@@ -1,0 +1,30 @@
+[package]
+name = "rquickjs-fun"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rquickjs = { version = "0.1.7", features = ["tokio", "futures", "array-buffer", "allocator", "rust-alloc", "loader", "macro", "phf", "either", "indexmap", "parallel"] }
+rustyline = "11.0.0"
+swc_core = { version = "0.74.2", features = ["ecma_codegen", "base_concurrent", "ecma_ast", "common_concurrent", "ecma_transforms_typescript", "ecma_parser_typescript", "ecma_plugin_transform"] }
+tokio = { version = "1.27.0", features = ["macros", "rt-multi-thread", "sync"] }
+vc-ltl = "5.0.5"
+
+[profile.release]
+incremental = true
+lto = "thin"
+strip = "debuginfo"
+
+[profile.min-size-release]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+
+[profile.release-strip]
+inherits = "release"
+strip = "symbols"
+
+[profile.min-size-release-strip]
+inherits = "min-size-release"
+strip = "symbols"
