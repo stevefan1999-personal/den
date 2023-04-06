@@ -4,11 +4,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rquickjs = { version = "0.1.7", features = ["tokio", "futures", "array-buffer", "allocator", "rust-alloc", "loader", "macro", "phf", "either", "indexmap", "parallel", "chrono"] }
-rustyline = "11.0.0"
-swc_core = { version = "0.74.2", features = ["ecma_codegen", "base_concurrent", "ecma_ast", "common_concurrent", "ecma_transforms_typescript", "ecma_parser_typescript", "ecma_plugin_transform"] }
-tokio = { version = "1.27.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+bytes = "1.4.0"
+color-eyre = "0.6.2"
+colored = "2.0.0"
+fmmap = { version = "0.3.2", features = ["sync", "tokio-async"] }
+matchit = "0.7.0"
+mime = "0.3.17"
+relative-path = "1.8.0"
+reqwest = { version = "0.11.16", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
+rquickjs = { git = "https://github.com/DelSkayn/rquickjs", version = "0.1.7", features = ["tokio", "futures", "array-buffer", "allocator", "rust-alloc", "loader", "macro", "phf", "either", "indexmap", "parallel", "chrono"] }
+rustyline = { version = "11.0.0", features = ["derive"] }
+swc_core = { version = "0.74.2", features = ["ecma_codegen", "base_concurrent", "ecma_ast", "common_concurrent", "ecma_plugin_transform"] }
+tokio = { version = "1.27.0", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net", "fs"] }
+url = "2.3.1"
 vc-ltl = "5.0.5"
+
+[features]
+default = ["typescript"]
+typescript = ["swc_core/ecma_transforms_typescript", "swc_core/ecma_parser_typescript"]
 
 [profile.release]
 incremental = true
