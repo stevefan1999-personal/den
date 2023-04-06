@@ -1658,6 +1658,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74fa1ecc1c84b31da87e5b26ce2b5218d36ffeb5c322141c78b79fa86a6ee3b9"
 dependencies = [
  "async-task",
+ "chrono",
  "either",
  "flume",
  "futures-lite",

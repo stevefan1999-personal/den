@@ -1,4 +1,7 @@
-use rquickjs::{Coerced, Context, Func, Runtime, Tokio};
+use rquickjs::{
+    BuiltinLoader, BuiltinResolver, Coerced, Context, FileResolver, Func, ModuleLoader, Runtime,
+    ScriptLoader, Tokio,
+};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::default::Default;
@@ -22,7 +25,7 @@ use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::transforms::typescript::strip;
 use swc_core::ecma::visit::FoldWith;
 use tokio::sync::mpsc;
-use tokio::task::JoinSet;
+use tokio::task::{yield_now, JoinSet};
 
 fn print(msg: String) {
     println!("{msg}");
@@ -40,25 +43,29 @@ async fn main() {
         let mut rl = DefaultEditor::new().unwrap();
 
         'repl: loop {
-            match rl.readline("> ") {
-                Err(ReadlineError::Eof) => break,
-                Err(ReadlineError::Interrupted) if interrupted => break,
-                Err(ReadlineError::Interrupted) => {
-                    println!("(To exit, press Ctrl+C again or Ctrl+D)");
-                    interrupted = true;
-                }
-                Err(_) => {}
-                Ok(line) => {
-                    interrupted = false;
-
-                    if line.is_empty() {
-                        continue 'repl;
+            'inner: loop {
+                match rl.readline("> ") {
+                    Err(ReadlineError::Eof) => break 'repl,
+                    Err(ReadlineError::Interrupted) if interrupted => break 'repl,
+                    Err(ReadlineError::Interrupted) => {
+                        println!("(To exit, press Ctrl+C again or Ctrl+D)");
+                        interrupted = true;
+                        break 'inner;
                     }
+                    Err(_) => break 'inner,
+                    Ok(line) => {
+                        interrupted = false;
 
-                    let _ = repl_tx.send(line.clone());
-                    let _ = rl.add_history_entry(&line);
+                        if !line.is_empty() {
+                            let _ = repl_tx.send(line.clone());
+                            let _ = rl.add_history_entry(&line);
+                        }
+
+                        break 'inner;
+                    }
                 }
             }
+            yield_now().await;
         }
     };
 
@@ -117,11 +124,23 @@ async fn main() {
             if let Some(x) = res {
                 let _ = parse_tx.send(x);
             }
+            yield_now().await;
         }
     };
 
     let interpreter = async move {
+        let resolver = (
+            BuiltinResolver::default(),
+            FileResolver::default().with_path("./"),
+        );
+        let loader = (
+            BuiltinLoader::default(),
+            ScriptLoader::default(),
+            ModuleLoader::default(),
+        );
         let rt = Runtime::new().unwrap();
+        rt.set_loader(resolver, loader);
+
         let _ = rt.spawn_executor(Tokio);
         let ctx = Context::full(&rt).unwrap();
         ctx.enable_big_num_ext(true);
@@ -142,6 +161,7 @@ async fn main() {
                     }
                 }
             });
+            yield_now().await;
         }
 
         rt.idle().await;
