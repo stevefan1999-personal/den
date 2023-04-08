@@ -1,0 +1,8 @@
+[package]
+name = "den-stdlib-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["parking_lot"] }
+tokio-util = { workspace = true }

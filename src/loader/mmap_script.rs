@@ -1,8 +1,11 @@
-use fmmap::{MmapFile, MmapFileExt};
+use derivative::Derivative;
+use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{Ctx, Error, Loaded, Loader, Module};
+use tokio::runtime::Handle;
 
-#[derive(Debug)]
+#[derive(Debug, Derivative)]
+#[derivative(Default(new = "true"))]
 pub struct MmapScriptLoader {
     extensions: Vec<String>,
 }
@@ -22,32 +25,24 @@ impl MmapScriptLoader {
     }
 }
 
-impl Default for MmapScriptLoader {
-    fn default() -> Self {
-        Self {
-            extensions: vec!["js".into(), "ts".into()],
-        }
-    }
-}
-
 impl Loader for MmapScriptLoader {
     fn load<'js>(&mut self, ctx: Ctx<'js>, path: &str) -> rquickjs::Result<Module<'js, Loaded>> {
-        if !check_extensions(path, &self.extensions) {
-            return Err(Error::new_loading(path));
-        }
-
-        let source = MmapFile::open(path).map_err(|_| Error::new_loading(path))?;
-        Ok(Module::new(ctx, path, source.as_slice())?.into_loaded())
-    }
-}
-
-fn check_extensions(name: &str, extensions: &[String]) -> bool {
-    let path = RelativePath::new(name);
-    path.extension()
-        .map(|extension| {
-            extensions
+        let task = async move {
+            let extension = RelativePath::new(path)
+                .extension()
+                .ok_or(Error::new_loading(path))?;
+            self.extensions
                 .iter()
-                .any(|known_extension| known_extension == extension)
-        })
-        .unwrap_or(false)
+                .find(|&e| extension == e)
+                .ok_or(Error::new_loading(path))?;
+
+            let source = AsyncMmapFile::open(path)
+                .await
+                .map_err(|_| Error::new_loading(path))?;
+
+            Ok(Module::new(ctx, path, source.as_slice())?.into_loaded())
+        };
+
+        tokio::task::block_in_place(move || Handle::current().block_on(task))
+    }
 }

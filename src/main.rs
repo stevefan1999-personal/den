@@ -1,75 +1,44 @@
-use rquickjs::Coerced;
-use std::default::Default;
-use std::panic;
-use swc_core::base::config::IsModule;
-use swc_core::ecma::parser::Syntax;
-use tokio::signal;
-use tokio::sync::{broadcast, mpsc};
-use tokio::task::{yield_now, JoinSet};
-use transpile::EasySwcTranspiler;
+use std::{default::Default, path::PathBuf};
+
+use app::App;
+use clap::Parser;
+use den_stdlib_core::WORLD_END;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[arg()]
+    file:       Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    repl:       bool,
+    #[arg(long, default_value_t = true)]
+    typescript: bool,
+}
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
+    WORLD_END.set(Default::default())?;
+
     color_eyre::install()?;
 
-    let (repl_tx, mut repl_rx) = mpsc::unbounded_channel();
-    let (ctrlc_tx, ctrlc_rx) = broadcast::channel(16);
+    let cli = Cli::parse();
+    let mut app = App::default();
 
-    let (rt, ctx) = js::create_qjs_context(ctrlc_rx);
-    let mut easy_swc = EasySwcTranspiler::default();
-    let repl = repl::run_repl(repl_tx);
-
-    let mut set = JoinSet::new();
-
-    let ctrlc = async move {
-        loop {
-            let _ = signal::ctrl_c().await;
-            let _ = ctrlc_tx.send(());
-        }
-    };
-
-    let interpreter = async move {
-        let syntax = Syntax::Typescript(Default::default());
-
-        while let Some(source) = repl_rx.recv().await {
-            if let Ok(src) = easy_swc.transpile(source, syntax, IsModule::Bool(false)) {
-                ctx.with(|ctx| {
-                    let result: rquickjs::Result<Coerced<String>> = ctx.eval(src);
-                    match result {
-                        Ok(Coerced(res)) => {
-                            println!("{}", res)
-                        }
-                        Err(err) => {
-                            eprintln!("{}", err)
-                        }
-                    }
-                });
-            }
-            yield_now().await;
-        }
-
-        Ok(())
-    };
-
-    set.spawn(ctrlc);
-    set.spawn(repl);
-    set.spawn(interpreter);
-
-    loop {
-        match set.join_next().await {
-            Some(Err(e)) => {
-                if let Ok(reason) = e.try_into_panic() {
-                    panic::resume_unwind(reason);
-                }
-            }
-            _ => {}
-        }
-        yield_now().await;
+    if let Some(x) = cli.file.clone() {
+        app.hook_ctrlc_handler();
+        app.run_file(x).await?;
     }
 
+    if cli.repl || cli.file.is_none() {
+        println!("Welcome to den, one word less than Deno");
+        app.start_repl_session().await;
+    }
+
+    app.run_until_end().await;
     Ok(())
 }
 
+mod app;
 mod js;
 mod loader;
 mod repl;

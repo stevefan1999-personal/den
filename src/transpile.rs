@@ -1,25 +1,30 @@
+use std::{io::stderr, sync::Arc};
+
 use bytes::Bytes;
 use color_eyre::eyre::eyre;
-use std::io::stderr;
-use std::sync::Arc as Lrc;
-use swc_core::base::config::IsModule;
-use swc_core::base::Compiler;
-use swc_core::common::errors::Handler;
-use swc_core::common::{FileName, Globals, Mark, SourceMap, GLOBALS};
-use swc_core::ecma::ast::EsVersion;
-use swc_core::ecma::codegen::text_writer::JsWriter;
-use swc_core::ecma::codegen::Emitter;
-use swc_core::ecma::parser::Syntax;
-use swc_core::ecma::transforms::base::fixer::fixer;
-use swc_core::ecma::transforms::base::hygiene::hygiene;
-use swc_core::ecma::transforms::base::resolver;
-use swc_core::ecma::transforms::typescript::strip;
-use swc_core::ecma::visit::FoldWith;
+use swc_core::{
+    base::{config::IsModule, Compiler},
+    common::{
+        errors::Handler, sync::Lrc, BytePos, FileName, Globals, LineCol, Mark, SourceFile,
+        SourceMap, GLOBALS,
+    },
+    ecma::{
+        ast::EsVersion,
+        codegen::{text_writer::JsWriter, Emitter},
+        parser::Syntax,
+        transforms::{
+            base::{fixer::fixer, hygiene::hygiene, resolver},
+            typescript::strip,
+        },
+        visit::FoldWith,
+    },
+};
+
 pub struct EasySwcTranspiler {
     source_map: Lrc<SourceMap>,
-    compiler: Compiler,
-    handler: Handler,
-    globals: Globals,
+    compiler:   Compiler,
+    handler:    Handler,
+    globals:    Globals,
 }
 
 impl Default for EasySwcTranspiler {
@@ -40,55 +45,91 @@ impl Default for EasySwcTranspiler {
 
 impl EasySwcTranspiler {
     pub fn transpile(
-        &mut self,
+        &self,
         source: String,
         syntax: Syntax,
         is_module: IsModule,
-    ) -> color_eyre::Result<Bytes> {
+        emit_sourcemap: bool,
+    ) -> color_eyre::Result<(Bytes, Option<swc_core::base::sourcemap::SourceMap>)> {
         let fm = self
             .source_map
-            .new_source_file(FileName::Anon, source.clone());
+            .new_source_file_from(FileName::Anon, source.into());
 
         GLOBALS.set(&self.globals, || {
-            let mut program = self
-                .compiler
-                .parse_js(
-                    fm,
-                    &self.handler,
-                    EsVersion::Es2022,
-                    syntax,
-                    is_module,
-                    None,
-                )
-                .map_err(|err| eyre!(err))?;
-
-            if let Syntax::Typescript(_) = syntax {
-                let unresolved_mark = Mark::new();
-                let top_level_mark = Mark::new();
-
-                program = program
-                    .fold_with(&mut resolver(unresolved_mark, top_level_mark, true))
-                    .fold_with(&mut strip(top_level_mark));
-            }
-
-            program = program
-                .fold_with(&mut hygiene())
-                .fold_with(&mut fixer(None));
-
-            let mut buf = vec![];
-
-            let mut emitter = Emitter {
-                cfg: swc_core::ecma::codegen::Config {
-                    target: EsVersion::Es2020,
-                    ..Default::default()
-                },
-                cm: self.source_map.clone(),
-                comments: None,
-                wr: JsWriter::new(self.source_map.clone(), "\n", &mut buf, None),
-            };
-
-            emitter.emit_program(&program)?;
-            Ok(buf.into())
+            self.do_transpile(syntax, is_module, emit_sourcemap, fm)
         })
+    }
+
+    fn do_transpile(
+        &self,
+        syntax: Syntax,
+        is_module: IsModule,
+        emit_sourcemap: bool,
+        fm: Arc<SourceFile>,
+    ) -> color_eyre::Result<(Bytes, Option<swc_core::base::sourcemap::SourceMap>)> {
+        let mut program = self
+            .compiler
+            .parse_js(
+                fm,
+                &self.handler,
+                EsVersion::Es2022,
+                syntax,
+                is_module,
+                None,
+            )
+            .map_err(|err| eyre!(err))?;
+
+        let unresolved_mark = Mark::new();
+        let top_level_mark = Mark::new();
+
+        program = match syntax {
+            Syntax::Typescript(_) => {
+                program
+                    .fold_with(&mut resolver(unresolved_mark, top_level_mark, true))
+                    .fold_with(&mut strip(top_level_mark))
+            }
+            Syntax::Es(_) => {
+                program.fold_with(&mut resolver(unresolved_mark, top_level_mark, false))
+            }
+        };
+
+        program = program
+            .fold_with(&mut hygiene())
+            .fold_with(&mut fixer(None));
+
+        let mut buf = vec![];
+        let mut srcmap: Vec<(BytePos, LineCol)> = vec![];
+
+        let wr = JsWriter::new(
+            self.source_map.clone(),
+            "\n",
+            &mut buf,
+            if emit_sourcemap {
+                Some(&mut srcmap)
+            } else {
+                None
+            },
+        );
+        let cfg = swc_core::ecma::codegen::Config {
+            target: EsVersion::Es2020,
+            ..Default::default()
+        };
+        let mut emitter = Emitter {
+            cfg,
+            cm: self.source_map.clone(),
+            comments: None,
+            wr,
+        };
+
+        emitter.emit_program(&program)?;
+
+        Ok((
+            buf.into(),
+            if emit_sourcemap {
+                Some(self.source_map.build_source_map(srcmap.as_ref()))
+            } else {
+                None
+            },
+        ))
     }
 }

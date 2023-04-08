@@ -1,9 +1,9 @@
-use rustyline::config::Configurer;
-use rustyline::error::ReadlineError;
-use rustyline::validate::MatchingBracketValidator;
-use rustyline::{Behavior, Completer, Editor, Helper, Highlighter, Hinter, Validator};
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::task::yield_now;
+use den_stdlib_core::WORLD_END;
+use rustyline::{
+    config::Configurer, error::ReadlineError, validate::MatchingBracketValidator, Behavior,
+    Completer, Editor, Helper, Highlighter, Hinter, Validator,
+};
+use tokio::{sync::mpsc, task::yield_now};
 
 #[derive(Completer, Helper, Highlighter, Hinter, Validator)]
 struct InputValidator {
@@ -11,7 +11,7 @@ struct InputValidator {
     brackets: MatchingBracketValidator,
 }
 
-pub async fn run_repl(output_sink: UnboundedSender<String>) -> Result<(), ()> {
+pub async fn run_repl(output_sink: mpsc::UnboundedSender<String>) {
     let h = InputValidator {
         brackets: MatchingBracketValidator::new(),
     };
@@ -45,5 +45,5 @@ pub async fn run_repl(output_sink: UnboundedSender<String>) -> Result<(), ()> {
         }
         yield_now().await;
     }
-    Ok(())
+    WORLD_END.get().unwrap().cancel();
 }

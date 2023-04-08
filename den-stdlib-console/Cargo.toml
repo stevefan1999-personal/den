@@ -1,0 +1,8 @@
+[package]
+name = "den-stdlib-console"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+colored = "2.0.0"
+rquickjs = { workspace = true, features = ["macro"] }

@@ -1,27 +1,63 @@
-[package]
-name = "rquickjs-fun"
-version = "0.1.0"
+[workspace]
+
+members = [
+    "den-stdlib-console",
+    "den-stdlib-timer",
+    "den-stdlib-core",
+    "den-stdlib-socket",
+    "den-utils"
+]
+
+[workspace.package]
+version = "0.0.1"
 edition = "2021"
+
+[workspace.dependencies]
+delegate-attr = "0.2.9"
+derivative = "2.2.0"
+derive_more = "0.99.17"
+futures = "0.3.28"
+rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-embed-typescript", version = "0.1.7", features = ["phf"] }
+tokio = "1.27.0"
+tokio-util = "0.7.7"
+
+[package]
+name = "den"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 bytes = "1.4.0"
+clap = { version = "4.2.1", features = ["unicode", "derive", "env"] }
 color-eyre = "0.6.2"
-colored = "2.0.0"
-fmmap = { version = "0.3.2", features = ["sync", "tokio-async"] }
+delegate-attr = { workspace = true }
+den-stdlib-console = { version = "0.0.1", path = "den-stdlib-console" }
+den-stdlib-core = { version = "0.0.1", path = "den-stdlib-core" }
+den-stdlib-socket = { version = "0.0.1", path = "den-stdlib-socket" }
+den-stdlib-timer = { version = "0.0.1", path = "den-stdlib-timer" }
+den-utils = { version = "0.0.1", path = "den-utils" }
+derivative = { workspace = true }
+derive_more = { workspace = true }
+fmmap = { version = "0.3.2", features = ["tokio-async"] }
 matchit = "0.7.0"
 mime = "0.3.17"
+phf = "0.10.1"
 relative-path = "1.8.0"
 reqwest = { version = "0.11.16", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
-rquickjs = { git = "https://github.com/DelSkayn/rquickjs", version = "0.1.7", features = ["tokio", "futures", "array-buffer", "allocator", "rust-alloc", "loader", "macro", "phf", "either", "indexmap", "parallel", "chrono"] }
+rquickjs = { workspace = true, features = ["array-buffer", "allocator", "futures", "rust-alloc", "loader", "parallel", "typescript", "phf"] }
 rustyline = { version = "11.0.0", features = ["derive"] }
-swc_core = { version = "0.74.2", features = ["ecma_codegen", "base_concurrent", "ecma_ast", "common_concurrent", "ecma_plugin_transform"] }
-tokio = { version = "1.27.0", features = ["macros", "rt-multi-thread", "sync", "time", "signal", "net", "fs"] }
+swc_core = { version = "0.74.6", features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = { workspace = true }
 url = "2.3.1"
 vc-ltl = "5.0.5"
+wasmer = { version = "3.1.1", optional = true }
 
 [features]
 default = ["typescript"]
 typescript = ["swc_core/ecma_transforms_typescript", "swc_core/ecma_parser_typescript"]
+wasm = []
+wasmer = ["wasm", "dep:wasmer"]
 
 [profile.release]
 incremental = true
@@ -41,3 +77,6 @@ strip = "symbols"
 [profile.min-size-release-strip]
 inherits = "min-size-release"
 strip = "symbols"
+
+[build-dependencies]
+cargo-emit = "0.2.1"
