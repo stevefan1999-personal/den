@@ -1,0 +1,40 @@
+name: lint
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - .github/workflows/lint.yml
+
+jobs:
+  clippy:
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - uses: olix0r/cargo-action-fmt/setup@v2
+      - uses: actions/checkout@v2
+      - run: rustup install nightly --profile complete
+      - run: cargo +nightly clippy --no-deps --message-format=json | cargo-action-fmt
+
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: setup
+    steps:
+      - uses: olix0r/cargo-action-fmt/setup@v2
+      - uses: actions/checkout@v2
+      - run: rustup install nightly --profile complete
+      - run: cargo +nightly fmt --message-format=json | cargo-action-fmt
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: setup
+    steps:
+      - uses: olix0r/cargo-action-fmt/setup@v2
+      - uses: actions/checkout@v2
+      - run: rustup install nightly --profile complete
+      - run: cargo +nightly doc --no-deps --message-format=json | cargo-action-fmt
