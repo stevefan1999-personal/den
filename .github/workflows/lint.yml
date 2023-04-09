@@ -26,7 +26,7 @@ jobs:
       - uses: olix0r/cargo-action-fmt/setup@v2
       - uses: actions/checkout@v2
       - run: rustup install nightly --profile complete
-      - run: cargo +nightly fmt --message-format=json | cargo-action-fmt
+      - run: cargo +nightly fmt --check
 
   docs:
     runs-on: ubuntu-latest
