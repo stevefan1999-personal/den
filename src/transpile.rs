@@ -46,14 +46,14 @@ impl Default for EasySwcTranspiler {
 impl EasySwcTranspiler {
     pub fn transpile(
         &self,
-        source: String,
+        source: &str,
         syntax: Syntax,
         is_module: IsModule,
         emit_sourcemap: bool,
     ) -> color_eyre::Result<(Bytes, Option<swc_core::base::sourcemap::SourceMap>)> {
         let fm = self
             .source_map
-            .new_source_file_from(FileName::Anon, source.into());
+            .new_source_file_from(FileName::Anon, source.to_string().into());
 
         GLOBALS.set(&self.globals, || {
             self.do_transpile(syntax, is_module, emit_sourcemap, fm)
