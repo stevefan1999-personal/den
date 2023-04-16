@@ -1,4 +1,4 @@
-use std::{io::stderr, sync::Arc};
+use std::io::stderr;
 
 use bytes::Bytes;
 use color_eyre::eyre::eyre;
@@ -65,7 +65,7 @@ impl EasySwcTranspiler {
         syntax: Syntax,
         is_module: IsModule,
         emit_sourcemap: bool,
-        fm: Arc<SourceFile>,
+        fm: Lrc<SourceFile>,
     ) -> color_eyre::Result<(Bytes, Option<swc_core::base::sourcemap::SourceMap>)> {
         let mut program = self
             .compiler
