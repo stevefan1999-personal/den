@@ -1,13 +1,21 @@
+use std::sync::Arc;
+
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{Ctx, Error, Loaded, Loader, Module};
+use swc_core::{base::config::IsModule, ecma::parser::Syntax};
 use tokio::runtime::Handle;
 
-#[derive(Debug, Derivative)]
+use crate::transpile::EasySwcTranspiler;
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 #[derivative(Default(new = "true"))]
 pub struct MmapScriptLoader {
     extensions: Vec<String>,
+    #[derivative(Debug = "ignore")]
+    transpiler: Arc<EasySwcTranspiler>,
 }
 
 impl MmapScriptLoader {
@@ -39,8 +47,17 @@ impl Loader for MmapScriptLoader {
             let source = AsyncMmapFile::open(path)
                 .await
                 .map_err(|_| Error::new_loading(path))?;
+            let (src, _) = self
+                .transpiler
+                .transpile(
+                    std::str::from_utf8(source.as_slice())?,
+                    Syntax::Typescript(Default::default()),
+                    IsModule::Bool(true),
+                    false,
+                )
+                .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
 
-            Ok(Module::new(ctx, path, source.as_slice())?.into_loaded())
+            Ok(Module::new(ctx, path, src)?.into_loaded())
         };
 
         tokio::task::block_in_place(move || Handle::current().block_on(task))
