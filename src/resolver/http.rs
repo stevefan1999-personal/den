@@ -3,27 +3,14 @@ use rquickjs::{Ctx, Error, Resolver};
 use tokio::runtime::Handle;
 use url::{ParseError, Url};
 
+#[derive(Default)]
 pub struct HttpResolver {
     pub(crate) allowlist: Option<Router<String>>,
     pub(crate) denylist:  Option<Router<String>>,
 }
 
-impl Default for HttpResolver {
-    fn default() -> Self {
-        Self {
-            allowlist: None,
-            denylist:  None,
-        }
-    }
-}
-
 impl Resolver for HttpResolver {
-    fn resolve<'js>(
-        &mut self,
-        _ctx: Ctx<'js>,
-        base_path: &str,
-        path: &str,
-    ) -> rquickjs::Result<String> {
+    fn resolve(&mut self, _ctx: Ctx<'_>, base_path: &str, path: &str) -> rquickjs::Result<String> {
         let task = async move {
             let base_path_url = Url::parse(base_path);
             let path_url = Url::parse(path);
@@ -55,7 +42,7 @@ impl Resolver for HttpResolver {
 
             // If a deny list exists and the current path is in it, deny
             if let Some(deny) = &self.denylist {
-                if let Ok(_) = deny.at(name.as_str()) {
+                if deny.at(name.as_str()).is_ok() {
                     let msg = format!("{name} is denied");
                     return Err(Error::new_resolving_message(base_path, path, msg));
                 }
