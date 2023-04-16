@@ -1,0 +1,9 @@
+[package]
+name = "den-stdlib-regex"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+colored = "2.0.0"
+regex = "1.7.3"
+rquickjs = { workspace = true, features = ["macro"] }

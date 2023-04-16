@@ -5,6 +5,7 @@ members = [
     "den-stdlib-timer",
     "den-stdlib-core",
     "den-stdlib-socket",
+    "den-stdlib-regex",
     "den-utils"
 ]
 
