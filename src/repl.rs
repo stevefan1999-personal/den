@@ -45,5 +45,5 @@ pub async fn run_repl(output_sink: mpsc::UnboundedSender<String>) {
         }
         yield_now().await;
     }
-    WORLD_END.get().unwrap().cancel();
+    WORLD_END.cancel();
 }
