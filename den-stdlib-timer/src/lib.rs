@@ -2,37 +2,13 @@ use rquickjs::bind;
 
 #[bind(object, public)]
 #[quickjs(bare)]
-pub mod cancellation_token {
-    use std::ops::Deref;
-
-    use delegate_attr::delegate;
-    use derivative::Derivative;
-    use derive_more::{Deref, DerefMut, From, Into};
-    use tokio_util::sync::CancellationToken;
-
-    #[quickjs(cloneable)]
-    #[derive(Derivative, From, Into, Deref, DerefMut)]
-    #[derivative(Clone, Debug)]
-    pub struct CancellationTokenWrapper(CancellationToken);
-
-    impl CancellationTokenWrapper {
-        #[delegate(self.deref())]
-        pub fn cancel(&self);
-    }
-}
-
-#[bind(object, public)]
-#[quickjs(bare)]
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::WORLD_END;
+    use den_stdlib_core::{cancellation_token::CancellationTokenWrapper, WORLD_END};
     use den_utils::FutureExt;
     use rquickjs::{Context, Ctx, Function, Persistent};
     use tokio::time;
-    use tokio_util::sync::CancellationToken;
-
-    use crate::cancellation_token::CancellationTokenWrapper;
 
     #[quickjs(rename = "setInterval")]
     pub fn set_interval(
@@ -43,9 +19,7 @@ pub mod timer {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
         let mut interval = time::interval(duration);
-        let token = WORLD_END
-            .get()
-            .map_or(CancellationToken::new(), |x| x.child_token());
+        let token = WORLD_END.child_token();
 
         ctx.spawn({
             let token = token.clone();
@@ -79,9 +53,7 @@ pub mod timer {
     ) -> CancellationTokenWrapper {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
-        let token = WORLD_END
-            .get()
-            .map_or(CancellationToken::new(), |x| x.child_token());
+        let token = WORLD_END.child_token();
         ctx.spawn({
             let token = token.clone();
             let context = Context::from_ctx(ctx).unwrap();

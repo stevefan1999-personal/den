@@ -9,8 +9,5 @@ derivative = { workspace = true }
 derive_more = { workspace = true }
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 den-stdlib-core = { version = "0.0.1", path = "../den-stdlib-core" }
-tokio = { workspace = true, features = ["macros", "net", "io-util", "sync"] }
-tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "sync"] }
 den-utils = { version = "0.0.1", path = "../den-utils" }
-futures.workspace = true
-rcu-clean = "0.1.8"

@@ -16,17 +16,12 @@ mod socket {
         net::{TcpListener, TcpStream},
         sync::RwLock,
     };
-    use tokio_util::sync::CancellationToken;
 
     use crate::socket_addr::SocketAddrWrapper;
 
     pub async fn listen(addr: String) -> rquickjs::Result<TcpListenerWrapper> {
         let listener = TcpListener::bind(addr)
-            .with_cancellation(
-                &WORLD_END
-                    .get()
-                    .map_or(CancellationToken::new(), |x| x.child_token()),
-            )
+            .with_cancellation(&WORLD_END.child_token())
             .await??;
         Ok(Arc::new(listener).into())
     }
@@ -49,11 +44,7 @@ mod socket {
             let mut writer = self.deref().write().await;
             writer
                 .write_all(&buf)
-                .with_cancellation(
-                    &WORLD_END
-                        .get()
-                        .map_or(CancellationToken::new(), |x| x.child_token()),
-                )
+                .with_cancellation(&WORLD_END.child_token())
                 .await??;
             Ok(())
         }
@@ -77,11 +68,7 @@ mod socket {
             let (stream, addr) = self
                 .deref()
                 .accept()
-                .with_cancellation(
-                    &WORLD_END
-                        .get()
-                        .map_or(CancellationToken::new(), |x| x.child_token()),
-                )
+                .with_cancellation(&WORLD_END.child_token())
                 .await??;
             let stream = Arc::new(RwLock::new(stream));
             let addr = Cell::new(addr);
