@@ -2,7 +2,6 @@ use std::{default::Default, path::PathBuf};
 
 use app::App;
 use clap::Parser;
-use den_stdlib_core::WORLD_END;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -17,8 +16,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    WORLD_END.set(Default::default())?;
-
     color_eyre::install()?;
 
     let cli = Cli::parse();
@@ -26,7 +23,7 @@ async fn main() -> color_eyre::Result<()> {
 
     if let Some(x) = cli.file.clone() {
         app.hook_ctrlc_handler();
-        app.run_file(x).await?;
+        app.engine.run_file(x).await?;
     }
 
     if cli.repl || cli.file.is_none() {
