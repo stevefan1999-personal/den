@@ -4,5 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-colored = "2.0.0"
+colored = "2.0.4"
 rquickjs = { workspace = true, features = ["macro"] }

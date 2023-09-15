@@ -18,9 +18,9 @@ delegate-attr = "0.2.9"
 derivative = "2.2.0"
 derive_more = "0.99.17"
 futures = "0.3.28"
-rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-embed-typescript", version = "0.1.7", features = ["phf"] }
-tokio = "1.27.0"
-tokio-util = "0.7.7"
+rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-qjs-patch-without-gnu", version = "0.4.0-beta.4", features = ["full-async", "rust-alloc", "parallel", "max-args-7"] }
+tokio = "1.32.0"
+tokio-util = "0.7.8"
 
 [package]
 name = "den"
@@ -28,31 +28,33 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bytes = "1.4.0"
-clap = { version = "4.2.1", features = ["unicode", "derive", "env"] }
+bytes = "1.5.0"
+clap = { version = "4.4.3", features = ["unicode", "derive", "env"] }
 color-eyre = "0.6.2"
 delegate-attr = { workspace = true }
-den-stdlib-console = { version = "0.0.1", path = "den-stdlib-console" }
-den-stdlib-core = { version = "0.0.1", path = "den-stdlib-core" }
-den-stdlib-socket = { version = "0.0.1", path = "den-stdlib-socket" }
-den-stdlib-timer = { version = "0.0.1", path = "den-stdlib-timer" }
-den-utils = { version = "0.0.1", path = "den-utils" }
+den-stdlib-console = { version = "^0.0", path = "den-stdlib-console" }
+den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
+den-stdlib-socket = { version = "^0.0", path = "den-stdlib-socket" }
+den-stdlib-timer = { version = "^0.0", path = "den-stdlib-timer" }
+den-utils = { version = "^0.0", path = "den-utils" }
 derivative = { workspace = true }
 derive_more = { workspace = true }
 fmmap = { version = "0.3.2", features = ["tokio-async"] }
-matchit = "0.7.0"
+matchit = "0.7.2"
 mime = "0.3.17"
 phf = "0.10.1"
-relative-path = "1.8.0"
-reqwest = { version = "0.11.16", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
-rquickjs = { workspace = true, features = ["array-buffer", "allocator", "futures", "rust-alloc", "loader", "parallel", "typescript", "phf"] }
+relative-path = "1.9.0"
+reqwest = { version = "0.11.20", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
+rquickjs = { workspace = true, features = ["array-buffer", "allocator", "futures", "rust-alloc", "loader", "parallel", "phf"] }
 rustyline = { version = "11.0.0", features = ["derive"] }
 swc_core = { version = "0.74.6", features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = { workspace = true }
-url = "2.3.1"
-vc-ltl = "5.0.5"
-wasmer = { version = "3.1.1", optional = true }
+url = "2.4.1"
+vc-ltl = "5.0.8"
+wasmer = { version = "3.3.0", optional = true }
+futures.workspace = true
+console-subscriber = "0.1.10"
 
 [features]
 default = ["typescript"]

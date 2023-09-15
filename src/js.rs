@@ -2,16 +2,20 @@ use std::{path::PathBuf, sync::Arc};
 
 use bytes::Bytes;
 use color_eyre::eyre;
-use den_stdlib_core::WORLD_END;
+use den_stdlib_console::Console;
+use den_stdlib_core::{js_core, WORLD_END};
 use rquickjs::{
-    intrinsic::All, BuiltinLoader, BuiltinResolver, Context, EvalOptions, FileResolver, FromJs,
-    ModuleLoader, Runtime,
+    async_with,
+    context::EvalOptions,
+    loader::{BuiltinLoader, BuiltinResolver, FileResolver, ModuleLoader},
+    AsyncContext, AsyncRuntime, FromJs, Module,
 };
 use swc_core::{
     base::{config::IsModule, sourcemap::SourceMap},
     ecma::parser::Syntax,
 };
-use tokio::{fs, signal, sync::mpsc, task::JoinHandle};
+use tokio::{fs, signal, sync::mpsc, task::yield_now};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
@@ -21,14 +25,15 @@ use crate::{
 
 #[derive(Clone)]
 pub struct Engine {
-    pub(crate) transpiler:      Arc<EasySwcTranspiler>,
-    pub(crate) ctx:             Context,
-    pub(crate) executor_handle: Arc<JoinHandle<()>>,
+    pub(crate) transpiler: Arc<EasySwcTranspiler>,
+    pub(crate) runtime:    AsyncRuntime,
+    pub(crate) context:    AsyncContext,
+    pub(crate) stop_token: CancellationToken,
 }
 
 impl Engine {
-    pub fn new() -> Engine {
-        let rt = Runtime::new().unwrap();
+    pub async fn new() -> Engine {
+        let runtime = AsyncRuntime::new().unwrap();
 
         {
             let resolver = (
@@ -53,42 +58,46 @@ impl Engine {
                     .with_extension("mjs"),
                 ModuleLoader::default(),
             );
-            rt.set_loader(resolver, loader);
+            runtime.set_loader(resolver, loader).await;
         }
 
-        rt.set_interrupt_handler({
-            let world_end = WORLD_END.child_token();
-            let (ctrlc_tx, mut ctrlc_rx) = mpsc::unbounded_channel();
-            tokio::spawn({
-                async move {
-                    loop {
-                        let _ = signal::ctrl_c().await;
-                        let _ = ctrlc_tx.send(());
+        runtime
+            .set_interrupt_handler({
+                let world_end = WORLD_END.child_token();
+                let (ctrlc_tx, mut ctrlc_rx) = mpsc::unbounded_channel();
+                tokio::spawn({
+                    async move {
+                        loop {
+                            let _ = signal::ctrl_c().await;
+                            let _ = ctrlc_tx.send(());
+                            yield_now().await;
+                        }
                     }
-                }
-            });
-            Some(Box::new(move || {
-                ctrlc_rx
-                    .try_recv()
-                    .map_or_else(|_| world_end.is_cancelled(), |_| true)
-            }))
-        });
-        let handle = tokio::spawn(rt.run_executor());
+                });
+                Some(Box::new(move || {
+                    ctrlc_rx
+                        .try_recv()
+                        .map_or_else(|_| world_end.is_cancelled(), |_| true)
+                }))
+            })
+            .await;
 
-        let ctx = Context::builder().with::<All>().build(&rt).unwrap();
-        ctx.with(|ctx| {
+        let context = AsyncContext::full(&runtime).await.unwrap();
+
+        async_with!(context => |ctx| {
             let global = ctx.globals();
-            global.init_def::<den_stdlib_console::Console>().unwrap();
-            global.init_def::<den_stdlib_timer::Timer>().unwrap();
-            global.init_def::<den_stdlib_socket::Socket>().unwrap();
-            global.init_def::<den_stdlib_socket::IpAddr>().unwrap();
-            global.init_def::<den_stdlib_socket::SocketAddr>().unwrap();
-        });
+            global.set("console", Console {})?;
+            Module::declare_def::<js_core, _>(ctx.clone(), "den:core")?;
+            Ok::<_, rquickjs::Error>(())
+        })
+        .await
+        .unwrap();
 
         Self {
             transpiler: Arc::new(Default::default()),
-            ctx,
-            executor_handle: handle.into(),
+            runtime,
+            context,
+            stop_token: CancellationToken::new(),
         }
     }
 
@@ -100,29 +109,37 @@ impl Engine {
             IsModule::Bool(true),
         )?;
 
-        self.ctx.with(|ctx| {
-            ctx.compile(filename.to_str().unwrap_or("<unknown>"), src)
-                .map(|_| ())
-        })?;
+        self.context
+            .with(|ctx| {
+                ctx.compile(filename.to_str().unwrap_or("<unknown>"), src)
+                    .map(|_| ())
+            })
+            .await?;
         Ok(())
     }
 
-    pub fn run_immediate<U: for<'a> FromJs<'a>>(&self, src: &str) -> eyre::Result<U> {
+    pub async fn run_immediate<U: for<'a> FromJs<'a> + Sync + Send>(
+        &self,
+        src: &str,
+    ) -> eyre::Result<U> {
         let (src, _) = self.transpile(
             src,
             Syntax::Typescript(Default::default()),
             IsModule::Bool(true),
         )?;
 
-        Ok(self.ctx.with(|ctx| {
-            ctx.eval_with_options(
-                src,
-                EvalOptions {
-                    global: false,
-                    ..Default::default()
-                },
-            )
-        })?)
+        Ok(self
+            .context
+            .with(|ctx| {
+                ctx.eval_with_options(
+                    src,
+                    EvalOptions {
+                        global: false,
+                        ..Default::default()
+                    },
+                )
+            })
+            .await?)
     }
 
     pub fn transpile(
@@ -134,14 +151,17 @@ impl Engine {
         self.transpiler.transpile(src, syntax, module, false)
     }
 
-    pub fn eval<U: for<'a> FromJs<'a>>(&self, src: &str) -> eyre::Result<U> {
+    pub async fn eval<U: for<'js> FromJs<'js> + Send + Sync + 'static>(
+        &self,
+        src: &str,
+    ) -> eyre::Result<U> {
         let (src, _) = self.transpile(
             src,
             Syntax::Typescript(Default::default()),
             IsModule::Unknown,
         )?;
 
-        Ok(self.ctx.with(|ctx| {
+        Ok(async_with!(self.context => |ctx| {
             ctx.eval_with_options(
                 src,
                 EvalOptions {
@@ -149,11 +169,12 @@ impl Engine {
                     ..Default::default()
                 },
             )
-        })?)
+        })
+        .await?)
     }
 
-    pub fn stop(&self) {
-        self.executor_handle.abort()
+    pub async fn stop(&mut self) {
+        self.stop_token.cancel()
     }
 }
 
@@ -165,18 +186,22 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn my_test() -> eyre::Result<()> {
-        let engine = Engine::new();
-        let _: usize = engine.run_immediate(
-            r#"
+        let engine = Engine::new().await;
+        let _: usize = engine
+            .run_immediate(
+                r#"
             console.log("hello world")
         "#,
-        )?;
-        engine.run_immediate(
-            r#"
+            )
+            .await?;
+        engine
+            .run_immediate(
+                r#"
             import { hello } from 'builtin'
             console.log(hello)
         "#,
-        )?;
+            )
+            .await?;
         Ok(())
     }
 }

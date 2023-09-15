@@ -1,44 +1,40 @@
-pub use ip_addr::*;
-use rquickjs::bind;
+use std::net::IpAddr;
 
-#[bind(object, public)]
-#[quickjs(bare)]
-mod ip_addr {
-    use std::{net::IpAddr, ops::Deref};
+use derivative::Derivative;
+use derive_more::{Deref, DerefMut, From, Into};
+use rquickjs::class::Trace;
 
-    use delegate_attr::delegate;
-    use derivative::Derivative;
-    use derive_more::{Deref, DerefMut, From, Into};
+#[derive(Trace, Derivative, From, Into, Deref, DerefMut)]
+#[derivative(Clone, Debug)]
+#[rquickjs::class(rename = "IpAddr")]
+pub struct IpAddrWrapper {
+    #[qjs(skip_trace)]
+    addr: IpAddr,
+}
 
-    #[quickjs(cloneable, rename = "IpAddr")]
-    #[derive(Derivative, From, Into, Deref, DerefMut)]
-    #[derivative(Clone, Debug)]
-    pub struct IpAddrWrapper(IpAddr);
+#[rquickjs::methods]
+impl IpAddrWrapper {
+    #[qjs(get, enumerable)]
+    #[delegate(self.deref())]
+    pub fn is_unspecified(&self) -> bool;
 
-    #[quickjs(rename = "IpAddr")]
-    impl IpAddrWrapper {
-        #[quickjs(get, enumerable)]
-        #[delegate(self.deref())]
-        pub fn is_unspecified(&self) -> bool;
+    #[qjs(get, enumerable)]
+    #[delegate(self.deref())]
+    pub fn is_loopback(&self) -> bool;
 
-        #[quickjs(get, enumerable)]
-        #[delegate(self.deref())]
-        pub fn is_loopback(&self) -> bool;
+    #[qjs(get, enumerable)]
+    #[delegate(self.deref())]
+    pub fn is_multicast(&self) -> bool;
 
-        #[quickjs(get, enumerable)]
-        #[delegate(self.deref())]
-        pub fn is_multicast(&self) -> bool;
+    #[qjs(get, enumerable)]
+    #[delegate(self.deref())]
+    pub fn is_ipv4(&self) -> bool;
 
-        #[quickjs(get, enumerable)]
-        #[delegate(self.deref())]
-        pub fn is_ipv4(&self) -> bool;
+    #[qjs(get, enumerable)]
+    #[delegate(self.deref())]
+    pub fn is_ipv6(&self) -> bool;
 
-        #[quickjs(get, enumerable)]
-        #[delegate(self.deref())]
-        pub fn is_ipv6(&self) -> bool;
-
-        #[quickjs(rename = "toString")]
-        #[delegate(self.deref())]
-        pub fn to_string(&self) -> String;
-    }
+    #[qjs(rename = "toString")]
+    #[delegate(self.deref())]
+    pub fn to_string(&self) -> String;
 }

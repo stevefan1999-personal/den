@@ -3,7 +3,7 @@ use std::sync::Arc;
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
-use rquickjs::{Ctx, Error, Loaded, Loader, Module};
+use rquickjs::{loader::Loader, module::ModuleData, Ctx, Error};
 use swc_core::{base::config::IsModule, ecma::parser::Syntax};
 use tokio::runtime::Handle;
 
@@ -34,7 +34,7 @@ impl MmapScriptLoader {
 }
 
 impl Loader for MmapScriptLoader {
-    fn load<'js>(&mut self, ctx: Ctx<'js>, path: &str) -> rquickjs::Result<Module<'js, Loaded>> {
+    fn load<'js>(&mut self, _ctx: &Ctx<'js>, path: &str) -> rquickjs::Result<ModuleData> {
         let task = async move {
             let extension = RelativePath::new(path)
                 .extension()
@@ -57,7 +57,7 @@ impl Loader for MmapScriptLoader {
                 )
                 .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
 
-            Ok(Module::new(ctx, path, src)?.into_loaded())
+            Ok(ModuleData::source(path, src))
         };
 
         tokio::task::block_in_place(move || Handle::current().block_on(task))

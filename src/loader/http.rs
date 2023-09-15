@@ -1,7 +1,7 @@
 use derivative::Derivative;
 use mime::Mime;
 use reqwest::header::CONTENT_TYPE;
-use rquickjs::{Ctx, Error, Loaded, Loader, Module};
+use rquickjs::{loader::Loader, module::ModuleData, Ctx, Error};
 use tokio::runtime::Handle;
 
 #[derive(Derivative)]
@@ -12,7 +12,7 @@ pub struct HttpLoader {
 }
 
 impl Loader for HttpLoader {
-    fn load<'js>(&mut self, ctx: Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js, Loaded>> {
+    fn load<'js>(&mut self, _ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<ModuleData> {
         let task = async move {
             let body = reqwest::get(name)
                 .await
@@ -52,7 +52,7 @@ impl Loader for HttpLoader {
             }
 
             if let Ok(body) = body.text().await {
-                Ok(Module::new(ctx, name, body)?.into_loaded())
+                Ok(ModuleData::source(name, body))
             } else {
                 Err(Error::new_loading_message(
                     name,

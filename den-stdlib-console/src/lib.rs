@@ -1,10 +1,12 @@
-use rquickjs::bind;
+use colored::Colorize;
+use rquickjs::convert::Coerced;
 
-#[bind(object, public)]
-pub mod console {
-    use colored::Colorize;
-    use rquickjs::Coerced;
+#[derive(rquickjs::class::Trace)]
+#[rquickjs::class]
+pub struct Console {}
 
+#[rquickjs::methods]
+impl Console {
     pub fn log(msg: Coerced<String>) {
         println!("{}", msg.0);
     }

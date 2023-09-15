@@ -1,4 +1,4 @@
-use std::{default::Default, path::PathBuf};
+use std::path::PathBuf;
 
 use app::App;
 use clap::Parser;
@@ -16,10 +16,11 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
+    console_subscriber::init();
     color_eyre::install()?;
 
     let cli = Cli::parse();
-    let mut app = App::default();
+    let mut app = App::new().await;
 
     if let Some(x) = cli.file.clone() {
         app.hook_ctrlc_handler();
@@ -30,7 +31,6 @@ async fn main() -> color_eyre::Result<()> {
         println!("Welcome to den, one word less than Deno");
         app.start_repl_session().await;
     }
-
     app.run_until_end().await;
     Ok(())
 }
