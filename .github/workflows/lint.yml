@@ -1,5 +1,7 @@
 name: lint
 
+
+
 permissions:
   contents: read
 
@@ -12,7 +14,7 @@ on:
 
 jobs:
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     steps:
       - uses: olix0r/cargo-action-fmt/setup@v2
       - uses: actions/checkout@v2
@@ -20,7 +22,7 @@ jobs:
       - run: cargo +nightly clippy --no-deps --message-format=json | cargo-action-fmt
 
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     timeout-minutes: 10
     steps:
       - uses: olix0r/cargo-action-fmt/setup@v2
@@ -29,7 +31,7 @@ jobs:
       - run: cargo +nightly fmt --check
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted]
     timeout-minutes: 10
     steps:
       - uses: olix0r/cargo-action-fmt/setup@v2
