@@ -34,7 +34,7 @@ color-eyre = "0.6.2"
 delegate-attr = { workspace = true }
 den-stdlib-console = { version = "^0.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
-den-stdlib-socket = { version = "^0.0", path = "den-stdlib-socket" }
+den-stdlib-networking = { version = "^0.0", path = "den-stdlib-networking" }
 den-stdlib-timer = { version = "^0.0", path = "den-stdlib-timer" }
 den-utils = { version = "^0.0", path = "den-utils" }
 derivative = { workspace = true }

@@ -4,23 +4,21 @@ use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::class::Trace;
 
-use crate::IpAddrWrapper;
+use crate::ip_addr::IpAddrWrapper;
 
 #[derive(Trace, Derivative, From, Into, Deref, DerefMut)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class(rename = "SocketAddr")]
 pub struct SocketAddrWrapper {
     #[qjs(skip_trace)]
-    addr: Cell<SocketAddr>,
+    addr: SocketAddr,
 }
 
 #[rquickjs::methods]
 impl SocketAddrWrapper {
     pub fn new(ip: IpAddrWrapper, port: u16) -> Self {
         let addr = SocketAddr::new(ip.into(), port);
-        Self {
-            addr: Cell::new(addr),
-        }
+        Self { addr }
     }
 
     #[qjs(get, enumerable)]

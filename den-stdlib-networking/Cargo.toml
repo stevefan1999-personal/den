@@ -1,5 +1,5 @@
 [package]
-name = "den-stdlib-socket"
+name = "den-stdlib-networking"
 version.workspace = true
 edition.workspace = true
 

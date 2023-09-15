@@ -33,7 +33,7 @@ impl TcpStreamWrapper {
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> rquickjs::Result<SocketAddrWrapper> {
         let this = self.try_read().map_err(|_| Error::Unknown)?;
-        let addr = Cell::new(this.local_addr()?);
+        let addr = this.local_addr()?;
         Ok(addr.into())
     }
 
@@ -61,17 +61,17 @@ impl TcpListenerWrapper {
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> rquickjs::Result<SocketAddrWrapper> {
         let addr = self.deref().local_addr()?;
-        Ok(Cell::new(addr).into())
+        Ok(addr.into())
     }
 
-    // pub async fn accept(self) -> rquickjs::Result<(TcpStreamWrapper,
-    // SocketAddrWrapper)> {     let (stream, addr) = self
-    //         .deref()
-    //         .accept()
-    //         .with_cancellation(&WORLD_END.child_token())
-    //         .await??;
-    //     let stream = Arc::new(RwLock::new(stream));
-    //     let addr = Cell::new(addr);
-    //     Ok((stream.into(), addr.into()))
-    // }
+    pub async fn accept(self) -> rquickjs::Result<TcpStreamWrapper> {
+        let (stream, addr) = self
+            .deref()
+            .accept()
+            .with_cancellation(&WORLD_END.child_token())
+            .await??;
+        let stream = Arc::new(RwLock::new(stream));
+        let addr = addr;
+        Ok((stream.into()))
+    }
 }
