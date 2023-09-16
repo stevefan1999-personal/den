@@ -7,6 +7,12 @@ use std::{
 
 use pin_project_lite::pin_project;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
+#[cfg(feature = "transpile")]
+use {
+    color_eyre::eyre,
+    color_eyre::eyre::eyre,
+    swc_core::ecma::parser::{EsConfig, Syntax, TsConfig},
+};
 
 pin_project! {
     #[must_use = "futures do nothing unless polled"]
@@ -52,4 +58,36 @@ impl<T: Future> FutureExt for T {
             cancellation: token.cancelled(),
         }
     }
+}
+
+#[cfg(feature = "transpile")]
+pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Syntax> {
+    trie_match::trie_match! {
+        match extension {
+            "js" | "mjs" => { Some(Syntax::Es(Default::default())) }
+            "jsx" | "mjsx" => {
+                if cfg!(feature = "react") {
+                    Some(Syntax::Es(EsConfig { jsx: true, ..Default::default() }))
+                } else {
+                    None
+                }
+            }
+            "ts" => {
+                if cfg!(feature = "typescript") {
+                    Some(Syntax::Typescript(Default::default()))
+                } else {
+                    None
+                }
+            }
+            "tsx" => {
+                if cfg!(all(feature = "typescript", feature = "react")) {
+                    Some(Syntax::Typescript(TsConfig { tsx: true, ..Default::default() }))
+                } else {
+                    None
+                }
+            }
+            _ => { None }
+        }
+    }
+    .ok_or(eyre!("invalid extension"))
 }

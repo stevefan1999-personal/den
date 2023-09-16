@@ -6,7 +6,15 @@ edition.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+color-eyre.workspace = true
+derive_more.workspace = true
 pin-project-lite = "0.2.13"
+swc_core = { workspace = true, optional = true }
 tokio = { workspace = true, features = [] }
 tokio-util.workspace = true
-derive_more.workspace = true
+trie-match = { version = "0.1.1", optional = true }
+
+[features]
+transpile = ["swc_core", "trie-match"]
+typescript = ["transpile", "swc_core?/ecma_parser_typescript"]
+react = ["transpile"]

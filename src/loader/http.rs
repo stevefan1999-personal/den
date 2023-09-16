@@ -30,7 +30,12 @@ impl Loader for HttpLoader {
                         {
                             let subtype = mime.subtype();
 
-                            if subtype == mime::JAVASCRIPT || subtype == "typescript" {
+                            if subtype == mime::JAVASCRIPT {
+                                break 'check_mime;
+                            }
+
+                            #[cfg(feature = "typescript")]
+                            if subtype == "typescript" {
                                 break 'check_mime;
                             }
                         }

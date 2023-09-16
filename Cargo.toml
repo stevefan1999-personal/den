@@ -14,12 +14,14 @@ version = "0.0.2"
 edition = "2021"
 
 [workspace.dependencies]
+color-eyre = "0.6.2"
 delegate = "0.10.0"
 delegate-attr = "0.2.9"
 derivative = "2.2.0"
 derive_more = "0.99.17"
 futures = "0.3.28"
 rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-qjs-patch-without-gnu", version = "0.4.0-beta.4", features = ["full-async", "rust-alloc", "parallel", "max-args-7"] }
+swc_core = "0.74.6"
 tokio = "1.32.0"
 tokio-util = "0.7.8"
 
@@ -30,8 +32,10 @@ edition.workspace = true
 
 [dependencies]
 bytes = "1.5.0"
+cfg-if = "1.0.0"
 clap = { version = "4.4.3", features = ["unicode", "derive", "env"] }
-color-eyre = "0.6.2"
+color-eyre.workspace = true
+console-subscriber = "0.1.10"
 delegate-attr.workspace = true
 den-stdlib-console = { version = "^0.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
@@ -41,6 +45,7 @@ den-utils = { version = "^0.0", path = "den-utils" }
 derivative.workspace = true
 derive_more.workspace = true
 fmmap = { version = "0.3.2", features = ["tokio-async"] }
+futures.workspace = true
 matchit = "0.7.2"
 mime = "0.3.17"
 phf = "0.10.1"
@@ -48,21 +53,18 @@ relative-path = "1.9.0"
 reqwest = { version = "0.11.20", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
 rquickjs = { workspace = true, features = ["array-buffer", "allocator", "futures", "rust-alloc", "loader", "parallel", "phf"] }
 rustyline = { version = "11.0.0", features = ["derive"] }
-swc_core = { version = "0.74.6", features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform", "ecma_parser"], optional = true }
+swc_core = { workspace = true, features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform", "ecma_parser"], optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true
 url = "2.4.1"
 vc-ltl = "5.0.8"
 wasmer = { version = "3.3.0", optional = true }
-futures.workspace = true
-console-subscriber = "0.1.10"
-
 
 [features]
 default = ["typescript", "react"]
-typescript = ["swc_core/ecma_transforms_typescript", "swc_core/ecma_parser_typescript"]
-react = ["swc_core/ecma_transforms_react"]
-transpile = ["swc_core"]
+typescript = ["transpile", "swc_core?/ecma_transforms_typescript", "swc_core?/ecma_parser_typescript", "den-utils/typescript"]
+react = ["transpile", "swc_core?/ecma_transforms_react", "den-utils/react"]
+transpile = ["swc_core", "den-utils/transpile"]
 wasm = []
 wasmer = ["wasm", "dep:wasmer"]
 

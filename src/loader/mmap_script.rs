@@ -1,15 +1,14 @@
-#[cfg(feature = "transpile")] use std::sync::Arc;
-
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{loader::Loader, module::ModuleData, Ctx, Error};
-#[cfg(feature = "transpile")]
-use swc_core::{base::config::IsModule, ecma::parser::Syntax};
 use tokio::runtime::Handle;
-
 #[cfg(feature = "transpile")]
-use crate::transpile::EasySwcTranspiler;
+use {
+    crate::transpile::EasySwcTranspiler,
+    std::sync::Arc,
+    swc_core::{base::config::IsModule, ecma::parser::Syntax},
+};
 
 #[derive(Derivative)]
 #[derivative(Debug)]

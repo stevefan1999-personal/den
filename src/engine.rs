@@ -1,7 +1,5 @@
 use std::path::PathBuf;
-#[cfg(feature = "transpile")] use std::sync::Arc;
 
-#[cfg(feature = "transpile")] use bytes::Bytes;
 use color_eyre::eyre;
 use den_stdlib_console::Console;
 use den_stdlib_core::{js_core, WORLD_END};
@@ -12,20 +10,27 @@ use rquickjs::{
     loader::{BuiltinLoader, BuiltinResolver, FileResolver, ModuleLoader},
     AsyncContext, AsyncRuntime, FromJs, Module,
 };
-#[cfg(feature = "transpile")]
-use swc_core::{
-    base::{config::IsModule, sourcemap::SourceMap},
-    ecma::parser::{Syntax, TsConfig},
-};
 use tokio::{fs, signal, sync::mpsc, task::yield_now};
 use tokio_util::sync::CancellationToken;
-
 #[cfg(feature = "transpile")]
-use crate::transpile::EasySwcTranspiler;
+use {
+    crate::transpile::EasySwcTranspiler,
+    bytes::Bytes,
+    color_eyre::eyre::eyre,
+    den_utils::infer_transpile_syntax_by_extension,
+    std::path::Path,
+    std::sync::Arc,
+    swc_core::{
+        base::{config::IsModule, sourcemap::SourceMap},
+        ecma::parser::Syntax,
+    },
+};
+
 use crate::{
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
     resolver::http::HttpResolver,
 };
+
 #[derive(Clone)]
 pub struct Engine {
     #[cfg(feature = "transpile")]
@@ -144,16 +149,16 @@ impl Engine {
 
     pub async fn run_file(&self, filename: PathBuf) -> eyre::Result<()> {
         let src = fs::read_to_string(filename.clone()).await?;
-        #[cfg(feature = "transpile")]
-        {
-            let (src, _) = self.transpile(
-                &src,
-                Syntax::Typescript(TsConfig {
-                    tsx: true,
-                    ..Default::default()
-                }),
-                IsModule::Bool(true),
-            )?;
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "transpile")] {
+                let extension = Path::new(&src).extension().and_then(|x| x.to_str()).ok_or_else(|| eyre!("invalid extensions"))?;
+                let syntax = infer_transpile_syntax_by_extension(extension)?;
+                let (src, _) = self.transpile(
+                    &src,
+                    syntax,
+                    IsModule::Bool(true),
+                )?;
+            }
         }
 
         self.context
@@ -169,13 +174,16 @@ impl Engine {
         &self,
         src: &str,
     ) -> eyre::Result<U> {
-        #[cfg(feature = "transpile")]
-        {
-            let (src, _) = self.transpile(
-                src,
-                Syntax::Typescript(Default::default()),
-                IsModule::Bool(true),
-            )?;
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "transpile")] {
+                let extension = Path::new(&src).extension().and_then(|x| x.to_str()).ok_or_else(|| eyre!("invalid extensions"))?;
+                let syntax = infer_transpile_syntax_by_extension(extension)?;
+                let (src, _) = self.transpile(
+                    src,
+                    syntax,
+                    IsModule::Bool(true),
+                )?;
+            }
         }
 
         Ok(self
@@ -206,13 +214,16 @@ impl Engine {
         &self,
         src: &str,
     ) -> eyre::Result<U> {
-        #[cfg(feature = "transpile")]
-        {
-            let (src, _) = self.transpile(
-                src,
-                Syntax::Typescript(Default::default()),
-                IsModule::Unknown,
-            )?;
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "transpile")] {
+                let extension = Path::new(&src).extension().and_then(|x| x.to_str()).ok_or_else(|| eyre!("invalid extensions"))?;
+                let syntax = infer_transpile_syntax_by_extension(extension)?;
+                let (src, _) = self.transpile(
+                    src,
+                    syntax,
+                    IsModule::Unknown,
+                )?;
+            }
         }
 
         Ok(async_with!(self.context => |ctx| {
@@ -252,7 +263,7 @@ mod tests {
             .run_immediate(
                 r#"
             import { hello } from 'builtin'
-            console.log(hello)
+            console.log(hello ?? "123")
         "#,
             )
             .await?;

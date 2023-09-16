@@ -943,6 +943,7 @@ version = "0.0.2"
 dependencies = [
  "bytes",
  "cargo-emit",
+ "cfg-if",
  "clap",
  "color-eyre",
  "console-subscriber",
@@ -1029,10 +1030,13 @@ dependencies = [
 name = "den-utils"
 version = "0.0.2"
 dependencies = [
+ "color-eyre",
  "derive_more",
  "pin-project-lite",
+ "swc_core",
  "tokio",
  "tokio-util",
+ "trie-match",
 ]
 
 [[package]]
@@ -4857,6 +4861,17 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trie-match"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34eb89b54a8090b012a9804c1bae9265b100137612f320dd620adf44f5f9ede9"
+dependencies = [
+ "proc-macro2 1.0.67",
+ "quote 1.0.33",
+ "syn 2.0.33",
 ]
 
 [[package]]
