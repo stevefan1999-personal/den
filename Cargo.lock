@@ -916,6 +916,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23d8666cb01533c39dde32bcbab8e227b4ed6679b2c925eba05feabea39508fb"
 
 [[package]]
+name = "delegate"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ee5df75c70b95bd3aacc8e2fd098797692fb1d54121019c4de481e42f04c8a1"
+dependencies = [
+ "proc-macro2 1.0.67",
+ "quote 1.0.33",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "delegate-attr"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -938,7 +949,7 @@ dependencies = [
  "delegate-attr",
  "den-stdlib-console",
  "den-stdlib-core",
- "den-stdlib-socket",
+ "den-stdlib-networking",
  "den-stdlib-timer",
  "den-utils",
  "derivative",
@@ -982,18 +993,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "den-stdlib-regex"
+name = "den-stdlib-networking"
 version = "0.0.2"
 dependencies = [
- "colored",
- "regex",
- "rquickjs",
-]
-
-[[package]]
-name = "den-stdlib-socket"
-version = "0.0.2"
-dependencies = [
+ "delegate",
  "delegate-attr",
  "den-stdlib-core",
  "den-utils",
@@ -1001,6 +1004,15 @@ dependencies = [
  "derive_more",
  "rquickjs",
  "tokio",
+]
+
+[[package]]
+name = "den-stdlib-regex"
+version = "0.0.2"
+dependencies = [
+ "colored",
+ "regex",
+ "rquickjs",
 ]
 
 [[package]]
@@ -3761,6 +3773,7 @@ dependencies = [
  "swc_ecma_codegen",
  "swc_ecma_parser",
  "swc_ecma_transforms_base",
+ "swc_ecma_transforms_react",
  "swc_ecma_transforms_testing",
  "swc_ecma_transforms_typescript",
  "swc_ecma_visit",

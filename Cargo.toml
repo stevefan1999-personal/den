@@ -2,10 +2,10 @@
 
 members = [
     "den-stdlib-console",
-    "den-stdlib-timer",
     "den-stdlib-core",
-    "den-stdlib-socket",
+    "den-stdlib-networking",
     "den-stdlib-regex",
+    "den-stdlib-timer",
     "den-utils"
 ]
 
@@ -14,6 +14,7 @@ version = "0.0.2"
 edition = "2021"
 
 [workspace.dependencies]
+delegate = "0.10.0"
 delegate-attr = "0.2.9"
 derivative = "2.2.0"
 derive_more = "0.99.17"
@@ -31,14 +32,14 @@ edition.workspace = true
 bytes = "1.5.0"
 clap = { version = "4.4.3", features = ["unicode", "derive", "env"] }
 color-eyre = "0.6.2"
-delegate-attr = { workspace = true }
+delegate-attr.workspace = true
 den-stdlib-console = { version = "^0.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
 den-stdlib-networking = { version = "^0.0", path = "den-stdlib-networking" }
 den-stdlib-timer = { version = "^0.0", path = "den-stdlib-timer" }
 den-utils = { version = "^0.0", path = "den-utils" }
-derivative = { workspace = true }
-derive_more = { workspace = true }
+derivative.workspace = true
+derive_more.workspace = true
 fmmap = { version = "0.3.2", features = ["tokio-async"] }
 matchit = "0.7.2"
 mime = "0.3.17"
@@ -49,16 +50,18 @@ rquickjs = { workspace = true, features = ["array-buffer", "allocator", "futures
 rustyline = { version = "11.0.0", features = ["derive"] }
 swc_core = { version = "0.74.6", features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
-tokio-util = { workspace = true }
+tokio-util.workspace = true
 url = "2.4.1"
 vc-ltl = "5.0.8"
 wasmer = { version = "3.3.0", optional = true }
 futures.workspace = true
 console-subscriber = "0.1.10"
 
+
 [features]
-default = ["typescript"]
+default = ["typescript", "react"]
 typescript = ["swc_core/ecma_transforms_typescript", "swc_core/ecma_parser_typescript"]
+react = ["swc_core/ecma_transforms_react"]
 wasm = []
 wasmer = ["wasm", "dep:wasmer"]
 

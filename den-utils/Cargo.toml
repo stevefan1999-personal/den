@@ -8,5 +8,5 @@ edition.workspace = true
 [dependencies]
 pin-project-lite = "0.2.13"
 tokio = { workspace = true, features = [] }
-tokio-util = { workspace = true }
-derive_more = { workspace = true }
+tokio-util.workspace = true
+derive_more.workspace = true
