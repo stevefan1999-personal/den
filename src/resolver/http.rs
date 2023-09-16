@@ -1,6 +1,5 @@
 use matchit::{MatchError, Router};
 use rquickjs::{loader::Resolver, Ctx, Error};
-
 use url::{ParseError, Url};
 
 #[derive(Default)]

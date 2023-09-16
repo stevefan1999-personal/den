@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use app::App;
 use clap::Parser;
+use rquickjs::async_with;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -24,7 +25,20 @@ async fn main() -> color_eyre::Result<()> {
 
     if let Some(x) = cli.file.clone() {
         app.hook_ctrlc_handler();
-        app.engine.run_file(x).await?;
+        match app.engine.run_file(x).await {
+            Err(e) if e.is::<rquickjs::Error>() => {
+                async_with!(app.engine.context => |ctx| {
+                    if let Some(e) = ctx.catch().as_exception() {
+                        eprintln!("{}", e)
+                    }
+                })
+                .await;
+            }
+            Err(e) => {
+                eprintln!("{}", e)
+            }
+            _ => {}
+        }
     }
 
     if cli.repl || cli.file.is_none() {
@@ -36,7 +50,7 @@ async fn main() -> color_eyre::Result<()> {
 }
 
 mod app;
-mod js;
+mod engine;
 mod loader;
 mod repl;
 mod resolver;

@@ -4,6 +4,7 @@ use bytes::Bytes;
 use color_eyre::eyre;
 use den_stdlib_console::Console;
 use den_stdlib_core::{js_core, WORLD_END};
+use den_stdlib_networking::js_networking;
 use rquickjs::{
     async_with,
     context::EvalOptions,
@@ -12,7 +13,7 @@ use rquickjs::{
 };
 use swc_core::{
     base::{config::IsModule, sourcemap::SourceMap},
-    ecma::parser::Syntax,
+    ecma::parser::{Syntax, TsConfig},
 };
 use tokio::{fs, signal, sync::mpsc, task::yield_now};
 use tokio_util::sync::CancellationToken;
@@ -22,7 +23,6 @@ use crate::{
     resolver::http::HttpResolver,
     transpile::EasySwcTranspiler,
 };
-
 #[derive(Clone)]
 pub struct Engine {
     pub(crate) transpiler: Arc<EasySwcTranspiler>,
@@ -37,26 +37,61 @@ impl Engine {
 
         {
             let resolver = (
-                BuiltinResolver::default(),
+                BuiltinResolver::default()
+                    .with_module("den:core")
+                    .with_module("den:networking"),
                 HttpResolver::default(),
-                FileResolver::default()
-                    .with_path("./")
-                    .with_pattern("{}.js")
-                    .with_pattern("{}.jsx")
-                    .with_pattern("{}.ts")
-                    .with_pattern("{}.tsx")
-                    .with_pattern("{}.mjs"),
+                {
+                    #[allow(unused_mut)]
+                    let mut resolver = FileResolver::default()
+                        .with_path("./")
+                        .with_pattern("{}.js")
+                        .with_pattern("{}.mjs");
+
+                    #[cfg(feature = "react")]
+                    {
+                        resolver = resolver.with_pattern("{}.jsx");
+                    }
+
+                    #[cfg(feature = "typescript")]
+                    {
+                        resolver = resolver.with_pattern("{}.ts");
+
+                        #[cfg(feature = "react")]
+                        {
+                            resolver = resolver.with_pattern("{}.tsx");
+                        }
+                    }
+
+                    resolver
+                },
             );
             let loader = (
                 BuiltinLoader::default(),
-                HttpLoader::default(),
-                MmapScriptLoader::default()
-                    .with_extension("js")
-                    .with_extension("jsx")
-                    .with_extension("ts")
-                    .with_extension("tsx")
-                    .with_extension("mjs"),
                 ModuleLoader::default(),
+                HttpLoader::default(),
+                {
+                    #[allow(unused_mut)]
+                    let mut loader = MmapScriptLoader::default()
+                        .with_extension("js")
+                        .with_extension("mjs");
+                    #[cfg(feature = "react")]
+                    {
+                        loader = loader.with_extension("jsx");
+                    }
+
+                    #[cfg(feature = "typescript")]
+                    {
+                        loader = loader.with_extension("ts");
+
+                        #[cfg(feature = "react")]
+                        {
+                            loader = loader.with_extension("tsx");
+                        }
+                    }
+
+                    loader
+                },
             );
             runtime.set_loader(resolver, loader).await;
         }
@@ -88,6 +123,7 @@ impl Engine {
             let global = ctx.globals();
             global.set("console", Console {})?;
             Module::declare_def::<js_core, _>(ctx.clone(), "den:core")?;
+            Module::declare_def::<js_networking, _>(ctx.clone(), "den:networking")?;
             Ok::<_, rquickjs::Error>(())
         })
         .await
@@ -105,7 +141,10 @@ impl Engine {
         let file = fs::read_to_string(filename.clone()).await?;
         let (src, _) = self.transpile(
             &file,
-            Syntax::Typescript(Default::default()),
+            Syntax::Typescript(TsConfig {
+                tsx: true,
+                ..Default::default()
+            }),
             IsModule::Bool(true),
         )?;
 
@@ -182,7 +221,7 @@ impl Engine {
 mod tests {
     use color_eyre::eyre;
 
-    use crate::js::Engine;
+    use crate::engine::Engine;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn my_test() -> eyre::Result<()> {

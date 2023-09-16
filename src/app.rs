@@ -7,7 +7,7 @@ use tokio::{
     task::{yield_now, JoinSet},
 };
 
-use crate::{js::Engine, repl};
+use crate::{engine::Engine, repl};
 
 pub struct App {
     pub(crate) engine: Engine,

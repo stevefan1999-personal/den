@@ -2,20 +2,21 @@ use std::io::stderr;
 
 use bytes::Bytes;
 use color_eyre::eyre::eyre;
+#[cfg(feature = "react")]
+use swc_core::ecma::transforms::react::react;
+#[cfg(feature = "typescript")]
+use swc_core::ecma::transforms::typescript::strip;
 use swc_core::{
     base::{config::IsModule, Compiler},
     common::{
-        errors::Handler, sync::Lrc, BytePos, FileName, Globals, LineCol, Mark, SourceFile,
-        SourceMap, GLOBALS,
+        comments::Comments, errors::Handler, sync::Lrc, BytePos, FileName, Globals, LineCol, Mark,
+        SourceFile, SourceMap, GLOBALS,
     },
     ecma::{
         ast::EsVersion,
         codegen::{text_writer::JsWriter, Emitter},
         parser::Syntax,
-        transforms::{
-            base::{fixer::fixer, hygiene::hygiene, resolver},
-            typescript::strip,
-        },
+        transforms::base::{fixer::fixer, hygiene::hygiene, resolver},
         visit::FoldWith,
     },
 };
@@ -75,7 +76,7 @@ impl EasySwcTranspiler {
                 EsVersion::Es2022,
                 syntax,
                 is_module,
-                None,
+                Some(self.compiler.comments()),
             )
             .map_err(|err| eyre!(err))?;
 
@@ -83,6 +84,7 @@ impl EasySwcTranspiler {
         let top_level_mark = Mark::new();
 
         program = match syntax {
+            #[cfg(feature = "typescript")]
             Syntax::Typescript(_) => {
                 program
                     .fold_with(&mut resolver(unresolved_mark, top_level_mark, true))
@@ -90,12 +92,29 @@ impl EasySwcTranspiler {
             }
             Syntax::Es(_) => {
                 program.fold_with(&mut resolver(unresolved_mark, top_level_mark, false))
-            }
+            },
+            // This is needed because we are left with one case, so if we disabled typescript it is left with an...interesting case
+            // effectively we are left with the ECMAScript option, i.e. have exhaustive match already
+            #[allow(unreachable_patterns)]
+            _ => program,
         };
+
+        let comments: Option<&dyn Comments> = Some(self.compiler.comments());
+
+        #[cfg(feature = "react")]
+        {
+            program = program.fold_with(&mut react::<&dyn Comments>(
+                self.source_map.clone(),
+                comments,
+                Default::default(),
+                top_level_mark,
+                unresolved_mark,
+            ));
+        }
 
         program = program
             .fold_with(&mut hygiene())
-            .fold_with(&mut fixer(None));
+            .fold_with(&mut fixer(comments));
 
         let mut buf = vec![];
         let mut srcmap: Vec<(BytePos, LineCol)> = vec![];
@@ -117,7 +136,7 @@ impl EasySwcTranspiler {
         let mut emitter = Emitter {
             cfg,
             cm: self.source_map.clone(),
-            comments: None,
+            comments,
             wr,
         };
 
