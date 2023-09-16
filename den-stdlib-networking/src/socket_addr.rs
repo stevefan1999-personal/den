@@ -1,5 +1,6 @@
-use std::{cell::Cell, net::SocketAddr};
+use std::net::SocketAddr;
 
+use delegate_attr::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::class::Trace;
@@ -16,33 +17,33 @@ pub struct SocketAddrWrapper {
 
 #[rquickjs::methods]
 impl SocketAddrWrapper {
-    pub fn new(ip: IpAddrWrapper, port: u16) -> Self {
-        let addr = SocketAddr::new(ip.into(), port);
-        Self { addr }
-    }
-
     #[qjs(get, enumerable)]
-    #[delegate(self.get())]
-    pub fn port(&self) -> u16;
+    #[delegate(self.addr)]
+    pub fn port(&self) -> u16 {}
 
     #[qjs(set, rename = "port")]
-    #[delegate(self.get_mut())]
-    pub fn set_port(mut self, new_port: u16);
+    #[delegate(self.addr)]
+    pub fn set_port(mut self, new_port: u16) {}
 
     #[qjs(get, enumerable)]
-    #[delegate(self.get())]
-    pub fn is_ipv4(&self) -> bool;
+    #[delegate(self.addr)]
+    pub fn is_ipv4(&self) -> bool {}
 
     #[qjs(get, enumerable)]
-    #[delegate(self.get())]
-    pub fn is_ipv6(&self) -> bool;
+    #[delegate(self.addr)]
+    pub fn is_ipv6(&self) -> bool {}
 
-    #[qjs(get, enumerable, rename = "ip")]
-    #[delegate(self.get())]
+    #[qjs(get, rename = "ip", enumerable)]
+    #[delegate(self.addr)]
     #[into]
-    pub fn ip(&self) -> IpAddrWrapper;
+    pub fn ip(&self) -> IpAddrWrapper {}
+
+    #[qjs(set, rename = "ip", enumerable)]
+    pub fn set_ip(mut self, ip: IpAddrWrapper) {
+        self.addr.set_ip(ip.into())
+    }
 
     #[qjs(rename = "toString")]
-    #[delegate(self.get())]
-    pub fn to_string(&self) -> String;
+    #[delegate(self.addr)]
+    pub fn to_string(&self) -> String {}
 }
