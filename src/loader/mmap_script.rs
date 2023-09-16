@@ -1,12 +1,14 @@
-use std::sync::Arc;
+#[cfg(feature = "transpile")] use std::sync::Arc;
 
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{loader::Loader, module::ModuleData, Ctx, Error};
+#[cfg(feature = "transpile")]
 use swc_core::{base::config::IsModule, ecma::parser::Syntax};
 use tokio::runtime::Handle;
 
+#[cfg(feature = "transpile")]
 use crate::transpile::EasySwcTranspiler;
 
 #[derive(Derivative)]
@@ -15,6 +17,7 @@ use crate::transpile::EasySwcTranspiler;
 pub struct MmapScriptLoader {
     extensions: Vec<String>,
     #[derivative(Debug = "ignore")]
+    #[cfg(feature = "transpile")]
     transpiler: Arc<EasySwcTranspiler>,
 }
 
@@ -44,20 +47,28 @@ impl Loader for MmapScriptLoader {
                 .find(|&e| extension == e)
                 .ok_or(Error::new_loading(path))?;
 
-            let source = AsyncMmapFile::open(path)
+            let src = AsyncMmapFile::open(path)
                 .await
                 .map_err(|_| Error::new_loading(path))?;
-            let (src, _) = self
-                .transpiler
-                .transpile(
-                    std::str::from_utf8(source.as_slice())?,
-                    Syntax::Typescript(Default::default()),
-                    IsModule::Bool(true),
-                    false,
-                )
-                .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
 
-            Ok(ModuleData::source(path, src))
+            #[cfg(feature = "transpile")]
+            {
+                let (src, _) = self
+                    .transpiler
+                    .transpile(
+                        std::str::from_utf8(src.as_slice())?,
+                        Syntax::Typescript(Default::default()),
+                        IsModule::Bool(true),
+                        false,
+                    )
+                    .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
+
+                Ok(ModuleData::source(path, src))
+            }
+            #[cfg(not(feature = "transpile"))]
+            {
+                Ok(ModuleData::source(path, src.as_slice()))
+            }
         };
 
         tokio::task::block_in_place(move || Handle::current().block_on(task))

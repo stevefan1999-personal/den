@@ -54,4 +54,4 @@ mod engine;
 mod loader;
 mod repl;
 mod resolver;
-mod transpile;
+#[cfg(feature = "transpile")] mod transpile;

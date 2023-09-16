@@ -1,6 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
+#[cfg(feature = "transpile")] use std::sync::Arc;
 
-use bytes::Bytes;
+#[cfg(feature = "transpile")] use bytes::Bytes;
 use color_eyre::eyre;
 use den_stdlib_console::Console;
 use den_stdlib_core::{js_core, WORLD_END};
@@ -11,6 +12,7 @@ use rquickjs::{
     loader::{BuiltinLoader, BuiltinResolver, FileResolver, ModuleLoader},
     AsyncContext, AsyncRuntime, FromJs, Module,
 };
+#[cfg(feature = "transpile")]
 use swc_core::{
     base::{config::IsModule, sourcemap::SourceMap},
     ecma::parser::{Syntax, TsConfig},
@@ -18,13 +20,15 @@ use swc_core::{
 use tokio::{fs, signal, sync::mpsc, task::yield_now};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(feature = "transpile")]
+use crate::transpile::EasySwcTranspiler;
 use crate::{
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
     resolver::http::HttpResolver,
-    transpile::EasySwcTranspiler,
 };
 #[derive(Clone)]
 pub struct Engine {
+    #[cfg(feature = "transpile")]
     pub(crate) transpiler: Arc<EasySwcTranspiler>,
     pub(crate) runtime:    AsyncRuntime,
     pub(crate) context:    AsyncContext,
@@ -130,6 +134,7 @@ impl Engine {
         .unwrap();
 
         Self {
+            #[cfg(feature = "transpile")]
             transpiler: Arc::new(Default::default()),
             runtime,
             context,
@@ -138,15 +143,18 @@ impl Engine {
     }
 
     pub async fn run_file(&self, filename: PathBuf) -> eyre::Result<()> {
-        let file = fs::read_to_string(filename.clone()).await?;
-        let (src, _) = self.transpile(
-            &file,
-            Syntax::Typescript(TsConfig {
-                tsx: true,
-                ..Default::default()
-            }),
-            IsModule::Bool(true),
-        )?;
+        let src = fs::read_to_string(filename.clone()).await?;
+        #[cfg(feature = "transpile")]
+        {
+            let (src, _) = self.transpile(
+                &src,
+                Syntax::Typescript(TsConfig {
+                    tsx: true,
+                    ..Default::default()
+                }),
+                IsModule::Bool(true),
+            )?;
+        }
 
         self.context
             .with(|ctx| {
@@ -161,11 +169,14 @@ impl Engine {
         &self,
         src: &str,
     ) -> eyre::Result<U> {
-        let (src, _) = self.transpile(
-            src,
-            Syntax::Typescript(Default::default()),
-            IsModule::Bool(true),
-        )?;
+        #[cfg(feature = "transpile")]
+        {
+            let (src, _) = self.transpile(
+                src,
+                Syntax::Typescript(Default::default()),
+                IsModule::Bool(true),
+            )?;
+        }
 
         Ok(self
             .context
@@ -181,6 +192,7 @@ impl Engine {
             .await?)
     }
 
+    #[cfg(feature = "transpile")]
     pub fn transpile(
         &self,
         src: &str,
@@ -194,11 +206,14 @@ impl Engine {
         &self,
         src: &str,
     ) -> eyre::Result<U> {
-        let (src, _) = self.transpile(
-            src,
-            Syntax::Typescript(Default::default()),
-            IsModule::Unknown,
-        )?;
+        #[cfg(feature = "transpile")]
+        {
+            let (src, _) = self.transpile(
+                src,
+                Syntax::Typescript(Default::default()),
+                IsModule::Unknown,
+            )?;
+        }
 
         Ok(async_with!(self.context => |ctx| {
             ctx.eval_with_options(

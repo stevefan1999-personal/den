@@ -48,7 +48,7 @@ relative-path = "1.9.0"
 reqwest = { version = "0.11.20", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
 rquickjs = { workspace = true, features = ["array-buffer", "allocator", "futures", "rust-alloc", "loader", "parallel", "phf"] }
 rustyline = { version = "11.0.0", features = ["derive"] }
-swc_core = { version = "0.74.6", features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform", "ecma_parser"] }
+swc_core = { version = "0.74.6", features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform", "ecma_parser"], optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true
 url = "2.4.1"
@@ -62,6 +62,7 @@ console-subscriber = "0.1.10"
 default = ["typescript", "react"]
 typescript = ["swc_core/ecma_transforms_typescript", "swc_core/ecma_parser_typescript"]
 react = ["swc_core/ecma_transforms_react"]
+transpile = ["swc_core"]
 wasm = []
 wasmer = ["wasm", "dep:wasmer"]
 

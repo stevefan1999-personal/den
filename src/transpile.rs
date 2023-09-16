@@ -92,9 +92,10 @@ impl EasySwcTranspiler {
             }
             Syntax::Es(_) => {
                 program.fold_with(&mut resolver(unresolved_mark, top_level_mark, false))
-            },
-            // This is needed because we are left with one case, so if we disabled typescript it is left with an...interesting case
-            // effectively we are left with the ECMAScript option, i.e. have exhaustive match already
+            }
+            // This is needed because we are left with one case, so if we disabled typescript it is
+            // left with an...interesting case effectively we are left with the
+            // ECMAScript option, i.e. have exhaustive match already
             #[allow(unreachable_patterns)]
             _ => program,
         };
