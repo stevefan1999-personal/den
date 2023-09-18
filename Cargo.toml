@@ -15,7 +15,6 @@ edition = "2021"
 
 [workspace.dependencies]
 color-eyre = "0.6.2"
-delegate = "0.10.0"
 delegate-attr = "0.2.9"
 derivative = "2.2.0"
 derive_more = "0.99.17"
