@@ -48,7 +48,9 @@ impl Engine {
             let resolver = (
                 BuiltinResolver::default()
                     .with_module("den:core")
-                    .with_module("den:networking"),
+                    .with_module("den:networking")
+                    .with_module("den:text")
+                    .with_module("den:timer"),
                 HttpResolver::default(),
                 {
                     #[allow(unused_mut)]
@@ -77,7 +79,11 @@ impl Engine {
             );
             let loader = (
                 BuiltinLoader::default(),
-                ModuleLoader::default(),
+                ModuleLoader::default()
+                    .with_module("den:core", js_core)
+                    .with_module("den:networking", js_networking)
+                    .with_module("den:text", js_text)
+                    .with_module("den:timer", js_timer),
                 HttpLoader::default(),
                 {
                     #[allow(unused_mut)]
@@ -131,11 +137,8 @@ impl Engine {
         async_with!(context => |ctx| {
             let global = ctx.globals();
             global.set("console", Console {})?;
-            Module::declare_def::<js_core, _>(ctx.clone(), "den:core")?;
-            Module::declare_def::<js_networking, _>(ctx.clone(), "den:networking")?;
             let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
             let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
-
             Ok::<_, rquickjs::Error>(())
         })
         .await
