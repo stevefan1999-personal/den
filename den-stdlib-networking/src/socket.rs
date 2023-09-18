@@ -4,7 +4,7 @@ use den_stdlib_core::WORLD_END;
 use den_utils::FutureExt;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
-use rquickjs::{class::Trace, Error};
+use rquickjs::{class::Trace, convert::List, Error};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -71,14 +71,13 @@ impl TcpListenerWrapper {
         Ok(self.deref().local_addr()?.into())
     }
 
-    pub async fn accept(self) -> rquickjs::Result<TcpStreamWrapper> {
+    pub async fn accept(self) -> rquickjs::Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
         let (stream, addr) = self
             .deref()
             .accept()
             .with_cancellation(&WORLD_END.child_token())
             .await??;
         let stream = Arc::new(RwLock::new(stream));
-        let _addr = addr;
-        Ok(stream.into())
+        Ok(List((stream.into(), addr.into())))
     }
 }
