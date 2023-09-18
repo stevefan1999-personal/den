@@ -72,16 +72,9 @@ impl App {
                         break 'select;
                     }
                 }
-                else => {
-                    if stoppable {
-                        break 'select;
-                    }
-                }
             }
             yield_now().await;
         }
-
-        rt.idle().await;
     }
 
     pub fn hook_ctrlc_handler(&mut self) {
