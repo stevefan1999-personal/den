@@ -19,7 +19,9 @@ color-eyre = "0.6.2"
 delegate-attr = "0.2.9"
 derivative = "2.2.0"
 derive_more = "0.99.17"
+either = "1.9.0"
 futures = "0.3.28"
+phf = "0.10.1"
 rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-qjs-patch-without-gnu", version = "0.4.0-beta.4", features = ["full-async", "rust-alloc", "parallel", "max-args-7"] }
 swc_core = "0.74.6"
 tokio = "1.32.0"
@@ -49,7 +51,6 @@ fmmap = { version = "0.3.2", features = ["tokio-async"] }
 futures.workspace = true
 matchit = "0.7.2"
 mime = "0.3.17"
-phf = "0.10.1"
 relative-path = "1.9.0"
 reqwest = { version = "0.11.20", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
 rquickjs.workspace = true
