@@ -1,7 +1,8 @@
 use derivative::Derivative;
 use derive_more::{From, Into};
-use encoding_rs::Encoding;
-use rquickjs::{class::Trace, Ctx, Object, TypedArray};
+use either::Either;
+use encoding_rs::{DecoderResult, Encoding};
+use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Object, TypedArray};
 
 #[derive(Trace, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
@@ -10,18 +11,37 @@ pub struct TextDecoder {
     #[qjs(skip_trace)]
     #[derivative(Debug = "ignore")]
     encoding: &'static Encoding,
+
+    fatal:      bool,
+    ignore_bom: bool,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl TextDecoder {
     #[qjs(constructor)]
-    pub fn new<'js>(label: Option<String>, ctx: Ctx<'js>) -> rquickjs::Result<Self> {
-        let label = label.unwrap_or("utf-8".to_string());
+    pub fn new<'js>(
+        label: Opt<String>,
+        opts: Opt<Object<'js>>,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<Self> {
+        let label = label.0.unwrap_or("utf-8".to_string());
 
         let encoding = Encoding::for_label(label.as_bytes()).ok_or_else(|| {
             rquickjs::Exception::throw_range(&ctx, &format!("unknown encoding {label}"))
         })?;
-        Ok(Self { encoding })
+
+        let (mut fatal, mut ignore_bom) = (false, false);
+
+        if let Some(opts) = opts.0 {
+            fatal = opts.get::<_, bool>("fatal").unwrap_or(false);
+            ignore_bom = opts.get::<_, bool>("ignoreBOM").unwrap_or(false);
+        }
+
+        Ok(Self {
+            encoding,
+            fatal,
+            ignore_bom,
+        })
     }
 
     #[qjs(get, enumerable)]
@@ -29,21 +49,55 @@ impl TextDecoder {
         self.encoding.name().to_ascii_lowercase()
     }
 
-    pub fn decode<'js>(&self, buffer: Option<Object<'js>>) -> rquickjs::Result<String> {
+    #[qjs(get, enumerable)]
+    pub fn fatal(&self) -> bool {
+        self.fatal
+    }
+
+    #[qjs(get, enumerable, rename = "ignoreBOM")]
+    pub fn ignore_bom(&self) -> bool {
+        self.ignore_bom
+    }
+
+    pub fn decode<'js>(
+        &self,
+        buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<String> {
         match buffer {
             Some(buffer) => {
-                let as_typed_array = buffer.as_typed_array::<u8>().and_then(|x| x.as_bytes());
-                let as_array_buffer = buffer.as_array_buffer().and_then(|x| x.as_bytes());
+                let mut decoder = if self.ignore_bom {
+                    self.encoding.new_decoder_without_bom_handling()
+                } else {
+                    self.encoding.new_decoder()
+                };
 
-                if let Some(buffer) = as_typed_array.or(as_array_buffer) {
-                    let mut decoder = self.encoding.new_decoder();
-                    let mut decoded = String::with_capacity(
-                        decoder.max_utf8_buffer_length(buffer.len()).unwrap_or(0),
-                    );
+                let buffer = match buffer {
+                    Either::Left(ref buf) => buf.as_bytes(),
+                    Either::Right(ref buf) => buf.as_bytes(),
+                }.unwrap();
+
+                let len = if self.fatal {
+                    decoder.max_utf8_buffer_length_without_replacement(buffer.len())
+                } else {
+                    decoder.max_utf8_buffer_length(buffer.len())
+                };
+
+                let mut decoded = len.map(String::with_capacity).unwrap_or_else(String::new);
+                if self.fatal {
+                    let (res, _) =
+                        decoder.decode_to_string_without_replacement(buffer, &mut decoded, true);
+                    if let DecoderResult::Malformed(_, _) = res {
+                        Err(rquickjs::Exception::throw_type(
+                            &ctx,
+                            &format!("invalid decoding encountered and no replacements allowed"),
+                        ))
+                    } else {
+                        Ok(decoded)
+                    }
+                } else {
                     let _ = decoder.decode_to_string(buffer, &mut decoded, true);
                     Ok(decoded)
-                } else {
-                    todo!()
                 }
             }
             None => Ok(String::new()),
@@ -74,9 +128,9 @@ impl TextEncoder {
 
     pub fn encode_into<'js>(
         &self,
-        src: String,
-        dest: TypedArray<'js, u8>,
-        ctx: Ctx<'js>,
+        _src: String,
+        _dest: TypedArray<'js, u8>,
+        _ctx: Ctx<'js>,
     ) -> rquickjs::Result<()> {
         todo!()
     }
