@@ -16,9 +16,7 @@ use tokio_util::sync::CancellationToken;
 use {
     crate::transpile::EasySwcTranspiler,
     bytes::Bytes,
-    color_eyre::eyre::eyre,
-    den_utils::infer_transpile_syntax_by_extension,
-    std::path::Path,
+    den_utils::{get_best_transpiling, infer_transpile_syntax_by_extension},
     std::sync::Arc,
     swc_core::{
         base::{config::IsModule, sourcemap::SourceMap},
@@ -151,8 +149,7 @@ impl Engine {
         let src = fs::read_to_string(filename.clone()).await?;
         cfg_if::cfg_if! {
             if #[cfg(feature = "transpile")] {
-                let extension = Path::new(&src).extension().and_then(|x| x.to_str()).ok_or_else(|| eyre!("invalid extensions"))?;
-                let syntax = infer_transpile_syntax_by_extension(extension)?;
+                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
                 let (src, _) = self.transpile(
                     &src,
                     syntax,
@@ -176,8 +173,7 @@ impl Engine {
     ) -> eyre::Result<U> {
         cfg_if::cfg_if! {
             if #[cfg(feature = "transpile")] {
-                let extension = Path::new(&src).extension().and_then(|x| x.to_str()).ok_or_else(|| eyre!("invalid extensions"))?;
-                let syntax = infer_transpile_syntax_by_extension(extension)?;
+                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
                 let (src, _) = self.transpile(
                     src,
                     syntax,
@@ -216,8 +212,7 @@ impl Engine {
     ) -> eyre::Result<U> {
         cfg_if::cfg_if! {
             if #[cfg(feature = "transpile")] {
-                let extension = Path::new(&src).extension().and_then(|x| x.to_str()).ok_or_else(|| eyre!("invalid extensions"))?;
-                let syntax = infer_transpile_syntax_by_extension(extension)?;
+                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
                 let (src, _) = self.transpile(
                     src,
                     syntax,

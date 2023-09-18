@@ -91,3 +91,13 @@ pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Synt
     }
     .ok_or(eyre!("invalid extension"))
 }
+
+#[cfg(feature = "transpile")]
+pub fn get_best_transpiling() -> &'static str {
+    match (cfg!(feature = "typescript"), cfg!(feature = "react")) {
+        (false, false) => "js",
+        (false, true) => "jsx",
+        (true, false) => "ts",
+        (true, true) => "tsx",
+    }
+}
