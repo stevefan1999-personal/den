@@ -6,6 +6,8 @@ use den_stdlib_core::{js_core, CancellationTokenWrapper};
 use den_stdlib_networking::js_networking;
 use den_stdlib_text::js_text;
 use den_stdlib_timer::js_timer;
+#[cfg(feature = "wasm")]
+use den_stdlib_wasm::js_wasm;
 use rquickjs::{
     async_with,
     context::EvalOptions,
@@ -52,7 +54,8 @@ impl Engine {
                     .with_module("den:core")
                     .with_module("den:networking")
                     .with_module("den:text")
-                    .with_module("den:timer"),
+                    .with_module("den:timer")
+                    .with_module("den:wasm"),
                 HttpResolver::default(),
                 {
                     #[allow(unused_mut)]
@@ -81,11 +84,20 @@ impl Engine {
             );
             let loader = (
                 BuiltinLoader::default(),
-                ModuleLoader::default()
-                    .with_module("den:core", js_core)
-                    .with_module("den:networking", js_networking)
-                    .with_module("den:text", js_text)
-                    .with_module("den:timer", js_timer),
+                {
+                    #[allow(unused_mut)]
+                    let mut loaders = ModuleLoader::default()
+                        .with_module("den:core", js_core)
+                        .with_module("den:networking", js_networking)
+                        .with_module("den:text", js_text)
+                        .with_module("den:timer", js_timer);
+
+                    #[cfg(feature = "wasm")]
+                    {
+                        loaders = loaders.with_module("den:wasm", js_wasm);
+                    }
+                    loaders
+                },
                 HttpLoader::default(),
                 {
                     #[allow(unused_mut)]
@@ -144,6 +156,11 @@ impl Engine {
                 global.set("console", Console {})?;
                 let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
                 let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
+
+                #[cfg(feature = "wasm")]
+                {
+                    let _ = Module::evaluate_def::<js_wasm, _>(ctx.clone(), "den:wasm")?;
+                }
 
                 ctx.globals().set(
                     "WORLD_END",

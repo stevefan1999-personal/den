@@ -3,10 +3,12 @@
 members = [
     "den-stdlib-console",
     "den-stdlib-core",
+    "den-stdlib-fs",
     "den-stdlib-networking",
     "den-stdlib-regex",
     "den-stdlib-text",
     "den-stdlib-timer",
+    "den-stdlib-wasm",
     "den-utils"
 ]
 
@@ -44,6 +46,7 @@ den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
 den-stdlib-networking = { version = "^0.0", path = "den-stdlib-networking" }
 den-stdlib-text = { version = "^0.0", path = "den-stdlib-text" }
 den-stdlib-timer = { version = "^0.0", path = "den-stdlib-timer" }
+den-stdlib-wasm = { version = "^0.0", path = "den-stdlib-wasm", optional = true }
 den-utils = { version = "^0.0", path = "den-utils" }
 derivative.workspace = true
 derive_more.workspace = true
@@ -60,15 +63,15 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true
 url = "2.4.1"
 vc-ltl = "5.0.8"
-wasmer = { version = "3.3.0", optional = true }
 
 [features]
-default = ["typescript", "react"]
+default = ["typescript", "react", "wasmi", "wasmtime"]
 typescript = ["transpile", "swc_core?/ecma_transforms_typescript", "swc_core?/ecma_parser_typescript", "den-utils/typescript"]
 react = ["transpile", "swc_core?/ecma_transforms_react", "den-utils/react"]
 transpile = ["swc_core", "den-utils/transpile"]
-wasm = []
-wasmer = ["wasm", "dep:wasmer"]
+wasm = ["dep:den-stdlib-wasm"]
+wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]
+wasmi = ["wasm", "den-stdlib-wasm?/wasmi"]
 
 [profile.release]
 incremental = true

@@ -1,0 +1,23 @@
+[package]
+name = "den-stdlib-wasm"
+version.workspace = true
+edition.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+color-eyre.workspace = true
+den-stdlib-core = { version = "^0.0", path = "../den-stdlib-core" }
+derivative.workspace = true
+derive_more.workspace = true
+either.workspace = true
+getset = "0.1.2"
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+wasmi = { version = "0.31.0", optional = true }
+wasmtime = { version = "12.0.2", optional = true }
+wasmtime-wasi = { version = "12.0.2", optional = true }
+
+[features]
+default = []
+wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi"]
+wasmi = ["dep:wasmi"]
