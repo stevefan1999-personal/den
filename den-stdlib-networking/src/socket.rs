@@ -1,10 +1,10 @@
 use std::{ops::Deref, sync::Arc};
 
-use den_stdlib_core::WORLD_END;
+use den_stdlib_core::CancellationTokenWrapper;
 use den_utils::FutureExt;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
-use rquickjs::{class::Trace, convert::List, Error};
+use rquickjs::{class::Trace, convert::List, Ctx, Error};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -30,21 +30,31 @@ impl TcpStreamWrapper {
         Ok(addr.into())
     }
 
-    pub async fn write_all(self, buf: Vec<u8>) -> rquickjs::Result<()> {
+    pub async fn write_all(self, buf: Vec<u8>, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         let mut write = self.stream.write().await;
         write
             .write_all(&buf)
-            .with_cancellation(&WORLD_END.child_token())
+            .with_cancellation(
+                &ctx.globals()
+                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
+                    .token
+                    .child_token(),
+            )
             .await??;
         Ok(())
     }
 
-    pub async fn read_to_end(self) -> rquickjs::Result<Vec<u8>> {
+    pub async fn read_to_end(self, ctx: Ctx<'_>) -> rquickjs::Result<Vec<u8>> {
         let mut buf = vec![];
         let mut write = self.stream.write().await;
         write
             .read_to_end(&mut buf)
-            .with_cancellation(&WORLD_END.child_token())
+            .with_cancellation(
+                &ctx.globals()
+                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
+                    .token
+                    .child_token(),
+            )
             .await??;
         Ok(buf)
     }
@@ -71,11 +81,19 @@ impl TcpListenerWrapper {
         Ok(self.deref().local_addr()?.into())
     }
 
-    pub async fn accept(self) -> rquickjs::Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
+    pub async fn accept(
+        self,
+        ctx: Ctx<'_>,
+    ) -> rquickjs::Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
         let (stream, addr) = self
             .deref()
             .accept()
-            .with_cancellation(&WORLD_END.child_token())
+            .with_cancellation(
+                &ctx.globals()
+                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
+                    .token
+                    .child_token(),
+            )
             .await??;
         let stream = Arc::new(RwLock::new(stream));
         Ok(List((stream.into(), addr.into())))

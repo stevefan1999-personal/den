@@ -2,7 +2,7 @@
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::{CancellationTokenWrapper, WORLD_END};
+    use den_stdlib_core::CancellationTokenWrapper;
     use den_utils::FutureExt;
     use rquickjs::{module::Exports, Ctx, Function};
     use tokio::time;
@@ -12,12 +12,16 @@ pub mod timer {
         func: Function<'js>,
         delay: Option<usize>,
         ctx: Ctx<'js>,
-    ) -> CancellationTokenWrapper {
+    ) -> rquickjs::Result<CancellationTokenWrapper> {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
         let mut interval = time::interval(duration);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        let token = WORLD_END.child_token();
+        let token = ctx
+            .globals()
+            .get::<_, CancellationTokenWrapper>("WORLD_END")?
+            .token
+            .child_token();
 
         ctx.spawn({
             let token = token.clone();
@@ -30,7 +34,7 @@ pub mod timer {
             }
         });
 
-        token.into()
+        Ok(token.into())
     }
 
     #[rquickjs::function(rename = "clearInterval")]
@@ -43,10 +47,14 @@ pub mod timer {
         func: Function<'js>,
         delay: Option<usize>,
         ctx: Ctx<'js>,
-    ) -> CancellationTokenWrapper {
+    ) -> rquickjs::Result<CancellationTokenWrapper> {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
-        let token = WORLD_END.child_token();
+        let token = ctx
+            .globals()
+            .get::<_, CancellationTokenWrapper>("WORLD_END")?
+            .token
+            .child_token();
 
         ctx.spawn({
             let token = token.clone();
@@ -55,7 +63,7 @@ pub mod timer {
                 func.call::<_, ()>(()).unwrap();
             }
         });
-        token.into()
+        Ok(token.into())
     }
 
     #[rquickjs::function(rename = "clearTimeout")]

@@ -75,7 +75,8 @@ impl TextDecoder {
                 let buffer = match buffer {
                     Either::Left(ref buf) => buf.as_bytes(),
                     Either::Right(ref buf) => buf.as_bytes(),
-                }.unwrap();
+                }
+                .unwrap();
 
                 let len = if self.fatal {
                     decoder.max_utf8_buffer_length_without_replacement(buffer.len())

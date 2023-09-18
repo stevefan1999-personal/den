@@ -1,4 +1,3 @@
-use den_stdlib_core::WORLD_END;
 use rustyline::{
     config::Configurer, error::ReadlineError, validate::MatchingBracketValidator, Behavior,
     Completer, Editor, Helper, Highlighter, Hinter, Validator,
@@ -45,5 +44,4 @@ pub async fn run_repl(output_sink: mpsc::UnboundedSender<String>) {
         }
         yield_now().await;
     }
-    WORLD_END.cancel();
 }

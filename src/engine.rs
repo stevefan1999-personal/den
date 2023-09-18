@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use color_eyre::eyre;
 use den_stdlib_console::Console;
-use den_stdlib_core::{js_core, WORLD_END};
+use den_stdlib_core::{js_core, CancellationTokenWrapper};
 use den_stdlib_networking::js_networking;
 use den_stdlib_text::js_text;
 use den_stdlib_timer::js_timer;
@@ -41,6 +41,7 @@ pub struct Engine {
     pub(crate) stop_token: CancellationToken,
 }
 
+#[allow(dead_code)]
 impl Engine {
     pub async fn new() -> Engine {
         let runtime = AsyncRuntime::new().unwrap();
@@ -112,9 +113,11 @@ impl Engine {
             runtime.set_loader(resolver, loader).await;
         }
 
+        let stop_token = CancellationToken::new();
+
         runtime
             .set_interrupt_handler({
-                let world_end = WORLD_END.child_token();
+                let world_end = stop_token.clone();
                 let (ctrlc_tx, mut ctrlc_rx) = mpsc::unbounded_channel();
                 tokio::spawn({
                     async move {
@@ -135,22 +138,31 @@ impl Engine {
 
         let context = AsyncContext::full(&runtime).await.unwrap();
 
-        async_with!(context => |ctx| {
-            let global = ctx.globals();
-            global.set("console", Console {})?;
-            let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
-            let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
-            Ok::<_, rquickjs::Error>(())
-        })
-        .await
-        .unwrap();
+        context
+            .with(|ctx| {
+                let global = ctx.globals();
+                global.set("console", Console {})?;
+                let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
+                let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
+
+                ctx.globals().set(
+                    "WORLD_END",
+                    CancellationTokenWrapper {
+                        token: stop_token.clone(),
+                    },
+                )?;
+
+                Ok::<_, rquickjs::Error>(())
+            })
+            .await
+            .unwrap();
 
         Self {
             #[cfg(feature = "transpile")]
             transpiler: Arc::new(Default::default()),
             runtime,
             context,
-            stop_token: CancellationToken::new(),
+            stop_token,
         }
     }
 
@@ -243,8 +255,12 @@ impl Engine {
         .await?)
     }
 
-    pub async fn stop(&mut self) {
+    pub fn stop(&self) {
         self.stop_token.cancel()
+    }
+
+    pub fn stop_token(&self) -> CancellationToken {
+        self.stop_token.clone()
     }
 }
 

@@ -1,5 +1,4 @@
 use color_eyre::eyre;
-use den_stdlib_core::WORLD_END;
 use rquickjs::{async_with, convert::Coerced};
 use tokio::{
     select, signal,
@@ -27,6 +26,7 @@ impl App {
 
 impl App {
     pub async fn start_repl_session(&mut self) {
+        let stop_token = self.engine.stop_token();
         let (repl_tx, mut repl_rx) = mpsc::unbounded_channel::<String>();
         self.tasks.spawn({
             let engine = self.engine.clone();
@@ -52,7 +52,12 @@ impl App {
                 }
             }
         });
-        self.tasks.spawn(repl::run_repl(repl_tx));
+        self.tasks.spawn({
+            async move {
+                repl::run_repl(repl_tx).await;
+                stop_token.cancel();
+            }
+        });
     }
 
     pub async fn run_until_end(&mut self) {
@@ -77,10 +82,11 @@ impl App {
         }
     }
 
-    pub fn hook_ctrlc_handler(&mut self) {
+    pub fn hook_ctrlc_handler(&self) {
+        let stop_token = self.engine.stop_token();
         tokio::spawn(async move {
             let _ = signal::ctrl_c().await;
-            WORLD_END.cancel();
+            stop_token.cancel();
         });
     }
 }
