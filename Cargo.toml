@@ -5,6 +5,7 @@ members = [
     "den-stdlib-core",
     "den-stdlib-networking",
     "den-stdlib-regex",
+    "den-stdlib-text",
     "den-stdlib-timer",
     "den-utils"
 ]
@@ -39,6 +40,7 @@ delegate-attr.workspace = true
 den-stdlib-console = { version = "^0.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
 den-stdlib-networking = { version = "^0.0", path = "den-stdlib-networking" }
+den-stdlib-text = { version = "^0.0", path = "den-stdlib-text" }
 den-stdlib-timer = { version = "^0.0", path = "den-stdlib-timer" }
 den-utils = { version = "^0.0", path = "den-utils" }
 derivative.workspace = true

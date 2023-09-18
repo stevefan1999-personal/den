@@ -1,0 +1,9 @@
+[package]
+name = "den-stdlib-text"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+derivative.workspace = true
+derive_more.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }

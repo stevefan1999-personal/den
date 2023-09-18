@@ -4,6 +4,8 @@ use color_eyre::eyre;
 use den_stdlib_console::Console;
 use den_stdlib_core::{js_core, WORLD_END};
 use den_stdlib_networking::js_networking;
+use den_stdlib_text::js_text;
+use den_stdlib_timer::js_timer;
 use rquickjs::{
     async_with,
     context::EvalOptions,
@@ -131,6 +133,9 @@ impl Engine {
             global.set("console", Console {})?;
             Module::declare_def::<js_core, _>(ctx.clone(), "den:core")?;
             Module::declare_def::<js_networking, _>(ctx.clone(), "den:networking")?;
+            let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
+            let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
+
             Ok::<_, rquickjs::Error>(())
         })
         .await
