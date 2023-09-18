@@ -16,6 +16,7 @@ pub mod timer {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
         let mut interval = time::interval(duration);
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         let token = WORLD_END.child_token();
 
         ctx.spawn({
@@ -34,7 +35,6 @@ pub mod timer {
 
     #[rquickjs::function(rename = "clearInterval")]
     pub fn clear_interval(token: CancellationTokenWrapper) {
-        println!("cancel");
         token.cancel();
     }
 
