@@ -2,7 +2,7 @@
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::CancellationTokenWrapper;
+    use den_stdlib_core::{CancellationTokenWrapper, WorldsEndExt};
     use den_utils::FutureExt;
     use rquickjs::{module::Exports, Ctx, Function};
     use tokio::time;
@@ -17,11 +17,7 @@ pub mod timer {
         let duration = Duration::from_millis(delay);
         let mut interval = time::interval(duration);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        let token = ctx
-            .globals()
-            .get::<_, CancellationTokenWrapper>("WORLD_END")?
-            .token
-            .child_token();
+        let token = ctx.worlds_end();
 
         ctx.spawn({
             let token = token.clone();
@@ -50,11 +46,7 @@ pub mod timer {
     ) -> rquickjs::Result<CancellationTokenWrapper> {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
-        let token = ctx
-            .globals()
-            .get::<_, CancellationTokenWrapper>("WORLD_END")?
-            .token
-            .child_token();
+        let token = ctx.worlds_end();
 
         ctx.spawn({
             let token = token.clone();

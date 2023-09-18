@@ -6,7 +6,7 @@ pub mod socket_addr;
 pub mod networking {
     use std::sync::Arc;
 
-    use den_stdlib_core::CancellationTokenWrapper;
+    use den_stdlib_core::WorldsEndExt;
     use den_utils::FutureExt;
     use rquickjs::Ctx;
     use tokio::net::TcpListener;
@@ -17,12 +17,7 @@ pub mod networking {
         ctx: Ctx<'_>,
     ) -> rquickjs::Result<crate::socket::TcpListenerWrapper> {
         let listener = TcpListener::bind(addr)
-            .with_cancellation(
-                &ctx.globals()
-                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
-                    .token
-                    .child_token(),
-            )
+            .with_cancellation(&ctx.worlds_end())
             .await??;
         Ok(Arc::new(listener).into())
     }

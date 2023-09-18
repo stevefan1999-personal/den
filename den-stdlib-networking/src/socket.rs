@@ -1,6 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
-use den_stdlib_core::CancellationTokenWrapper;
+use den_stdlib_core::WorldsEndExt;
 use den_utils::FutureExt;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
@@ -34,12 +34,7 @@ impl TcpStreamWrapper {
         let mut write = self.stream.write().await;
         write
             .write_all(&buf)
-            .with_cancellation(
-                &ctx.globals()
-                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
-                    .token
-                    .child_token(),
-            )
+            .with_cancellation(&ctx.worlds_end())
             .await??;
         Ok(())
     }
@@ -49,12 +44,7 @@ impl TcpStreamWrapper {
         let mut write = self.stream.write().await;
         write
             .read_to_end(&mut buf)
-            .with_cancellation(
-                &ctx.globals()
-                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
-                    .token
-                    .child_token(),
-            )
+            .with_cancellation(&ctx.worlds_end())
             .await??;
         Ok(buf)
     }
@@ -88,12 +78,7 @@ impl TcpListenerWrapper {
         let (stream, addr) = self
             .deref()
             .accept()
-            .with_cancellation(
-                &ctx.globals()
-                    .get::<_, CancellationTokenWrapper>("WORLD_END")?
-                    .token
-                    .child_token(),
-            )
+            .with_cancellation(&ctx.worlds_end())
             .await??;
         let stream = Arc::new(RwLock::new(stream));
         Ok(List((stream.into(), addr.into())))

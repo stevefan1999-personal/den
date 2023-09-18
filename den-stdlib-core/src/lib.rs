@@ -21,3 +21,16 @@ impl CancellationTokenWrapper {
 pub mod core {
     pub use super::CancellationTokenWrapper;
 }
+
+pub trait WorldsEndExt {
+    fn worlds_end(&self) -> CancellationToken;
+}
+
+impl WorldsEndExt for rquickjs::Ctx<'_> {
+    fn worlds_end(&self) -> CancellationToken {
+        self.globals()
+            .get::<_, CancellationTokenWrapper>("WORLD_END")
+            .map(|x| x.token.child_token())
+            .unwrap_or_else(|_| CancellationToken::new())
+    }
+}
