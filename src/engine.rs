@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use {
     crate::transpile::EasySwcTranspiler,
     bytes::Bytes,
+    color_eyre::eyre::eyre,
     den_utils::{get_best_transpiling, infer_transpile_syntax_by_extension},
     std::sync::Arc,
     swc_core::{
@@ -157,7 +158,8 @@ impl Engine {
         let src = fs::read_to_string(filename.clone()).await?;
         cfg_if::cfg_if! {
             if #[cfg(feature = "transpile")] {
-                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
+                let extension = filename.extension().and_then(|x| x.to_str()).ok_or(eyre!("invalid extension"))?;
+                let syntax = infer_transpile_syntax_by_extension(extension)?;
                 let (src, _) = self.transpile(
                     &src,
                     syntax,
