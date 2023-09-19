@@ -14,7 +14,7 @@ use swc_core::{
     },
     ecma::{
         ast::EsVersion,
-        codegen::{text_writer::JsWriter, Emitter},
+        codegen::{self, text_writer::JsWriter, Emitter},
         parser::Syntax,
         transforms::base::{fixer::fixer, hygiene::hygiene, resolver},
         visit::FoldWith,
@@ -130,10 +130,10 @@ impl EasySwcTranspiler {
                 None
             },
         );
-        let cfg = swc_core::ecma::codegen::Config {
-            target: EsVersion::Es2020,
-            ..Default::default()
-        };
+        
+        let mut cfg = codegen::Config::default();
+        cfg.target = EsVersion::Es2020;
+        
         let mut emitter = Emitter {
             cfg,
             cm: self.source_map.clone(),
