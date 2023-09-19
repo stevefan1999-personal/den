@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "den"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "bytes",
  "cargo-emit",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-console"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "colored",
  "rquickjs",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-core"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "delegate-attr",
  "derivative",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-fs"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "delegate-attr",
  "den-stdlib-core",
@@ -1097,11 +1097,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "den-stdlib-networking"
-version = "0.0.2"
+name = "den-stdlib-io"
+version = "0.1.0"
 dependencies = [
  "delegate-attr",
  "den-stdlib-core",
+ "den-utils",
+ "derivative",
+ "derive_more",
+ "either",
+ "rquickjs",
+ "tokio",
+]
+
+[[package]]
+name = "den-stdlib-networking"
+version = "0.1.0"
+dependencies = [
+ "delegate-attr",
+ "den-stdlib-core",
+ "den-stdlib-io",
  "den-utils",
  "derivative",
  "derive_more",
@@ -1112,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-regex"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "colored",
  "regex",
@@ -1121,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-text"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "derivative",
  "derive_more",
@@ -1132,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-timer"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "den-stdlib-core",
  "den-utils",
@@ -1142,10 +1157,14 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-wasm"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "color-eyre",
  "den-stdlib-core",
+ "derivative",
+ "derive_more",
+ "either",
+ "getset",
  "rquickjs",
  "wasmi",
  "wasmtime",
@@ -1154,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "den-utils"
-version = "0.0.2"
+version = "0.1.0"
 dependencies = [
  "color-eyre",
  "derive_more",
