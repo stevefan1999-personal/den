@@ -19,14 +19,14 @@ edition = "2021"
 
 [workspace.dependencies]
 color-eyre = "0.6.2"
-delegate-attr = "0.2.9"
+delegate-attr = "0.3.0"
 derivative = "2.2.0"
 derive_more = "0.99.17"
 either = "1.9.0"
 futures = "0.3.28"
-phf = "0.10.1"
+phf = "0.11.2"
 rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-qjs-patch-without-gnu", version = "0.4.0-beta.4", features = ["full-async", "rust-alloc", "parallel", "max-args-7"] }
-swc_core = "0.74.6"
+swc_core = "0.83.16"
 tokio = "1.32.0"
 tokio-util = "0.7.8"
 
@@ -38,7 +38,7 @@ edition.workspace = true
 [dependencies]
 bytes = "1.5.0"
 cfg-if = "1.0.0"
-clap = { version = "4.4.3", features = ["unicode", "derive", "env"] }
+clap = { version = "4.4.4", features = ["unicode", "derive", "env"] }
 color-eyre.workspace = true
 console-subscriber = "0.1.10"
 delegate-attr.workspace = true
@@ -51,14 +51,14 @@ den-stdlib-wasm = { version = "*", path = "den-stdlib-wasm", optional = true }
 den-utils = { version = "*", path = "den-utils" }
 derivative.workspace = true
 derive_more.workspace = true
-fmmap = { version = "0.3.2", features = ["tokio-async"] }
+fmmap = { version = "0.3.3", features = ["tokio-async"] }
 futures.workspace = true
 matchit = "0.7.2"
 mime = "0.3.17"
 relative-path = "1.9.0"
 reqwest = { version = "0.11.20", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
 rquickjs.workspace = true
-rustyline = { version = "11.0.0", features = ["derive"] }
+rustyline = { version = "12.0.0", features = ["derive"] }
 swc_core = { workspace = true, features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform", "ecma_parser"], optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true

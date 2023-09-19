@@ -9,10 +9,11 @@ edition.workspace = true
 color-eyre.workspace = true
 derive_more.workspace = true
 pin-project-lite = "0.2.13"
+rquickjs.workspace = true
 swc_core = { workspace = true, optional = true }
 tokio = { workspace = true, features = [] }
 tokio-util.workspace = true
-trie-match = { version = "0.1.1", optional = true }
+trie-match = { version = "0.1.2", optional = true }
 
 [features]
 transpile = ["swc_core", "trie-match"]
