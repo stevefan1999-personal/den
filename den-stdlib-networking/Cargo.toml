@@ -5,9 +5,10 @@ edition.workspace = true
 
 [dependencies]
 delegate-attr.workspace = true
+den-stdlib-core = { version = "^0.0", path = "../den-stdlib-core" }
+den-utils = { version = "^0.0", path = "../den-utils" }
 derivative.workspace = true
 derive_more.workspace = true
+either.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
-den-stdlib-core = { version = "^0.0", path = "../den-stdlib-core" }
 tokio = { workspace = true, features = ["net", "io-util", "sync"] }
-den-utils = { version = "^0.0", path = "../den-utils" }

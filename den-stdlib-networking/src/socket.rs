@@ -41,7 +41,7 @@ impl TcpStreamWrapper {
     ) -> rquickjs::Result<()> {
         let buf = match buf {
             Either::Left(ref x) => x,
-            Either::Right(ref x) => x.as_bytes().unwrap()
+            Either::Right(ref x) => x.as_bytes().unwrap(),
         };
         let mut write = self.stream.write().await;
         write
@@ -71,8 +71,11 @@ impl TcpStreamWrapper {
         Ok(str)
     }
 
-    
-    pub async fn read<'js>(self, bytes: usize, ctx: Ctx<'js>) -> rquickjs::Result<TypedArray<'js, u8>> {
+    pub async fn read<'js>(
+        self,
+        bytes: usize,
+        ctx: Ctx<'js>,
+    ) -> rquickjs::Result<TypedArray<'js, u8>> {
         let mut buf = vec![0; bytes];
         let mut write = self.stream.write().await;
         write
