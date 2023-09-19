@@ -4,6 +4,7 @@ members = [
     "den-stdlib-console",
     "den-stdlib-core",
     "den-stdlib-fs",
+    "den-stdlib-io",
     "den-stdlib-networking",
     "den-stdlib-regex",
     "den-stdlib-text",
