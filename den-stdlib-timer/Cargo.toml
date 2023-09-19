@@ -5,6 +5,6 @@ edition.workspace = true
 
 [dependencies]
 rquickjs = { workspace = true, features = ["macro", "futures"] }
-den-stdlib-core = { version = "^0.0", path = "../den-stdlib-core" }
+den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 tokio = { workspace = true, features = ["time"] }
-den-utils = { version = "^0.0", path = "../den-utils" }
+den-utils = { version = "*", path = "../den-utils" }

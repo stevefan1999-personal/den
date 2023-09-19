@@ -42,13 +42,13 @@ clap = { version = "4.4.3", features = ["unicode", "derive", "env"] }
 color-eyre.workspace = true
 console-subscriber = "0.1.10"
 delegate-attr.workspace = true
-den-stdlib-console = { version = "^0.0", path = "den-stdlib-console" }
-den-stdlib-core = { version = "^0.0", path = "den-stdlib-core" }
-den-stdlib-networking = { version = "^0.0", path = "den-stdlib-networking" }
-den-stdlib-text = { version = "^0.0", path = "den-stdlib-text" }
-den-stdlib-timer = { version = "^0.0", path = "den-stdlib-timer" }
-den-stdlib-wasm = { version = "^0.0", path = "den-stdlib-wasm", optional = true }
-den-utils = { version = "^0.0", path = "den-utils" }
+den-stdlib-console = { version = "*", path = "den-stdlib-console" }
+den-stdlib-core = { version = "*", path = "den-stdlib-core" }
+den-stdlib-networking = { version = "*", path = "den-stdlib-networking" }
+den-stdlib-text = { version = "*", path = "den-stdlib-text" }
+den-stdlib-timer = { version = "*", path = "den-stdlib-timer" }
+den-stdlib-wasm = { version = "*", path = "den-stdlib-wasm", optional = true }
+den-utils = { version = "*", path = "den-utils" }
 derivative.workspace = true
 derive_more.workspace = true
 fmmap = { version = "0.3.2", features = ["tokio-async"] }

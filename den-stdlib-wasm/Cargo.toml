@@ -7,7 +7,7 @@ edition.workspace = true
 
 [dependencies]
 color-eyre.workspace = true
-den-stdlib-core = { version = "^0.0", path = "../den-stdlib-core" }
+den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 derivative.workspace = true
 derive_more.workspace = true
 either.workspace = true
