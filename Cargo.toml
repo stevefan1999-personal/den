@@ -16,6 +16,11 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/stevefan1999-personal/den"
+readme = "README.md"
+authors = ["Steve Fan <29133953+stevefan1999-personal@users.noreply.github.com>"]
+license = "MIT"
+keywords = ["javascript", "quickjs", "tokio", "typescript", "swc", "reqwest", "wasmer"]
 
 [workspace.dependencies]
 color-eyre = "0.6.2"
@@ -32,8 +37,14 @@ tokio-util = "0.7.8"
 
 [package]
 name = "den"
+description = "One word less than Deno!"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
 
 [dependencies]
 bytes = "1.5.0"

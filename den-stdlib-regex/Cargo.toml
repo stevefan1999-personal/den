@@ -2,6 +2,11 @@
 name = "den-stdlib-regex"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
 
 [dependencies]
 colored = "2.0.4"
