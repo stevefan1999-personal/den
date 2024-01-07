@@ -9,7 +9,7 @@ use wasmtime::ExternType;
 pub struct Module {
     #[qjs(skip_trace)]
     #[getset(get)]
-    module: wasmtime::Module,
+    pub(crate) module: wasmtime::Module,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -29,11 +29,11 @@ impl Module {
         config.consume_fuel(true);
 
         let engine = wasmtime::Engine::new(&config).map_err(|x| {
-            rquickjs::Exception::throw_message(&ctx, &format!("wasm engine creation error: {}", x))
+            rquickjs::Exception::throw_internal(&ctx, &format!("wasm engine creation error: {}", x))
         })?;
 
         let module = wasmtime::Module::from_binary(&engine, buf).map_err(|x| {
-            rquickjs::Exception::throw_message(&ctx, &format!("wasm module creation error: {}", x))
+            rquickjs::Exception::throw_internal(&ctx, &format!("wasm module creation error: {}", x))
         })?;
 
         Ok(Self { module })
@@ -71,7 +71,7 @@ impl Module {
         _module: &Module,
         ctx: Ctx<'js>,
     ) -> rquickjs::Result<Vec<Object<'js>>> {
-        Err(rquickjs::Exception::throw_message(&ctx, "not implemented"))
+        Err(rquickjs::Exception::throw_internal(&ctx, "not implemented"))
     }
 }
 
