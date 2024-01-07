@@ -38,6 +38,10 @@ impl Loader for HttpLoader {
                             if subtype == "typescript" {
                                 break 'check_mime;
                             }
+                            return Err(Error::new_loading_message(
+                                name,
+                                format!("{name} is not a valid script"),
+                            ))
                         }
                         Some(_) => {
                             return Err(Error::new_loading_message(
