@@ -1,8 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
-use den_stdlib_core::WorldsEndExt;
 use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
-use den_utils::FutureExt;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::{class::Trace, convert::List, Ctx, Error, TypedArray};
@@ -34,19 +32,17 @@ impl TcpStreamWrapper {
     }
 
     #[qjs(static)]
-    pub async fn connect(addr: String, ctx: Ctx<'_>) -> rquickjs::Result<Self> {
-        let stream = TcpStream::connect(addr)
-            .with_cancellation(&ctx.worlds_end())
-            .await??;
+    pub async fn connect(addr: String) -> rquickjs::Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
         Ok(Arc::new(RwLock::new(stream)).into())
     }
 
-    pub async fn read_to_string(self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
-        AsyncReadWrapper(self.stream).read_to_string(ctx).await
+    pub async fn read_to_string(self) -> rquickjs::Result<String> {
+        AsyncReadWrapper(self.stream).read_to_string().await
     }
 
-    pub async fn read_to_end(self, ctx: Ctx<'_>) -> rquickjs::Result<Vec<u8>> {
-        AsyncReadWrapper(self.stream).read_to_end(ctx).await
+    pub async fn read_to_end(self) -> rquickjs::Result<Vec<u8>> {
+        AsyncReadWrapper(self.stream).read_to_end().await
     }
 
     pub async fn read<'js>(
@@ -60,9 +56,8 @@ impl TcpStreamWrapper {
     pub async fn write_all<'js>(
         self,
         buf: either::Either<Vec<u8>, TypedArray<'js, u8>>,
-        ctx: Ctx<'_>,
     ) -> rquickjs::Result<()> {
-        AsyncWriteWrapper(self.stream).write_all(buf, ctx).await
+        AsyncWriteWrapper(self.stream).write_all(buf).await
     }
 
     pub async fn flush(self) -> rquickjs::Result<()> {
@@ -92,24 +87,15 @@ impl TcpListenerWrapper {
         Ok(self.deref().local_addr()?.into())
     }
 
-    pub async fn accept(
-        self,
-        ctx: Ctx<'_>,
-    ) -> rquickjs::Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
-        let (stream, addr) = self
-            .deref()
-            .accept()
-            .with_cancellation(&ctx.worlds_end())
-            .await??;
+    pub async fn accept(self) -> rquickjs::Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
+        let (stream, addr) = self.deref().accept().await?;
         let stream = Arc::new(RwLock::new(stream));
         Ok(List((stream.into(), addr.into())))
     }
 
     #[qjs(static)]
-    pub async fn listen(addr: String, ctx: Ctx<'_>) -> rquickjs::Result<Self> {
-        let listener = TcpListener::bind(addr)
-            .with_cancellation(&ctx.worlds_end())
-            .await??;
+    pub async fn listen(addr: String) -> rquickjs::Result<Self> {
+        let listener = TcpListener::bind(addr).await?;
         Ok(Arc::new(listener).into())
     }
 }

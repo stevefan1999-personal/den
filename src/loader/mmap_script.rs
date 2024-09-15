@@ -5,11 +5,7 @@ use relative_path::RelativePath;
 use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
 #[cfg(feature = "transpile")]
-use {
-    crate::transpile::EasySwcTranspiler,
-    std::sync::Arc,
-    swc_core::base::config::IsModule,
-};
+use {crate::transpile::EasySwcTranspiler, std::sync::Arc, swc_core::base::config::IsModule};
 
 #[derive(Derivative)]
 #[derivative(Debug)]

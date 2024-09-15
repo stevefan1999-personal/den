@@ -2,7 +2,7 @@
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::{CancellationTokenWrapper, WorldsEndExt};
+    use den_stdlib_core::{CancellationToken, CancellationTokenWrapper};
     use den_utils::FutureExt;
     use rquickjs::{module::Exports, Ctx, Function};
     use tokio::time;
@@ -17,10 +17,10 @@ pub mod timer {
         let duration = Duration::from_millis(delay);
         let mut interval = time::interval(duration);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        let token = ctx.worlds_end();
+        let token = CancellationToken::new();
 
         ctx.spawn({
-            let token = token.clone();
+            let token = token.child_token();
             async move {
                 // ignore the first tick
                 let _ = interval.tick().with_cancellation(&token).await;
@@ -45,14 +45,15 @@ pub mod timer {
         ctx: Ctx<'js>,
     ) -> rquickjs::Result<CancellationTokenWrapper> {
         let delay = delay.unwrap_or(0) as u64;
-        let duration = Duration::from_millis(delay);
-        let token = ctx.worlds_end();
+        let duration: Duration = Duration::from_millis(delay);
+        let token = CancellationToken::new();
 
         ctx.spawn({
-            let token = token.clone();
+            let token = token.child_token();
             async move {
-                let _ = time::sleep(duration).with_cancellation(&token).await;
-                let _ = func.call::<_, ()>(());
+                if let Ok(()) = time::sleep(duration).with_cancellation(&token).await {
+                    let _ = func.call::<_, ()>(());
+                }
             }
         });
         Ok(token.into())

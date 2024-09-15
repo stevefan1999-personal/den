@@ -1,7 +1,7 @@
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::class::Trace;
-use tokio_util::sync::CancellationToken;
+pub use tokio_util::sync::CancellationToken;
 
 #[derive(Trace, Derivative, From, Into, Deref, DerefMut)]
 #[derivative(Clone, Debug)]
@@ -20,17 +20,4 @@ impl CancellationTokenWrapper {
 #[rquickjs::module]
 pub mod core {
     pub use super::CancellationTokenWrapper;
-}
-
-pub trait WorldsEndExt {
-    fn worlds_end(&self) -> CancellationToken;
-}
-
-impl WorldsEndExt for rquickjs::Ctx<'_> {
-    fn worlds_end(&self) -> CancellationToken {
-        self.globals()
-            .get::<_, CancellationTokenWrapper>("WORLD_END")
-            .map(|x| x.token.child_token())
-            .unwrap_or_else(|_| CancellationToken::new())
-    }
 }

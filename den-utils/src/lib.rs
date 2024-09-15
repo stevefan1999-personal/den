@@ -6,7 +6,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 #[cfg(feature = "transpile")]
 use {
     color_eyre::eyre,
@@ -16,22 +16,22 @@ use {
 
 pin_project! {
     #[must_use = "futures do nothing unless polled"]
-    pub struct WithCancellationFuture<'a, T: Future>{
+    pub struct WithCancellationFuture<T: Future>{
         #[pin]
         future: T,
         #[pin]
-        cancellation: WaitForCancellationFuture<'a>,
+        cancellation: WaitForCancellationFutureOwned,
     }
 }
 
-impl<T: Future> Future for WithCancellationFuture<'_, T> {
+impl<T: Future> Future for WithCancellationFuture<T> {
     type Output = Result<T::Output, io::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
 
         if let Poll::Ready(()) = this.cancellation.as_mut().poll(cx) {
-            Poll::Ready(Err(io::Error::from(io::ErrorKind::TimedOut)))
+            Poll::Ready(Err(io::Error::from(io::ErrorKind::Interrupted)))
         } else {
             match this.future.as_mut().poll(cx) {
                 Poll::Ready(res) => Poll::Ready(Ok(res)),
@@ -43,19 +43,16 @@ impl<T: Future> Future for WithCancellationFuture<'_, T> {
 
 pub trait FutureExt {
     type Future: Future;
-    fn with_cancellation(
-        self,
-        token: &CancellationToken,
-    ) -> WithCancellationFuture<'_, Self::Future>;
+    fn with_cancellation(self, token: &CancellationToken) -> WithCancellationFuture<Self::Future>;
 }
 
 impl<T: Future> FutureExt for T {
     type Future = T;
 
-    fn with_cancellation(self, token: &CancellationToken) -> WithCancellationFuture<'_, T> {
+    fn with_cancellation(self, token: &CancellationToken) -> WithCancellationFuture<T> {
         WithCancellationFuture {
             future:       self,
-            cancellation: token.cancelled(),
+            cancellation: token.clone().cancelled_owned(),
         }
     }
 }

@@ -1,6 +1,6 @@
 #[rquickjs::module]
 pub mod fs {
-    use rquickjs::{module::Exports, Ctx};
+    use rquickjs::Ctx;
 
     #[rquickjs::function]
     pub async fn canonicalize(path: String) -> rquickjs::Result<Option<String>> {

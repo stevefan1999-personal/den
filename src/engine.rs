@@ -9,13 +9,13 @@ use den_stdlib_text::js_text;
 use den_stdlib_timer::js_timer;
 #[cfg(feature = "wasm")]
 use den_stdlib_wasm::js_wasm;
+use den_utils::FutureExt;
 use rquickjs::{
     async_with,
     context::EvalOptions,
     loader::{BuiltinLoader, BuiltinResolver, FileResolver, ModuleLoader},
     AsyncContext, AsyncRuntime, FromJs, Module, Object, Promise,
 };
-use tokio::{signal, sync::mpsc, task::yield_now};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "transpile")]
 use {
@@ -176,24 +176,12 @@ impl Engine {
 
         runtime
             .set_interrupt_handler({
-                let world_end = stop_token.clone();
-                let (ctrlc_tx, mut ctrlc_rx) = mpsc::unbounded_channel();
-                tokio::spawn({
-                    async move {
-                        loop {
-                            let _ = signal::ctrl_c().await;
-                            let _ = ctrlc_tx.send(());
-                            yield_now().await;
-                        }
-                    }
-                });
-                Some(Box::new(move || {
-                    ctrlc_rx
-                        .try_recv()
-                        .map_or_else(|_| world_end.is_cancelled(), |_| true)
-                }))
+                let world_end = stop_token.child_token();
+                Some(Box::new(move || world_end.is_cancelled()))
             })
             .await;
+
+        tokio::spawn(runtime.drive().with_cancellation(&stop_token.child_token()));
 
         let context = AsyncContext::full(&runtime).await.unwrap();
 
@@ -242,8 +230,13 @@ impl Engine {
         }
     }
 
-    pub async fn run_file(&self, filename: PathBuf) -> eyre::Result<()> {
-        async_with!(self.context => |ctx| {
+    pub async fn run_file<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
+        &self,
+        filename: PathBuf,
+    ) -> eyre::Result<U> {
+        Ok(async_with!(self.context => |ctx| {
+            // Evil hack by using top-level await, so that the eval will transfer the import to our file resolver
+            // then we can use it to transpile Typescript and other stuff
             let promise: Promise = ctx.eval_with_options(format!(r#"await import(`{}`)"#, filename.to_str().unwrap()), {
                 let mut options = EvalOptions::default();
                 options.global = true;
@@ -251,10 +244,16 @@ impl Engine {
                 options.strict = true;
                 options
             })?;
+            // However, this is the problem because rather than returning the underlying value, 
+            // the implementation of QuickJS decided to make this a {"value": <TLA evaluation value>}
+            // so we have to directly fetch the "value" key and so we can transmigrate within
+
+            // Technically we can do an optimization to just run the future and discard the returned value,
+            // since we run under an assumption of running this function on a file
+            // However, with REPL continuation, things could change
             promise.into_future::<Object>().await?.get("value")
         })
-        .await?;
-        Ok(())
+        .await?)
     }
 
     pub async fn run_immediate<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
@@ -279,6 +278,7 @@ impl Engine {
                     let mut options = EvalOptions::default();
                     options.global = true;
                     options.promise = true;
+                    options.strict = true;
                     options.backtrace_barrier = true;
                     options
                 }
@@ -308,7 +308,7 @@ impl Engine {
                 let (src, _) = self.transpile(
                     src,
                     syntax,
-                    IsModule::Bool(false),
+                    IsModule::Unknown,
                 )?;
             }
         }
