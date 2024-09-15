@@ -17,9 +17,11 @@ impl App {
     pub async fn new() -> Self {
         let join_set = JoinSet::new();
 
+        let engine = Engine::new().await;
+        tokio::spawn(engine.runtime.drive());
         Self {
-            engine: Engine::new().await,
-            tasks:  join_set,
+            engine,
+            tasks: join_set,
         }
     }
 }
@@ -72,10 +74,8 @@ impl App {
                 None = self.tasks.join_next(), if !stoppable => {
                     stoppable = true;
                 },
-                _ = rt.idle() => {
-                    if stoppable {
-                        break 'select;
-                    }
+                _ = rt.idle(), if stoppable => {
+                    break 'select;
                 }
             }
             yield_now().await;

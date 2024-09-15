@@ -25,7 +25,7 @@ pub mod timer {
                 // ignore the first tick
                 let _ = interval.tick().with_cancellation(&token).await;
                 while let Ok(_) = interval.tick().with_cancellation(&token).await {
-                    func.call::<_, ()>(()).unwrap();
+                    let _ = func.call::<_, ()>(());
                 }
             }
         });
@@ -52,7 +52,7 @@ pub mod timer {
             let token = token.clone();
             async move {
                 let _ = time::sleep(duration).with_cancellation(&token).await;
-                func.call::<_, ()>(()).unwrap();
+                let _ = func.call::<_, ()>(());
             }
         });
         Ok(token.into())
@@ -64,7 +64,7 @@ pub mod timer {
     }
 
     #[qjs(declare)]
-    pub fn declare(declare: &mut rquickjs::module::Declarations) -> rquickjs::Result<()> {
+    pub fn declare(declare: &rquickjs::module::Declarations) -> rquickjs::Result<()> {
         declare.declare("setInterval")?;
         declare.declare("clearInterval")?;
         declare.declare("setTimeout")?;
@@ -73,10 +73,11 @@ pub mod timer {
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &mut Exports<'js>) -> rquickjs::Result<()> {
-        for (k, v) in exports.iter() {
-            ctx.globals().set(k.to_str()?, v)?;
-        }
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> rquickjs::Result<()> {
+        ctx.globals().set("setInterval", js_set_interval)?;
+        ctx.globals().set("clearInterval", js_clear_interval)?;
+        ctx.globals().set("setTimeout", js_set_timeout)?;
+        ctx.globals().set("clearTimeout", js_clear_timeout)?;
 
         Ok(())
     }

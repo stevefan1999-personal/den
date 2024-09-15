@@ -10,17 +10,27 @@ members = [
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
-    "den-utils"
+    "den-utils",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 repository = "https://github.com/stevefan1999-personal/den"
 readme = "README.md"
-authors = ["Steve Fan <29133953+stevefan1999-personal@users.noreply.github.com>"]
+authors = [
+    "Steve Fan <29133953+stevefan1999-personal@users.noreply.github.com>",
+]
 license = "MIT"
-keywords = ["javascript", "quickjs", "tokio", "typescript", "swc", "reqwest", "wasmer"]
+keywords = [
+    "javascript",
+    "quickjs",
+    "tokio",
+    "typescript",
+    "swc",
+    "reqwest",
+    "wasmer",
+]
 
 [workspace.dependencies]
 color-eyre = "0.6.2"
@@ -30,8 +40,12 @@ derive_more = "0.99.17"
 either = "1.9.0"
 futures = "0.3.28"
 phf = "0.11.2"
-rquickjs = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-qjs-patch-without-gnu", version = "0.4.0-beta.4", features = ["full-async", "rust-alloc", "parallel", "max-args-7"] }
-swc_core = "0.83.16"
+rquickjs = { version = "0.6.2", features = [
+    "full-async",
+    "rust-alloc",
+    "parallel",
+] }
+swc_core = "0.104.2"
 tokio = "1.32.0"
 tokio-util = "0.7.8"
 
@@ -51,39 +65,78 @@ bytes = "1.5.0"
 cfg-if = "1.0.0"
 clap = { version = "4.4.4", features = ["unicode", "derive", "env"] }
 color-eyre.workspace = true
-console-subscriber = "0.1.10"
+console-subscriber = "0.2.0"
 delegate-attr.workspace = true
-den-stdlib-console = { version = "*", path = "den-stdlib-console" }
-den-stdlib-core = { version = "*", path = "den-stdlib-core" }
-den-stdlib-networking = { version = "*", path = "den-stdlib-networking" }
-den-stdlib-text = { version = "*", path = "den-stdlib-text" }
-den-stdlib-timer = { version = "*", path = "den-stdlib-timer" }
+den-stdlib-console = { version = "*", path = "den-stdlib-console", optional = true }
+den-stdlib-core = { version = "*", path = "den-stdlib-core", optional = true }
+den-stdlib-fs = { version = "*", path = "den-stdlib-fs", optional = true }
+den-stdlib-networking = { version = "*", path = "den-stdlib-networking", optional = true }
+den-stdlib-text = { version = "*", path = "den-stdlib-text", optional = true }
+den-stdlib-timer = { version = "*", path = "den-stdlib-timer", optional = true }
 den-stdlib-wasm = { version = "*", path = "den-stdlib-wasm", optional = true }
 den-utils = { version = "*", path = "den-utils" }
 derivative.workspace = true
 derive_more.workspace = true
 fmmap = { version = "0.3.3", features = ["tokio-async"] }
 futures.workspace = true
-matchit = "0.7.2"
+matchit = "0.8.2"
 mime = "0.3.17"
 relative-path = "1.9.0"
-reqwest = { version = "0.11.20", features = ["stream", "socks", "multipart", "json", "deflate", "gzip", "cookies", "blocking", "brotli", "native-tls"] }
+reqwest = { version = "0.12.4", features = [
+    "stream",
+    "socks",
+    "multipart",
+    "json",
+    "deflate",
+    "gzip",
+    "cookies",
+    "blocking",
+    "brotli",
+    "native-tls",
+] }
 rquickjs.workspace = true
-rustyline = { version = "12.0.0", features = ["derive"] }
-swc_core = { workspace = true, features = ["ecma_codegen", "base_concurrent", "common_concurrent", "ecma_plugin_transform", "ecma_parser"], optional = true }
+rustyline = { version = "14.0.0", features = ["derive"] }
+swc_core = { workspace = true, features = [
+    "ecma_codegen",
+    "base_concurrent",
+    "common_concurrent",
+    "ecma_plugin_transform",
+    "ecma_parser",
+], optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true
 url = "2.4.1"
-vc-ltl = "5.0.8"
+vc-ltl = "5.1.1"
 
 [features]
-default = ["typescript", "react", "wasmi", "wasmtime"]
-typescript = ["transpile", "swc_core?/ecma_transforms_typescript", "swc_core?/ecma_parser_typescript", "den-utils/typescript"]
+default = ["stdlib", "react", "typescript"]
+typescript = [
+    "transpile",
+    "swc_core?/ecma_transforms_typescript",
+    "swc_core?/ecma_parser_typescript",
+    "den-utils/typescript",
+]
 react = ["transpile", "swc_core?/ecma_transforms_react", "den-utils/react"]
 transpile = ["swc_core", "den-utils/transpile"]
+
+stdlib = [
+    "stdlib-console",
+    "stdlib-core",
+    "stdlib-fs",
+    "stdlib-networking",
+    "stdlib-text",
+    "stdlib-timer",
+]
+stdlib-console = ["dep:den-stdlib-console"]
+stdlib-core = ["dep:den-stdlib-core"]
+stdlib-fs = ["dep:den-stdlib-fs"]
+stdlib-networking = ["dep:den-stdlib-networking"]
+stdlib-text = ["dep:den-stdlib-text"]
+stdlib-timer = ["dep:den-stdlib-timer"]
+
 wasm = ["dep:den-stdlib-wasm"]
-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]
-wasmi = ["wasm", "den-stdlib-wasm?/wasmi"]
+wasm-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]
+wasm-wasmi = ["wasm", "den-stdlib-wasm?/wasmi"]
 
 [profile.release]
 incremental = true

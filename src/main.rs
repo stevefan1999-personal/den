@@ -28,7 +28,10 @@ async fn main() -> color_eyre::Result<()> {
         match app.engine.run_file(x).await {
             Err(e) if e.is::<rquickjs::Error>() => {
                 async_with!(app.engine.context => |ctx| {
-                    if let Some(e) = ctx.catch().as_exception() {
+                    let e = ctx.catch();
+                    if let Some(e) = e.as_exception() {
+                        eprintln!("{}", e)
+                    } else if let Some(Ok(e)) = e.as_string().map(|x| x.to_string()) {
                         eprintln!("{}", e)
                     }
                 })

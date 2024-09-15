@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use color_eyre::eyre;
 use den_stdlib_console::Console;
 use den_stdlib_core::{js_core, CancellationTokenWrapper};
+use den_stdlib_fs::js_fs;
 use den_stdlib_networking::js_networking;
 use den_stdlib_text::js_text;
 use den_stdlib_timer::js_timer;
@@ -12,15 +13,13 @@ use rquickjs::{
     async_with,
     context::EvalOptions,
     loader::{BuiltinLoader, BuiltinResolver, FileResolver, ModuleLoader},
-    AsyncContext, AsyncRuntime, FromJs, Module,
+    AsyncContext, AsyncRuntime, FromJs, Module, Object, Promise,
 };
-use tokio::{fs, signal, sync::mpsc, task::yield_now};
+use tokio::{signal, sync::mpsc, task::yield_now};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "transpile")]
 use {
     crate::transpile::EasySwcTranspiler,
-    bytes::Bytes,
-    color_eyre::eyre::eyre,
     den_utils::{get_best_transpiling, infer_transpile_syntax_by_extension},
     std::sync::Arc,
     swc_core::{
@@ -50,12 +49,36 @@ impl Engine {
 
         {
             let resolver = (
-                BuiltinResolver::default()
-                    .with_module("den:core")
-                    .with_module("den:networking")
-                    .with_module("den:text")
-                    .with_module("den:timer")
-                    .with_module("den:wasm"),
+                {
+                    #[allow(unused_mut)]
+                    let mut resolver = BuiltinResolver::default();
+
+                    #[cfg(feature = "stdlib-core")]
+                    {
+                        resolver = resolver.with_module("den:core");
+                    }
+                    #[cfg(feature = "stdlib-networking")]
+                    {
+                        resolver = resolver.with_module("den:networking");
+                    }
+                    #[cfg(feature = "stdlib-text")]
+                    {
+                        resolver = resolver.with_module("den:text");
+                    }
+                    #[cfg(feature = "stdlib-timer")]
+                    {
+                        resolver = resolver.with_module("den:timer");
+                    }
+                    #[cfg(feature = "stdlib-fs")]
+                    {
+                        resolver = resolver.with_module("den:fs");
+                    }
+                    #[cfg(feature = "wasm")]
+                    {
+                        resolver = resolver.with_module("den:wasm");
+                    }
+                    resolver
+                },
                 HttpResolver::default(),
                 {
                     #[allow(unused_mut)]
@@ -67,6 +90,7 @@ impl Engine {
                     #[cfg(feature = "react")]
                     {
                         resolver = resolver.with_pattern("{}.jsx");
+                        resolver = resolver.with_pattern("{}.mjsx");
                     }
 
                     #[cfg(feature = "typescript")]
@@ -86,27 +110,50 @@ impl Engine {
                 BuiltinLoader::default(),
                 {
                     #[allow(unused_mut)]
-                    let mut loaders = ModuleLoader::default()
-                        .with_module("den:core", js_core)
-                        .with_module("den:networking", js_networking)
-                        .with_module("den:text", js_text)
-                        .with_module("den:timer", js_timer);
+                    let mut loader = ModuleLoader::default();
+
+                    #[cfg(feature = "stdlib-core")]
+                    {
+                        loader = loader.with_module("den:core", js_core);
+                    }
+
+                    #[cfg(feature = "stdlib-networking")]
+                    {
+                        loader = loader.with_module("den:networking", js_networking);
+                    }
+
+                    #[cfg(feature = "stdlib-text")]
+                    {
+                        loader = loader.with_module("den:text", js_text);
+                    }
+
+                    #[cfg(feature = "stdlib-timer")]
+                    {
+                        loader = loader.with_module("den:timer", js_timer);
+                    }
+
+                    #[cfg(feature = "stdlib-fs")]
+                    {
+                        loader = loader.with_module("den:fs", js_fs);
+                    }
 
                     #[cfg(feature = "wasm")]
                     {
-                        loaders = loaders.with_module("den:wasm", js_wasm);
+                        loader = loader.with_module("den:wasm", js_wasm)
                     }
-                    loaders
+                    loader
                 },
                 HttpLoader::default(),
                 {
                     #[allow(unused_mut)]
-                    let mut loader = MmapScriptLoader::default()
-                        .with_extension("js")
-                        .with_extension("mjs");
+                    let mut loader = MmapScriptLoader::default();
+                    loader = loader.with_extension("js");
+                    loader = loader.with_extension("mjs");
+
                     #[cfg(feature = "react")]
                     {
                         loader = loader.with_extension("jsx");
+                        loader = loader.with_extension("mjsx");
                     }
 
                     #[cfg(feature = "typescript")]
@@ -153,9 +200,21 @@ impl Engine {
         context
             .with(|ctx| {
                 let global = ctx.globals();
-                global.set("console", Console {})?;
-                let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
-                let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
+
+                #[cfg(feature = "stdlib-console")]
+                {
+                    global.set("console", Console {})?;
+                }
+
+                #[cfg(feature = "stdlib-text")]
+                {
+                    let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
+                }
+
+                #[cfg(feature = "stdlib-timer")]
+                {
+                    let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
+                }
 
                 #[cfg(feature = "wasm")]
                 {
@@ -176,7 +235,7 @@ impl Engine {
 
         Self {
             #[cfg(feature = "transpile")]
-            transpiler: Arc::new(Default::default()),
+            transpiler: Arc::new(EasySwcTranspiler::default()),
             runtime,
             context,
             stop_token,
@@ -184,29 +243,21 @@ impl Engine {
     }
 
     pub async fn run_file(&self, filename: PathBuf) -> eyre::Result<()> {
-        let src = fs::read_to_string(filename.clone()).await?;
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "transpile")] {
-                let extension = filename.extension().and_then(|x| x.to_str()).ok_or(eyre!("invalid extension"))?;
-                let syntax = infer_transpile_syntax_by_extension(extension)?;
-                let (src, _) = self.transpile(
-                    &src,
-                    syntax,
-                    IsModule::Bool(true),
-                )?;
-            }
-        }
-
-        self.context
-            .with(|ctx| {
-                ctx.compile(filename.to_str().unwrap_or("<unknown>"), src)
-                    .map(|_| ())
-            })
-            .await?;
+        async_with!(self.context => |ctx| {
+            let promise: Promise = ctx.eval_with_options(format!(r#"await import(`{}`)"#, filename.to_str().unwrap()), {
+                let mut options = EvalOptions::default();
+                options.global = true;
+                options.promise = true;
+                options.strict = true;
+                options
+            })?;
+            promise.into_future::<Object>().await?.get("value")
+        })
+        .await?;
         Ok(())
     }
 
-    pub async fn run_immediate<U: for<'a> FromJs<'a> + Sync + Send>(
+    pub async fn run_immediate<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
         &self,
         src: &str,
     ) -> eyre::Result<U> {
@@ -221,18 +272,20 @@ impl Engine {
             }
         }
 
-        Ok(self
-            .context
-            .with(|ctx| {
-                ctx.eval_with_options(
-                    src,
-                    EvalOptions {
-                        global: false,
-                        ..Default::default()
-                    },
-                )
-            })
-            .await?)
+        Ok(async_with!(self.context => |ctx| {
+            let promise: Promise = ctx.eval_with_options(
+                src,
+                {
+                    let mut options = EvalOptions::default();
+                    options.global = true;
+                    options.promise = true;
+                    options.backtrace_barrier = true;
+                    options
+                }
+            )?;
+            promise.into_future::<Object>().await?.get("value")
+        })
+        .await?)
     }
 
     #[cfg(feature = "transpile")]
@@ -241,7 +294,7 @@ impl Engine {
         src: &str,
         syntax: Syntax,
         module: IsModule,
-    ) -> eyre::Result<(Bytes, Option<SourceMap>)> {
+    ) -> eyre::Result<(String, Option<SourceMap>)> {
         self.transpiler.transpile(src, syntax, module, false)
     }
 
@@ -255,19 +308,26 @@ impl Engine {
                 let (src, _) = self.transpile(
                     src,
                     syntax,
-                    IsModule::Unknown,
+                    IsModule::Bool(false),
                 )?;
             }
         }
 
+        // // evil hack
+        // let src = src.trim_end_matches(";\n");
+
         Ok(async_with!(self.context => |ctx| {
-            ctx.eval_with_options(
+            let promise: Promise = ctx.eval_with_options(
                 src,
-                EvalOptions {
-                    global: true,
-                    ..Default::default()
-                },
-            )
+                {
+                    let mut options = EvalOptions::default();
+                    options.global = true;
+                    options.promise = true;
+                    options.backtrace_barrier = true;
+                    options
+                }
+            )?;
+            promise.into_future::<Object>().await?.get("value")
         })
         .await?)
     }

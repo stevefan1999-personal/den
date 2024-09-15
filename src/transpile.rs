@@ -1,6 +1,5 @@
 use std::io::stderr;
 
-use bytes::Bytes;
 use color_eyre::eyre::eyre;
 #[cfg(feature = "react")]
 use swc_core::ecma::transforms::react::react;
@@ -51,10 +50,10 @@ impl EasySwcTranspiler {
         syntax: Syntax,
         is_module: IsModule,
         emit_sourcemap: bool,
-    ) -> color_eyre::Result<(Bytes, Option<swc_core::base::sourcemap::SourceMap>)> {
+    ) -> color_eyre::Result<(String, Option<swc_core::base::sourcemap::SourceMap>)> {
         let fm = self
             .source_map
-            .new_source_file_from(FileName::Anon, source.to_string().into());
+            .new_source_file_from(FileName::Anon.into(), source.to_string().into());
 
         GLOBALS.set(&self.globals, || {
             self.do_transpile(syntax, is_module, emit_sourcemap, fm)
@@ -67,13 +66,13 @@ impl EasySwcTranspiler {
         is_module: IsModule,
         emit_sourcemap: bool,
         fm: Lrc<SourceFile>,
-    ) -> color_eyre::Result<(Bytes, Option<swc_core::base::sourcemap::SourceMap>)> {
+    ) -> color_eyre::Result<(String, Option<swc_core::base::sourcemap::SourceMap>)> {
         let mut program = self
             .compiler
             .parse_js(
                 fm,
                 &self.handler,
-                EsVersion::Es2022,
+                EsVersion::EsNext,
                 syntax,
                 is_module,
                 Some(self.compiler.comments()),
@@ -88,7 +87,7 @@ impl EasySwcTranspiler {
             Syntax::Typescript(_) => {
                 program
                     .fold_with(&mut resolver(unresolved_mark, top_level_mark, true))
-                    .fold_with(&mut strip(top_level_mark))
+                    .fold_with(&mut strip(unresolved_mark, top_level_mark))
             }
             Syntax::Es(_) => {
                 program.fold_with(&mut resolver(unresolved_mark, top_level_mark, false))
@@ -130,10 +129,11 @@ impl EasySwcTranspiler {
                 None
             },
         );
-        
+
         let mut cfg = codegen::Config::default();
-        cfg.target = EsVersion::Es2020;
-        
+        cfg.target = EsVersion::Es2022;
+        cfg.omit_last_semi = true;
+
         let mut emitter = Emitter {
             cfg,
             cm: self.source_map.clone(),
@@ -144,7 +144,7 @@ impl EasySwcTranspiler {
         emitter.emit_program(&program)?;
 
         Ok((
-            buf.into(),
+            String::from_utf8(buf)?,
             if emit_sourcemap {
                 Some(self.source_map.build_source_map(srcmap.as_ref()))
             } else {

@@ -1,13 +1,14 @@
+use den_utils::infer_transpile_syntax_by_extension;
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
-use rquickjs::{loader::Loader, module::ModuleData, Ctx, Error};
+use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
 #[cfg(feature = "transpile")]
 use {
     crate::transpile::EasySwcTranspiler,
     std::sync::Arc,
-    swc_core::{base::config::IsModule, ecma::parser::Syntax},
+    swc_core::base::config::IsModule,
 };
 
 #[derive(Derivative)]
@@ -36,12 +37,13 @@ impl MmapScriptLoader {
 }
 
 impl Loader for MmapScriptLoader {
-    fn load<'js>(&mut self, _ctx: &Ctx<'js>, path: &str) -> rquickjs::Result<ModuleData> {
+    fn load<'js>(&mut self, ctx: &Ctx<'js>, path: &str) -> rquickjs::Result<Module<'js, Declared>> {
         let task = async move {
             let extension = RelativePath::new(path)
                 .extension()
                 .ok_or(Error::new_loading(path))?;
-            self.extensions
+            let extension = self
+                .extensions
                 .iter()
                 .find(|&e| extension == e)
                 .ok_or(Error::new_loading(path))?;
@@ -56,17 +58,17 @@ impl Loader for MmapScriptLoader {
                     .transpiler
                     .transpile(
                         std::str::from_utf8(src.as_slice())?,
-                        Syntax::Typescript(Default::default()),
+                        infer_transpile_syntax_by_extension(extension).unwrap_or_default(),
                         IsModule::Bool(true),
                         false,
                     )
                     .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
 
-                Ok(ModuleData::source(path, src))
+                Module::declare(ctx.clone(), path, src)
             }
             #[cfg(not(feature = "transpile"))]
             {
-                Ok(ModuleData::source(path, src.as_slice()))
+                Module::declare(ctx.clone(), path, src.as_slice())
             }
         };
 

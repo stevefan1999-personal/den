@@ -7,6 +7,9 @@ pub struct Console {}
 
 #[rquickjs::methods]
 impl Console {
+    #[qjs(constructor)]
+    pub fn new() {}
+
     pub fn log(msg: Coerced<String>) {
         println!("{}", msg.0);
     }

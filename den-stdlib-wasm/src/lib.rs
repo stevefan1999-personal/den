@@ -84,16 +84,19 @@ pub mod wasm {
         if validate(buffer_source.clone(), ctx.clone())? {
             Module::new(buffer_source, ctx)
         } else {
-            Err(rquickjs::Exception::throw_internal(&ctx, &format!("wasm compile error: unknown")))
+            Err(rquickjs::Exception::throw_internal(
+                &ctx,
+                &format!("wasm compile error: unknown"),
+            ))
         }
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &mut Exports<'js>) -> rquickjs::Result<()> {
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
         let wasm = Object::new(ctx.clone())?;
-        for (k, v) in exports.iter() {
-            wasm.set(k.to_str()?, v)?;
-        }
+        // for (k, v) in exports.iter() {
+        //     wasm.set(k.to_str()?, v)?;
+        // }
 
         ctx.globals().set("WebAssembly", wasm)?;
 

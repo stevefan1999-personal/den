@@ -1,0 +1,19 @@
+[package]
+name = "den-stdlib-fs"
+description = "Filesystem API for den"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+delegate-attr.workspace = true
+derivative.workspace = true
+derive_more.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
+tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+den-utils = { version = "*", path = "../den-utils" }

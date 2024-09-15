@@ -1,0 +1,10 @@
+{
+    "rust-analyzer.linkedProjects": [
+        ".\\Cargo.toml"
+    ],
+    "files.associations": {
+        "*.embeddedhtml": "html",
+        "tcc.h": "c",
+        "config.h": "c"
+    }
+}

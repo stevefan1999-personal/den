@@ -11,7 +11,7 @@ use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 use {
     color_eyre::eyre,
     color_eyre::eyre::eyre,
-    swc_core::ecma::parser::{EsConfig, Syntax, TsConfig},
+    swc_core::ecma::parser::{EsSyntax, Syntax, TsSyntax},
 };
 
 pin_project! {
@@ -67,7 +67,7 @@ pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Synt
             "js" | "mjs" => { Some(Syntax::Es(Default::default())) }
             "jsx" | "mjsx" => {
                 if cfg!(feature = "react") {
-                    Some(Syntax::Es(EsConfig { jsx: true, ..Default::default() }))
+                    Some(Syntax::Es(EsSyntax { jsx: true, ..Default::default() }))
                 } else {
                     None
                 }
@@ -81,7 +81,7 @@ pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Synt
             }
             "tsx" => {
                 if cfg!(all(feature = "typescript", feature = "react")) {
-                    Some(Syntax::Typescript(TsConfig { tsx: true, ..Default::default() }))
+                    Some(Syntax::Typescript(TsSyntax { tsx: true, ..Default::default() }))
                 } else {
                     None
                 }
@@ -93,7 +93,7 @@ pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Synt
 }
 
 #[cfg(feature = "transpile")]
-pub fn get_best_transpiling() -> &'static str {
+pub const fn get_best_transpiling() -> &'static str {
     match (cfg!(feature = "typescript"), cfg!(feature = "react")) {
         (false, false) => "js",
         (false, true) => "jsx",

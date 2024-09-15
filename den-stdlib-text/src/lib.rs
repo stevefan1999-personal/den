@@ -91,7 +91,7 @@ impl TextDecoder {
                     if let DecoderResult::Malformed(_, _) = res {
                         Err(rquickjs::Exception::throw_type(
                             &ctx,
-                            &format!("invalid decoding encountered and no replacements allowed"),
+                            "invalid decoding encountered and no replacements allowed",
                         ))
                     } else {
                         Ok(decoded)
@@ -131,23 +131,24 @@ impl TextEncoder {
         &self,
         _src: String,
         _dest: TypedArray<'js, u8>,
-        _ctx: Ctx<'js>,
+        ctx: Ctx<'js>,
     ) -> rquickjs::Result<()> {
-        todo!()
+        Err(rquickjs::Exception::throw_internal(&ctx, "not implemented"))
     }
 }
 
 #[rquickjs::module]
 pub mod text {
-    use rquickjs::{module::Exports, Ctx};
+    use rquickjs::{class::JsClass, module::Exports, Ctx};
 
     pub use super::{TextDecoder, TextEncoder};
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &mut Exports<'js>) -> rquickjs::Result<()> {
-        for (k, v) in exports.iter() {
-            ctx.globals().set(k.to_str()?, v)?;
-        }
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _exports: &Exports<'js>) -> rquickjs::Result<()> {
+        ctx.globals()
+            .set("TextDecoder", TextDecoder::constructor(ctx))?;
+        ctx.globals()
+            .set("TextEncoder", TextEncoder::constructor(ctx))?;
 
         Ok(())
     }
