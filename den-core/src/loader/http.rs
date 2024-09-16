@@ -4,13 +4,13 @@ use reqwest::header::CONTENT_TYPE;
 use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
 use typed_builder::TypedBuilder;
-
 #[cfg(feature = "transpile")]
 use {
-    den_transpiler_swc::swc_core::base::config::IsModule, den_transpiler_swc::EasySwcTranspiler,
-    den_utils::transpile::infer_transpile_syntax_by_extension, std::sync::Arc,
+    den_transpiler_swc::{
+        infer_transpile_syntax_by_extension, swc_core::base::config::IsModule, EasySwcTranspiler,
+    },
+    std::sync::Arc,
 };
-
 
 #[derive(Derivative, TypedBuilder)]
 #[derivative(Default(new = "true"))]
@@ -74,10 +74,10 @@ impl Loader for HttpLoader {
                 }
             } else {
                 None
-            }.unwrap_or("js");
+            }
+            .unwrap_or("js");
 
             if let Ok(body) = body.text().await {
-
                 #[cfg(feature = "transpile")]
                 {
                     let (src, _) = self
@@ -88,8 +88,10 @@ impl Loader for HttpLoader {
                             IsModule::Bool(true),
                             false,
                         )
-                        .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
-    
+                        .map_err(|e| {
+                            Error::new_loading_message("cannot transpile", e.to_string())
+                        })?;
+
                     Module::declare(ctx.clone(), name, src)
                 }
                 #[cfg(not(feature = "transpile"))]

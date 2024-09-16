@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use den_utils::FutureExt;
 use derive_more::{Debug, Display, Error, From};
 use rquickjs::{
     async_with,
@@ -11,12 +10,14 @@ use rquickjs::{
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "transpile")]
 use {
-    den_transpiler_swc::swc_core::{
-        base::{config::IsModule, sourcemap::SourceMap},
-        ecma::parser::Syntax,
+    den_transpiler_swc::{
+        get_best_transpiling, infer_transpile_syntax_by_extension,
+        swc_core::{
+            base::{config::IsModule, sourcemap::SourceMap},
+            ecma::parser::Syntax,
+        },
+        EasySwcTranspiler, EasySwcTranspilerError,
     },
-    den_transpiler_swc::{EasySwcTranspiler, EasySwcTranspilerError},
-    den_utils::{transpile::get_best_transpiling, transpile::infer_transpile_syntax_by_extension},
     std::sync::Arc,
 };
 
@@ -200,8 +201,6 @@ impl Engine {
             })
             .await;
 
-        tokio::spawn(runtime.drive().with_cancellation(&stop_token.child_token()));
-
         let context = AsyncContext::full(&runtime).await.unwrap();
 
         context
@@ -258,13 +257,14 @@ impl Engine {
         Ok(async_with!(self.context => |ctx| {
             // Evil hack by using top-level await, so that the eval will transfer the import to our file resolver
             // then we can use it to transpile Typescript and other stuff
-            // However, this is the problem because rather than returning the underlying value, 
+            // However, this is the problem because rather than returning the underlying value,
             // the implementation of QuickJS decided to make this a {"value": <TLA evaluation value>}
             // so we have to directly fetch the "value" key and so we can transmigrate within
             // Technically we can do an optimization to just run the future and discard the returned value,
             // since we run under an assumption of running this function on a file
             // However, with REPL continuation, things could change
-            ctx.eval_with_options::<Promise, _>(format!(r#"await import(`{}`)"#, filename.to_str().unwrap()), {
+            let src = format!(r#"await import(`{}`)"#, filename.to_str().unwrap());
+            ctx.eval_with_options::<Promise, _>(src, {
                 let mut options = EvalOptions::default();
                 options.global = true;
                 options.promise = true;
@@ -300,21 +300,14 @@ impl Engine {
             }
         }
 
-        // // evil hack
-        // let src = src.trim_end_matches(";\n");
-
         Ok(async_with!(self.context => |ctx| {
-            ctx.eval_with_options::<Promise, _>(
-                src,
-                {
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.promise = true;
-                    options.strict = true;
-                    options.backtrace_barrier = true;
-                    options
-                }
-            )?.into_future::<Object>().await?.get("value")
+            ctx.eval_with_options::<Promise, _>(src, {
+                let mut options = EvalOptions::default();
+                options.global = true;
+                options.promise = true;
+                options.strict = true;
+                options
+            })?.into_future::<Object>().await?.get("value")
         })
         .await?)
     }
@@ -337,7 +330,7 @@ pub enum EngineError {
     Rquickjs(rquickjs::Error),
     #[cfg(feature = "transpile")]
     #[from]
-    InferTranspileSyntaxError(den_utils::transpile::InferTranspileSyntaxError),
+    InferTranspileSyntaxError(den_transpiler_swc::InferTranspileSyntaxError),
 }
 
 #[cfg(test)]

@@ -1234,23 +1234,14 @@ name = "den-transpiler-swc"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "den-utils",
  "derive_more",
  "swc_core",
+ "trie-match",
 ]
 
 [[package]]
 name = "den-utils"
 version = "0.3.0"
-dependencies = [
- "derive_more",
- "pin-project-lite",
- "rquickjs",
- "swc_core",
- "tokio",
- "tokio-util",
- "trie-match",
-]
 
 [[package]]
 name = "deranged"

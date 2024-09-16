@@ -47,17 +47,16 @@ typed-builder = "0.20.0"
 
 [dev-dependencies]
 color-eyre = "0.6.3"
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [features]
 typescript = [
     "transpile",
-    "den-utils/typescript",
     "den-transpiler-swc?/typescript",
 ]
-react = ["transpile", "den-utils/react", "den-transpiler-swc?/react"]
+react = ["transpile", "den-transpiler-swc?/react"]
 transpile = [
     "dep:den-transpiler-swc",
-    "den-utils/transpile",
     "den-transpiler-swc?/transpile",
 ]
 

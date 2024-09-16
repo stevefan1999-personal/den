@@ -84,7 +84,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 vc-ltl = "5.1.1"
 
 [features]
-default = ["stdlib", "typescript", "react", "tokio-console"]
+default = ["stdlib", "typescript", "react"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -126,6 +126,8 @@ strip = "symbols"
 inherits = "min-size-release"
 strip = "symbols"
 
+[profile.test]
+default = ["den-core/stdlib", "den-core/typescript", "den-core/react"]
 
 [build-dependencies]
 cargo-emit = "0.2.1"

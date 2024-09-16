@@ -4,11 +4,12 @@ use relative_path::RelativePath;
 use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
 use typed_builder::TypedBuilder;
-
 #[cfg(feature = "transpile")]
 use {
-    den_transpiler_swc::swc_core::base::config::IsModule, den_transpiler_swc::EasySwcTranspiler,
-    den_utils::transpile::infer_transpile_syntax_by_extension, std::sync::Arc,
+    den_transpiler_swc::{
+        infer_transpile_syntax_by_extension, swc_core::base::config::IsModule, EasySwcTranspiler,
+    },
+    std::sync::Arc,
 };
 
 #[derive(Derivative, TypedBuilder)]

@@ -1,1 +1,1 @@
-pub(crate) mod http;
+pub mod http;
