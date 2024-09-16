@@ -58,7 +58,7 @@ pub mod transpile {
 
     pub fn infer_transpile_syntax_by_extension(
         extension: &str,
-    ) -> Result<Syntax, InferTranspileSyntaxError> {
+    ) -> Option<Syntax> {
         trie_match::trie_match! {
             match extension {
                 "js" | "mjs" => { Some(Syntax::Es(Default::default())) }
@@ -86,7 +86,6 @@ pub mod transpile {
                 _ => { None }
             }
         }
-        .ok_or(InferTranspileSyntaxError::InvalidExtension)
     }
 
     #[derive(Display, From, Error, Debug)]

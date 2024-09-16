@@ -1,13 +1,5 @@
 use std::path::PathBuf;
 
-use den_stdlib_console::Console;
-use den_stdlib_core::js_core;
-use den_stdlib_fs::js_fs;
-use den_stdlib_networking::js_networking;
-use den_stdlib_text::js_text;
-use den_stdlib_timer::js_timer;
-#[cfg(feature = "wasm")]
-use den_stdlib_wasm::js_wasm;
 use den_utils::FutureExt;
 use derive_more::{Debug, Display, Error, From};
 use rquickjs::{
@@ -114,32 +106,32 @@ impl Engine {
 
                     #[cfg(feature = "stdlib-core")]
                     {
-                        loader = loader.with_module("den:core", js_core);
+                        loader = loader.with_module("den:core", den_stdlib_core::js_core);
                     }
 
                     #[cfg(feature = "stdlib-networking")]
                     {
-                        loader = loader.with_module("den:networking", js_networking);
+                        loader = loader.with_module("den:networking", den_stdlib_networking::js_networking);
                     }
 
                     #[cfg(feature = "stdlib-text")]
                     {
-                        loader = loader.with_module("den:text", js_text);
+                        loader = loader.with_module("den:text", den_stdlib_text::js_text);
                     }
 
                     #[cfg(feature = "stdlib-timer")]
                     {
-                        loader = loader.with_module("den:timer", js_timer);
+                        loader = loader.with_module("den:timer", den_stdlib_timer::js_timer);
                     }
 
                     #[cfg(feature = "stdlib-fs")]
                     {
-                        loader = loader.with_module("den:fs", js_fs);
+                        loader = loader.with_module("den:fs", den_stdlib_fs::js_fs);
                     }
 
                     #[cfg(feature = "wasm")]
                     {
-                        loader = loader.with_module("den:wasm", js_wasm)
+                        loader = loader.with_module("den:wasm", den_stdlib_wasm::js_wasm)
                     }
                     loader
                 },
@@ -191,22 +183,23 @@ impl Engine {
 
                 #[cfg(feature = "stdlib-console")]
                 {
-                    global.set("console", Console {})?;
+                    global.set("console", den_stdlib_console::Console {})?;
+
                 }
 
                 #[cfg(feature = "stdlib-text")]
                 {
-                    let _ = Module::evaluate_def::<js_text, _>(ctx.clone(), "den:text")?;
+                    let _ = Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?;
                 }
 
                 #[cfg(feature = "stdlib-timer")]
                 {
-                    let _ = Module::evaluate_def::<js_timer, _>(ctx.clone(), "den:timer")?;
+                    let _ = Module::evaluate_def::<den_stdlib_timer::js_timer, _>(ctx.clone(), "den:timer")?;
                 }
 
                 #[cfg(feature = "wasm")]
                 {
-                    let _ = Module::evaluate_def::<js_wasm, _>(ctx.clone(), "den:wasm")?;
+                    let _ = Module::evaluate_def::<den_stdlib_wasm::js_wasm, _>(ctx.clone(), "den:wasm")?;
                 }
 
                 Ok::<_, rquickjs::Error>(())
@@ -263,7 +256,7 @@ impl Engine {
     ) -> Result<U, EngineError> {
         cfg_if::cfg_if! {
             if #[cfg(feature = "transpile")] {
-                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
+                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling()).unwrap_or_default();
                 let (src, _) = self.transpile(
                     src,
                     syntax,

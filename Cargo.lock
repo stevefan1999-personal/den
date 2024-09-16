@@ -1109,6 +1109,7 @@ name = "den-core"
 version = "0.3.0"
 dependencies = [
  "cfg-if",
+ "color-eyre",
  "den-stdlib-console",
  "den-stdlib-core",
  "den-stdlib-fs",
