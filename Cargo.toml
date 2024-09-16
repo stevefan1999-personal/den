@@ -77,6 +77,7 @@ color-eyre = { version = "0.6.3", default-features = false }
 console-subscriber = { version = "0.4.0", optional = true }
 den-core = { version = "*", path = "den-core" }
 den-utils = { version = "*", path = "den-utils" }
+futures.workspace = true
 rquickjs.workspace = true
 rustyline = { version = "14.0.0", features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }

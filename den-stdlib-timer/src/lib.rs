@@ -2,8 +2,7 @@
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::{cancellation::CancellationToken, cancellation::CancellationTokenWrapper};
-    use den_utils::FutureExt;
+    use den_stdlib_core::cancellation::{CancellationToken, CancellationTokenWrapper};
     use rquickjs::{module::Exports, Ctx, Function};
     use tokio::time;
 
@@ -23,8 +22,8 @@ pub mod timer {
             let token = token.child_token();
             async move {
                 // ignore the first tick
-                let _ = interval.tick().with_cancellation(&token).await;
-                while let Ok(_) = interval.tick().with_cancellation(&token).await {
+                let _ = token.run_until_cancelled(interval.tick()).await;
+                while token.run_until_cancelled(interval.tick()).await.is_some() {
                     let _ = func.call::<_, ()>(());
                 }
             }
@@ -51,7 +50,11 @@ pub mod timer {
         ctx.spawn({
             let token = token.child_token();
             async move {
-                if let Ok(()) = time::sleep(duration).with_cancellation(&token).await {
+                if token
+                    .run_until_cancelled(time::sleep(duration))
+                    .await
+                    .is_some()
+                {
                     let _ = func.call::<_, ()>(());
                 }
             }

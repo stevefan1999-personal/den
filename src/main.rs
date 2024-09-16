@@ -18,7 +18,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> color_eyre::eyre::Result<()> {
-    #[cfg(all(feature = "tokio-console",  tokio_unstable))]
+    #[cfg(all(feature = "tokio-console", tokio_unstable))]
     {
         console_subscriber::init();
     }
@@ -29,8 +29,14 @@ async fn main() -> color_eyre::eyre::Result<()> {
 
     if let Some(x) = cli.file.clone() {
         app.hook_ctrlc_handler();
-        match app.engine.run_file::<()>(x).await {
-            Err(EngineError::Rquickjs(_)) => {
+        match app
+            .engine
+            .stop_token
+            .child_token()
+            .run_until_cancelled(app.engine.run_file::<()>(x))
+            .await
+        {
+            Some(Err(EngineError::Rquickjs(_))) => {
                 async_with!(app.engine.context => |ctx| {
                     let e = ctx.catch();
                     if let Some(e) = e.as_exception() {
@@ -44,7 +50,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
                 .await;
             }
             #[allow(unreachable_patterns)]
-            Err(e) => {
+            Some(Err(e)) => {
                 eprintln!("{e}")
             }
             _ => {}
@@ -53,8 +59,9 @@ async fn main() -> color_eyre::eyre::Result<()> {
 
     if cli.repl || cli.file.is_none() {
         println!("Welcome to den, one word less than Deno");
-        app.start_repl_session().await;
+        app.start_repl_session();
     }
+
     app.run_until_end().await;
     Ok(())
 }

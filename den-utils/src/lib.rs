@@ -6,7 +6,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
+use tokio_util::sync::WaitForCancellationFutureOwned;
 
 pin_project! {
     #[must_use = "futures do nothing unless polled"]
@@ -35,30 +35,12 @@ impl<T: Future> Future for WithCancellationFuture<T> {
     }
 }
 
-pub trait FutureExt {
-    type Future: Future;
-    fn with_cancellation(self, token: &CancellationToken) -> WithCancellationFuture<Self::Future>;
-}
-
-impl<T: Future> FutureExt for T {
-    type Future = T;
-
-    fn with_cancellation(self, token: &CancellationToken) -> WithCancellationFuture<T> {
-        WithCancellationFuture {
-            future:       self,
-            cancellation: token.clone().cancelled_owned(),
-        }
-    }
-}
-
 #[cfg(feature = "transpile")]
 pub mod transpile {
     use derive_more::{Debug, Display, Error, From};
     use swc_core::ecma::parser::{EsSyntax, Syntax, TsSyntax};
 
-    pub fn infer_transpile_syntax_by_extension(
-        extension: &str,
-    ) -> Option<Syntax> {
+    pub fn infer_transpile_syntax_by_extension(extension: &str) -> Option<Syntax> {
         trie_match::trie_match! {
             match extension {
                 "js" | "mjs" => { Some(Syntax::Es(Default::default())) }
