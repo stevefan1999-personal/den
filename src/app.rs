@@ -7,14 +7,14 @@ use crate::repl;
 
 pub struct App {
     pub(crate) engine: Engine,
-    repl:              bool,
+    wait_for_cancel_signal:              bool,
 }
 
 impl App {
     pub async fn new() -> Self {
         Self {
             engine: Engine::new().await,
-            repl:   false,
+            wait_for_cancel_signal:   false,
         }
     }
 }
@@ -84,7 +84,7 @@ impl App {
             repl::run_repl(repl_tx).then(move |_| async move { stop_token.cancel() })
         });
 
-        self.repl = true;
+        self.wait_for_cancel_signal = true;
     }
 
     pub async fn run_until_end(&mut self) {
@@ -96,15 +96,17 @@ impl App {
 
         tokio::spawn(self.engine.runtime.drive());
 
-        // tokio::spawn(self.tasks.join_all()).await;
-
-        if self.repl {
+        if self.wait_for_cancel_signal {
             self.engine.stop_token.child_token().cancelled().await;
         }
         self.engine
             .stop_token
             .run_until_cancelled(self.engine.runtime.idle())
             .await;
+    }
+
+    pub fn set_wait_for_cancel_signal(&mut self, value: bool) {
+        self.wait_for_cancel_signal = value;
     }
 
     // Just hooks the Ctrl-C signal and then automatically stop the VM engine
