@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "den-core",
     "den-stdlib-console",
     "den-stdlib-core",
     "den-stdlib-fs",
@@ -10,6 +11,7 @@ members = [
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
+    "den-transpiler-swc",
     "den-utils",
 ]
 
@@ -33,10 +35,18 @@ keywords = [
 ]
 
 [workspace.dependencies]
-color-eyre = "0.6.3"
 delegate-attr = "0.3.0"
 derivative = "2.2.0"
-derive_more = { version = "1.0.0", features = ["deref_mut", "deref", "from", "into"] }
+derive_more = { version = "1.0.0", features = [
+    "deref_mut",
+    "deref",
+    "from",
+    "into",
+    "display",
+    "from",
+    "error",
+    "debug",
+] }
 either = "1.13.0"
 futures = "0.3.30"
 phf = "0.11.2"
@@ -48,6 +58,7 @@ rquickjs = { version = "0.6.2", features = [
 swc_core = "0.104.2"
 tokio = "1.40.0"
 tokio-util = "0.7.12"
+thiserror = "1.0.63"
 
 [package]
 name = "den"
@@ -61,82 +72,39 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-bytes = "1.7.1"
-cfg-if = "1.0.0"
 clap = { version = "4.5.17", features = ["unicode", "derive", "env"] }
-color-eyre.workspace = true
-console-subscriber = "0.4.0"
-delegate-attr.workspace = true
-den-stdlib-console = { version = "*", path = "den-stdlib-console", optional = true }
-den-stdlib-core = { version = "*", path = "den-stdlib-core", optional = true }
-den-stdlib-fs = { version = "*", path = "den-stdlib-fs", optional = true }
-den-stdlib-networking = { version = "*", path = "den-stdlib-networking", optional = true }
-den-stdlib-text = { version = "*", path = "den-stdlib-text", optional = true }
-den-stdlib-timer = { version = "*", path = "den-stdlib-timer", optional = true }
-den-stdlib-wasm = { version = "*", path = "den-stdlib-wasm", optional = true }
+color-eyre = { version = "0.6.3", default-features = false }
+console-subscriber = { version = "0.4.0", optional = true }
+den-core = { version = "*", path = "den-core" }
 den-utils = { version = "*", path = "den-utils" }
-derivative.workspace = true
-derive_more.workspace = true
-fmmap = { version = "0.3.3", features = ["tokio-async"] }
-futures.workspace = true
-matchit = "0.8.4"
-mime = "0.3.17"
-relative-path = "1.9.3"
-reqwest = { version = "0.12.7", features = [
-    "stream",
-    "socks",
-    "multipart",
-    "json",
-    "deflate",
-    "gzip",
-    "cookies",
-    "blocking",
-    "brotli",
-    "native-tls",
-] }
 rquickjs.workspace = true
 rustyline = { version = "14.0.0", features = ["derive"] }
-swc_core = { workspace = true, features = [
-    "ecma_codegen",
-    "base_concurrent",
-    "common_concurrent",
-    "ecma_plugin_transform",
-    "ecma_parser",
-], optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
-tokio-util.workspace = true
-url = "2.5.2"
-# vc-ltl = "5.1.1"
+vc-ltl = "5.1.1"
 
 [features]
-default = ["stdlib", "react", "typescript"]
-typescript = [
-    "transpile",
-    "swc_core?/ecma_transforms_typescript",
-    "swc_core?/ecma_parser_typescript",
-    "den-utils/typescript",
-]
-react = ["transpile", "swc_core?/ecma_transforms_react", "den-utils/react"]
-transpile = ["swc_core", "den-utils/transpile"]
+default = ["stdlib", "typescript", "react"]
+typescript = ["den-core/typescript"]
+react = ["den-core/react"]
+transpile = ["den-core/transpile"]
 
-stdlib = [
-    "stdlib-console",
-    "stdlib-core",
-    "stdlib-fs",
-    "stdlib-networking",
-    "stdlib-text",
-    "stdlib-timer",
-]
-stdlib-console = ["dep:den-stdlib-console"]
-stdlib-core = ["dep:den-stdlib-core"]
-stdlib-fs = ["dep:den-stdlib-fs"]
-stdlib-networking = ["dep:den-stdlib-networking"]
-stdlib-text = ["dep:den-stdlib-text"]
-stdlib-timer = ["dep:den-stdlib-timer"]
+tracing = ["color-eyre/track-caller", "color-eyre/capture-spantrace"]
+tokio-console = ["console-subscriber"]
 
-wasm = ["dep:den-stdlib-wasm"]
-wasm-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]
-wasm-wasmi = ["wasm", "den-stdlib-wasm?/wasmi"]
+stdlib = ["den-core/stdlib"]
+stdlib-console = ["den-core/stdlib-console"]
+stdlib-core = ["den-core/stdlib-core"]
+stdlib-fs = ["den-core/stdlib-fs"]
+stdlib-networking = ["den-core/stdlib-networking"]
+stdlib-text = ["den-core/stdlib-text"]
+stdlib-timer = ["den-core/stdlib-timer"]
+
+wasm = ["den-core/wasm"]
+wasm-wasmtime = ["den-core/wasm-wasmtime"]
+wasm-wasmi = ["den-core/wasm-wasmi"]
+
+[profile.dev.package.backtrace]
+opt-level = 3
 
 [profile.release]
 incremental = true
@@ -156,6 +124,7 @@ strip = "symbols"
 [profile.min-size-release-strip]
 inherits = "min-size-release"
 strip = "symbols"
+
 
 [build-dependencies]
 cargo-emit = "0.2.1"

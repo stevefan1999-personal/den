@@ -1092,13 +1092,23 @@ dependencies = [
 name = "den"
 version = "0.3.0"
 dependencies = [
- "bytes",
  "cargo-emit",
- "cfg-if",
  "clap",
  "color-eyre",
  "console-subscriber",
- "delegate-attr",
+ "den-core",
+ "den-utils",
+ "rquickjs",
+ "rustyline",
+ "tokio",
+ "vc-ltl",
+]
+
+[[package]]
+name = "den-core"
+version = "0.3.0"
+dependencies = [
+ "cfg-if",
  "den-stdlib-console",
  "den-stdlib-core",
  "den-stdlib-fs",
@@ -1106,18 +1116,16 @@ dependencies = [
  "den-stdlib-text",
  "den-stdlib-timer",
  "den-stdlib-wasm",
+ "den-transpiler-swc",
  "den-utils",
  "derivative",
  "derive_more",
  "fmmap",
- "futures",
  "matchit 0.8.4",
  "mime",
  "relative-path",
  "reqwest",
  "rquickjs",
- "rustyline",
- "swc_core",
  "tokio",
  "tokio-util",
  "url",
@@ -1219,7 +1227,6 @@ dependencies = [
 name = "den-stdlib-wasm"
 version = "0.3.0"
 dependencies = [
- "color-eyre",
  "den-stdlib-core",
  "derivative",
  "derive_more",
@@ -1232,10 +1239,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "den-transpiler-swc"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "den-utils",
+ "derive_more",
+ "swc_core",
+]
+
+[[package]]
 name = "den-utils"
 version = "0.3.0"
 dependencies = [
- "color-eyre",
  "derive_more",
  "pin-project-lite",
  "rquickjs",
@@ -1314,6 +1330,7 @@ dependencies = [
  "proc-macro2 1.0.86",
  "quote 1.0.37",
  "syn 2.0.77",
+ "unicode-xid 0.2.5",
 ]
 
 [[package]]
@@ -1640,7 +1657,6 @@ checksum = "645c6916888f6cb6350d2550b80fb63e734897a8498abe35cfb732b6487804b0"
 dependencies = [
  "futures-channel",
  "futures-core",
- "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",
@@ -1662,17 +1678,6 @@ name = "futures-core"
 version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfc6580bb841c5a68e9ef15c77ccc837b40a7504914d52e47b8b0e9bbda25a1d"
-
-[[package]]
-name = "futures-executor"
-version = "0.3.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a576fc72ae164fca6b9db127eaa9a9dda0d61316034f33a0a0d4eda41f02b01d"
-dependencies = [
- "futures-core",
- "futures-task",
- "futures-util",
-]
 
 [[package]]
 name = "futures-io"
@@ -1709,7 +1714,6 @@ version = "0.3.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d6401deb83407ab3da39eba7e33987a73c3df0c82b4bb5813ee871c19c41d48"
 dependencies = [
- "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",
@@ -5596,6 +5600,12 @@ name = "valuable"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
+
+[[package]]
+name = "vc-ltl"
+version = "5.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04908d7cc87be06ead9048544f86c88d0806ef7f4ae6433884ed1405af866f93"
 
 [[package]]
 name = "vcpkg"

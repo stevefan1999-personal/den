@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use color_eyre::eyre;
 use den_stdlib_console::Console;
 use den_stdlib_core::{js_core, CancellationTokenWrapper};
 use den_stdlib_fs::js_fs;
@@ -10,6 +9,7 @@ use den_stdlib_timer::js_timer;
 #[cfg(feature = "wasm")]
 use den_stdlib_wasm::js_wasm;
 use den_utils::FutureExt;
+use derive_more::{Debug, Display, Error, From};
 use rquickjs::{
     async_with,
     context::EvalOptions,
@@ -19,13 +19,13 @@ use rquickjs::{
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "transpile")]
 use {
-    crate::transpile::EasySwcTranspiler,
-    den_utils::{get_best_transpiling, infer_transpile_syntax_by_extension},
-    std::sync::Arc,
-    swc_core::{
+    den_transpiler_swc::swc_core::{
         base::{config::IsModule, sourcemap::SourceMap},
         ecma::parser::Syntax,
     },
+    den_transpiler_swc::{EasySwcTranspiler, EasySwcTranspilerError},
+    den_utils::{get_best_transpiling, infer_transpile_syntax_by_extension},
+    std::sync::Arc,
 };
 
 use crate::{
@@ -36,10 +36,10 @@ use crate::{
 #[derive(Clone)]
 pub struct Engine {
     #[cfg(feature = "transpile")]
-    pub(crate) transpiler: Arc<EasySwcTranspiler>,
-    pub(crate) runtime:    AsyncRuntime,
-    pub(crate) context:    AsyncContext,
-    pub(crate) stop_token: CancellationToken,
+    pub transpiler: Arc<EasySwcTranspiler>,
+    pub runtime:    AsyncRuntime,
+    pub context:    AsyncContext,
+    pub stop_token: CancellationToken,
 }
 
 #[allow(dead_code)]
@@ -233,57 +233,23 @@ impl Engine {
     pub async fn run_file<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
         &self,
         filename: PathBuf,
-    ) -> eyre::Result<U> {
+    ) -> Result<U, EngineError> {
         Ok(async_with!(self.context => |ctx| {
             // Evil hack by using top-level await, so that the eval will transfer the import to our file resolver
             // then we can use it to transpile Typescript and other stuff
-            let promise: Promise = ctx.eval_with_options(format!(r#"await import(`{}`)"#, filename.to_str().unwrap()), {
+            // However, this is the problem because rather than returning the underlying value, 
+            // the implementation of QuickJS decided to make this a {"value": <TLA evaluation value>}
+            // so we have to directly fetch the "value" key and so we can transmigrate within
+            // Technically we can do an optimization to just run the future and discard the returned value,
+            // since we run under an assumption of running this function on a file
+            // However, with REPL continuation, things could change
+            ctx.eval_with_options::<Promise, _>(format!(r#"await import(`{}`)"#, filename.to_str().unwrap()), {
                 let mut options = EvalOptions::default();
                 options.global = true;
                 options.promise = true;
                 options.strict = true;
                 options
-            })?;
-            // However, this is the problem because rather than returning the underlying value, 
-            // the implementation of QuickJS decided to make this a {"value": <TLA evaluation value>}
-            // so we have to directly fetch the "value" key and so we can transmigrate within
-
-            // Technically we can do an optimization to just run the future and discard the returned value,
-            // since we run under an assumption of running this function on a file
-            // However, with REPL continuation, things could change
-            promise.into_future::<Object>().await?.get("value")
-        })
-        .await?)
-    }
-
-    pub async fn run_immediate<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
-        &self,
-        src: &str,
-    ) -> eyre::Result<U> {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "transpile")] {
-                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
-                let (src, _) = self.transpile(
-                    src,
-                    syntax,
-                    IsModule::Bool(true),
-                )?;
-            }
-        }
-
-        Ok(async_with!(self.context => |ctx| {
-            let promise: Promise = ctx.eval_with_options(
-                src,
-                {
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.promise = true;
-                    options.strict = true;
-                    options.backtrace_barrier = true;
-                    options
-                }
-            )?;
-            promise.into_future::<Object>().await?.get("value")
+            })?.into_future::<Object>().await?.get("value")
         })
         .await?)
     }
@@ -294,14 +260,14 @@ impl Engine {
         src: &str,
         syntax: Syntax,
         module: IsModule,
-    ) -> eyre::Result<(String, Option<SourceMap>)> {
+    ) -> Result<(String, Option<SourceMap>), EasySwcTranspilerError> {
         self.transpiler.transpile(src, syntax, module, false)
     }
 
     pub async fn eval<U: for<'js> FromJs<'js> + Send + Sync + 'static>(
         &self,
         src: &str,
-    ) -> eyre::Result<U> {
+    ) -> Result<U, EngineError> {
         cfg_if::cfg_if! {
             if #[cfg(feature = "transpile")] {
                 let syntax = infer_transpile_syntax_by_extension(get_best_transpiling())?;
@@ -317,17 +283,17 @@ impl Engine {
         // let src = src.trim_end_matches(";\n");
 
         Ok(async_with!(self.context => |ctx| {
-            let promise: Promise = ctx.eval_with_options(
+            ctx.eval_with_options::<Promise, _>(
                 src,
                 {
                     let mut options = EvalOptions::default();
                     options.global = true;
                     options.promise = true;
+                    options.strict = true;
                     options.backtrace_barrier = true;
                     options
                 }
-            )?;
-            promise.into_future::<Object>().await?.get("value")
+            )?.into_future::<Object>().await?.get("value")
         })
         .await?)
     }
@@ -341,6 +307,18 @@ impl Engine {
     }
 }
 
+#[derive(Display, From, Error, Debug)]
+pub enum EngineError {
+    #[cfg(feature = "transpile")]
+    #[from]
+    EasySwcTranspiler(EasySwcTranspilerError),
+    #[from]
+    Rquickjs(rquickjs::Error),
+    #[cfg(feature = "transpile")]
+    #[from]
+    InferTranspileSyntaxError(den_utils::InferTranspileSyntaxError),
+}
+
 #[cfg(test)]
 mod tests {
     use color_eyre::eyre;
@@ -350,18 +328,25 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn my_test() -> eyre::Result<()> {
         let engine = Engine::new().await;
-        let _: usize = engine
-            .run_immediate(
+        engine
+            .eval::<()>(
                 r#"
             console.log("hello world")
         "#,
             )
             .await?;
+        assert_eq!(engine.eval::<String>(r#"null ?? "123""#).await?, "123");
+        assert_eq!(engine.eval::<usize>(r#"null ?? 123"#).await?, 123);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn my_test2() -> eyre::Result<()> {
+        let engine = Engine::new().await;
         engine
-            .run_immediate(
+            .eval::<()>(
                 r#"
-            import { hello } from 'builtin'
-            console.log(hello ?? "123")
+            export const hello = "world"
         "#,
             )
             .await?;

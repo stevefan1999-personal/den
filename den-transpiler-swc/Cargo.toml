@@ -1,0 +1,32 @@
+[package]
+name = "den-transpiler-swc"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+swc_core = { workspace = true, features = [
+    "ecma_codegen",
+    "base_concurrent",
+    "common_concurrent",
+    "ecma_plugin_transform",
+    "ecma_parser",
+    "common_tty",
+] }
+den-utils = { version = "*", path = "../den-utils" }
+derive_more = { workspace = true, features = ["display", "debug", "error"] }
+anyhow = "1.0.89"
+
+[features]
+typescript = [
+    "transpile",
+    "swc_core/ecma_transforms_typescript",
+    "swc_core/ecma_parser_typescript",
+    "den-utils/typescript",
+]
+react = ["transpile", "swc_core/ecma_transforms_react", "den-utils/react"]
+transpile = ["den-utils/transpile"]

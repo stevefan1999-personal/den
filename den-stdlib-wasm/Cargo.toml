@@ -12,7 +12,6 @@ keywords.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-color-eyre.workspace = true
 den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 derivative.workspace = true
 derive_more.workspace = true

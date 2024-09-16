@@ -1,0 +1,75 @@
+[package]
+name = "den-core"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+cfg-if = "1.0.0"
+den-stdlib-console = { version = "*", path = "../den-stdlib-console", optional = true }
+den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
+den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
+den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
+den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
+den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
+den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true }
+den-transpiler-swc = { version = "0.3.0", path = "../den-transpiler-swc", optional = true }
+den-utils = { version = "*", path = "../den-utils" }
+derivative.workspace = true
+derive_more.workspace = true
+fmmap = { version = "0.3.3", features = ["tokio-async"] }
+matchit = "0.8.4"
+mime = "0.3.17"
+relative-path = "1.9.3"
+reqwest = { version = "0.12.7", features = [
+    "stream",
+    "socks",
+    "multipart",
+    "json",
+    "deflate",
+    "gzip",
+    "cookies",
+    "blocking",
+    "brotli",
+    "native-tls",
+] }
+rquickjs.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url = "2.5.2"
+
+[features]
+typescript = [
+    "transpile",
+    "den-utils/typescript",
+    "den-transpiler-swc?/typescript",
+]
+react = ["transpile", "den-utils/react", "den-transpiler-swc?/react"]
+transpile = [
+    "dep:den-transpiler-swc",
+    "den-utils/transpile",
+    "den-transpiler-swc?/transpile",
+]
+
+stdlib = [
+    "stdlib-console",
+    "stdlib-core",
+    "stdlib-fs",
+    "stdlib-networking",
+    "stdlib-text",
+    "stdlib-timer",
+]
+stdlib-console = ["dep:den-stdlib-console"]
+stdlib-core = ["dep:den-stdlib-core"]
+stdlib-fs = ["dep:den-stdlib-fs"]
+stdlib-networking = ["dep:den-stdlib-networking"]
+stdlib-text = ["dep:den-stdlib-text"]
+stdlib-timer = ["dep:den-stdlib-timer"]
+
+wasm = ["dep:den-stdlib-wasm"]
+wasm-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]
+wasm-wasmi = ["wasm", "den-stdlib-wasm?/wasmi"]

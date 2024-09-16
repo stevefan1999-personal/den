@@ -12,7 +12,6 @@ keywords.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-color-eyre.workspace = true
 derive_more.workspace = true
 pin-project-lite = "0.2.14"
 rquickjs.workspace = true

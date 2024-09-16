@@ -9,8 +9,7 @@ use pin_project_lite::pin_project;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 #[cfg(feature = "transpile")]
 use {
-    color_eyre::eyre,
-    color_eyre::eyre::eyre,
+    derive_more::{Debug, Display, Error, From},
     swc_core::ecma::parser::{EsSyntax, Syntax, TsSyntax},
 };
 
@@ -58,7 +57,9 @@ impl<T: Future> FutureExt for T {
 }
 
 #[cfg(feature = "transpile")]
-pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Syntax> {
+pub fn infer_transpile_syntax_by_extension(
+    extension: &str,
+) -> Result<Syntax, InferTranspileSyntaxError> {
     trie_match::trie_match! {
         match extension {
             "js" | "mjs" => { Some(Syntax::Es(Default::default())) }
@@ -86,7 +87,13 @@ pub fn infer_transpile_syntax_by_extension(extension: &str) -> eyre::Result<Synt
             _ => { None }
         }
     }
-    .ok_or(eyre!("invalid extension"))
+    .ok_or(InferTranspileSyntaxError::InvalidExtension)
+}
+
+#[cfg(feature = "transpile")]
+#[derive(Display, From, Error, Debug)]
+pub enum InferTranspileSyntaxError {
+    InvalidExtension,
 }
 
 #[cfg(feature = "transpile")]

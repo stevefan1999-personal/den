@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use app::App;
 use clap::Parser;
+use den_core::engine::EngineError;
 use rquickjs::{async_with, Coerced};
 
 #[derive(Parser, Debug)]
@@ -16,8 +17,11 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> color_eyre::Result<()> {
-    console_subscriber::init();
+async fn main() -> color_eyre::eyre::Result<()> {
+    #[cfg(feature = "tokio-console")]
+    {
+        console_subscriber::init();
+    }
     color_eyre::install()?;
 
     let cli = Cli::parse();
@@ -26,7 +30,7 @@ async fn main() -> color_eyre::Result<()> {
     if let Some(x) = cli.file.clone() {
         app.hook_ctrlc_handler();
         match app.engine.run_file::<()>(x).await {
-            Err(e) if e.is::<rquickjs::Error>() => {
+            Err(EngineError::Rquickjs(_)) => {
                 async_with!(app.engine.context => |ctx| {
                     let e = ctx.catch();
                     if let Some(e) = e.as_exception() {
@@ -39,6 +43,7 @@ async fn main() -> color_eyre::Result<()> {
                 })
                 .await;
             }
+            #[allow(unreachable_patterns)]
             Err(e) => {
                 eprintln!("{e}")
             }
@@ -55,8 +60,4 @@ async fn main() -> color_eyre::Result<()> {
 }
 
 mod app;
-mod engine;
-mod loader;
 mod repl;
-mod resolver;
-#[cfg(feature = "transpile")] mod transpile;

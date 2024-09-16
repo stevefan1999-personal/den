@@ -6,5 +6,6 @@
         "*.embeddedhtml": "html",
         "tcc.h": "c",
         "config.h": "c"
-    }
+    },
+    "rust-analyzer.cargo.targetDir": true
 }

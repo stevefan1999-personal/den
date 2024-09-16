@@ -1,11 +1,13 @@
-use den_utils::infer_transpile_syntax_by_extension;
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
 #[cfg(feature = "transpile")]
-use {crate::transpile::EasySwcTranspiler, std::sync::Arc, swc_core::base::config::IsModule};
+use {
+    den_transpiler_swc::swc_core::base::config::IsModule, den_transpiler_swc::EasySwcTranspiler,
+    den_utils::infer_transpile_syntax_by_extension, std::sync::Arc,
+};
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -38,6 +40,8 @@ impl Loader for MmapScriptLoader {
             let extension = RelativePath::new(path)
                 .extension()
                 .ok_or(Error::new_loading(path))?;
+
+            #[allow(unused_variables)]
             let extension = self
                 .extensions
                 .iter()

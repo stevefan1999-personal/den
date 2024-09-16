@@ -1,6 +1,7 @@
-use std::io::stderr;
+use std::{io, string::FromUtf8Error};
 
-use color_eyre::eyre::eyre;
+use derive_more::{Display, Error, From, Into};
+pub use swc_core;
 #[cfg(feature = "react")]
 use swc_core::ecma::transforms::react::react;
 #[cfg(feature = "typescript")]
@@ -8,8 +9,10 @@ use swc_core::ecma::transforms::typescript::strip;
 use swc_core::{
     base::{config::IsModule, Compiler},
     common::{
-        comments::Comments, errors::Handler, sync::Lrc, BytePos, FileName, Globals, LineCol, Mark,
-        SourceFile, SourceMap, GLOBALS,
+        comments::Comments,
+        errors::{ColorConfig, Handler},
+        sync::Lrc,
+        BytePos, FileName, Globals, LineCol, Mark, SourceFile, SourceMap, GLOBALS,
     },
     ecma::{
         ast::EsVersion,
@@ -31,7 +34,9 @@ impl Default for EasySwcTranspiler {
     fn default() -> Self {
         let source_map: Lrc<SourceMap> = Default::default();
         let compiler = Compiler::new(source_map.clone());
-        let handler = Handler::with_emitter_writer(Box::new(stderr()), Some(compiler.cm.clone()));
+
+        let handler =
+            Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(source_map.clone()));
         let globals = Globals::new();
 
         Self {
@@ -50,7 +55,8 @@ impl EasySwcTranspiler {
         syntax: Syntax,
         is_module: IsModule,
         emit_sourcemap: bool,
-    ) -> color_eyre::Result<(String, Option<swc_core::base::sourcemap::SourceMap>)> {
+    ) -> Result<(String, Option<swc_core::base::sourcemap::SourceMap>), EasySwcTranspilerError>
+    {
         let fm = self
             .source_map
             .new_source_file_from(FileName::Anon.into(), source.to_string().into());
@@ -66,7 +72,8 @@ impl EasySwcTranspiler {
         is_module: IsModule,
         emit_sourcemap: bool,
         fm: Lrc<SourceFile>,
-    ) -> color_eyre::Result<(String, Option<swc_core::base::sourcemap::SourceMap>)> {
+    ) -> Result<(String, Option<swc_core::base::sourcemap::SourceMap>), EasySwcTranspilerError>
+    {
         let mut program = self
             .compiler
             .parse_js(
@@ -77,7 +84,7 @@ impl EasySwcTranspiler {
                 is_module,
                 Some(self.compiler.comments()),
             )
-            .map_err(|err| eyre!(err))?;
+            .map_err(EasySwcTranspilerError::SwcParse)?;
 
         let unresolved_mark = Mark::new();
         let top_level_mark = Mark::new();
@@ -141,7 +148,9 @@ impl EasySwcTranspiler {
             wr,
         };
 
-        emitter.emit_program(&program)?;
+        emitter
+            .emit_program(&program)
+            .map_err(EasySwcTranspilerError::SwcEmitProgram)?;
 
         Ok((
             String::from_utf8(buf)?,
@@ -152,4 +161,14 @@ impl EasySwcTranspiler {
             },
         ))
     }
+}
+
+#[derive(From, Error, Display, Debug)]
+pub enum EasySwcTranspilerError {
+    #[from]
+    SwcParse(anyhow::Error),
+    #[from]
+    SwcEmitProgram(io::Error),
+    #[from]
+    Utf8(FromUtf8Error),
 }
