@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use den_stdlib_console::Console;
-use den_stdlib_core::{js_core, CancellationTokenWrapper};
+use den_stdlib_core::js_core;
 use den_stdlib_fs::js_fs;
 use den_stdlib_networking::js_networking;
 use den_stdlib_text::js_text;
@@ -24,7 +24,7 @@ use {
         ecma::parser::Syntax,
     },
     den_transpiler_swc::{EasySwcTranspiler, EasySwcTranspilerError},
-    den_utils::{get_best_transpiling, infer_transpile_syntax_by_extension},
+    den_utils::{transpile::get_best_transpiling, transpile::infer_transpile_syntax_by_extension},
     std::sync::Arc,
 };
 
@@ -209,13 +209,6 @@ impl Engine {
                     let _ = Module::evaluate_def::<js_wasm, _>(ctx.clone(), "den:wasm")?;
                 }
 
-                ctx.globals().set(
-                    "WORLD_END",
-                    CancellationTokenWrapper {
-                        token: stop_token.clone(),
-                    },
-                )?;
-
                 Ok::<_, rquickjs::Error>(())
             })
             .await
@@ -316,7 +309,7 @@ pub enum EngineError {
     Rquickjs(rquickjs::Error),
     #[cfg(feature = "transpile")]
     #[from]
-    InferTranspileSyntaxError(den_utils::InferTranspileSyntaxError),
+    InferTranspileSyntaxError(den_utils::transpile::InferTranspileSyntaxError),
 }
 
 #[cfg(test)]

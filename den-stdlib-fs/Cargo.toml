@@ -10,10 +10,5 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-delegate-attr.workspace = true
-derivative.workspace = true
-derive_more.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
-den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
-den-utils = { version = "*", path = "../den-utils" }

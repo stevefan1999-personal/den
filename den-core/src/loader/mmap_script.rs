@@ -6,7 +6,7 @@ use tokio::runtime::Handle;
 #[cfg(feature = "transpile")]
 use {
     den_transpiler_swc::swc_core::base::config::IsModule, den_transpiler_swc::EasySwcTranspiler,
-    den_utils::infer_transpile_syntax_by_extension, std::sync::Arc,
+    den_utils::transpile::infer_transpile_syntax_by_extension, std::sync::Arc,
 };
 
 #[derive(Derivative)]

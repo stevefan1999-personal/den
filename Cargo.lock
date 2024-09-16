@@ -1147,7 +1147,6 @@ dependencies = [
  "derivative",
  "derive_more",
  "rquickjs",
- "tokio",
  "tokio-util",
 ]
 
@@ -1155,11 +1154,6 @@ dependencies = [
 name = "den-stdlib-fs"
 version = "0.3.0"
 dependencies = [
- "delegate-attr",
- "den-stdlib-core",
- "den-utils",
- "derivative",
- "derive_more",
  "rquickjs",
  "tokio",
 ]
@@ -1168,10 +1162,6 @@ dependencies = [
 name = "den-stdlib-io"
 version = "0.3.0"
 dependencies = [
- "delegate-attr",
- "den-stdlib-core",
- "den-utils",
- "derivative",
  "derive_more",
  "either",
  "rquickjs",
@@ -1183,9 +1173,7 @@ name = "den-stdlib-networking"
 version = "0.3.0"
 dependencies = [
  "delegate-attr",
- "den-stdlib-core",
  "den-stdlib-io",
- "den-utils",
  "derivative",
  "derive_more",
  "either",
@@ -5200,7 +5188,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
