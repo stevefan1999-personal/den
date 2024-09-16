@@ -18,7 +18,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> color_eyre::eyre::Result<()> {
-    #[cfg(feature = "tokio-console")]
+    #[cfg(all(feature = "tokio-console",  tokio_unstable))]
     {
         console_subscriber::init();
     }

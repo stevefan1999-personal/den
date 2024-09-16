@@ -83,7 +83,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 vc-ltl = "5.1.1"
 
 [features]
-default = ["stdlib", "typescript", "react"]
+default = ["stdlib", "typescript", "react", "tokio-console"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -128,3 +128,6 @@ strip = "symbols"
 
 [build-dependencies]
 cargo-emit = "0.2.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
