@@ -2,7 +2,7 @@
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::{CancellationToken, CancellationTokenWrapper};
+    use den_stdlib_core::{cancellation::CancellationToken, cancellation::CancellationTokenWrapper};
     use den_utils::FutureExt;
     use rquickjs::{module::Exports, Ctx, Function};
     use tokio::time;
