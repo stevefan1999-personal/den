@@ -75,8 +75,8 @@ keywords.workspace = true
 clap = { version = "4.5.17", features = ["unicode", "derive", "env"] }
 color-eyre = { version = "0.6.3", default-features = false }
 console-subscriber = { version = "0.4.0", optional = true }
-den-core = { version = "*", path = "den-core" }
-den-utils = { version = "*", path = "den-utils" }
+den-core = { version = "*", path = "den-core", default-features = false }
+den-utils = { version = "*", path = "den-utils", default-features = false }
 futures.workspace = true
 rquickjs.workspace = true
 rustyline = { version = "14.0.0", features = ["derive", "with-sqlite-history"] }
@@ -125,9 +125,6 @@ strip = "symbols"
 [profile.min-size-release-strip]
 inherits = "min-size-release"
 strip = "symbols"
-
-[profile.test]
-default = ["den-core/stdlib", "den-core/typescript", "den-core/react"]
 
 [build-dependencies]
 cargo-emit = "0.2.1"
