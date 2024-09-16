@@ -37,6 +37,9 @@ pub struct Engine {
 #[allow(dead_code)]
 impl Engine {
     pub async fn new() -> Engine {
+        #[cfg(feature = "transpile")]
+        let transpiler = Arc::new(EasySwcTranspiler::default());
+
         let runtime = AsyncRuntime::new().unwrap();
 
         {
@@ -111,7 +114,8 @@ impl Engine {
 
                     #[cfg(feature = "stdlib-networking")]
                     {
-                        loader = loader.with_module("den:networking", den_stdlib_networking::js_networking);
+                        loader = loader
+                            .with_module("den:networking", den_stdlib_networking::js_networking);
                     }
 
                     #[cfg(feature = "stdlib-text")]
@@ -135,10 +139,33 @@ impl Engine {
                     }
                     loader
                 },
-                HttpLoader::default(),
+                {
+                    let builder = HttpLoader::builder();
+                    #[cfg(feature = "transpile")]
+                    {
+                        builder.transpiler(transpiler.clone())
+                    }
+                    #[cfg(not(feature = "transpile"))]
+                    {
+                        builder
+                    }
+                }
+                .build(),
                 {
                     #[allow(unused_mut)]
-                    let mut loader = MmapScriptLoader::default();
+                    let mut loader = {
+                        let mut builder = MmapScriptLoader::builder();
+                        #[cfg(feature = "transpile")]
+                        {
+                            builder.transpiler(transpiler.clone())
+                        }
+                        #[cfg(not(feature = "transpile"))]
+                        {
+                            builder
+                        }
+                    }
+                    .build();
+
                     loader = loader.with_extension("js");
                     loader = loader.with_extension("mjs");
 
@@ -184,22 +211,30 @@ impl Engine {
                 #[cfg(feature = "stdlib-console")]
                 {
                     global.set("console", den_stdlib_console::Console {})?;
-
                 }
 
                 #[cfg(feature = "stdlib-text")]
                 {
-                    let _ = Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?;
+                    let _ = Module::evaluate_def::<den_stdlib_text::js_text, _>(
+                        ctx.clone(),
+                        "den:text",
+                    )?;
                 }
 
                 #[cfg(feature = "stdlib-timer")]
                 {
-                    let _ = Module::evaluate_def::<den_stdlib_timer::js_timer, _>(ctx.clone(), "den:timer")?;
+                    let _ = Module::evaluate_def::<den_stdlib_timer::js_timer, _>(
+                        ctx.clone(),
+                        "den:timer",
+                    )?;
                 }
 
                 #[cfg(feature = "wasm")]
                 {
-                    let _ = Module::evaluate_def::<den_stdlib_wasm::js_wasm, _>(ctx.clone(), "den:wasm")?;
+                    let _ = Module::evaluate_def::<den_stdlib_wasm::js_wasm, _>(
+                        ctx.clone(),
+                        "den:wasm",
+                    )?;
                 }
 
                 Ok::<_, rquickjs::Error>(())
@@ -209,7 +244,7 @@ impl Engine {
 
         Self {
             #[cfg(feature = "transpile")]
-            transpiler: Arc::new(EasySwcTranspiler::default()),
+            transpiler,
             runtime,
             context,
             stop_token,

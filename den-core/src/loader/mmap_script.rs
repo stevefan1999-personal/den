@@ -3,16 +3,19 @@ use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
+use typed_builder::TypedBuilder;
+
 #[cfg(feature = "transpile")]
 use {
     den_transpiler_swc::swc_core::base::config::IsModule, den_transpiler_swc::EasySwcTranspiler,
     den_utils::transpile::infer_transpile_syntax_by_extension, std::sync::Arc,
 };
 
-#[derive(Derivative)]
+#[derive(Derivative, TypedBuilder)]
 #[derivative(Debug)]
 #[derivative(Default(new = "true"))]
 pub struct MmapScriptLoader {
+    #[builder(default)]
     extensions: Vec<String>,
     #[derivative(Debug = "ignore")]
     #[cfg(feature = "transpile")]

@@ -3,12 +3,24 @@ use mime::Mime;
 use reqwest::header::CONTENT_TYPE;
 use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
 use tokio::runtime::Handle;
+use typed_builder::TypedBuilder;
 
-#[derive(Derivative)]
+#[cfg(feature = "transpile")]
+use {
+    den_transpiler_swc::swc_core::base::config::IsModule, den_transpiler_swc::EasySwcTranspiler,
+    den_utils::transpile::infer_transpile_syntax_by_extension, std::sync::Arc,
+};
+
+
+#[derive(Derivative, TypedBuilder)]
 #[derivative(Default(new = "true"))]
 pub struct HttpLoader {
     #[derivative(Default(value = "true"))]
+    #[builder(default)]
     check_mime: bool,
+    #[derivative(Debug = "ignore")]
+    #[cfg(feature = "transpile")]
+    transpiler: Arc<EasySwcTranspiler>,
 }
 
 impl Loader for HttpLoader {
@@ -17,7 +29,7 @@ impl Loader for HttpLoader {
             let body = reqwest::get(name)
                 .await
                 .map_err(|e| Error::new_loading_message(name, e.to_string()))?;
-            if self.check_mime {
+            let extension = if self.check_mime {
                 let mime_type = body
                     .headers()
                     .get(CONTENT_TYPE)
@@ -33,12 +45,12 @@ impl Loader for HttpLoader {
                             let subtype = mime.subtype();
 
                             if subtype == mime::JAVASCRIPT {
-                                break 'check_mime;
+                                break 'check_mime Some("js");
                             }
 
                             #[cfg(feature = "typescript")]
                             if subtype == "typescript" {
-                                break 'check_mime;
+                                break 'check_mime Some("ts");
                             }
                             return Err(Error::new_loading_message(
                                 name,
@@ -60,10 +72,30 @@ impl Loader for HttpLoader {
                         }
                     };
                 }
-            }
+            } else {
+                None
+            }.unwrap_or("js");
 
             if let Ok(body) = body.text().await {
-                Module::declare(ctx.clone(), name, body)
+
+                #[cfg(feature = "transpile")]
+                {
+                    let (src, _) = self
+                        .transpiler
+                        .transpile(
+                            &body,
+                            infer_transpile_syntax_by_extension(extension).unwrap_or_default(),
+                            IsModule::Bool(true),
+                            false,
+                        )
+                        .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
+    
+                    Module::declare(ctx.clone(), name, src)
+                }
+                #[cfg(not(feature = "transpile"))]
+                {
+                    Module::declare(ctx.clone(), name, body)
+                }
             } else {
                 Err(Error::new_loading_message(
                     name,

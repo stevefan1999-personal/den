@@ -43,6 +43,7 @@ den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = tru
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true }
 den-transpiler-swc = { version = "*", path = "../den-transpiler-swc", optional = true }
 den-utils = { version = "*", path = "../den-utils" }
+typed-builder = "0.20.0"
 
 [dev-dependencies]
 color-eyre = "0.6.3"
