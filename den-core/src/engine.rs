@@ -212,6 +212,14 @@ impl Engine {
                     global.set("console", den_stdlib_console::Console {})?;
                 }
 
+                #[cfg(feature = "stdlib-core")]
+                {
+                    let _ = Module::evaluate_def::<den_stdlib_core::js_core, _>(
+                        ctx.clone(),
+                        "den:core",
+                    )?;
+                }
+
                 #[cfg(feature = "stdlib-text")]
                 {
                     let _ = Module::evaluate_def::<den_stdlib_text::js_text, _>(

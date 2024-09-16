@@ -14,6 +14,9 @@ pub struct CancellationTokenWrapper {
 
 #[rquickjs::methods]
 impl CancellationTokenWrapper {
+    #[qjs(constructor)]
+    pub fn new() {}
+
     #[delegate(self.deref())]
     pub fn cancel(&self) {}
 }

@@ -1146,6 +1146,7 @@ dependencies = [
 name = "den-stdlib-core"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "delegate-attr",
  "derivative",
  "derive_more",
