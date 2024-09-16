@@ -15,4 +15,4 @@ derivative.workspace = true
 derive_more.workspace = true
 tokio-util.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
-base64 = "0.22.1"
+base64-simd = "0.8.0"
