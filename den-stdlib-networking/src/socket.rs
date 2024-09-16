@@ -3,6 +3,7 @@ use std::sync::Arc;
 use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
+use either::Either;
 use rquickjs::{class::Trace, convert::List, Ctx, Error, TypedArray};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -55,7 +56,7 @@ impl TcpStreamWrapper {
 
     pub async fn write_all<'js>(
         self,
-        buf: either::Either<Vec<u8>, TypedArray<'js, u8>>,
+        buf: Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>,
     ) -> rquickjs::Result<()> {
         AsyncWriteWrapper(self.stream).write_all(buf).await
     }

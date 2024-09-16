@@ -44,11 +44,12 @@ pub struct AsyncWriteWrapper(pub Arc<RwLock<dyn AsyncWrite + Unpin>>);
 impl AsyncWriteWrapper {
     pub async fn write_all<'js>(
         self,
-        buf: Either<Vec<u8>, TypedArray<'js, u8>>,
+        buf: Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>,
     ) -> rquickjs::Result<()> {
         let buf = match buf {
-            Either::Left(ref x) => x,
-            Either::Right(ref x) => x.as_bytes().unwrap(),
+            Either::Left(ref x) => x.as_bytes(),
+            Either::Right(Either::Left(ref x)) => x.as_slice(),
+            Either::Right(Either::Right(ref x)) => x.as_bytes().unwrap(),
         };
         let mut write = self.write().await;
         write.write_all(&buf).await?;
