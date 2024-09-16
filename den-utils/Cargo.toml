@@ -14,7 +14,7 @@ keywords.workspace = true
 [dependencies]
 color-eyre.workspace = true
 derive_more.workspace = true
-pin-project-lite = "0.2.13"
+pin-project-lite = "0.2.14"
 rquickjs.workspace = true
 swc_core = { workspace = true, optional = true }
 tokio = { workspace = true, features = [] }

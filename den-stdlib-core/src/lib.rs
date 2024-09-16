@@ -1,3 +1,4 @@
+use delegate_attr::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::class::Trace;
@@ -14,7 +15,7 @@ pub struct CancellationTokenWrapper {
 #[rquickjs::methods]
 impl CancellationTokenWrapper {
     #[delegate(self.deref())]
-    pub fn cancel(&self);
+    pub fn cancel(&self) {}
 }
 
 #[rquickjs::module]

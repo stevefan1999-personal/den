@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
 use derivative::Derivative;

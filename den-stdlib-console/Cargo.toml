@@ -11,5 +11,5 @@ keywords.workspace = true
 
 
 [dependencies]
-colored = "2.0.4"
+colored = "2.1.0"
 rquickjs = { workspace = true, features = ["macro"] }

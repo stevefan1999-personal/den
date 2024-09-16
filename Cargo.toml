@@ -33,12 +33,12 @@ keywords = [
 ]
 
 [workspace.dependencies]
-color-eyre = "0.6.2"
+color-eyre = "0.6.3"
 delegate-attr = "0.3.0"
 derivative = "2.2.0"
-derive_more = "0.99.17"
-either = "1.9.0"
-futures = "0.3.28"
+derive_more = { version = "1.0.0", features = ["deref_mut", "deref", "from", "into"] }
+either = "1.13.0"
+futures = "0.3.30"
 phf = "0.11.2"
 rquickjs = { version = "0.6.2", features = [
     "full-async",
@@ -46,8 +46,8 @@ rquickjs = { version = "0.6.2", features = [
     "parallel",
 ] }
 swc_core = "0.104.2"
-tokio = "1.32.0"
-tokio-util = "0.7.8"
+tokio = "1.40.0"
+tokio-util = "0.7.12"
 
 [package]
 name = "den"
@@ -61,11 +61,11 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-bytes = "1.5.0"
+bytes = "1.7.1"
 cfg-if = "1.0.0"
-clap = { version = "4.4.4", features = ["unicode", "derive", "env"] }
+clap = { version = "4.5.17", features = ["unicode", "derive", "env"] }
 color-eyre.workspace = true
-console-subscriber = "0.2.0"
+console-subscriber = "0.4.0"
 delegate-attr.workspace = true
 den-stdlib-console = { version = "*", path = "den-stdlib-console", optional = true }
 den-stdlib-core = { version = "*", path = "den-stdlib-core", optional = true }
@@ -79,10 +79,10 @@ derivative.workspace = true
 derive_more.workspace = true
 fmmap = { version = "0.3.3", features = ["tokio-async"] }
 futures.workspace = true
-matchit = "0.8.2"
+matchit = "0.8.4"
 mime = "0.3.17"
-relative-path = "1.9.0"
-reqwest = { version = "0.12.4", features = [
+relative-path = "1.9.3"
+reqwest = { version = "0.12.7", features = [
     "stream",
     "socks",
     "multipart",
@@ -105,8 +105,8 @@ swc_core = { workspace = true, features = [
 ], optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util.workspace = true
-url = "2.4.1"
-vc-ltl = "5.1.1"
+url = "2.5.2"
+# vc-ltl = "5.1.1"
 
 [features]
 default = ["stdlib", "react", "typescript"]
