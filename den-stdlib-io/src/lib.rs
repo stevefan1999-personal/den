@@ -52,7 +52,7 @@ impl AsyncWriteWrapper {
             Either::Right(Either::Right(ref x)) => x.as_bytes().unwrap(),
         };
         let mut write = self.write().await;
-        write.write_all(&buf).await?;
+        write.write_all(buf).await?;
         Ok(())
     }
 
