@@ -79,7 +79,7 @@ den-core = { version = "*", path = "den-core" }
 den-utils = { version = "*", path = "den-utils" }
 futures.workspace = true
 rquickjs.workspace = true
-rustyline = { version = "14.0.0", features = ["derive"] }
+rustyline = { version = "14.0.0", features = ["derive", "with-sqlite-history"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 vc-ltl = "5.1.1"
 
