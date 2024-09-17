@@ -53,6 +53,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:core");
                     }
+                    #[cfg(feature = "stdlib-console")]
+                    {
+                        resolver = resolver.with_module("den:console");
+                    }
                     #[cfg(feature = "stdlib-networking")]
                     {
                         resolver = resolver.with_module("den:networking");
@@ -111,6 +115,11 @@ impl Engine {
                     #[cfg(feature = "stdlib-core")]
                     {
                         loader = loader.with_module("den:core", den_stdlib_core::js_core);
+                    }
+
+                    #[cfg(feature = "stdlib-console")]
+                    {
+                        loader = loader.with_module("den:console", den_stdlib_console::js_console);
                     }
 
                     #[cfg(feature = "stdlib-networking")]
@@ -205,11 +214,12 @@ impl Engine {
 
         context
             .with(|ctx| {
-                let global = ctx.globals();
-
                 #[cfg(feature = "stdlib-console")]
                 {
-                    global.set("console", den_stdlib_console::Console {})?;
+                    let _ = Module::evaluate_def::<den_stdlib_console::js_console, _>(
+                        ctx.clone(),
+                        "den:console",
+                    )?;
                 }
 
                 #[cfg(feature = "stdlib-core")]
