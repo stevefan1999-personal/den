@@ -7,7 +7,7 @@ use rquickjs::class::Trace;
 #[rquickjs::class(rename = "Performance")]
 pub struct Performance {
     #[qjs(skip_trace)]
-    time_origin: u64,
+    clock:   Clock,
     #[qjs(skip_trace)]
     instant: Instant,
 }
@@ -16,10 +16,9 @@ pub struct Performance {
 impl Performance {
     #[qjs(constructor)]
     pub fn new() -> rquickjs::Result<Self> {
-        Ok(Self {
-            time_origin: Clock::new().raw(),
-            instant: Instant::now()
-        })
+        let clock = Clock::new();
+        let instant = clock.now();
+        Ok(Self { clock, instant })
     }
 
     pub fn now(self) -> u64 {
@@ -28,7 +27,7 @@ impl Performance {
 
     #[qjs(get, enumerable, rename = "timeOrigin")]
     pub fn time_origin(self) -> u64 {
-        self.time_origin
+        self.clock.raw()
     }
 }
 
