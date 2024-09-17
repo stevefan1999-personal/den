@@ -33,7 +33,6 @@ impl Performance {
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod core {
-    use base64_simd::STANDARD;
     use rquickjs::{module::Exports, Coerced, Ctx};
 
     pub use crate::cancellation::CancellationTokenWrapper;
@@ -41,15 +40,40 @@ pub mod core {
 
     #[rquickjs::function()]
     pub fn btoa(value: Coerced<String>) -> rquickjs::Result<String> {
-        Ok(STANDARD.encode_to_string(value.as_bytes()))
+        #[cfg(feature = "base64-simd")]
+        {
+            use base64_simd::STANDARD;
+            Ok(STANDARD.encode_to_string(value.as_bytes()))
+        }
+        #[cfg(feature = "base64")]
+        {
+            use base64::prelude::*;
+
+            Ok(BASE64_STANDARD.encode(value.as_bytes()))
+        }
     }
 
     #[rquickjs::function()]
     pub fn atob<'js>(ctx: Ctx<'js>, value: Coerced<String>) -> rquickjs::Result<String> {
-        match STANDARD.decode_to_vec(value.as_bytes()) {
-            Ok(decoded) => Ok(String::from_utf8(decoded)?),
-            Err(e) => Err(rquickjs::Exception::throw_internal(&ctx, &format!("{e}"))),
+        #[cfg(feature = "base64-simd")]
+        {
+            use base64_simd::STANDARD;
+            match STANDARD.decode_to_vec(value.as_bytes()) 
+            {
+                Ok(decoded) => Ok(String::from_utf8(decoded)?),
+                Err(e) => Err(rquickjs::Exception::throw_internal(&ctx, &format!("{e}"))),
+            }
         }
+        #[cfg(feature = "base64")]
+        {
+            use base64::prelude::*;
+            match BASE64_STANDARD.decode(value.as_bytes()) 
+            {
+                Ok(decoded) => Ok(String::from_utf8(decoded)?),
+                Err(e) => Err(rquickjs::Exception::throw_internal(&ctx, &format!("{e}"))),
+            }
+        }
+
     }
 
     #[qjs(declare)]
