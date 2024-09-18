@@ -8,13 +8,16 @@ pub mod tag;
 
 #[rquickjs::module]
 pub mod wasm {
+    use std::clone::Clone;
+
     use either::Either;
     use rquickjs::{
-        class::Trace, module::Exports, prelude::Opt, ArrayBuffer, Ctx, Object, TypedArray,
+        class::Trace, module::Exports, prelude::Opt, ArrayBuffer, Ctx, Exception, Object, Result,
+        TypedArray,
     };
 
     pub use crate::{
-        error::{CompileError, Exception, LinkError, RuntimeError},
+        error::{CompileError, Exception as WasmException, LinkError, RuntimeError},
         global::Global,
         instance::Instance,
         memory::Memory,
@@ -43,7 +46,7 @@ pub mod wasm {
         module_or_buffer_source: Either<Module, Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>,
         import_object: Opt<Object<'js>>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<ResultObject> {
+    ) -> Result<ResultObject> {
         let module = match module_or_buffer_source {
             Either::Left(module) => module,
             Either::Right(buffer_source) => Module::new(buffer_source, ctx.clone())?,
@@ -56,7 +59,7 @@ pub mod wasm {
     pub fn validate<'js>(
         buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<bool> {
+    ) -> Result<bool> {
         // https://webassembly.github.io/spec/js-api/#dom-webassembly-validate
         let buf = match buffer_source {
             Either::Left(ref x) => x.as_bytes(),
@@ -68,7 +71,7 @@ pub mod wasm {
         config.consume_fuel(true);
 
         let engine = wasmtime::Engine::new(&config).map_err(|x| {
-            rquickjs::Exception::throw_internal(&ctx, &format!("wasm engine creation error: {}", x))
+            Exception::throw_internal(&ctx, &format!("wasm engine creation error: {}", x))
         })?;
 
         Ok(wasmtime::Module::validate(&engine, buf).is_ok())
@@ -79,20 +82,20 @@ pub mod wasm {
     pub async fn compile<'js>(
         buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<Module> {
+    ) -> Result<Module> {
         // https://webassembly.github.io/spec/js-api/#compile-a-webassembly-module
         if validate(buffer_source.clone(), ctx.clone())? {
             Module::new(buffer_source, ctx)
         } else {
-            Err(rquickjs::Exception::throw_internal(
+            Err(Exception::throw_internal(
                 &ctx,
-                &format!("wasm compile error: unknown"),
+                "wasm compile error: unknown",
             ))
         }
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> rquickjs::Result<()> {
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
         let wasm = Object::new(ctx.clone())?;
         // for (k, v) in exports.iter() {
         //     wasm.set(k.to_str()?, v)?;

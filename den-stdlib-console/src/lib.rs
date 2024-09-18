@@ -1,7 +1,7 @@
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod console {
     use colored::Colorize;
-    use rquickjs::{module::Exports, Coerced, Ctx, Object};
+    use rquickjs::{module::Exports, Coerced, Ctx, Object, Result};
 
     #[rquickjs::function]
     pub fn log(msg: Coerced<String>) {
@@ -24,15 +24,14 @@ pub mod console {
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> rquickjs::Result<()> {
-
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         ctx.globals().set("console", {
             let obj = Object::new(ctx.clone())?;
             obj.set("log", js_log)?;
             obj.set("info", js_info)?;
             obj.set("warn", js_warn)?;
             obj.set("error", js_error)?;
-            obj    
+            obj
         })?;
         Ok(())
     }

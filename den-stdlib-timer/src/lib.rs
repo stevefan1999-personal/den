@@ -1,9 +1,16 @@
-#[rquickjs::module(rename_types = "camelCase", rename = "camelCase")]
+#[rquickjs::module(
+    rename = "camelCase",
+    rename_vars = "camelCase",
+    rename_types = "camelCase"
+)]
 pub mod timer {
     use std::time::Duration;
 
     use den_stdlib_core::cancellation::{CancellationToken, CancellationTokenWrapper};
-    use rquickjs::{module::Exports, Ctx, Function};
+    use rquickjs::{
+        module::{Declarations, Exports},
+        Ctx, Function, Result,
+    };
     use tokio::time;
 
     #[rquickjs::function(rename = "setInterval")]
@@ -11,7 +18,7 @@ pub mod timer {
         func: Function<'js>,
         delay: Option<usize>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<CancellationTokenWrapper> {
+    ) -> Result<CancellationTokenWrapper> {
         let delay = delay.unwrap_or(0) as u64;
         let duration = Duration::from_millis(delay);
         let mut interval = time::interval(duration);
@@ -42,7 +49,7 @@ pub mod timer {
         func: Function<'js>,
         delay: Option<usize>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<CancellationTokenWrapper> {
+    ) -> Result<CancellationTokenWrapper> {
         let delay = delay.unwrap_or(0) as u64;
         let duration: Duration = Duration::from_millis(delay);
         let token = CancellationToken::new();
@@ -68,7 +75,7 @@ pub mod timer {
     }
 
     #[qjs(declare)]
-    pub fn declare(declare: &rquickjs::module::Declarations) -> rquickjs::Result<()> {
+    pub fn declare(declare: &Declarations) -> Result<()> {
         declare.declare("setInterval")?;
         declare.declare("clearInterval")?;
         declare.declare("setTimeout")?;
@@ -77,7 +84,7 @@ pub mod timer {
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> rquickjs::Result<()> {
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         ctx.globals().set("setInterval", js_set_interval)?;
         ctx.globals().set("clearInterval", js_clear_interval)?;
         ctx.globals().set("setTimeout", js_set_timeout)?;

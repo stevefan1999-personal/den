@@ -1,5 +1,4 @@
-use either::Either;
-use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Object};
+use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Object, Result};
 
 #[derive(Trace)]
 #[rquickjs::class]
@@ -15,7 +14,7 @@ pub struct Memory {
 #[rquickjs::methods]
 impl Memory {
     #[qjs(constructor)]
-    pub fn new<'js>(opts: Object<'js>) -> rquickjs::Result<Self> {
+    pub fn new(opts: Object<'_>) -> Result<Self> {
         let initial = opts.get::<_, usize>("initial")?;
         let maximum = opts.get::<_, Option<usize>>("maximum")?;
         let shared = opts.get::<_, bool>("shared").unwrap_or(false);
@@ -28,7 +27,7 @@ impl Memory {
     }
 
     #[qjs(get, enumerable)]
-    pub fn exports<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<ArrayBuffer<'js>> {
+    pub fn exports<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
         todo!()
     }
 }

@@ -4,7 +4,7 @@ use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use either::Either;
-use rquickjs::{class::Trace, convert::List, Ctx, Error, TypedArray};
+use rquickjs::{class::Trace, convert::List, Ctx, Error, Result, TypedArray};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::RwLock,
@@ -26,46 +26,42 @@ impl TcpStreamWrapper {
     pub fn new() {}
 
     #[qjs(get, enumerable)]
-    pub fn local_addr(&self) -> rquickjs::Result<SocketAddrWrapper> {
+    pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
         let this = self.stream.try_read().map_err(|_| Error::Unknown)?;
         let addr = this.local_addr()?;
         Ok(addr.into())
     }
 
     #[qjs(static)]
-    pub async fn connect(addr: String) -> rquickjs::Result<Self> {
+    pub async fn connect(addr: String) -> Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         Ok(Arc::new(RwLock::new(stream)).into())
     }
 
-    pub async fn read_to_string(self) -> rquickjs::Result<String> {
+    pub async fn read_to_string(self) -> Result<String> {
         AsyncReadWrapper(self.stream).read_to_string().await
     }
 
-    pub async fn read_to_end(self) -> rquickjs::Result<Vec<u8>> {
+    pub async fn read_to_end(self) -> Result<Vec<u8>> {
         AsyncReadWrapper(self.stream).read_to_end().await
     }
 
-    pub async fn read<'js>(
-        self,
-        bytes: usize,
-        ctx: Ctx<'js>,
-    ) -> rquickjs::Result<TypedArray<'js, u8>> {
+    pub async fn read<'js>(self, bytes: usize, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
         AsyncReadWrapper(self.stream).read(bytes, ctx).await
     }
 
     pub async fn write_all<'js>(
         self,
         buf: Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>,
-    ) -> rquickjs::Result<()> {
+    ) -> Result<()> {
         AsyncWriteWrapper(self.stream).write_all(buf).await
     }
 
-    pub async fn flush(self) -> rquickjs::Result<()> {
+    pub async fn flush(self) -> Result<()> {
         AsyncWriteWrapper(self.stream).flush().await
     }
 
-    pub async fn shutdown(self) -> rquickjs::Result<()> {
+    pub async fn shutdown(self) -> Result<()> {
         AsyncWriteWrapper(self.stream).shutdown().await
     }
 }
@@ -84,18 +80,18 @@ impl TcpListenerWrapper {
     pub fn new() {}
 
     #[qjs(get, enumerable)]
-    pub fn local_addr(&self) -> rquickjs::Result<SocketAddrWrapper> {
+    pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
         Ok(self.deref().local_addr()?.into())
     }
 
-    pub async fn accept(self) -> rquickjs::Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
+    pub async fn accept(self) -> Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
         let (stream, addr) = self.deref().accept().await?;
         let stream = Arc::new(RwLock::new(stream));
         Ok(List((stream.into(), addr.into())))
     }
 
     #[qjs(static)]
-    pub async fn listen(addr: String) -> rquickjs::Result<Self> {
+    pub async fn listen(addr: String) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Arc::new(listener).into())
     }

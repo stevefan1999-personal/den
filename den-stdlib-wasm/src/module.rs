@@ -1,7 +1,9 @@
+use std::clone::Clone;
+
 use derive_more::Deref;
 use either::Either;
 use getset::Getters;
-use rquickjs::{class::Trace, ArrayBuffer, Ctx, Object, TypedArray};
+use rquickjs::{class::Trace, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 use wasmtime::ExternType;
 
 #[derive(Trace, Getters, Deref, Clone)]
@@ -18,7 +20,7 @@ impl Module {
     pub fn new<'js>(
         buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<Self> {
+    ) -> Result<Self> {
         let buf = match buffer_source {
             Either::Left(ref x) => x.as_bytes(),
             Either::Right(ref x) => x.as_bytes(),
@@ -29,18 +31,18 @@ impl Module {
         config.consume_fuel(true);
 
         let engine = wasmtime::Engine::new(&config).map_err(|x| {
-            rquickjs::Exception::throw_internal(&ctx, &format!("wasm engine creation error: {}", x))
+            Exception::throw_internal(&ctx, &format!("wasm engine creation error: {}", x))
         })?;
 
         let module = wasmtime::Module::from_binary(&engine, buf).map_err(|x| {
-            rquickjs::Exception::throw_internal(&ctx, &format!("wasm module creation error: {}", x))
+            Exception::throw_internal(&ctx, &format!("wasm module creation error: {}", x))
         })?;
 
         Ok(Self { module })
     }
 
     #[qjs(static)]
-    pub fn imports<'js>(module: &Module, ctx: Ctx<'js>) -> rquickjs::Result<Vec<Object<'js>>> {
+    pub fn imports<'js>(module: &Module, ctx: Ctx<'js>) -> Result<Vec<Object<'js>>> {
         module
             .imports()
             .map(|import| {
@@ -50,11 +52,11 @@ impl Module {
                 obj.set("kind", extern_type_to_str(import.ty()))?;
                 Ok(obj)
             })
-            .collect::<rquickjs::Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()
     }
 
     #[qjs(static)]
-    pub fn exports<'js>(module: &Module, ctx: Ctx<'js>) -> rquickjs::Result<Vec<Object<'js>>> {
+    pub fn exports<'js>(module: &Module, ctx: Ctx<'js>) -> Result<Vec<Object<'js>>> {
         module
             .exports()
             .map(|import| {
@@ -63,15 +65,12 @@ impl Module {
                 obj.set("kind", extern_type_to_str(import.ty()))?;
                 Ok(obj)
             })
-            .collect::<rquickjs::Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()
     }
 
     #[qjs(static)]
-    pub fn custom_sections<'js>(
-        _module: &Module,
-        ctx: Ctx<'js>,
-    ) -> rquickjs::Result<Vec<Object<'js>>> {
-        Err(rquickjs::Exception::throw_internal(&ctx, "not implemented"))
+    pub fn custom_sections<'js>(_module: &Module, ctx: Ctx<'js>) -> Result<Vec<Object<'js>>> {
+        Err(Exception::throw_internal(&ctx, "not implemented"))
     }
 }
 

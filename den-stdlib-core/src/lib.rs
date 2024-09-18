@@ -1,7 +1,8 @@
 use derivative::Derivative;
 use derive_more::{From, Into};
 use quanta::{Clock, Instant};
-use rquickjs::class::Trace;
+use rquickjs::{class::Trace, Result};
+
 #[derive(Trace, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class(rename = "Performance")]
@@ -15,7 +16,7 @@ pub struct Performance {
 #[rquickjs::methods]
 impl Performance {
     #[qjs(constructor)]
-    pub fn new() -> rquickjs::Result<Self> {
+    pub fn new() -> Result<Self> {
         let clock = Clock::new();
         let instant = clock.now();
         Ok(Self { clock, instant })
@@ -33,13 +34,16 @@ impl Performance {
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod core {
-    use rquickjs::{module::Exports, Coerced, Ctx};
+    use rquickjs::{
+        module::{Declarations, Exports},
+        Coerced, Ctx, Exception, Object, Result,
+    };
 
     pub use crate::cancellation::CancellationTokenWrapper;
     use crate::Performance;
 
     #[rquickjs::function()]
-    pub fn btoa(value: Coerced<String>) -> rquickjs::Result<String> {
+    pub fn btoa(value: Coerced<String>) -> Result<String> {
         #[cfg(feature = "base64-simd")]
         {
             use base64_simd::STANDARD;
@@ -54,30 +58,28 @@ pub mod core {
     }
 
     #[rquickjs::function()]
-    pub fn atob<'js>(ctx: Ctx<'js>, value: Coerced<String>) -> rquickjs::Result<String> {
+    pub fn atob(ctx: Ctx<'_>, value: Coerced<String>) -> Result<String> {
         #[cfg(feature = "base64-simd")]
         {
             use base64_simd::STANDARD;
-            match STANDARD.decode_to_vec(value.as_bytes()) 
-            {
+            match STANDARD.decode_to_vec(value.as_bytes()) {
                 Ok(decoded) => Ok(String::from_utf8(decoded)?),
-                Err(e) => Err(rquickjs::Exception::throw_internal(&ctx, &format!("{e}"))),
+                Err(e) => Err(Exception::throw_internal(&ctx, &format!("{e}"))),
             }
         }
         #[cfg(feature = "base64")]
         {
             use base64::prelude::*;
-            match BASE64_STANDARD.decode(value.as_bytes()) 
-            {
+            match BASE64_STANDARD.decode(value.as_bytes()) {
                 Ok(decoded) => Ok(String::from_utf8(decoded)?),
-                Err(e) => Err(rquickjs::Exception::throw_internal(&ctx, &format!("{e}"))),
+                Err(e) => Err(Exception::throw_internal(&ctx, &format!("{e}"))),
             }
         }
 
     }
 
     #[qjs(declare)]
-    pub fn declare(declare: &rquickjs::module::Declarations) -> rquickjs::Result<()> {
+    pub fn declare(declare: &Declarations) -> Result<()> {
         declare.declare("atob")?;
         declare.declare("btoa")?;
         declare.declare("performance")?;
@@ -85,7 +87,7 @@ pub mod core {
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> rquickjs::Result<()> {
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         ctx.globals().set("atob", js_atob)?;
         ctx.globals().set("btoa", js_btoa)?;
         ctx.globals().set("performance", Performance::new())?;

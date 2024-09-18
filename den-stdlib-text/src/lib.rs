@@ -2,7 +2,7 @@ use derivative::Derivative;
 use derive_more::{From, Into};
 use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
-use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Object, TypedArray};
+use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 
 #[derive(Trace, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
@@ -19,16 +19,11 @@ pub struct TextDecoder {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl TextDecoder {
     #[qjs(constructor)]
-    pub fn new<'js>(
-        label: Opt<String>,
-        opts: Opt<Object<'js>>,
-        ctx: Ctx<'js>,
-    ) -> rquickjs::Result<Self> {
+    pub fn new<'js>(label: Opt<String>, opts: Opt<Object<'js>>, ctx: Ctx<'js>) -> Result<Self> {
         let label = label.0.unwrap_or("utf-8".to_string());
 
-        let encoding = Encoding::for_label(label.as_bytes()).ok_or_else(|| {
-            rquickjs::Exception::throw_range(&ctx, &format!("unknown encoding {label}"))
-        })?;
+        let encoding = Encoding::for_label(label.as_bytes())
+            .ok_or_else(|| Exception::throw_range(&ctx, &format!("unknown encoding {label}")))?;
 
         let (mut fatal, mut ignore_bom) = (false, false);
 
@@ -63,7 +58,7 @@ impl TextDecoder {
         &self,
         buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<String> {
+    ) -> Result<String> {
         match buffer {
             Some(buffer) => {
                 let mut decoder = if self.ignore_bom {
@@ -89,7 +84,7 @@ impl TextDecoder {
                     let (res, _) =
                         decoder.decode_to_string_without_replacement(buffer, &mut decoded, true);
                     if let DecoderResult::Malformed(_, _) = res {
-                        Err(rquickjs::Exception::throw_type(
+                        Err(Exception::throw_type(
                             &ctx,
                             "invalid decoding encountered and no replacements allowed",
                         ))
@@ -111,6 +106,12 @@ impl TextDecoder {
 #[rquickjs::class]
 pub struct TextEncoder {}
 
+impl Default for TextEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[rquickjs::methods(rename_all = "camelCase")]
 impl TextEncoder {
     #[qjs(constructor)]
@@ -120,10 +121,10 @@ impl TextEncoder {
 
     #[qjs(get, enumerable)]
     pub fn encoding(&self) -> &'static str {
-        "utf-8".into()
+        "utf-8"
     }
 
-    pub fn encode<'js>(&self, src: String, ctx: Ctx<'js>) -> rquickjs::Result<TypedArray<'js, u8>> {
+    pub fn encode<'js>(&self, src: String, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
         TypedArray::new_copy(ctx, src)
     }
 
@@ -132,19 +133,23 @@ impl TextEncoder {
         _src: String,
         _dest: TypedArray<'js, u8>,
         ctx: Ctx<'js>,
-    ) -> rquickjs::Result<()> {
-        Err(rquickjs::Exception::throw_internal(&ctx, "not implemented"))
+    ) -> Result<()> {
+        Err(Exception::throw_internal(&ctx, "not implemented"))
     }
 }
 
-#[rquickjs::module]
+#[rquickjs::module(
+    rename = "camelCase",
+    rename_vars = "camelCase",
+    rename_types = "PascalCase"
+)]
 pub mod text {
-    use rquickjs::{class::JsClass, module::Exports, Ctx};
+    use rquickjs::{class::JsClass, module::Exports, Ctx, Result};
 
     pub use super::{TextDecoder, TextEncoder};
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, _exports: &Exports<'js>) -> rquickjs::Result<()> {
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _exports: &Exports<'js>) -> Result<()> {
         ctx.globals()
             .set("TextDecoder", TextDecoder::constructor(ctx))?;
         ctx.globals()
