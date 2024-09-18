@@ -39,6 +39,7 @@ den-stdlib-console = { version = "*", path = "../den-stdlib-console", optional =
 den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
 den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
 den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
+den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = true }
 den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
 den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true }
@@ -68,6 +69,7 @@ stdlib = [
     "stdlib-networking",
     "stdlib-text",
     "stdlib-timer",
+    "stdlib-sqlite"
 ]
 stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
@@ -75,6 +77,7 @@ stdlib-fs = ["dep:den-stdlib-fs"]
 stdlib-networking = ["dep:den-stdlib-networking"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
+stdlib-sqlite = ["dep:den-stdlib-sqlite"]
 
 wasm = ["dep:den-stdlib-wasm"]
 wasm-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]

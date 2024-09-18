@@ -73,6 +73,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:fs");
                     }
+                    #[cfg(feature = "stdlib-sqlite")]
+                    {
+                        resolver = resolver.with_module("den:sqlite");
+                    }
                     #[cfg(feature = "wasm")]
                     {
                         resolver = resolver.with_module("den:wasm");
@@ -141,6 +145,11 @@ impl Engine {
                     #[cfg(feature = "stdlib-fs")]
                     {
                         loader = loader.with_module("den:fs", den_stdlib_fs::js_fs);
+                    }
+
+                    #[cfg(feature = "stdlib-sqlite")]
+                    {
+                        loader = loader.with_module("den:sqlite", den_stdlib_sqlite::js_sqlite);
                     }
 
                     #[cfg(feature = "wasm")]

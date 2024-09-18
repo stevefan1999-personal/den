@@ -1,0 +1,16 @@
+[package]
+name = "den-stdlib-sqlite"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.31.0", features = ["bundled"] }
+derivative.workspace = true
+derive_more.workspace = true
+either.workspace = true
+rquickjs = { workspace = true, features = ["macro"] }

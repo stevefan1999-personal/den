@@ -7,7 +7,7 @@ members = [
     "den-stdlib-fs",
     "den-stdlib-io",
     "den-stdlib-networking",
-    "den-stdlib-regex",
+    "den-stdlib-regex", "den-stdlib-sqlite",
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
@@ -99,10 +99,12 @@ stdlib-fs = ["den-core/stdlib-fs"]
 stdlib-networking = ["den-core/stdlib-networking"]
 stdlib-text = ["den-core/stdlib-text"]
 stdlib-timer = ["den-core/stdlib-timer"]
+stdlib-sqlite = ["den-core/stdlib-sqlite"]
 
 wasm = ["den-core/wasm"]
 wasm-wasmtime = ["den-core/wasm-wasmtime"]
 wasm-wasmi = ["den-core/wasm-wasmi"]
+
 
 [profile.dev.package.backtrace]
 opt-level = 3
