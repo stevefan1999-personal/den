@@ -8,8 +8,9 @@ Here contains the software manifest that Den heavily relies on, or heavily inspi
 5. Tokio: https://github.com/tokio-rs/tokio for being the foundation
 6. Deno: https://github.com/denoland/deno for heavily inspiring the philosophy of Den project
 7. Speedy Web Compiler: https://github.com/swc-project/swc for `transpiler-swc`
-8. SQLite: https://www.sqlite.org/ for `rusqlite`
+8. SQLite: https://www.sqlite.org/ for `rusqlite` and for REPL history
 9. Rusqlite: https://github.com/rusqlite/rusqlite for `den:sqlite`
 10. reqwst: https://github.com/seanmonstar/reqwest for `fetch` API
 11. RustCrypto: https://github.com/RustCrypto for WinterCG `crypto` implementation
 12. SurrealKV: https://github.com/surrealdb/surrealkv for `den:kv`
+13. rustyline: https://github.com/kkawakam/rustyline for REPL implementation

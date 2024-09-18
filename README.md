@@ -6,24 +6,6 @@ Made during the Easter holiday of 2023.
 
 ## Features
 
-### Software Manifest
-
-The whole runtime uses the following set of software:
-
-- [rquickjs](https://github.com/DelSkayn/rquickjs)
-    - for its amazing integration & binding support for [QuickJS](https://bellard.org/quickjs/)!
-- [tokio](https://github.com/tokio-rs/tokio) for async runtime & execution
-- [WIP] [wasmer](https://github.com/wasmerio/wasmer) for WASM (Optional)
-- [reqwest](https://github.com/seanmonstar/reqwest) for HTTP
-  client
-    - [fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API) bindings are WIP. Both `reqwest`
-      and `fetch` are quite similar to each other and so it won't be very hard.
-- [rustyline](https://github.com/kkawakam/rustyline) for REPL
-- [WIP] [Speedy Web Compiler](https://github.com/swc-project/swc) for TypeScript transpiling support
-    - Can support ES2020+ syntax like ESNext input and then transpile it to ES2020 output for QuickJS as well
-- [WIP] [ring](https://github.com/briansmith/ring) for crypto API. If ring misses some necessary components,
-  [RustCrypto](https://github.com/RustCrypto) can fit that role given that possibility
-
 # Build instruction
 
 ## Steps
