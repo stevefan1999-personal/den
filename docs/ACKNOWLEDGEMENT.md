@@ -14,3 +14,5 @@ Here contains the software manifest that Den heavily relies on, or heavily inspi
 11. RustCrypto: https://github.com/RustCrypto for WinterCG `crypto` implementation
 12. SurrealKV: https://github.com/surrealdb/surrealkv for `den:kv`
 13. rustyline: https://github.com/kkawakam/rustyline for REPL implementation
+14. VC-LTL: https://github.com/Chuyu-Team/VC-LTL5 for legacy Windows support (up to Windows XP)
+15. clap: https://github.com/clap-rs/clap for CLI parsing
