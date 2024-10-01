@@ -1,17 +1,26 @@
 use std::clone::Clone;
 
-use derive_more::Deref;
+use derive_more::{derive::DerefMut, Deref, From, Into};
 use either::Either;
 use getset::Getters;
-use rquickjs::{class::Trace, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
+use indexmap::{indexmap, IndexMap};
+use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 use wasmtime::ExternType;
 
-#[derive(Trace, Getters, Deref, Clone)]
+use crate::MyUserData;
+
+#[derive(Trace, Getters, Deref, DerefMut, From, Into, Clone)]
 #[rquickjs::class]
 pub struct Module {
     #[qjs(skip_trace)]
     #[getset(get)]
-    pub(crate) module: wasmtime::Module,
+    pub(crate) inner: wasmtime::Module,
+
+    #[qjs(skip_trace)]
+    #[getset(get)]
+    #[deref(ignore)]
+    #[deref_mut(ignore)]
+    pub(crate) engine: crate::engine::Engine,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -19,6 +28,7 @@ impl Module {
     #[qjs(constructor)]
     pub fn new<'js>(
         buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
+        engine: Opt<crate::engine::Engine>,
         ctx: Ctx<'js>,
     ) -> Result<Self> {
         let buf = match buffer_source {
@@ -27,45 +37,40 @@ impl Module {
         }
         .unwrap();
 
-        let mut config = wasmtime::Config::default();
-        config.consume_fuel(true);
+        let engine = engine.clone().unwrap_or(ctx.userdata::<MyUserData>().unwrap().engine.clone());
 
-        let engine = wasmtime::Engine::new(&config).map_err(|x| {
-            Exception::throw_internal(&ctx, &format!("wasm engine creation error: {}", x))
-        })?;
-
-        let module = wasmtime::Module::from_binary(&engine, buf).map_err(|x| {
+        let inner = wasmtime::Module::from_binary(&engine, buf).map_err(|x| {
             Exception::throw_internal(&ctx, &format!("wasm module creation error: {}", x))
         })?;
 
-        Ok(Self { module })
+        Ok(Self { engine, inner })
     }
 
     #[qjs(static)]
-    pub fn imports<'js>(module: &Module, ctx: Ctx<'js>) -> Result<Vec<Object<'js>>> {
+    pub fn imports(module: &Module) -> Vec<IndexMap<&str, &str>> {
         module
             .imports()
             .map(|import| {
-                let obj = Object::new(ctx.clone())?;
-                obj.set("module", import.module())?;
-                obj.set("name", import.name())?;
-                obj.set("kind", extern_type_to_str(import.ty()))?;
-                Ok(obj)
+                indexmap! {
+                    "module" => import.module(),
+                    "name" => import.name(),
+                    "kind" => extern_type_to_str(import.ty())
+                }
             })
-            .collect::<Result<Vec<_>>>()
+            .collect::<Vec<_>>()
     }
 
     #[qjs(static)]
-    pub fn exports<'js>(module: &Module, ctx: Ctx<'js>) -> Result<Vec<Object<'js>>> {
+    pub fn exports(module: &Module) -> Vec<IndexMap<&str, &str>> {
         module
             .exports()
             .map(|import| {
-                let obj = Object::new(ctx.clone())?;
-                obj.set("name", import.name())?;
-                obj.set("kind", extern_type_to_str(import.ty()))?;
-                Ok(obj)
+                indexmap! {
+                    "name" => import.name(),
+                    "kind" => extern_type_to_str(import.ty())
+                }
             })
-            .collect::<Result<Vec<_>>>()
+            .collect::<Vec<_>>()
     }
 
     #[qjs(static)]

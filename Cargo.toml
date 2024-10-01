@@ -49,16 +49,25 @@ derive_more = { version = "1.0.0", features = [
 ] }
 either = "1.13.0"
 futures = "0.3.30"
+indexmap = "2.5.0"
 phf = "0.11.2"
 rquickjs = { version = "0.6.2", features = [
     "full-async",
     "rust-alloc",
     "parallel",
+    "indexmap",
+    "either",
+    "dump-leaks"
 ] }
 swc_core = "0.104.2"
 tokio = "1.40.0"
 tokio-util = "0.7.12"
-thiserror = "1.0.63"
+tracing = "0.1.40"
+thiserror = "1.0.64"
+typed-builder = "0.20.0"
+reqwest = "0.12.7"
+serde = "1.0.210"
+serde_json = "1.0.128"
 
 [package]
 name = "den"
@@ -72,7 +81,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-clap = { version = "4.5.17", features = ["unicode", "derive", "env"] }
+clap = { version = "4.5.18", features = ["unicode", "derive", "env"] }
 color-eyre = { version = "0.6.3", default-features = false }
 console-subscriber = { version = "0.4.0", optional = true }
 den-core = { version = "*", path = "den-core", default-features = false }
@@ -84,7 +93,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 vc-ltl = "5.1.1"
 
 [features]
-default = ["stdlib", "typescript", "react"]
+default = ["stdlib", "typescript", "react", "tracing", "tokio-console", "wasm-wasmtime"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -133,3 +142,6 @@ cargo-emit = "0.2.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[patch.crates-io]
+rquickjs = { git = "https://github.com/DelSkayn/rquickjs" }
