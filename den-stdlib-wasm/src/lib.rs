@@ -12,7 +12,7 @@ pub mod tag;
 
 #[rquickjs::module]
 pub mod wasm {
-    use std::{cell::RefCell, clone::Clone, sync::Arc};
+    use std::clone::Clone;
 
     use either::Either;
     use indexmap::{indexmap, IndexMap};
@@ -116,15 +116,9 @@ pub mod wasm {
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
-        let engine = RefCell::new(wasmtime::Engine::default());
-        let store = Arc::new(RefCell::new(wasmtime::Store::new(
-            &engine.borrow(),
-            ctx.clone(),
-        )));
-        ctx.store_userdata(crate::WasmtimeRuntimeData {
-            engine: engine.into(),
-            store:  store.into(),
-        })?;
+        let engine = crate::engine::Engine::new();
+        let store = crate::store::Store::new(engine.clone(), ctx.clone());
+        ctx.store_userdata(crate::WasmtimeRuntimeData { engine, store })?;
         ctx.globals().set(
             "WebAssembly",
             indexmap! {

@@ -7,10 +7,13 @@ use rquickjs::{
     Value,
 };
 use tracing::warn;
-use wasmtime::{AsContext, AsContextMut, Extern, RefType, Val};
+use wasmtime::{AsContext, AsContextMut, Extern, Val};
 
 use crate::{
-    error::LinkError, module::Module, table::TableDescriptor, utils::WasmValueConverter,
+    error::LinkError,
+    module::Module,
+    table::TableDescriptor,
+    utils::{get_default_value_for_val_type, WasmValueConverter},
     WasmtimeRuntimeData,
 };
 
@@ -35,6 +38,8 @@ impl<'js> Instance<'js> {
         ctx: Ctx<'js>,
     ) -> Result<Self> {
         let mut linker = wasmtime::Linker::new(module.engine());
+        wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |(wasi_ctx, _)| wasi_ctx).unwrap();
+
         let store = store
             .clone()
             .unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
@@ -53,150 +58,143 @@ impl<'js> Instance<'js> {
                     let name = module_import.name();
                     if let Some(o) = import_object.get(module) {
                         if let Some(v) = o.get(name) {
-                            match module_import.ty() {
-                                wasmtime::ExternType::Global(ty)
-                                    if ty.content().is_i64() && v.is_number() =>
-                                {
-                                    return Err(ctx.throw(LinkError::new().into_js(&ctx)?))
-                                }
-                                wasmtime::ExternType::Global(ty)
-                                    if !ty.content().is_i64() && v.as_big_int().is_some() =>
-                                {
-                                    return Err(ctx.throw(LinkError::new().into_js(&ctx)?))
-                                }
-                                wasmtime::ExternType::Global(ty) if ty.content().is_v128() => {
-                                    return Err(ctx.throw(LinkError::new().into_js(&ctx)?))
-                                }
-                                wasmtime::ExternType::Global(ty) => {
-                                    let item = crate::global::Global::from_js(&ctx, v.clone())
-                                        .or_else(|_| {
-                                            crate::global::Global::from_type(
-                                                ty,
-                                                v,
-                                                store.as_context_mut(),
-                                                &ctx,
-                                            )
-                                        })?;
+                            let define_result = if let wasmtime::ExternType::Func(ty) =
+                                module_import.ty()
+                            {
+                                if !v.is_function() {
+                                    None
+                                } else {
+                                    #[derive(Clone, Copy, From, Deref, DerefMut)]
+                                    struct DangerouslyImplementSync<T>(T);
+                                    unsafe impl<T> Send for DangerouslyImplementSync<T> {}
+                                    unsafe impl<T> Sync for DangerouslyImplementSync<T> {}
 
-                                    linker
-                                        .define(store.as_context(), module, name, item.inner)
-                                        .map_err(|x| {
-                                            Exception::throw_internal(
-                                                &ctx,
-                                                &format!("wasm linker define error: {}", x),
-                                            )
-                                        })?;
-                                }
-                                wasmtime::ExternType::Table(ty) => {
-                                    if let Ok(table) = crate::table::Table::from_js(&ctx, v.clone())
-                                    {
-                                        // let actual_ty = table.inner.ty(store.as_context());
-                                        // if actual_ty != ty {
-                                        //     warn!(?ty, ?actual_ty, "table is different");
-                                        // }
+                                    let func: Persistent<Function> = v.get()?;
+                                    let func = Mutex::new(DangerouslyImplementSync(func));
+                                    // We know that at the time of getting this call back,
+                                    // the context should still have had been alive
+                                    // For some reason a Mutex is needed to make it Send
+                                    // safe
+                                    Some(linker.func_new(
+                                        module,
+                                        name,
+                                        ty,
+                                        move |caller, params, results| {
+                                            let (_, ctx) = caller.data();
+                                            let func =
+                                                func.lock().unwrap().0.clone().restore(ctx)?;
 
-                                        linker
-                                            .define(store.as_context(), module, name, table.inner)
-                                            .map_err(|x| {
-                                                Exception::throw_internal(
-                                                    &ctx,
-                                                    &format!("wasm linker define error: {}", x),
-                                                )
-                                            })?;
-                                    } else {
-                                        return Err(ctx.throw(LinkError::new().into_js(&ctx)?));
-                                    }
-                                }
-                                wasmtime::ExternType::Memory(ty) => {
-                                    if let Ok(memory) =
-                                        crate::memory::Memory::from_js(&ctx, v.clone())
-                                    {
-                                        let actual_ty = memory.inner.ty(store.as_context());
-                                        if actual_ty != ty {
-                                            warn!(?ty, ?actual_ty, "memory is different");
-                                        }
-
-                                        linker
-                                            .define(store.as_context(), module, name, memory.inner)
-                                            .map_err(|x| {
-                                                Exception::throw_internal(
-                                                    &ctx,
-                                                    &format!("wasm linker define error: {}", x),
-                                                )
-                                            })?;
-                                    } else {
-                                        return Err(ctx.throw(LinkError::new().into_js(&ctx)?));
-                                    }
-                                }
-                                wasmtime::ExternType::Func(ty) => {
-                                    if !v.is_function() {
-                                        return Err(ctx.throw(LinkError::new().into_js(&ctx)?));
-                                    }
-
-                                    linker
-                                        .func_new(module, name, ty, {
-                                            #[derive(Clone, Copy, From, Deref, DerefMut)]
-                                            struct DangerouslyImplementSync<T>(T);
-                                            unsafe impl<T> Send for DangerouslyImplementSync<T> {}
-                                            unsafe impl<T> Sync for DangerouslyImplementSync<T> {}
-
-                                            let func: Persistent<Function> = v.get()?;
-                                            let func = Mutex::new(DangerouslyImplementSync(func));
-                                            // We know that at the time of getting this call back,
-                                            // the context should still have had been alive
-                                            // For some reason a Mutex is needed to make it Send
-                                            // safe
-                                            move |caller, params, results| {
-                                                let ctx = caller.data();
-                                                let func =
-                                                    func.lock().unwrap().0.clone().restore(ctx)?;
-
-                                                let mut args = Args::new(ctx.clone(), params.len());
-                                                args.push_args(
-                                                    params
-                                                        .iter()
-                                                        .map(|x| WasmValueConverter::from(*x)),
-                                                )?;
-                                                let res: Value = func.call_arg(args)?;
-                                                if let Some(array) = res.as_array() {
-                                                    if array.len() != results.len() {
-                                                        Err(Exception::throw_internal(
-                                                            ctx,
-                                                            &format!(
-                                                                "JS returned an array value, but \
-                                                                 its length does not match the \
-                                                                 result requirement, expected {} \
-                                                                 results, got {}",
-                                                                results.len(),
-                                                                array.len()
-                                                            ),
-                                                        ))?
-                                                    }
-
-                                                    for (item, result) in array.iter().zip(results)
-                                                    {
-                                                        let item: WasmValueConverter =
-                                                            WasmValueConverter::from_js(
-                                                                ctx, item?,
-                                                            )?;
-
-                                                        if matches!(result, Val::F32(_))
-                                                            && item.f64().is_some()
-                                                        {
-                                                            *result = item.f64().unwrap().into();
-                                                        } else {
-                                                            *result = *item;
-                                                        }
-                                                    }
-                                                } else if let Some(ret) = results.first_mut() {
-                                                    *ret = WasmValueConverter::from_js(ctx, res)?
-                                                        .into();
+                                            let mut args = Args::new(ctx.clone(), params.len());
+                                            args.push_args(
+                                                params.iter().map(|x| WasmValueConverter::from(*x)),
+                                            )?;
+                                            let res: Value = func.call_arg(args)?;
+                                            if let Some(array) = res.as_array() {
+                                                if array.len() != results.len() {
+                                                    Err(Exception::throw_internal(
+                                                        ctx,
+                                                        &format!(
+                                                            "JS returned an array value, but its \
+                                                             length does not match the result \
+                                                             requirement, expected {} results, \
+                                                             got {}",
+                                                            results.len(),
+                                                            array.len()
+                                                        ),
+                                                    ))?
                                                 }
-                                                Ok(())
+
+                                                for (item, result) in array.iter().zip(results) {
+                                                    let item: WasmValueConverter =
+                                                        WasmValueConverter::from_js(ctx, item?)?;
+
+                                                    if matches!(result, Val::F32(_))
+                                                        && item.f64().is_some()
+                                                    {
+                                                        *result = item.f64().unwrap().into();
+                                                    } else {
+                                                        *result = *item;
+                                                    }
+                                                }
+                                            } else if let Some(ret) = results.first_mut() {
+                                                *ret =
+                                                    WasmValueConverter::from_js(ctx, res)?.into();
                                             }
-                                        })
-                                        .unwrap();
+                                            Ok(())
+                                        },
+                                    ))
                                 }
+                            } else {
+                                let external: Option<Extern> = match module_import.ty() {
+                                    wasmtime::ExternType::Global(ty)
+                                        if ty.content().is_i64() && v.is_number() =>
+                                    {
+                                        None
+                                    }
+                                    wasmtime::ExternType::Global(ty)
+                                        if !ty.content().is_i64() && v.as_big_int().is_some() =>
+                                    {
+                                        None
+                                    }
+                                    wasmtime::ExternType::Global(ty) if ty.content().is_v128() => {
+                                        None
+                                    }
+                                    wasmtime::ExternType::Global(ty) => {
+                                        let item = crate::global::Global::from_js(&ctx, v.clone())
+                                            .or_else(|_| {
+                                                crate::global::Global::from_type(
+                                                    ty,
+                                                    v,
+                                                    store.as_context_mut(),
+                                                    &ctx,
+                                                )
+                                            })?;
+                                        Some(item.inner.into())
+                                    }
+                                    wasmtime::ExternType::Table(ty) => {
+                                        if let Ok(table) =
+                                            crate::table::Table::from_js(&ctx, v.clone())
+                                        {
+                                            // let actual_ty = table.inner.ty(store.as_context());
+                                            // if actual_ty != ty {
+                                            //     warn!(?ty, ?actual_ty, "table is different");
+                                            // }
+
+                                            Some(table.inner.into())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    wasmtime::ExternType::Memory(ty) => {
+                                        if let Ok(memory) =
+                                            crate::memory::Memory::from_js(&ctx, v.clone())
+                                        {
+                                            let actual_ty = memory.inner.ty(store.as_context());
+                                            if actual_ty != ty {
+                                                warn!(?ty, ?actual_ty, "memory is different");
+                                            }
+                                            Some(memory.inner.into())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                };
+
+                                external.map(|value| {
+                                    linker.define(store.as_context(), module, name, value)
+                                })
+                            };
+
+                            match define_result {
+                                Some(Ok(_)) => {}
+                                Some(Err(x)) => {
+                                    return Err(Exception::throw_internal(
+                                        &ctx,
+                                        &format!("wasm linker define error: {}", x),
+                                    ))
+                                }
+                                None => return Err(ctx.throw(LinkError::new().into_js(&ctx)?)),
                             }
                         } else {
                             return Err(Exception::throw_type(
@@ -243,29 +241,10 @@ impl<'js> Instance<'js> {
                                     .collect::<Result<Vec<_>>>()?;
                                 let mut results: Vec<Val> = func_type
                                     .results()
-                                    .map(|x| {
-                                        match x {
-                                            wasmtime::ValType::I32 => Ok(Val::I32(0)),
-                                            wasmtime::ValType::I64 => Ok(Val::I64(0)),
-                                            wasmtime::ValType::F32 => Ok(Val::F32(0)),
-                                            wasmtime::ValType::F64 => Ok(Val::F64(0)),
-                                            wasmtime::ValType::V128 => Ok(Val::V128(0_u128.into())),
-                                            wasmtime::ValType::Ref(ref_type)
-                                                if ref_type.matches(&RefType::FUNCREF) =>
-                                            {
-                                                Ok(Val::null_func_ref())
-                                            }
-                                            wasmtime::ValType::Ref(ref_type)
-                                                if ref_type.matches(&RefType::EXTERNREF) =>
-                                            {
-                                                Ok(Val::null_extern_ref())
-                                            }
-                                            wasmtime::ValType::Ref(ref_type)
-                                                if ref_type.matches(&RefType::ANYREF) =>
-                                            {
-                                                Ok(Val::null_any_ref())
-                                            }
-                                            _ => Err(ctx.throw("TODO".into_js(&ctx)?)),
+                                    .map(|ref x| {
+                                        match get_default_value_for_val_type(x) {
+                                            Ok(x) => Ok(x),
+                                            Err(_) => Err(ctx.throw("TODO".into_js(&ctx)?)),
                                         }
                                     })
                                     .collect::<Result<Vec<_>>>()?;
@@ -311,29 +290,10 @@ impl<'js> Instance<'js> {
                         if let Some(global) = self.get_global(store.as_context_mut(), &name) {
                             global
                         } else {
-                            let val = match ty.content() {
-                                wasmtime::ValType::I32 => Val::I32(0),
-                                wasmtime::ValType::I64 => Val::I64(0),
-                                wasmtime::ValType::F32 => Val::F32(0),
-                                wasmtime::ValType::F64 => Val::F64(0),
-                                wasmtime::ValType::V128 => Val::V128(0_u128.into()),
-                                wasmtime::ValType::Ref(ref_type)
-                                    if ref_type.matches(&RefType::FUNCREF) =>
-                                {
-                                    Val::null_func_ref()
-                                }
-                                wasmtime::ValType::Ref(ref_type)
-                                    if ref_type.matches(&RefType::EXTERNREF) =>
-                                {
-                                    Val::null_extern_ref()
-                                }
-                                wasmtime::ValType::Ref(ref_type)
-                                    if ref_type.matches(&RefType::ANYREF) =>
-                                {
-                                    Val::null_any_ref()
-                                }
-                                _ => return Err(ctx.throw("TODO".into_js(&ctx)?)),
-                            };
+                            let val = match get_default_value_for_val_type(ty.content()) {
+                                Ok(x) => Ok(x),
+                                Err(_) => Err(ctx.throw("TODO".into_js(&ctx)?)),
+                            }?;
                             wasmtime::Global::new(store.as_context_mut(), ty, val).map_err(|x| {
                                 Exception::throw_internal(
                                     &ctx,

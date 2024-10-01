@@ -7,6 +7,8 @@ use rquickjs::class::Trace;
 #[rquickjs::class]
 pub struct Engine {
     #[qjs(skip_trace)]
+    // wasmtime engine itself is ref counted, so clone is available default, no need to wrap it in
+    // Arc
     inner: RefCell<wasmtime::Engine>,
 }
 
@@ -20,8 +22,11 @@ impl Default for Engine {
 impl Engine {
     #[qjs(constructor)]
     pub fn new() -> Self {
+        let mut config = wasmtime::Config::new();
+        // config.async_support(true);
+        let inner = wasmtime::Engine::new(&config).unwrap();
         Self {
-            inner: RefCell::new(wasmtime::Engine::default()),
+            inner: RefCell::new(inner),
         }
     }
 }
