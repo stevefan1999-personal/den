@@ -47,7 +47,7 @@ color-eyre = "0.6.3"
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 
 [features]
-default = ["stdlib", "typescript", "react"]
+default = ["stdlib", "typescript", "react", "wasm-wasmtime"]
 typescript = [
     "transpile",
     "den-transpiler-swc?/typescript",
