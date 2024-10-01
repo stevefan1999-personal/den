@@ -16,15 +16,10 @@ fmmap = { version = "0.3.3", features = ["tokio-async"] }
 matchit = "0.8.4"
 mime = "0.3.17"
 relative-path = "1.9.3"
-reqwest = { version = "0.12.7", features = [
+reqwest = { workspace = true, features = [
     "stream",
-    "socks",
-    "multipart",
-    "json",
     "deflate",
     "gzip",
-    "cookies",
-    "blocking",
     "brotli",
     "native-tls",
 ] }
@@ -43,6 +38,7 @@ den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = t
 den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
 den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true }
+den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch", optional = true }
 den-transpiler-swc = { version = "*", path = "../den-transpiler-swc", optional = true }
 den-utils = { version = "*", path = "../den-utils" }
 
@@ -69,7 +65,8 @@ stdlib = [
     "stdlib-networking",
     "stdlib-text",
     "stdlib-timer",
-    "stdlib-sqlite"
+    "stdlib-sqlite",
+    "stdlib-whatwg-fetch"
 ]
 stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
@@ -78,6 +75,7 @@ stdlib-networking = ["dep:den-stdlib-networking"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
 stdlib-sqlite = ["dep:den-stdlib-sqlite"]
+stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
 
 wasm = ["dep:den-stdlib-wasm"]
 wasm-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]

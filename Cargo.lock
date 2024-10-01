@@ -1159,6 +1159,7 @@ dependencies = [
  "den-stdlib-text",
  "den-stdlib-timer",
  "den-stdlib-wasm",
+ "den-stdlib-whatwg-fetch",
  "den-transpiler-swc",
  "den-utils",
  "derivative",
@@ -1195,9 +1196,7 @@ dependencies = [
  "derivative",
  "derive_more",
  "quanta",
- "reqwest",
  "rquickjs",
- "serde_json",
  "tokio-util",
 ]
 
@@ -1293,6 +1292,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "den-stdlib-whatwg-fetch"
+version = "0.3.0"
+dependencies = [
+ "den-utils",
+ "derivative",
+ "derive_more",
+ "either",
+ "getset",
+ "indexmap 2.5.0",
+ "reqwest",
+ "rquickjs",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "typed-builder",
+]
+
+[[package]]
 name = "den-transpiler-swc"
 version = "0.3.0"
 dependencies = [
@@ -1306,6 +1323,7 @@ dependencies = [
 name = "den-utils"
 version = "0.3.0"
 dependencies = [
+ "derive_more",
  "rquickjs",
  "serde",
  "serde_json",
@@ -3478,7 +3496,6 @@ dependencies = [
 [[package]]
 name = "rquickjs"
 version = "0.6.2"
-source = "git+https://github.com/DelSkayn/rquickjs#bb4a97b66cd59c4cbb789b01593f1c195af6abe0"
 dependencies = [
  "either",
  "indexmap 2.5.0",
@@ -3489,7 +3506,6 @@ dependencies = [
 [[package]]
 name = "rquickjs-core"
 version = "0.6.2"
-source = "git+https://github.com/DelSkayn/rquickjs#bb4a97b66cd59c4cbb789b01593f1c195af6abe0"
 dependencies = [
  "async-lock",
  "chrono",
@@ -3504,7 +3520,6 @@ dependencies = [
 [[package]]
 name = "rquickjs-macro"
 version = "0.6.2"
-source = "git+https://github.com/DelSkayn/rquickjs#bb4a97b66cd59c4cbb789b01593f1c195af6abe0"
 dependencies = [
  "convert_case",
  "fnv",
@@ -3523,7 +3538,6 @@ dependencies = [
 [[package]]
 name = "rquickjs-sys"
 version = "0.6.2"
-source = "git+https://github.com/DelSkayn/rquickjs#bb4a97b66cd59c4cbb789b01593f1c195af6abe0"
 dependencies = [
  "cc",
 ]

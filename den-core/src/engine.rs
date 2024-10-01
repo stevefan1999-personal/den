@@ -77,6 +77,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:sqlite");
                     }
+                    #[cfg(feature = "stdlib-whatwg-fetch")]
+                    {
+                        resolver = resolver.with_module("den:whatcg-fetch");
+                    }
                     #[cfg(feature = "wasm")]
                     {
                         resolver = resolver.with_module("den:wasm");
@@ -150,6 +154,11 @@ impl Engine {
                     #[cfg(feature = "stdlib-sqlite")]
                     {
                         loader = loader.with_module("den:sqlite", den_stdlib_sqlite::js_sqlite);
+                    }
+                    #[cfg(feature = "stdlib-whatwg-fetch")]
+                    {
+                        loader = loader
+                            .with_module("den:whatcg-fetch", den_stdlib_whatwg_fetch::js_whatwg);
                     }
 
                     #[cfg(feature = "wasm")]
@@ -252,6 +261,14 @@ impl Engine {
                     let _ = Module::evaluate_def::<den_stdlib_timer::js_timer, _>(
                         ctx.clone(),
                         "den:timer",
+                    )?;
+                }
+
+                #[cfg(feature = "stdlib-whatwg-fetch")]
+                {
+                    let _ = Module::evaluate_def::<den_stdlib_whatwg_fetch::js_whatwg, _>(
+                        ctx.clone(),
+                        "den:whatwg-fetch",
                     )?;
                 }
 

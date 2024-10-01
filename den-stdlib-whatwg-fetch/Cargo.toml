@@ -1,0 +1,33 @@
+[package]
+name = "den-stdlib-whatwg-fetch"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+den-utils = { version = "0.3.0", path = "../den-utils" }
+derivative.workspace = true
+derive_more.workspace = true
+either.workspace = true
+getset = "0.1.3"
+indexmap.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+tracing.workspace = true
+typed-builder.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+reqwest = { workspace = true, features = [
+    "stream",
+    "multipart",
+    "json",
+    "deflate",
+    "gzip",
+    "cookies",
+    "brotli",
+    "native-tls",
+] }
+serde_json.workspace = true

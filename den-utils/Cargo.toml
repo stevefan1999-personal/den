@@ -12,6 +12,10 @@ keywords.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+derive_more.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rquickjs = { workspace = true, features = ["macro"] }
 
 
 [features]
