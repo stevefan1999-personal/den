@@ -1,8 +1,4 @@
-use std::{
-    cell::RefCell,
-    mem::ManuallyDrop,
-    sync::{Arc, Mutex},
-};
+use std::sync::Mutex;
 
 use derive_more::derive::{Deref, DerefMut, From, Into};
 use indexmap::IndexMap;
@@ -11,10 +7,11 @@ use rquickjs::{
     Value,
 };
 use tracing::warn;
-use wasmtime::{AsContext, AsContextMut, Extern, ExternType, RefType, Val};
+use wasmtime::{AsContext, AsContextMut, Extern, RefType, Val};
 
 use crate::{
-    error::LinkError, module::Module, table::TableDescriptor, utils::WasmValueConverter, MyUserData,
+    error::LinkError, module::Module, table::TableDescriptor, utils::WasmValueConverter,
+    WasmtimeRuntimeData,
 };
 
 #[derive(Trace, Clone, Deref, DerefMut, From, Into)]
@@ -23,7 +20,6 @@ pub struct Instance<'js> {
     #[qjs(skip_trace)]
     instance: wasmtime::Instance,
 
-    #[qjs(skip_trace)]
     #[deref(ignore)]
     #[deref_mut(ignore)]
     store: crate::store::Store<'js>,
@@ -39,9 +35,11 @@ impl<'js> Instance<'js> {
         ctx: Ctx<'js>,
     ) -> Result<Self> {
         let mut linker = wasmtime::Linker::new(module.engine());
-        let store = store.clone().unwrap_or(ctx.userdata::<MyUserData>().unwrap().store.clone());
+        let store = store
+            .clone()
+            .unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
         let instance = {
-            let mut store = store.lock().unwrap();
+            let mut store = store.borrow_mut();
 
             // https://webassembly.github.io/spec/js-api/#read-the-imports
             let module_imports = module.imports();
@@ -144,9 +142,11 @@ impl<'js> Instance<'js> {
 
                                             let func: Persistent<Function> = v.get()?;
                                             let func = Mutex::new(DangerouslyImplementSync(func));
-
+                                            // We know that at the time of getting this call back,
+                                            // the context should still have had been alive
+                                            // For some reason a Mutex is needed to make it Send
+                                            // safe
                                             move |caller, params, results| {
-                                                // println!("{:?}", ctx.as_raw());
                                                 let ctx = caller.data();
                                                 let func =
                                                     func.lock().unwrap().0.clone().restore(ctx)?;
@@ -158,11 +158,10 @@ impl<'js> Instance<'js> {
                                                         .map(|x| WasmValueConverter::from(*x)),
                                                 )?;
                                                 let res: Value = func.call_arg(args)?;
-                                                // let res = Value::new_null(ctx.clone());
                                                 if let Some(array) = res.as_array() {
                                                     if array.len() != results.len() {
                                                         Err(Exception::throw_internal(
-                                                            &ctx,
+                                                            ctx,
                                                             &format!(
                                                                 "JS returned an array value, but \
                                                                  its length does not match the \
@@ -178,7 +177,7 @@ impl<'js> Instance<'js> {
                                                     {
                                                         let item: WasmValueConverter =
                                                             WasmValueConverter::from_js(
-                                                                &ctx, item?,
+                                                                ctx, item?,
                                                             )?;
 
                                                         if matches!(result, Val::F32(_))
@@ -190,7 +189,7 @@ impl<'js> Instance<'js> {
                                                         }
                                                     }
                                                 } else if let Some(ret) = results.first_mut() {
-                                                    *ret = WasmValueConverter::from_js(&ctx, res)?
+                                                    *ret = WasmValueConverter::from_js(ctx, res)?
                                                         .into();
                                                 }
                                                 Ok(())
@@ -212,7 +211,7 @@ impl<'js> Instance<'js> {
             linker
                 .instantiate(store.as_context_mut(), module)
                 .map_err(|x| {
-                    Exception::throw_internal(&ctx, &format!("wasm module creation error: {}", x))
+                    Exception::throw_internal(&ctx, &format!("wasm instance creation error: {}", x))
                 })?
         };
 
@@ -222,9 +221,7 @@ impl<'js> Instance<'js> {
     #[qjs(get, enumerable)]
     pub fn exports(&self, ctx: Ctx<'js>) -> Result<IndexMap<String, Value<'js>>> {
         let store = self.store.clone();
-        let mut store = store.try_lock().map_err(|x| {
-            Exception::throw_internal(&ctx, &format!("failed to lock store: {}", x))
-        })?;
+        let mut store = store.borrow_mut();
         let mut map = IndexMap::new();
         for (name, ext) in self
             .instance
@@ -272,18 +269,26 @@ impl<'js> Instance<'js> {
                                         }
                                     })
                                     .collect::<Result<Vec<_>>>()?;
-                                func.call(
-                                    store.lock().unwrap().as_context_mut(),
-                                    &args,
-                                    &mut results,
-                                )
-                                .map_err(|x| {
-                                    Exception::throw_internal(
-                                        &ctx,
-                                        &format!("failed to lock store: {}", x),
-                                    )
-                                })?;
-                                Ok::<_, rquickjs::Error>(())
+                                func.call(store.borrow_mut().as_context_mut(), &args, &mut results)
+                                    .map_err(|x| {
+                                        Exception::throw_internal(
+                                            &ctx,
+                                            &format!("failed to lock store: {}", x),
+                                        )
+                                    })?;
+                                match results.len() {
+                                    0 => Ok(Value::new_null(ctx.clone())),
+                                    1 => WasmValueConverter::from(results[0]).into_js(&ctx),
+                                    _ => {
+                                        Ok(Array::from_iter_js(
+                                            &ctx,
+                                            results
+                                                .into_iter()
+                                                .map(|x| WasmValueConverter::from(x).into_js(&ctx)),
+                                        )?
+                                        .into_value())
+                                    }
+                                }
                             }
                         })?;
                         func.set_length(func_len)?;

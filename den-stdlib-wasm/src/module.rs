@@ -7,7 +7,7 @@ use indexmap::{indexmap, IndexMap};
 use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 use wasmtime::ExternType;
 
-use crate::MyUserData;
+use crate::WasmtimeRuntimeData;
 
 #[derive(Trace, Getters, Deref, DerefMut, From, Into, Clone)]
 #[rquickjs::class]
@@ -15,12 +15,6 @@ pub struct Module {
     #[qjs(skip_trace)]
     #[getset(get)]
     pub(crate) inner: wasmtime::Module,
-
-    #[qjs(skip_trace)]
-    #[getset(get)]
-    #[deref(ignore)]
-    #[deref_mut(ignore)]
-    pub(crate) engine: crate::engine::Engine,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -37,13 +31,18 @@ impl Module {
         }
         .unwrap();
 
-        let engine = engine.clone().unwrap_or(ctx.userdata::<MyUserData>().unwrap().engine.clone());
+        let engine = engine.clone().unwrap_or(
+            ctx.userdata::<WasmtimeRuntimeData>()
+                .unwrap()
+                .engine
+                .clone(),
+        );
 
-        let inner = wasmtime::Module::from_binary(&engine, buf).map_err(|x| {
+        let inner = wasmtime::Module::from_binary(&engine.borrow(), buf).map_err(|x| {
             Exception::throw_internal(&ctx, &format!("wasm module creation error: {}", x))
         })?;
 
-        Ok(Self { engine, inner })
+        Ok(Self { inner })
     }
 
     #[qjs(static)]

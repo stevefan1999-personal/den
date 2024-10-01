@@ -4,7 +4,7 @@ use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Result, Va
 use typed_builder::TypedBuilder;
 use wasmtime::AsContextMut;
 
-use crate::MyUserData;
+use crate::WasmtimeRuntimeData;
 
 #[derive(Trace, Clone, Deref, DerefMut, From, Into)]
 #[rquickjs::class]
@@ -69,11 +69,11 @@ impl<'js> Memory<'js> {
                 )
             })?;
 
-        let store = store.unwrap_or(ctx.userdata::<MyUserData>().unwrap().store.clone());
+        let store = store.unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
 
         Ok(Self {
             inner: {
-                let mut store = store.lock().unwrap();
+                let mut store = store.borrow_mut();
 
                 wasmtime::Memory::new(store.as_context_mut(), ty).map_err(|x| {
                     Exception::throw_internal(&ctx, &format!("wasm linker memory new error: {}", x))
@@ -87,7 +87,7 @@ impl<'js> Memory<'js> {
     pub fn buffer(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
         let _data = self
             .inner
-            .data_mut(self.store.lock().unwrap().as_context_mut());
+            .data_mut(self.store.borrow_mut().as_context_mut());
         Err(ctx.throw("TODO".into_js(&ctx)?))
 
         // let val = unsafe {
@@ -114,7 +114,7 @@ impl<'js> Memory<'js> {
 
     pub fn grow(&self, delta: u64, ctx: Ctx<'_>) -> Result<()> {
         self.inner
-            .grow(self.store.lock().unwrap().as_context_mut(), delta)
+            .grow(self.store.borrow_mut().as_context_mut(), delta)
             .map_err(|x| {
                 Exception::throw_internal(&ctx, &format!("wasm linker memory grow error: {}", x))
             })?;

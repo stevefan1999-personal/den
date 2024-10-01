@@ -4,7 +4,7 @@ use rquickjs::{class::Trace, prelude::Opt, Ctx, Exception, FromJs, IntoJs, Resul
 use typed_builder::TypedBuilder;
 use wasmtime::{Ref, RefType, TableType};
 
-use crate::MyUserData;
+use crate::WasmtimeRuntimeData;
 
 #[derive(Clone, From, Into, TypedBuilder)]
 pub struct TableDescriptor {
@@ -74,8 +74,8 @@ impl Table {
             }
         };
 
-        let store = store.unwrap_or(ctx.userdata::<MyUserData>().unwrap().store.clone());
-        let mut store = store.lock().unwrap();
+        let store = store.unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
+        let mut store = store.borrow_mut();
         let inner = wasmtime::Table::new(&mut *store, ty, init).map_err(|x| {
             Exception::throw_internal(&ctx, &format!("wasm linker memory new error: {}", x))
         })?;

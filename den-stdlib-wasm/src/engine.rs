@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::cell::RefCell;
 
 use derive_more::derive::{Deref, DerefMut, From, Into};
 use rquickjs::class::Trace;
@@ -7,7 +7,7 @@ use rquickjs::class::Trace;
 #[rquickjs::class]
 pub struct Engine {
     #[qjs(skip_trace)]
-    inner: wasmtime::Engine,
+    inner: RefCell<wasmtime::Engine>,
 }
 
 impl Default for Engine {
@@ -21,7 +21,7 @@ impl Engine {
     #[qjs(constructor)]
     pub fn new() -> Self {
         Self {
-            inner: wasmtime::Engine::default(),
+            inner: RefCell::new(wasmtime::Engine::default()),
         }
     }
 }

@@ -6,7 +6,7 @@ use rquickjs::{
 use typed_builder::TypedBuilder;
 use wasmtime::{AsContext, AsContextMut, GlobalType, Val, ValType};
 
-use crate::MyUserData;
+use crate::WasmtimeRuntimeData;
 
 #[derive(Clone, Trace, Deref, DerefMut, From, Into)]
 #[rquickjs::class]
@@ -51,7 +51,7 @@ impl Global {
         Opt(store): Opt<crate::store::Store<'js>>,
         ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let store = store.unwrap_or(ctx.userdata::<MyUserData>().unwrap().store.clone());
+        let store = store.unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
         let value = match (desc.value.as_str(), value.type_of()) {
             ("i32", rquickjs::Type::Int) => value.as_int().unwrap().into(),
             ("i32", rquickjs::Type::Bool) => wasmtime::Val::I32(value.as_bool().unwrap().into()),
@@ -72,9 +72,8 @@ impl Global {
             }
         };
 
-        let mut store = store.lock().unwrap();
         let ty = GlobalType::new(
-            value.ty(store.as_context()).unwrap(),
+            value.ty(store.borrow().as_context()).unwrap(),
             if desc.mutable.unwrap_or(false) {
                 wasmtime::Mutability::Var
             } else {
@@ -82,9 +81,10 @@ impl Global {
             },
         );
 
-        let inner = wasmtime::Global::new(store.as_context_mut(), ty, value).map_err(|x| {
-            Exception::throw_internal(&ctx, &format!("wasm global new error: {}", x))
-        })?;
+        let inner =
+            wasmtime::Global::new(store.borrow_mut().as_context_mut(), ty, value).map_err(|x| {
+                Exception::throw_internal(&ctx, &format!("wasm global new error: {}", x))
+            })?;
 
         Ok(Self { inner })
     }
