@@ -9,7 +9,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-rusqlite = { version = "0.31.0", features = ["bundled"] }
+rusqlite.workspace = true
 derivative.workspace = true
 derive_more.workspace = true
 either.workspace = true

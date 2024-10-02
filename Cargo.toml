@@ -69,6 +69,7 @@ tracing = "0.1.40"
 thiserror = "1.0.64"
 typed-builder = "0.20.0"
 reqwest = "0.12.7"
+rusqlite = { version = "0.31.0", features = ["bundled"] }
 serde = "1.0.210"
 serde_json = "1.0.128"
 
