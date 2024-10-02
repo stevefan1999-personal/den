@@ -13,10 +13,10 @@ keywords.workspace = true
 
 [dependencies]
 derive_more.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 rquickjs = { workspace = true, features = ["macro"] }
 
 
 [features]
-
+serde_json = ["dep:serde_json", "serde"]

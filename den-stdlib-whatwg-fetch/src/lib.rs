@@ -1,6 +1,6 @@
 use std::{cell::RefCell, sync::Arc};
 
-use den_utils::SerdeJsonValue;
+use den_utils::serde_json::SerdeJsonValue;
 use derivative::Derivative;
 use derive_more::derive::{From, Into};
 use rquickjs::{class::Trace, ArrayBuffer, Ctx, Exception, IntoJs, Result, TypedArray};
@@ -31,7 +31,7 @@ impl Response {
         }
     }
 
-    pub async fn blob<'js>(ctx: Ctx<'js>) -> Result<()> {
+    pub async fn blob<'js>(&self, ctx: Ctx<'js>) -> Result<()> {
         Err(ctx.throw("TODO".into_js(&ctx)?))
     }
 
@@ -74,6 +74,74 @@ impl Response {
         } else {
             Err(Exception::throw_type(&ctx, "Already distributed"))
         }
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn body_used(&self) -> bool {
+        self.inner.borrow().is_none()
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn ok(&self) -> bool {
+        self.inner
+            .borrow()
+            .as_ref()
+            .map(|inner| inner.status().is_success())
+            .unwrap_or(false)
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn redirected(&self) -> bool {
+        self.inner
+            .borrow()
+            .as_ref()
+            .map(|inner| inner.status().is_redirection())
+            .unwrap_or(false)
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn status<'js>(&self, ctx: Ctx<'js>) -> Result<u16> {
+        match self
+            .inner
+            .borrow()
+            .as_ref()
+            .map(|inner| inner.status().into())
+        {
+            Some(x) => Ok(x),
+            None => Err(Exception::throw_internal(&ctx, "Already consumed")),
+        }
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn status_text<'js>(&self, ctx: Ctx<'js>) -> Result<&str> {
+        match self
+            .inner
+            .borrow()
+            .as_ref()
+            .map(|inner| inner.status().canonical_reason())
+        {
+            Some(Some(x)) => Ok(x),
+            Some(None) => Ok(""),
+            None => Err(Exception::throw_internal(&ctx, "Already consumed")),
+        }
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn url<'js>(&self, ctx: Ctx<'js>) -> Result<String> {
+        match self
+            .inner
+            .borrow()
+            .as_ref()
+            .map(|inner| inner.url().to_string())
+        {
+            Some(x) => Ok(x),
+            None => Err(Exception::throw_internal(&ctx, "Already consumed")),
+        }
+    }
+
+    #[qjs(enumerable, get, rename = "type")]
+    pub fn type_<'js>(&self, ctx: Ctx<'js>) -> Result<&str> {
+        Err(ctx.throw("TODO".into_js(&ctx)?))
     }
 }
 
