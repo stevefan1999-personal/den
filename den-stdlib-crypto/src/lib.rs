@@ -1,13 +1,37 @@
 use rand::RngCore;
-use rquickjs::ArrayBuffer;
+use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 use uuid::Uuid;
 
 #[rquickjs::function]
-pub fn get_random_values<'js>(array: ArrayBuffer<'js>) -> ArrayBuffer<'js> {
-    let dest = array.as_bytes().unwrap();
-    let dest = unsafe { core::slice::from_raw_parts_mut(dest.as_ptr() as *mut u8, dest.len()) };
-    rand::thread_rng().fill_bytes(dest);
-    array
+pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
+    {
+        let array = if let Ok(array) = TypedArray::<u8>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<u16>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<u32>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<u64>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<i8>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<i16>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<i32>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Ok(array) = TypedArray::<i64>::from_object(array.clone()) {
+            array.arraybuffer()
+        } else if let Some(array) = ArrayBuffer::from_object(array.clone()) {
+            Ok(array)
+        } else {
+            Err(Exception::throw_type(&ctx, "not a typed array"))
+        }?;
+
+        let dest = array.as_bytes().unwrap();
+        let dest = unsafe { core::slice::from_raw_parts_mut(dest.as_ptr() as *mut u8, dest.len()) };
+        rand::thread_rng().fill_bytes(dest);
+    }
+    Ok(array)
 }
 
 #[rquickjs::function(rename = "randomUUID")]
