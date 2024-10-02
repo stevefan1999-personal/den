@@ -17,7 +17,7 @@ use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 #[cfg(feature = "react")]
 use swc_ecma_transforms_react::react;
 #[cfg(feature = "typescript")]
-use swc_ecma_transforms_typescript::strip;
+use swc_ecma_transforms_typescript::typescript;
 use swc_ecma_visit::FoldWith;
 use swc_node_comments::SwcComments;
 pub struct EasySwcTranspiler {
@@ -88,7 +88,15 @@ impl EasySwcTranspiler {
             Syntax::Typescript(_) => {
                 program
                     .fold_with(&mut resolver(unresolved_mark, top_level_mark, true))
-                    .fold_with(&mut strip(unresolved_mark, top_level_mark))
+                    .fold_with(&mut typescript(
+                        {
+                            let mut config = swc_ecma_transforms_typescript::Config::default();
+                            config.native_class_properties = true;
+                            config
+                        },
+                        unresolved_mark,
+                        top_level_mark,
+                    ))
             }
             Syntax::Es(_) => {
                 program.fold_with(&mut resolver(unresolved_mark, top_level_mark, false))
@@ -146,14 +154,8 @@ impl EasySwcTranspiler {
             .emit_program(&program)
             .map_err(EasySwcTranspilerError::SwcEmitProgram)?;
 
-        Ok((
-            String::from_utf8(buf)?,
-            if emit_sourcemap {
-                Some(self.source_map.build_source_map(srcmap.as_ref()))
-            } else {
-                None
-            },
-        ))
+        let source_map = emit_sourcemap.then(|| self.source_map.build_source_map(srcmap.as_ref()));
+        Ok((String::from_utf8(buf)?, source_map))
     }
 }
 
