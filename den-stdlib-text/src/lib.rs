@@ -2,6 +2,7 @@ use derivative::Derivative;
 use derive_more::{From, Into};
 use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
+use indexmap::{indexmap, IndexMap};
 use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 
 #[derive(Trace, Derivative, From, Into)]
@@ -130,11 +131,17 @@ impl TextEncoder {
 
     pub fn encode_into<'js>(
         &self,
-        _src: String,
-        _dest: TypedArray<'js, u8>,
-        ctx: Ctx<'js>,
-    ) -> Result<()> {
-        Err(Exception::throw_internal(&ctx, "not implemented"))
+        src: String,
+        dest: TypedArray<'js, u8>,
+    ) -> IndexMap<&str, usize> {
+        let dest = dest.as_bytes().unwrap();
+        let dest = unsafe { core::slice::from_raw_parts_mut(dest.as_ptr() as *mut u8, dest.len()) };
+        let (result, _, _) = encoding_rs::UTF_8.encode(&src);
+        dest[..result.len()].copy_from_slice(&result);
+        indexmap! {
+            "read" => result.len(),
+            "written" => result.len()
+        }
     }
 }
 
