@@ -4,13 +4,16 @@ members = [
     "den-core",
     "den-stdlib-console",
     "den-stdlib-core",
+    "den-stdlib-crypto",
     "den-stdlib-fs",
     "den-stdlib-io",
     "den-stdlib-networking",
-    "den-stdlib-regex", "den-stdlib-sqlite",
+    "den-stdlib-regex", 
+    "den-stdlib-sqlite",
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
+    "den-stdlib-whatwg-fetch",
     "den-transpiler-swc",
     "den-utils",
 ]
@@ -104,11 +107,12 @@ tokio-console = ["console-subscriber"]
 stdlib = ["den-core/stdlib"]
 stdlib-console = ["den-core/stdlib-console"]
 stdlib-core = ["den-core/stdlib-core"]
+stdlib-crypto = ["den-core/stdlib-crypto"]
 stdlib-fs = ["den-core/stdlib-fs"]
 stdlib-networking = ["den-core/stdlib-networking"]
+stdlib-sqlite = ["den-core/stdlib-sqlite"]
 stdlib-text = ["den-core/stdlib-text"]
 stdlib-timer = ["den-core/stdlib-timer"]
-stdlib-sqlite = ["den-core/stdlib-sqlite"]
 stdlib-whatwg-fetch = ["den-core/stdlib-whatwg-fetch"]
 
 wasm = ["den-core/wasm"]

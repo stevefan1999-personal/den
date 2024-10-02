@@ -1,0 +1,23 @@
+[package]
+name = "den-stdlib-crypto"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+den-utils = { path = "../den-utils", features = ["serde_json"] }
+derivative.workspace = true
+derive_more.workspace = true
+either.workspace = true
+getset = "0.1.3"
+indexmap.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+tracing.workspace = true
+typed-builder.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+rand = "0.8.5"
+uuid = { version = "1.10.0", features = ["fast-rng", "v4"] }

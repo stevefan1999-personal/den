@@ -81,6 +81,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:whatcg-fetch");
                     }
+                    #[cfg(feature = "stdlib-crypto")]
+                    {
+                        resolver = resolver.with_module("den:crypto");
+                    }
                     #[cfg(feature = "wasm")]
                     {
                         resolver = resolver.with_module("den:wasm");
@@ -160,7 +164,11 @@ impl Engine {
                         loader = loader
                             .with_module("den:whatcg-fetch", den_stdlib_whatwg_fetch::js_whatwg);
                     }
-
+                    #[cfg(feature = "stdlib-crypto")]
+                    {
+                        loader = loader
+                            .with_module("den:crypto", den_stdlib_crypto::js_crypto);
+                    }
                     #[cfg(feature = "wasm")]
                     {
                         loader = loader.with_module("den:wasm", den_stdlib_wasm::js_wasm)
@@ -269,6 +277,14 @@ impl Engine {
                     let _ = Module::evaluate_def::<den_stdlib_whatwg_fetch::js_whatwg, _>(
                         ctx.clone(),
                         "den:whatwg-fetch",
+                    )?;
+                }
+
+                #[cfg(feature = "stdlib-crypto")]
+                {
+                    let _ = Module::evaluate_def::<den_stdlib_crypto::js_crypto, _>(
+                        ctx.clone(),
+                        "den:crypto",
                     )?;
                 }
 

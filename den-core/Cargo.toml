@@ -32,6 +32,7 @@ typed-builder = "0.20.0"
 # Den specific stuff
 den-stdlib-console = { version = "*", path = "../den-stdlib-console", optional = true }
 den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
+den-stdlib-crypto = { version = "*", path = "../den-stdlib-crypto", optional = true }
 den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
 den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
 den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = true }
@@ -61,20 +62,22 @@ transpile = [
 stdlib = [
     "stdlib-console",
     "stdlib-core",
+    "stdlib-crypto",
     "stdlib-fs",
     "stdlib-networking",
+    "stdlib-sqlite",
     "stdlib-text",
     "stdlib-timer",
-    "stdlib-sqlite",
-    "stdlib-whatwg-fetch"
+    "stdlib-whatwg-fetch",
 ]
 stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
+stdlib-crypto = ["dep:den-stdlib-crypto"]
 stdlib-fs = ["dep:den-stdlib-fs"]
 stdlib-networking = ["dep:den-stdlib-networking"]
+stdlib-sqlite = ["dep:den-stdlib-sqlite"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
-stdlib-sqlite = ["dep:den-stdlib-sqlite"]
 stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
 
 wasm = ["dep:den-stdlib-wasm"]
