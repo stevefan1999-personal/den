@@ -6,9 +6,7 @@ use tokio::runtime::Handle;
 use typed_builder::TypedBuilder;
 #[cfg(feature = "transpile")]
 use {
-    den_transpiler_swc::{
-        infer_transpile_syntax_by_extension, swc_core::base::config::IsModule, EasySwcTranspiler,
-    },
+    den_transpiler_swc::{infer_transpile_syntax_by_extension, EasySwcTranspiler, IsModule},
     std::sync::Arc,
 };
 

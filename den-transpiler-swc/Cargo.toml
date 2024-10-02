@@ -9,23 +9,29 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-swc_core = { workspace = true, features = [
-    "ecma_codegen",
-    "base_concurrent",
-    "common_concurrent",
-    "ecma_plugin_transform",
-    "ecma_parser",
-    "common_tty",
-] }
-derive_more = { workspace = true, features = ["display", "debug", "error"] }
 anyhow = "1.0.89"
+derive_more = { workspace = true, features = ["display", "debug", "error"] }
+sourcemap = "9.0.0"
 trie-match = "0.2.0"
+
+swc_common = { version = "0.40.1", features = ["sourcemap", "tty-emitter", "concurrent"] }
+swc_ecma_ast = "0.121.1"
+swc_ecma_codegen = "0.158.1"
+swc_ecma_parser = { version = "0.152.1", optional = true }
+swc_ecma_transforms_base = { version = "0.149.0", features = ["concurrent"] }
+swc_ecma_transforms_react = { version = "0.195.0", features = ["concurrent"], optional = true }
+swc_ecma_transforms_typescript = { version = "0.202.1", optional = true }
+swc_ecma_visit = "0.107.0"
+swc_config = { version = "0.1.15", features = ["sourcemap"] }
+swc_compiler_base = "0.23.0"
+swc_node_comments = "0.27.0"
 
 [features]
 typescript = [
     "transpile",
-    "swc_core/ecma_transforms_typescript",
-    "swc_core/ecma_parser_typescript"
+    "dep:swc_ecma_parser",
+    "swc_ecma_parser/typescript",
+    "dep:swc_ecma_transforms_typescript",
 ]
-react = ["transpile", "swc_core/ecma_transforms_react"]
+react = ["transpile", "dep:swc_ecma_transforms_react"]
 transpile = []

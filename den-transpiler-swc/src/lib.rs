@@ -1,47 +1,44 @@
 use std::{io, string::FromUtf8Error};
 
 use derive_more::{Debug, Display, Error, From, Into};
-pub use swc_core;
-#[cfg(feature = "react")]
-use swc_core::ecma::transforms::react::react;
-#[cfg(feature = "typescript")]
-use swc_core::ecma::transforms::typescript::strip;
-use swc_core::{
-    base::{config::IsModule, Compiler},
-    common::{
-        comments::Comments,
-        errors::{ColorConfig, Handler},
-        sync::Lrc,
-        BytePos, FileName, Globals, LineCol, Mark, SourceFile, SourceMap, GLOBALS,
-    },
-    ecma::{
-        ast::EsVersion,
-        codegen::{self, text_writer::JsWriter, Emitter},
-        parser::{EsSyntax, Syntax, TsSyntax},
-        transforms::base::{fixer::fixer, hygiene::hygiene, resolver},
-        visit::FoldWith,
-    },
+pub use sourcemap::SourceMap;
+use swc_common::{
+    comments::Comments,
+    errors::{ColorConfig, Handler},
+    sync::Lrc,
+    BytePos, FileName, Globals, LineCol, Mark, SourceFile, SourceMap as SwcSourceMap, GLOBALS,
 };
-
+pub use swc_config::IsModule;
+use swc_ecma_ast::EsVersion;
+use swc_ecma_codegen::{self, text_writer::JsWriter, Emitter};
+pub use swc_ecma_parser::Syntax;
+use swc_ecma_parser::{EsSyntax, TsSyntax};
+use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
+#[cfg(feature = "react")]
+use swc_ecma_transforms_react::react;
+#[cfg(feature = "typescript")]
+use swc_ecma_transforms_typescript::strip;
+use swc_ecma_visit::FoldWith;
+use swc_node_comments::SwcComments;
 pub struct EasySwcTranspiler {
-    source_map: Lrc<SourceMap>,
-    compiler:   Compiler,
+    source_map: Lrc<SwcSourceMap>,
+    comments:   SwcComments,
     handler:    Handler,
     globals:    Globals,
 }
 
 impl Default for EasySwcTranspiler {
     fn default() -> Self {
-        let source_map: Lrc<SourceMap> = Default::default();
-        let compiler = Compiler::new(source_map.clone());
+        let source_map: Lrc<SwcSourceMap> = Default::default();
 
         let handler =
             Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(source_map.clone()));
         let globals = Globals::new();
+        let comments = SwcComments::default();
 
         Self {
             source_map,
-            compiler,
+            comments,
             handler,
             globals,
         }
@@ -55,8 +52,7 @@ impl EasySwcTranspiler {
         syntax: Syntax,
         is_module: IsModule,
         emit_sourcemap: bool,
-    ) -> Result<(String, Option<swc_core::base::sourcemap::SourceMap>), EasySwcTranspilerError>
-    {
+    ) -> Result<(String, Option<::sourcemap::SourceMap>), EasySwcTranspilerError> {
         let fm = self
             .source_map
             .new_source_file_from(FileName::Anon.into(), source.to_string().into());
@@ -72,19 +68,17 @@ impl EasySwcTranspiler {
         is_module: IsModule,
         emit_sourcemap: bool,
         fm: Lrc<SourceFile>,
-    ) -> Result<(String, Option<swc_core::base::sourcemap::SourceMap>), EasySwcTranspilerError>
-    {
-        let mut program = self
-            .compiler
-            .parse_js(
-                fm,
-                &self.handler,
-                EsVersion::EsNext,
-                syntax,
-                is_module,
-                Some(self.compiler.comments()),
-            )
-            .map_err(EasySwcTranspilerError::SwcParse)?;
+    ) -> Result<(String, Option<::sourcemap::SourceMap>), EasySwcTranspilerError> {
+        let mut program = swc_compiler_base::parse_js(
+            self.source_map.clone(),
+            fm,
+            &self.handler,
+            EsVersion::EsNext,
+            syntax,
+            is_module,
+            Some(&self.comments),
+        )
+        .map_err(EasySwcTranspilerError::SwcParse)?;
 
         let unresolved_mark = Mark::new();
         let top_level_mark = Mark::new();
@@ -106,7 +100,7 @@ impl EasySwcTranspiler {
             _ => program,
         };
 
-        let comments: Option<&dyn Comments> = Some(self.compiler.comments());
+        let comments: Option<&dyn Comments> = Some(&self.comments);
 
         #[cfg(feature = "react")]
         {
@@ -137,7 +131,7 @@ impl EasySwcTranspiler {
             },
         );
 
-        let mut cfg = codegen::Config::default();
+        let mut cfg = swc_ecma_codegen::Config::default();
         cfg.target = EsVersion::Es2022;
         cfg.omit_last_semi = true;
 

@@ -11,12 +11,8 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "transpile")]
 use {
     den_transpiler_swc::{
-        get_best_transpiling, infer_transpile_syntax_by_extension,
-        swc_core::{
-            base::{config::IsModule, sourcemap::SourceMap},
-            ecma::parser::Syntax,
-        },
-        EasySwcTranspiler, EasySwcTranspilerError,
+        get_best_transpiling, infer_transpile_syntax_by_extension, EasySwcTranspiler,
+        EasySwcTranspilerError, IsModule, SourceMap, Syntax,
     },
     std::sync::Arc,
 };
@@ -166,8 +162,7 @@ impl Engine {
                     }
                     #[cfg(feature = "stdlib-crypto")]
                     {
-                        loader = loader
-                            .with_module("den:crypto", den_stdlib_crypto::js_crypto);
+                        loader = loader.with_module("den:crypto", den_stdlib_crypto::js_crypto);
                     }
                     #[cfg(feature = "wasm")]
                     {
