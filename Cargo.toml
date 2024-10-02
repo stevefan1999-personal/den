@@ -3,7 +3,7 @@
 members = [
     "den-core",
     "den-stdlib-console",
-    "den-stdlib-core",
+    "den-stdlib-core", 
     "den-stdlib-crypto",
     "den-stdlib-fs",
     "den-stdlib-io",
@@ -12,7 +12,7 @@ members = [
     "den-stdlib-sqlite",
     "den-stdlib-text",
     "den-stdlib-timer",
-    "den-stdlib-wasm",
+    "den-stdlib-wasm", 
     "den-stdlib-whatwg-fetch",
     "den-transpiler-swc",
     "den-utils",
@@ -52,7 +52,7 @@ derive_more = { version = "1.0.0", features = [
 ] }
 either = "1.13.0"
 futures = "0.3.30"
-indexmap = "2.5.0"
+indexmap = "2.6.0"
 phf = "0.11.2"
 rquickjs = { version = "0.6.2", features = [
     "full-async",
@@ -67,7 +67,7 @@ tokio-util = "0.7.12"
 tracing = "0.1.40"
 thiserror = "1.0.64"
 typed-builder = "0.20.0"
-reqwest = "0.12.7"
+reqwest = "0.12.8"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 serde = "1.0.210"
 serde_json = "1.0.128"
@@ -84,7 +84,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-clap = { version = "4.5.18", features = ["unicode", "derive", "env"] }
+clap = { version = "4.5.19", features = ["unicode", "derive", "env"] }
 color-eyre = { version = "0.6.3", default-features = false }
 console-subscriber = { version = "0.4.0", optional = true }
 den-core = { version = "*", path = "den-core", default-features = false }
@@ -149,4 +149,5 @@ cargo-emit = "0.2.1"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [patch.crates-io]
-rquickjs = { git = "https://github.com/DelSkayn/rquickjs" }
+#rquickjs = { git = "https://github.com/DelSkayn/rquickjs" }
+rquickjs = { path = "F:\\Git\\github.com\\DelSkayn\\rquickjs" }
