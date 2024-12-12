@@ -38,6 +38,7 @@ impl Engine {
         let transpiler = Arc::new(EasySwcTranspiler::default());
 
         let runtime = AsyncRuntime::new().unwrap();
+        runtime.set_max_stack_size(0).await;
 
         {
             let resolver = (
