@@ -27,6 +27,8 @@ swc_compiler_base = "7.0.0"
 swc_node_comments = "5.0.0"
 
 [features]
+default = ["transpile"]
+
 typescript = [
     "transpile",
     "dep:swc_ecma_parser",

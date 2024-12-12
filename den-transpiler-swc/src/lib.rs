@@ -1,3 +1,5 @@
+#![cfg(feature = "transpile")]
+
 use std::{io, string::FromUtf8Error};
 
 use derive_more::{Debug, Display, Error, From, Into};
