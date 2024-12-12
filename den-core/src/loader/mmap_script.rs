@@ -1,7 +1,7 @@
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
-use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
+use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module, Result};
 use tokio::runtime::Handle;
 use typed_builder::TypedBuilder;
 #[cfg(feature = "transpile")]
@@ -37,7 +37,7 @@ impl MmapScriptLoader {
 }
 
 impl Loader for MmapScriptLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, path: &str) -> rquickjs::Result<Module<'js, Declared>> {
+    fn load<'js>(&mut self, ctx: &Ctx<'js>, path: &str) -> Result<Module<'js, Declared>> {
         let task = async move {
             let extension = RelativePath::new(path)
                 .extension()
@@ -66,11 +66,13 @@ impl Loader for MmapScriptLoader {
                     )
                     .map_err(|e| Error::new_loading_message("cannot transpile", e.to_string()))?;
 
-                Module::declare(ctx.clone(), path, src)
+                let module = Module::declare(ctx.clone(), path, src)?;
+                Ok(module)
             }
             #[cfg(not(feature = "transpile"))]
             {
-                Module::declare(ctx.clone(), path, src.as_slice())
+                let module = Module::declare(ctx.clone(), path, src.as_slice());
+                Ok(module)
             }
         };
 

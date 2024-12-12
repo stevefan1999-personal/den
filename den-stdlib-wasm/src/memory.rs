@@ -1,20 +1,14 @@
 use derive_more::derive::{Deref, DerefMut, From, Into};
 use indexmap::indexmap;
-use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Result, Value};
+use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, JsLifetime, Result, Value};
 use typed_builder::TypedBuilder;
 use wasmtime::AsContextMut;
 
-use crate::WasmtimeRuntimeData;
-
-#[derive(Trace, Clone, Deref, DerefMut, From, Into)]
+#[derive(Trace, JsLifetime, Clone, Deref, DerefMut, From, Into)]
 #[rquickjs::class]
-pub struct Memory<'js> {
+pub struct Memory {
     #[qjs(skip_trace)]
     pub(crate) inner: wasmtime::Memory,
-
-    #[deref(ignore)]
-    #[deref_mut(ignore)]
-    pub(crate) store: crate::store::Store<'js>,
 }
 
 #[derive(Clone, TypedBuilder)]
@@ -50,13 +44,9 @@ impl<'js> IntoJs<'js> for MemoryDescriptor {
 }
 
 #[rquickjs::methods]
-impl<'js> Memory<'js> {
+impl Memory {
     #[qjs(constructor)]
-    pub fn new(
-        opts: MemoryDescriptor,
-        Opt(store): Opt<crate::store::Store<'js>>,
-        ctx: Ctx<'js>,
-    ) -> Result<Self> {
+    pub fn new<'js>(opts: MemoryDescriptor, ctx: Ctx<'js>) -> Result<Self> {
         let ty = wasmtime::MemoryTypeBuilder::default()
             .min(opts.initial)
             .max(opts.maximum)
@@ -69,25 +59,19 @@ impl<'js> Memory<'js> {
                 )
             })?;
 
-        let store = store.unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
+        let store = ctx.userdata::<crate::store::Store>().unwrap();
+        let inner =
+            wasmtime::Memory::new(store.borrow_mut().as_context_mut(), ty).map_err(|x| {
+                Exception::throw_internal(&ctx, &format!("wasm linker memory new error: {}", x))
+            })?;
 
-        Ok(Self {
-            inner: {
-                let mut store = store.borrow_mut();
-
-                wasmtime::Memory::new(store.as_context_mut(), ty).map_err(|x| {
-                    Exception::throw_internal(&ctx, &format!("wasm linker memory new error: {}", x))
-                })?
-            },
-            store,
-        })
+        Ok(Self { inner })
     }
 
     #[qjs(get, enumerable)]
-    pub fn buffer(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        let _data = self
-            .inner
-            .data_mut(self.store.borrow_mut().as_context_mut());
+    pub fn buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
+        let store = ctx.userdata::<crate::store::Store>().unwrap();
+        let _data = self.inner.data_mut(store.borrow_mut().as_context_mut());
         Err(ctx.throw("TODO".into_js(&ctx)?))
 
         // let val = unsafe {
@@ -113,8 +97,9 @@ impl<'js> Memory<'js> {
     }
 
     pub fn grow(&self, delta: u64, ctx: Ctx<'_>) -> Result<()> {
+        let store = ctx.userdata::<crate::store::Store>().unwrap();
         self.inner
-            .grow(self.store.borrow_mut().as_context_mut(), delta)
+            .grow(store.borrow_mut().as_context_mut(), delta)
             .map_err(|x| {
                 Exception::throw_internal(&ctx, &format!("wasm linker memory grow error: {}", x))
             })?;

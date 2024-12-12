@@ -1,11 +1,11 @@
 use derivative::Derivative;
 use derive_more::{From, Into};
 use quanta::{Clock, Instant};
-use rquickjs::{class::Trace, Coerced, Ctx, Exception, Result};
+use rquickjs::{class::Trace, Coerced, Ctx, Exception, JsLifetime, Result};
 
 pub use crate::cancellation::CancellationTokenWrapper;
 
-#[derive(Trace, Derivative, From, Into)]
+#[derive(Trace, Derivative, From, Into, JsLifetime)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class(rename = "Performance")]
 pub struct Performance {

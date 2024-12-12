@@ -3,9 +3,9 @@ use std::{cell::RefCell, sync::Arc};
 use den_utils::serde_json::SerdeJsonValue;
 use derivative::Derivative;
 use derive_more::derive::{From, Into};
-use rquickjs::{class::Trace, ArrayBuffer, Ctx, Exception, IntoJs, Result, TypedArray};
+use rquickjs::{class::Trace, ArrayBuffer, Ctx, Exception, IntoJs, JsLifetime, Result, TypedArray};
 
-#[derive(Trace, Derivative, From, Into)]
+#[derive(Trace, JsLifetime, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response {

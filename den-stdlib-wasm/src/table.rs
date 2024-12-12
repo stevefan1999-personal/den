@@ -1,10 +1,10 @@
 use derive_more::{derive::DerefMut, Deref, From, Into};
 use indexmap::indexmap;
-use rquickjs::{class::Trace, prelude::Opt, Ctx, Exception, FromJs, IntoJs, Result, Value};
+use rquickjs::{class::Trace, Ctx, Exception, FromJs, IntoJs, JsLifetime, Result, Value};
 use typed_builder::TypedBuilder;
 use wasmtime::{Ref, RefType, TableType};
 
-use crate::WasmtimeRuntimeData;
+use crate::store::StoreData;
 
 #[derive(Clone, From, Into, TypedBuilder)]
 pub struct TableDescriptor {
@@ -38,7 +38,7 @@ impl<'js> IntoJs<'js> for TableDescriptor {
     }
 }
 
-#[derive(Trace, Clone, DerefMut, Deref, From, Into)]
+#[derive(Trace, JsLifetime, Clone, DerefMut, Deref, From, Into)]
 #[rquickjs::class]
 pub struct Table {
     #[qjs(skip_trace)]
@@ -47,11 +47,11 @@ pub struct Table {
 
 #[rquickjs::methods]
 impl Table {
-    #[qjs(constructor)]
-    pub fn new<'js>(
+    #[qjs(skip)]
+    pub(crate) fn new_inner<'js>(
         desc: TableDescriptor,
-        Opt(store): Opt<crate::store::Store<'js>>,
-        ctx: Ctx<'js>,
+        store: &mut wasmtime::Store<StoreData>,
+        ctx: &Ctx<'js>,
     ) -> Result<Self> {
         let (ty, init) = match desc.element.as_str() {
             "externref" => {
@@ -68,18 +68,25 @@ impl Table {
             }
             x => {
                 return Err(Exception::throw_internal(
-                    &ctx,
+                    ctx,
                     &format!("Either externref or anyfunc is accepted for element type, found {x}"),
                 ));
             }
         };
 
-        let store = store.unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
-        let mut store = store.borrow_mut();
-        let inner = wasmtime::Table::new(&mut *store, ty, init).map_err(|x| {
-            Exception::throw_internal(&ctx, &format!("wasm linker memory new error: {}", x))
+        let inner = wasmtime::Table::new(store, ty, init).map_err(|x| {
+            Exception::throw_internal(ctx, &format!("wasm linker memory new error: {}", x))
         })?;
 
         Ok(Self { inner })
+    }
+
+    #[qjs(constructor)]
+    pub fn new<'js>(desc: TableDescriptor, ctx: Ctx<'js>) -> Result<Self> {
+        Self::new_inner(
+            desc,
+            &mut *ctx.userdata::<crate::store::Store>().unwrap().borrow_mut(),
+            &ctx,
+        )
     }
 }

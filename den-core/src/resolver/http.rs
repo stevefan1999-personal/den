@@ -1,5 +1,5 @@
 use matchit::{MatchError, Router};
-use rquickjs::{loader::Resolver, Ctx, Error};
+use rquickjs::{loader::Resolver, Ctx, Error, Result};
 use url::{ParseError, Url};
 
 #[derive(Default)]
@@ -9,7 +9,7 @@ pub struct HttpResolver {
 }
 
 impl Resolver for HttpResolver {
-    fn resolve(&mut self, _ctx: &Ctx<'_>, base_path: &str, path: &str) -> rquickjs::Result<String> {
+    fn resolve(&mut self, _ctx: &Ctx<'_>, base_path: &str, path: &str) -> Result<String> {
         let base_path_url = Url::parse(base_path);
         let path_url = Url::parse(path);
 

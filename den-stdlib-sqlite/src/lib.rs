@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, sync::Arc};
 
 use derivative::Derivative;
 use derive_more::{
@@ -6,15 +6,17 @@ use derive_more::{
     Deref, DerefMut, From, Into,
 };
 use either::Either;
-use rquickjs::{class::Trace, prelude::*, Array, BigInt, Ctx, Exception, Object, Result, Value};
+use rquickjs::{
+    class::Trace, prelude::*, Array, BigInt, Ctx, Exception, JsLifetime, Object, Result, Value,
+};
 use rusqlite::Statement;
 
-#[derive(Trace, Derivative, From, Into, Deref, DerefMut)]
+#[derive(Trace, JsLifetime, Derivative, From, Into, Deref, DerefMut)]
 #[derivative(Debug, Clone)]
 #[rquickjs::class(rename = "Connection")]
 pub struct Connection {
     #[qjs(skip_trace)]
-    conn: Rc<RefCell<Option<rusqlite::Connection>>>,
+    conn: Arc<RefCell<Option<rusqlite::Connection>>>,
 }
 
 #[rquickjs::methods]
@@ -27,7 +29,7 @@ impl Connection {
         let conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
         Ok(Connection {
-            conn: Rc::new(RefCell::new(Some(conn))),
+            conn: Arc::new(RefCell::new(Some(conn))),
         })
     }
 
@@ -36,7 +38,7 @@ impl Connection {
         let conn = rusqlite::Connection::open(path)
             .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
         Ok(Connection {
-            conn: Rc::new(RefCell::new(Some(conn))),
+            conn: Arc::new(RefCell::new(Some(conn))),
         })
     }
 

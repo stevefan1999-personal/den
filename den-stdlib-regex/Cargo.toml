@@ -9,6 +9,6 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-colored = "2.0.4"
-regex = "1.9.5"
+colored = "2.1.0"
+pcre2 = "0.2.9"
 rquickjs = { workspace = true, features = ["macro"] }

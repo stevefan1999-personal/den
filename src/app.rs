@@ -6,15 +6,15 @@ use tokio::{signal, sync::mpsc, task::yield_now};
 use crate::repl;
 
 pub struct App {
-    pub(crate) engine: Engine,
-    wait_for_cancel_signal:              bool,
+    pub(crate) engine:      Engine,
+    wait_for_cancel_signal: bool,
 }
 
 impl App {
     pub async fn new() -> Self {
         Self {
-            engine: Engine::new().await,
-            wait_for_cancel_signal:   false,
+            engine:                 Engine::new().await,
+            wait_for_cancel_signal: false,
         }
     }
 }
@@ -112,6 +112,11 @@ impl App {
     // Just hooks the Ctrl-C signal and then automatically stop the VM engine
     pub fn hook_ctrlc_handler(&mut self) {
         let stop_token = self.engine.stop_token.clone();
-        tokio::spawn(signal::ctrl_c().then(move |_| async move { stop_token.cancel() }));
+
+        tokio::spawn(signal::ctrl_c().then(|_| {
+            async move {
+                stop_token.cancel();
+            }
+        }));
     }
 }

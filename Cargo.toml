@@ -51,10 +51,10 @@ derive_more = { version = "1.0.0", features = [
     "debug",
 ] }
 either = "1.13.0"
-futures = "0.3.30"
-indexmap = "2.6.0"
+futures = "0.3.31"
+indexmap = "2.7.0"
 phf = "0.11.2"
-rquickjs = { version = "0.6.2", features = [
+rquickjs = { version = "0.8.1", features = [
     "full-async",
     "rust-alloc",
     "parallel",
@@ -62,15 +62,15 @@ rquickjs = { version = "0.6.2", features = [
     "either",
     "dump-leaks"
 ] }
-tokio = "1.40.0"
-tokio-util = "0.7.12"
-tracing = "0.1.40"
-thiserror = "1.0.64"
+tokio = "1.42.0"
+tokio-util = "0.7.13"
+tracing = "0.1.41"
+thiserror = "2.0.6"
 typed-builder = "0.20.0"
-reqwest = "0.12.8"
-rusqlite = { version = "0.31.0", features = ["bundled"] }
-serde = "1.0.210"
-serde_json = "1.0.128"
+reqwest = "0.12.9"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = "1.0.216"
+serde_json = "1.0.133"
 
 [package]
 name = "den"
@@ -84,14 +84,14 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-clap = { version = "4.5.19", features = ["unicode", "derive", "env"] }
+clap = { version = "4.5.23", features = ["unicode", "derive", "env"] }
 color-eyre = { version = "0.6.3", default-features = false }
-console-subscriber = { version = "0.4.0", optional = true }
+console-subscriber = { version = "0.4.1", optional = true }
 den-core = { version = "*", path = "den-core", default-features = false }
 den-utils = { version = "*", path = "den-utils", default-features = false }
 futures.workspace = true
 rquickjs.workspace = true
-rustyline = { version = "14.0.0", features = ["derive", "with-sqlite-history"] }
+rustyline = { version = "15.0.0", features = ["derive", "with-sqlite-history"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 vc-ltl = "5.1.1"
 
@@ -147,7 +147,3 @@ cargo-emit = "0.2.1"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
-
-[patch.crates-io]
-#rquickjs = { git = "https://github.com/DelSkayn/rquickjs" }
-rquickjs = { path = "F:\\Git\\github.com\\DelSkayn\\rquickjs" }

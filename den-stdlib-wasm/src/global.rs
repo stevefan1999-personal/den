@@ -1,14 +1,10 @@
 use derive_more::derive::{Deref, DerefMut, From, Into};
 use indexmap::indexmap;
-use rquickjs::{
-    class::Trace, prelude::Opt, Coerced, Ctx, Exception, FromJs, IntoJs, Result, Value,
-};
+use rquickjs::{class::Trace, Coerced, Ctx, Exception, FromJs, IntoJs, JsLifetime, Result, Value};
 use typed_builder::TypedBuilder;
 use wasmtime::{AsContext, AsContextMut, GlobalType, Val, ValType};
 
-use crate::WasmtimeRuntimeData;
-
-#[derive(Clone, Trace, Deref, DerefMut, From, Into)]
+#[derive(Clone, Trace, JsLifetime, Deref, DerefMut, From, Into)]
 #[rquickjs::class]
 pub struct Global {
     #[qjs(skip_trace)]
@@ -16,7 +12,7 @@ pub struct Global {
 }
 
 impl Global {
-    pub fn from_type<'js>(
+    pub(crate) fn from_type<'js>(
         ty: GlobalType,
         v: &Value<'js>,
         store: impl AsContextMut,
@@ -45,13 +41,9 @@ impl Global {
 #[rquickjs::methods]
 impl Global {
     #[qjs(constructor)]
-    pub fn new<'js>(
-        desc: GlobalDescriptor,
-        value: Value<'js>,
-        Opt(store): Opt<crate::store::Store<'js>>,
-        ctx: Ctx<'js>,
-    ) -> Result<Self> {
-        let store = store.unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
+    pub fn new<'js>(desc: GlobalDescriptor, value: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
+        let store = ctx.userdata::<crate::store::Store>().unwrap();
+
         let value = match (desc.value.as_str(), value.type_of()) {
             ("i32", rquickjs::Type::Int) => value.as_int().unwrap().into(),
             ("i32", rquickjs::Type::Bool) => wasmtime::Val::I32(value.as_bool().unwrap().into()),
@@ -72,21 +64,21 @@ impl Global {
             }
         };
 
-        let ty = GlobalType::new(
-            value.ty(store.borrow().as_context()).unwrap(),
-            if desc.mutable.unwrap_or(false) {
-                wasmtime::Mutability::Var
-            } else {
-                wasmtime::Mutability::Const
-            },
-        );
+        let inner = wasmtime::Global::new(
+            store.borrow_mut().as_context_mut(),
+            GlobalType::new(
+                value.ty(store.borrow().as_context()).unwrap(),
+                if desc.mutable.unwrap_or(false) {
+                    wasmtime::Mutability::Var
+                } else {
+                    wasmtime::Mutability::Const
+                },
+            ),
+            value,
+        )
+        .map_err(|x| Exception::throw_internal(&ctx, &format!("wasm global new error: {}", x)))?;
 
-        let inner =
-            wasmtime::Global::new(store.borrow_mut().as_context_mut(), ty, value).map_err(|x| {
-                Exception::throw_internal(&ctx, &format!("wasm global new error: {}", x))
-            })?;
-
-        Ok(Self { inner })
+        Ok(Global { inner })
     }
 }
 

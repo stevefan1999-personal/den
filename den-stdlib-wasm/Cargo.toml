@@ -12,6 +12,7 @@ keywords.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.94"
 den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 derivative.workspace = true
 derive_more.workspace = true
@@ -22,9 +23,9 @@ rquickjs = { workspace = true, features = ["macro", "futures"] }
 tracing.workspace = true
 typed-builder.workspace = true
 wabt = "0.10.0"
-wasmi = { version = "0.36.2", optional = true }
-wasmtime = { version = "25.0.1", optional = true }
-wasmtime-wasi = { version = "25.0.1", optional = true }
+wasmi = { version = "0.40.0", optional = true }
+wasmtime = { version = "27.0.0", optional = true }
+wasmtime-wasi = { version = "27.0.0", optional = true }
 
 [features]
 default = ["wasmtime"]

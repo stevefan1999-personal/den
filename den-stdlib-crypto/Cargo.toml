@@ -20,4 +20,4 @@ tracing.workspace = true
 typed-builder.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 rand = "0.8.5"
-uuid = { version = "1.10.0", features = ["fast-rng", "v4"] }
+uuid = { version = "1.11.0", features = ["fast-rng", "v4"] }

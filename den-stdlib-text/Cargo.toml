@@ -13,6 +13,6 @@ keywords.workspace = true
 derivative.workspace = true
 derive_more.workspace = true
 either.workspace = true
-encoding_rs = "0.8.34"
+encoding_rs = "0.8.35"
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }

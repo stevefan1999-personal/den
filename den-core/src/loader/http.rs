@@ -1,7 +1,7 @@
 use derivative::Derivative;
 use mime::Mime;
 use reqwest::header::CONTENT_TYPE;
-use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module};
+use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module, Result};
 use tokio::runtime::Handle;
 use typed_builder::TypedBuilder;
 #[cfg(feature = "transpile")]
@@ -22,7 +22,7 @@ pub struct HttpLoader {
 }
 
 impl Loader for HttpLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<Module<'js, Declared>> {
+    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str) -> Result<Module<'js, Declared>> {
         let task = async move {
             let body = reqwest::get(name)
                 .await

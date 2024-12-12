@@ -3,9 +3,11 @@ use derive_more::{From, Into};
 use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
 use indexmap::{indexmap, IndexMap};
-use rquickjs::{class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
+use rquickjs::{
+    class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray,
+};
 
-#[derive(Trace, Derivative, From, Into)]
+#[derive(Trace, JsLifetime, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class]
 pub struct TextDecoder {
@@ -102,7 +104,7 @@ impl TextDecoder {
     }
 }
 
-#[derive(Trace, Derivative, From, Into)]
+#[derive(Trace, JsLifetime, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class]
 pub struct TextEncoder {}

@@ -1,5 +1,3 @@
-use rquickjs::runtime::UserData;
-
 pub mod engine;
 pub mod error;
 pub mod global;
@@ -17,8 +15,8 @@ pub mod wasm {
     use either::Either;
     use indexmap::{indexmap, IndexMap};
     use rquickjs::{
-        class::Trace, module::Exports, prelude::Opt, ArrayBuffer, Ctx, Exception, IntoJs, Result,
-        TypedArray, Value,
+        class::Trace, module::Exports, prelude::Opt, ArrayBuffer, Ctx, Exception, IntoJs,
+        JsLifetime, Result, TypedArray, Value,
     };
 
     pub use crate::{
@@ -31,17 +29,17 @@ pub mod wasm {
         tag::Tag,
     };
 
-    #[derive(Trace, Clone)]
+    #[derive(Trace, JsLifetime, Clone)]
     #[rquickjs::class()]
-    pub struct ResultObject<'js> {
+    pub struct ResultObject {
         #[qjs(get, enumerable)]
         pub module:   crate::module::Module,
         #[qjs(get, enumerable)]
-        pub instance: crate::instance::Instance<'js>,
+        pub instance: crate::instance::Instance,
     }
 
     #[rquickjs::methods]
-    impl ResultObject<'_> {
+    impl ResultObject {
         #[qjs(constructor)]
         pub fn new() {}
     }
@@ -50,23 +48,19 @@ pub mod wasm {
     pub async fn instantiate<'js>(
         module_or_buffer_source: Either<Module, Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>,
         import_object: Opt<IndexMap<String, IndexMap<String, Value<'js>>>>,
-        engine: Opt<crate::engine::Engine>,
-        store: Opt<crate::store::Store<'js>>,
         ctx: Ctx<'js>,
-    ) -> Result<ResultObject<'js>> {
+    ) -> Result<ResultObject> {
         let module = match module_or_buffer_source {
             Either::Left(module) => module,
-            Either::Right(buffer_source) => Module::new(buffer_source, engine, ctx.clone())?,
+            Either::Right(buffer_source) => Module::new2(buffer_source, &ctx)?,
         };
-        let instance = Instance::new(&module, import_object, store, ctx.clone())?;
+        let instance = Instance::new(&module, import_object, ctx)?;
         Ok(ResultObject { module, instance })
     }
 
-    #[rquickjs::function]
-    pub fn validate<'js>(
-        buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
-        engine: Opt<crate::engine::Engine>,
-        ctx: Ctx<'js>,
+    fn validate_inner<'js>(
+        buffer_source: &Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
+        engine: &crate::engine::Engine,
     ) -> Result<bool> {
         // https://webassembly.github.io/spec/js-api/#dom-webassembly-validate
         let buf = match buffer_source {
@@ -75,26 +69,29 @@ pub mod wasm {
         }
         .unwrap();
 
-        let engine = engine.0.unwrap_or(
-            ctx.userdata::<crate::WasmtimeRuntimeData>()
-                .unwrap()
-                .engine
-                .clone(),
-        );
-        let engine = engine.borrow();
         Ok(wasmtime::Module::validate(&engine, buf).is_ok())
+    }
+
+    #[rquickjs::function]
+    pub fn validate<'js>(
+        buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
+        ctx: Ctx<'js>,
+    ) -> Result<bool> {
+        validate_inner(
+            &buffer_source,
+            &ctx.userdata::<crate::engine::Engine>().unwrap(),
+        )
     }
 
     // Unfortunately...this is not supported by wasmtime/wasmi yet
     #[rquickjs::function]
     pub async fn compile<'js>(
         buffer_source: Either<TypedArray<'js, u8>, ArrayBuffer<'js>>,
-        engine: Opt<crate::engine::Engine>,
         ctx: Ctx<'js>,
     ) -> Result<Module> {
-        // https://webassembly.github.io/spec/js-api/#compile-a-webassembly-module
-        if validate(buffer_source.clone(), Opt(engine.clone()), ctx.clone())? {
-            Module::new(buffer_source, engine, ctx)
+        let engine = &ctx.userdata::<crate::engine::Engine>().unwrap();
+        if validate_inner(&buffer_source, &engine)? {
+            Module::new_inner(buffer_source, &ctx)
         } else {
             Err(ctx.throw(crate::error::CompileError::new().into_js(&ctx)?))
         }
@@ -117,8 +114,9 @@ pub mod wasm {
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         let engine = crate::engine::Engine::new();
-        let store = crate::store::Store::new(engine.clone(), ctx.clone());
-        ctx.store_userdata(crate::WasmtimeRuntimeData { engine, store })?;
+        let store = crate::store::Store::new(&engine, ctx.clone());
+        ctx.store_userdata(store)?;
+        ctx.store_userdata(engine)?;
         ctx.globals().set(
             "WebAssembly",
             indexmap! {
@@ -137,16 +135,6 @@ pub mod wasm {
 
         Ok(())
     }
-}
-
-#[derive(Clone)]
-pub struct WasmtimeRuntimeData<'js> {
-    pub(crate) engine: crate::engine::Engine,
-    pub(crate) store:  crate::store::Store<'js>,
-}
-
-unsafe impl<'js> UserData<'js> for WasmtimeRuntimeData<'js> {
-    type Static = WasmtimeRuntimeData<'static>;
 }
 
 pub mod utils;

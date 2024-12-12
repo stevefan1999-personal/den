@@ -3,38 +3,33 @@ use std::sync::Mutex;
 use derive_more::derive::{Deref, DerefMut, From, Into};
 use indexmap::IndexMap;
 use rquickjs::{
-    class::Trace, function::Args, prelude::*, Array, Ctx, Exception, Function, Persistent, Result,
-    Value,
+    class::Trace, function::Args, prelude::*, Array, Ctx, Exception, Function, JsLifetime,
+    Persistent, Result, Value,
 };
 use tracing::warn;
-use wasmtime::{AsContext, AsContextMut, Extern, StoreContextMut, Val};
-use wasmtime_wasi::preview1::WasiP1Ctx;
+use wasmtime::{AsContext, AsContextMut, Extern, Val};
 
 use crate::{
     error::LinkError,
     module::Module,
+    store::StoreData,
     table::TableDescriptor,
     utils::{get_default_value_for_val_type, WasmValueConverter},
-    WasmtimeRuntimeData,
 };
 
-#[derive(Trace, Clone, Deref, DerefMut, From, Into)]
+#[derive(Trace, JsLifetime, Clone, Deref, DerefMut, From, Into)]
 #[rquickjs::class]
-pub struct Instance<'js> {
+pub struct Instance {
     #[qjs(skip_trace)]
     instance: wasmtime::Instance,
-
-    #[deref(ignore)]
-    #[deref_mut(ignore)]
-    store: crate::store::Store<'js>,
 }
 
-impl<'js> Instance<'js> {
-    fn resolve_imports(
+impl Instance {
+    fn resolve_imports<'js, S: AsContextMut + AsContext<Data = StoreData<'js>>>(
         module: &Module,
         import_object: IndexMap<String, IndexMap<String, Value<'js>>>,
-        mut store: StoreContextMut<(WasiP1Ctx, Ctx<'js>)>,
-        linker: &mut wasmtime::Linker<(WasiP1Ctx, Ctx<'js>)>,
+        mut store: S,
+        linker: &mut wasmtime::Linker<StoreData<'js>>,
         ctx: &Ctx<'js>,
     ) -> Result<()> {
         // https://webassembly.github.io/spec/js-api/#read-the-imports
@@ -45,7 +40,7 @@ impl<'js> Instance<'js> {
                 match o.get(name) {
                     None => {
                         return Err(Exception::throw_type(
-                            &ctx,
+                            ctx,
                             &format!("{} is not an object", name),
                         ));
                     }
@@ -63,10 +58,12 @@ impl<'js> Instance<'js> {
 
                                 let js_func: Persistent<Function> = v.get()?;
                                 let js_func = Mutex::new(DangerouslyImplementSync(js_func));
+
                                 // We know that at the time of getting this call back,
                                 // the context should still have had been alive
                                 // For some reason a Mutex is needed to make it Send
                                 // safe
+
                                 let wasm_func = linker.func_new(
                                     module,
                                     name,
@@ -129,19 +126,19 @@ impl<'js> Instance<'js> {
                                 }
                                 wasmtime::ExternType::Global(ty) if ty.content().is_v128() => None,
                                 wasmtime::ExternType::Global(ty) => {
-                                    let item = crate::global::Global::from_js(&ctx, v.clone())
+                                    let item = crate::global::Global::from_js(ctx, v.clone())
                                         .or_else(|_| {
                                             crate::global::Global::from_type(
                                                 ty,
                                                 v,
                                                 store.as_context_mut(),
-                                                &ctx,
+                                                ctx,
                                             )
                                         })?;
                                     Some(item.inner.into())
                                 }
                                 wasmtime::ExternType::Table(ty) => {
-                                    if let Ok(table) = crate::table::Table::from_js(&ctx, v.clone())
+                                    if let Ok(table) = crate::table::Table::from_js(ctx, v.clone())
                                     {
                                         // let actual_ty = table.inner.ty(store.as_context());
                                         // if actual_ty != ty {
@@ -155,7 +152,7 @@ impl<'js> Instance<'js> {
                                 }
                                 wasmtime::ExternType::Memory(ty) => {
                                     if let Ok(memory) =
-                                        crate::memory::Memory::from_js(&ctx, v.clone())
+                                        crate::memory::Memory::from_js(ctx, v.clone())
                                     {
                                         let actual_ty = memory.inner.ty(store.as_context());
                                         if actual_ty != ty {
@@ -177,11 +174,11 @@ impl<'js> Instance<'js> {
                             Some(Ok(_)) => {}
                             Some(Err(x)) => {
                                 return Err(Exception::throw_internal(
-                                    &ctx,
+                                    ctx,
                                     &format!("wasm linker define error: {}", x),
                                 ))
                             }
-                            None => return Err(ctx.throw(LinkError::new().into_js(&ctx)?)),
+                            None => return Err(ctx.throw(LinkError::new().into_js(ctx)?)),
                         }
                     }
                 }
@@ -191,24 +188,18 @@ impl<'js> Instance<'js> {
         Ok(())
     }
 
-    fn make_linker(
+    fn make_linker<'js, S: AsContextMut + AsContext<Data = StoreData<'js>>>(
         module: &Module,
         Opt(import_object): Opt<IndexMap<String, IndexMap<String, Value<'js>>>>,
-        store: StoreContextMut<(WasiP1Ctx, Ctx<'js>)>,
+        store: S,
         ctx: &Ctx<'js>,
-    ) -> Result<wasmtime::Linker<(WasiP1Ctx, Ctx<'js>)>> {
+    ) -> Result<wasmtime::Linker<StoreData<'js>>> {
         let mut linker = wasmtime::Linker::new(module.engine());
 
         if module.imports().len() > 0 {
-            Self::resolve_imports(
-                module,
-                import_object.ok_or_else(|| {
-                    Exception::throw_internal(&ctx, "import object is not an object")
-                })?,
-                store,
-                &mut linker,
-                &ctx,
-            )?;
+            let import_object = import_object
+                .ok_or_else(|| Exception::throw_internal(ctx, "import object is not an object"))?;
+            Self::resolve_imports(module, import_object, store, &mut linker, ctx)?;
         }
 
         Ok(linker)
@@ -216,51 +207,44 @@ impl<'js> Instance<'js> {
 }
 
 #[rquickjs::methods]
-impl<'js> Instance<'js> {
+impl Instance {
     #[qjs(constructor)]
-    pub fn new(
+    pub fn new<'js>(
         module: &Module,
         import_object: Opt<IndexMap<String, IndexMap<String, Value<'js>>>>,
-        store: Opt<crate::store::Store<'js>>,
         ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let store = store
-            .clone()
-            .unwrap_or(ctx.userdata::<WasmtimeRuntimeData>().unwrap().store.clone());
-
-        let mut linker = Self::make_linker(
-            module,
-            import_object,
-            store.borrow_mut().as_context_mut(),
-            &ctx,
-        )?;
+        let store = ctx.userdata::<crate::store::Store>().unwrap();
+        let mut linker =
+            Instance::make_linker(module, import_object, &mut *store.borrow_mut(), &ctx)?;
         wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |(wasi_ctx, _)| wasi_ctx).unwrap();
         let instance = linker
             .instantiate(store.borrow_mut().as_context_mut(), module)
             .map_err(|x| {
                 Exception::throw_internal(&ctx, &format!("wasm instance creation error: {}", x))
             })?;
-
-        Ok(Self { instance, store })
+        Ok(Instance { instance })
     }
 
     #[qjs(get, enumerable)]
-    pub fn exports(&self, ctx: Ctx<'js>) -> Result<IndexMap<String, Value<'js>>> {
-        let mut store = self.store.borrow_mut();
+    pub fn exports<'js>(&self, ctx: Ctx<'js>) -> Result<IndexMap<String, Value<'js>>> {
+        let store_ = ctx.userdata::<crate::store::Store>().unwrap();
+
         let mut map = IndexMap::new();
+        let store = &mut *store_.borrow_mut();
         for (name, ext) in self
             .instance
-            .exports(store.as_context_mut())
+            .exports(&mut *store)
             .map(|x| (x.name().to_string(), x.into_extern()))
             .collect::<Vec<(String, Extern)>>()
         {
-            let value = match ext.ty(store.as_context()) {
+            let value = match ext.ty(&mut *store) {
                 wasmtime::ExternType::Func(func_type) => {
-                    let func = self.get_func(store.as_context_mut(), &name);
+                    let func = self.get_func(&mut *store, &name);
                     if let Some(func) = func {
                         let func_len = func_type.params().len();
                         let func = rquickjs::Function::new(ctx.clone(), {
-                            let store = self.store.clone();
+                            let store = store_.clone();
                             move |ctx, Rest(args): Rest<Value<'js>>| {
                                 let args: Vec<Val> = args
                                     .into_iter()
@@ -275,7 +259,7 @@ impl<'js> Instance<'js> {
                                         }
                                     })
                                     .collect::<Result<Vec<_>>>()?;
-                                func.call(store.borrow_mut().as_context_mut(), &args, &mut results)
+                                func.call(&mut *store.borrow_mut(), &args, &mut results)
                                     .map_err(|x| {
                                         Exception::throw_internal(
                                             &ctx,
@@ -283,7 +267,7 @@ impl<'js> Instance<'js> {
                                         )
                                     })?;
                                 match results.len() {
-                                    0 => Ok(Value::new_null(ctx.clone())),
+                                    0 => Ok(Value::new_null(ctx)),
                                     1 => WasmValueConverter::from(results[0]).into_js(&ctx),
                                     _ => {
                                         Ok(Array::from_iter_js(
@@ -313,55 +297,53 @@ impl<'js> Instance<'js> {
                     }
                 }
                 wasmtime::ExternType::Global(ty) => {
-                    let global =
-                        if let Some(global) = self.get_global(store.as_context_mut(), &name) {
-                            Ok(global)
-                        } else {
-                            let val = match get_default_value_for_val_type(ty.content()) {
-                                Ok(x) => Ok(x),
-                                Err(_) => Err(ctx.throw("TODO".into_js(&ctx)?)),
-                            }?;
-                            wasmtime::Global::new(store.as_context_mut(), ty, val)
-                        }
-                        .map_err(|x| {
-                            Exception::throw_internal(
-                                &ctx,
-                                &format!("wasm instance create global type error: {}", x),
-                            )
-                        })?;
+                    let global = if let Some(global) = self.get_global(&mut *store, &name) {
+                        Ok(global)
+                    } else {
+                        let val = match get_default_value_for_val_type(ty.content()) {
+                            Ok(x) => Ok(x),
+                            Err(_) => Err(ctx.throw("TODO".into_js(&ctx)?)),
+                        }?;
+                        wasmtime::Global::new(&mut *store, ty, val)
+                    }
+                    .map_err(|x| {
+                        Exception::throw_internal(
+                            &ctx,
+                            &format!("wasm instance create global type error: {}", x),
+                        )
+                    })?;
                     let global = crate::global::Global::from(global);
                     global.into_js(&ctx)?
                 }
                 wasmtime::ExternType::Table(ty) => {
-                    let table = if let Some(table) = self.get_table(store.as_context_mut(), &name) {
+                    let table = if let Some(table) = self.get_table(&mut *store, &name) {
                         crate::table::Table::from(table)
                     } else {
-                        crate::table::Table::new(
+                        crate::table::Table::new_inner(
                             TableDescriptor::builder()
                                 .element(ty.element().heap_type().to_string())
-                                .initial(ty.minimum())
-                                .maximum(ty.maximum())
+                                .initial(ty.minimum() as u32)
+                                .maximum(ty.maximum().map(|x| x as u32))
                                 .build(),
-                            Some(self.store.clone()).into(),
-                            ctx.clone(),
+                            &mut *store,
+                            &ctx,
                         )?
                     };
                     table.into_js(&ctx)?
                 }
                 wasmtime::ExternType::Memory(ty) => {
-                    let memory =
-                        if let Some(memory) = self.get_memory(store.as_context_mut(), &name) {
-                            Ok(memory)
-                        } else {
-                            wasmtime::Memory::new(store.as_context_mut(), ty)
-                        }
-                        .map_err(|x| {
-                            Exception::throw_internal(
-                                &ctx,
-                                &format!("wasm instance create global type error: {}", x),
-                            )
-                        })?;
-                    crate::memory::Memory::from((memory, self.store.clone())).into_js(&ctx)?
+                    let memory = if let Some(memory) = self.get_memory(&mut *store, &name) {
+                        Ok(memory)
+                    } else {
+                        wasmtime::Memory::new(&mut *store, ty)
+                    }
+                    .map_err(|x| {
+                        Exception::throw_internal(
+                            &ctx,
+                            &format!("wasm instance create global type error: {}", x),
+                        )
+                    })?;
+                    crate::memory::Memory::from(memory).into_js(&ctx)?
                 }
             };
             map.insert(name, value);

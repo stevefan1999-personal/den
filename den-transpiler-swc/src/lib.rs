@@ -18,7 +18,6 @@ use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 use swc_ecma_transforms_react::react;
 #[cfg(feature = "typescript")]
 use swc_ecma_transforms_typescript::typescript;
-use swc_ecma_visit::FoldWith;
 use swc_node_comments::SwcComments;
 pub struct EasySwcTranspiler {
     source_map: Lrc<SwcSourceMap>,
@@ -87,8 +86,8 @@ impl EasySwcTranspiler {
             #[cfg(feature = "typescript")]
             Syntax::Typescript(_) => {
                 program
-                    .fold_with(&mut resolver(unresolved_mark, top_level_mark, true))
-                    .fold_with(&mut typescript(
+                    .apply(&mut resolver(unresolved_mark, top_level_mark, true))
+                    .apply(&mut typescript(
                         {
                             let mut config = swc_ecma_transforms_typescript::Config::default();
                             config.native_class_properties = true;
@@ -98,9 +97,7 @@ impl EasySwcTranspiler {
                         top_level_mark,
                     ))
             }
-            Syntax::Es(_) => {
-                program.fold_with(&mut resolver(unresolved_mark, top_level_mark, false))
-            }
+            Syntax::Es(_) => program.apply(&mut resolver(unresolved_mark, top_level_mark, false)),
             // This is needed because we are left with one case, so if we disabled typescript it is
             // left with an...interesting case effectively we are left with the
             // ECMAScript option, i.e. have exhaustive match already
@@ -112,7 +109,7 @@ impl EasySwcTranspiler {
 
         #[cfg(feature = "react")]
         {
-            program = program.fold_with(&mut react::<&dyn Comments>(
+            program = program.apply(&mut react::<&dyn Comments>(
                 self.source_map.clone(),
                 comments,
                 Default::default(),
@@ -121,9 +118,7 @@ impl EasySwcTranspiler {
             ));
         }
 
-        program = program
-            .fold_with(&mut hygiene())
-            .fold_with(&mut fixer(comments));
+        program = program.apply(&mut hygiene()).apply(&mut fixer(comments));
 
         let mut buf = vec![];
         let mut srcmap: Vec<(BytePos, LineCol)> = vec![];

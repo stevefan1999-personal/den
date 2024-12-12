@@ -1,5 +1,5 @@
-use rquickjs::class::Trace;
-#[derive(Trace)]
+use rquickjs::{class::Trace, JsLifetime};
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct Tag {}
 

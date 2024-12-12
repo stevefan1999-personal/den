@@ -1,6 +1,6 @@
 use derive_more::Display;
-use rquickjs::class::Trace;
-#[derive(Trace)]
+use rquickjs::{class::Trace, JsLifetime};
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct Exception {}
 
@@ -10,7 +10,7 @@ impl Exception {
     pub fn new() {}
 }
 
-#[derive(Trace, Debug, Display)]
+#[derive(Trace, Debug, Display, JsLifetime)]
 #[rquickjs::class]
 pub struct CompileError {}
 
@@ -30,7 +30,7 @@ impl CompileError {
     }
 }
 
-#[derive(Trace)]
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct LinkError {}
 
@@ -40,7 +40,7 @@ impl LinkError {
     pub fn new() {}
 }
 
-#[derive(Trace)]
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct RuntimeError {}
 
