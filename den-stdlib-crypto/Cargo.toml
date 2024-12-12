@@ -1,5 +1,6 @@
 [package]
 name = "den-stdlib-crypto"
+description = "Web Crypto API for den"
 version.workspace = true
 edition.workspace = true
 repository.workspace = true
@@ -9,7 +10,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-den-utils = { path = "../den-utils", features = ["serde_json"] }
+den-utils = { version = "*", path = "../den-utils", features = ["serde_json"] }
 derivative.workspace = true
 derive_more.workspace = true
 either.workspace = true

@@ -967,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "den"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cargo-emit",
  "clap",
@@ -984,7 +984,7 @@ dependencies = [
 
 [[package]]
 name = "den-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cfg-if",
  "color-eyre",
@@ -1016,7 +1016,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-console"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "colored",
  "indexmap 2.7.0",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "base64-simd 0.8.0",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-crypto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "den-utils",
  "derivative",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-fs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rquickjs",
  "tokio",
@@ -1065,7 +1065,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-io"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "derive_more",
  "either",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-networking"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "delegate-attr",
  "den-stdlib-io",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-regex"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "colored",
  "pcre2",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-sqlite"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "derivative",
  "derive_more",
@@ -1108,7 +1108,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-text"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "derivative",
  "derive_more",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-timer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "den-stdlib-core",
  "den-utils",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-wasm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "den-stdlib-core",
@@ -1150,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "den-stdlib-whatwg-fetch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "den-utils",
  "derivative",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "den-transpiler-swc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "den-utils"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "derive_more",
  "rquickjs",
