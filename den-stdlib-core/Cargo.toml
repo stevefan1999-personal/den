@@ -15,7 +15,6 @@ base64-simd = { version = "0.8.0", optional = true }
 delegate-attr.workspace = true
 derivative.workspace = true
 derive_more.workspace = true
-quanta = "0.12.3"
 rquickjs = { workspace = true, features = ["macro"] }
 tokio-util.workspace = true
 

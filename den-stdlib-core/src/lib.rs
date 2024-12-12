@@ -1,38 +1,6 @@
-use derivative::Derivative;
-use derive_more::{From, Into};
-use quanta::{Clock, Instant};
-use rquickjs::{class::Trace, Coerced, Ctx, Exception, JsLifetime, Result};
+use rquickjs::{Coerced, Ctx, Exception, Result};
 
 pub use crate::cancellation::CancellationTokenWrapper;
-
-#[derive(Trace, Derivative, From, Into, JsLifetime)]
-#[derivative(Clone, Debug)]
-#[rquickjs::class(rename = "Performance")]
-pub struct Performance {
-    #[qjs(skip_trace)]
-    clock:   Clock,
-    #[qjs(skip_trace)]
-    instant: Instant,
-}
-
-#[rquickjs::methods]
-impl Performance {
-    #[qjs(constructor)]
-    pub fn new() -> Result<Self> {
-        let clock = Clock::new();
-        let instant = clock.now();
-        Ok(Self { clock, instant })
-    }
-
-    pub fn now(self) -> u64 {
-        self.instant.elapsed().as_millis().try_into().unwrap()
-    }
-
-    #[qjs(get, enumerable, rename = "timeOrigin")]
-    pub fn time_origin(self) -> u64 {
-        self.clock.raw()
-    }
-}
 
 #[rquickjs::function()]
 pub fn btoa(value: Coerced<String>) -> Result<String> {
@@ -81,30 +49,22 @@ pub mod core {
         Ctx, Result,
     };
 
-    pub use crate::{cancellation::CancellationTokenWrapper, Performance};
+    pub use crate::cancellation::CancellationTokenWrapper;
 
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
-        declare
-            .declare("atob")?
-            .declare("btoa")?
-            .declare("performance")?
-            .declare("gc")?;
+        declare.declare("atob")?.declare("btoa")?.declare("gc")?;
         Ok(())
     }
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, e: &Exports<'js>) -> Result<()> {
-        let performance = Performance::new()?;
-
         e.export("atob", super::js_atob)?
             .export("btoa", super::js_btoa)?
-            .export("performance", performance.clone())?
             .export("gc", super::js_gc)?;
 
         ctx.globals().set("atob", super::js_atob)?;
         ctx.globals().set("btoa", super::js_btoa)?;
-        ctx.globals().set("performance", performance)?;
         ctx.globals().set("gc", super::js_gc)?;
         Ok(())
     }
