@@ -5,6 +5,11 @@ use clap::Parser;
 use den_core::engine::EngineError;
 use rquickjs::{async_with, Coerced};
 
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {

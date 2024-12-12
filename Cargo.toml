@@ -88,13 +88,14 @@ console-subscriber = { version = "0.4.1", optional = true }
 den-core = { version = "*", path = "den-core", default-features = false }
 den-utils = { version = "*", path = "den-utils", default-features = false }
 futures.workspace = true
+mimalloc = { version = "0.1.43", optional = true }
 rquickjs.workspace = true
 rustyline = { version = "15.0.0", features = ["derive", "with-sqlite-history"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 vc-ltl = "5.1.1"
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm-wasmtime"]
+default = ["stdlib", "typescript", "react", "wasm-wasmtime", "mimalloc"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -116,6 +117,8 @@ stdlib-whatwg-fetch = ["den-core/stdlib-whatwg-fetch"]
 wasm = ["den-core/wasm"]
 wasm-wasmtime = ["den-core/wasm-wasmtime"]
 wasm-wasmi = ["den-core/wasm-wasmi"]
+
+mimalloc = ["dep:mimalloc"]
 
 
 [profile.dev.package.backtrace]
