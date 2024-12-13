@@ -52,7 +52,6 @@ rquickjs = { version = "0.8.1", features = [
     "parallel",
     "indexmap",
     "either",
-    "dump-leaks"
 ] }
 tokio = "1.42.0"
 tokio-util = "0.7.13"
