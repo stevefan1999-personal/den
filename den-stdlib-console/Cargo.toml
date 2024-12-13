@@ -14,3 +14,4 @@ keywords.workspace = true
 colored = "2.1.0"
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
+tracing.workspace = true

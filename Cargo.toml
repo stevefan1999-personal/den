@@ -27,13 +27,7 @@ authors = [
     "Steve Fan <29133953+stevefan1999-personal@users.noreply.github.com>",
 ]
 license = "MIT"
-keywords = [
-    "javascript",
-    "quickjs",
-    "tokio",
-    "typescript",
-    "swc",
-]
+keywords = ["javascript", "quickjs", "tokio", "typescript", "swc"]
 
 [workspace.dependencies]
 delegate-attr = "0.3.0"
@@ -69,6 +63,7 @@ reqwest = "0.12.9"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = "1.0.216"
 serde_json = "1.0.133"
+log = "0.4.22"
 
 [package]
 name = "den"
@@ -92,6 +87,7 @@ mimalloc = { version = "0.1.43", optional = true }
 rquickjs.workspace = true
 rustyline = { version = "15.0.0", features = ["derive", "with-sqlite-history"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
 vc-ltl = "5.1.1"
 
 [features]

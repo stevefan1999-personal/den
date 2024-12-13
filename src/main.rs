@@ -4,7 +4,7 @@ use app::App;
 use clap::Parser;
 use den_core::engine::EngineError;
 use rquickjs::{async_with, Coerced};
-
+use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -28,6 +28,14 @@ async fn main() -> color_eyre::eyre::Result<()> {
         console_subscriber::init();
     }
     color_eyre::install()?;
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .pretty()
+        .init();
 
     let cli = Cli::parse();
     let mut app = App::new().await;
