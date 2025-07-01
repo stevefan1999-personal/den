@@ -12,32 +12,7 @@ metadata:
   version: 1.0.0
 components:
   - container:
-      endpoints:
-        - name: https-rust
-          targetPort: 8080
-          protocol: https
-      image: quay.io/devfile/base-developer-image:ubi9-latest
-      args: ["tail", "-f", "/dev/null"]
-      memoryLimit: 16384Mi
+      image: quay.io/devfile/universal-developer-image:ubi9-latest
+      memoryLimit: 65536Mi
       mountSources: true
     name: runtime
-commands:
-  - exec:
-      commandLine: cargo build
-      component: runtime
-      env:
-       - name: CARGO_HOME
-         value: /tmp/.cargo
-      group:
-        isDefault: true
-        kind: build
-      workingDir: ${PROJECT_SOURCE}
-    id: build
-  - exec:
-      commandLine: cargo run
-      component: runtime
-      group:
-        isDefault: true
-        kind: run
-      workingDir: ${PROJECT_SOURCE}
-    id: run
