@@ -1,0 +1,29 @@
+name: wpt
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "den-core/tests/wpt.rs"
+      - "den-core/tests/wpt_adapter.js"
+      - "den-core/Cargo.toml"
+      - ".gitmodules"
+      - ".github/workflows/wpt.yml"
+      - "vendor/wpt"
+      - "Cargo.lock"
+
+jobs:
+  wpt:
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Init vendor/wpt (shallow + sparse-checkout)
+        run: |
+          git submodule update --init --depth 1 --filter=blob:none vendor/wpt
+          git -C vendor/wpt sparse-checkout init --cone
+          git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI
+      - run: cargo nextest run --profile official -p den-core --test wpt --features stdlib,typescript,react,wasm,jit
