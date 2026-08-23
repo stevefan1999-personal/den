@@ -14,7 +14,6 @@ den-utils = { version = "*", path = "../den-utils", features = ["serde_json"] }
 derivative.workspace = true
 derive_more.workspace = true
 either.workspace = true
-getset = "0.1.7"
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tracing.workspace = true

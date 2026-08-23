@@ -1058,17 +1058,9 @@ dependencies = [
 name = "den-stdlib-crypto"
 version = "0.4.0"
 dependencies = [
- "den-utils",
- "derivative",
- "derive_more",
- "either",
- "getset",
  "indexmap",
  "rand",
  "rquickjs",
- "tokio",
- "tracing",
- "typed-builder",
  "uuid",
 ]
 
@@ -1140,15 +1132,11 @@ dependencies = [
 name = "den-stdlib-wasm"
 version = "0.4.0"
 dependencies = [
- "anyhow",
- "den-stdlib-core",
  "derive_more",
  "either",
  "indexmap",
  "rquickjs",
  "tokio",
- "tracing",
- "typed-builder",
  "wasmi",
  "wasmtime",
  "wasmtime-wasi",
@@ -1163,7 +1151,6 @@ dependencies = [
  "derivative",
  "derive_more",
  "either",
- "getset",
  "http",
  "indexmap",
  "reqwest",
@@ -1180,8 +1167,6 @@ version = "0.4.0"
 dependencies = [
  "den-stdlib-core",
  "den-transpiler-oxc",
- "derive_more",
- "relative-path",
  "rquickjs",
  "tokio",
  "tokio-util",
@@ -1701,17 +1686,6 @@ dependencies = [
  "r-efi",
  "rand_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "getset"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cf442baaabe4213ce7d1239afc26c039180b6456da2cededa316ae2c8a77a77"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]

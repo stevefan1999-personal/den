@@ -56,7 +56,6 @@ rquickjs = { version = "0.12.2", features = [
 tokio = "1.53.1"
 tokio-util = "0.7.19"
 tracing = "0.1.44"
-thiserror = "2.0.20"
 typed-builder = "0.23.2"
 reqwest = "0.13.4"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
