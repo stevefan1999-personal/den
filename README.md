@@ -134,7 +134,7 @@ There are still a lot of bugs that needs to be addressed before it can be deemed
 - [x] Detect when the task list is empty and is safe to shutdown (like Node)
     - `AsyncRuntime::idle()` is the whole rule: den exits when nothing is spawned. A worker only
       keeps the process alive while it is doing work or something is still listening to it — see
-      [ARCHITECTURE.md](ARCHITECTURE.md) §6.5. The process still exits 0 on an uncaught error,
+      [ARCHITECTURE.md](ARCHITECTURE.md) §7.5. The process still exits 0 on an uncaught error,
       which is the next thing to fix.
 - [x] Make it easily embeddable to other Rust projects
     - [x] Remove the need for the global state. There is only one so far and that is the "global cancellation token"

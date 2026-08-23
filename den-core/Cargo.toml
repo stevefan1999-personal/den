@@ -56,7 +56,7 @@ den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-fe
 
 [dev-dependencies]
 color-eyre = "0.6.5"
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Reference assembler for the WebAssembly fixtures, and the yardstick den's own
 # `WebAssembly.wat2wasm` is pinned against.
 wat = "1.257.1"

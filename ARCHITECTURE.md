@@ -14,7 +14,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
  └── den-core                   the embeddable runtime: Engine, loaders, resolvers
       ├── den-transpiler-oxc    TS/JSX → JS  (optional, `transpile`)
       ├── den-stdlib-console    globalThis.console → tracing
-      ├── den-stdlib-core       atob/btoa/gc, CancellationToken
+      ├── den-stdlib-core       atob/btoa/gc
       ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
       ├── den-stdlib-fs         den:fs
       ├── den-stdlib-networking den:networking (TCP, UDP, Unix, TLS sockets)
@@ -35,9 +35,39 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
 `den-core` owns everything about *how* JavaScript gets in: the `Engine`
 (runtime + context + stop token), module resolution, module loading and the
 transpile hook. Each `den-stdlib-*` crate owns one JS-visible API and knows
-nothing about the loader chain. The binary owns only process concerns.
+nothing about the loader chain. The binary owns only process concerns. The
+stop token is a Rust `CancellationToken` on `Engine`, never a JS class;
+timers store numeric ids in userdata and `clearTimeout(id)` looks them up.
 
-## 2. How one Rust module becomes both `den:x` and a global
+## 2. CLI event loop and Ctrl-C
+
+The event loop is **`AsyncRuntime::idle()` only** (`src/app.rs`,
+`den-core/src/engine.rs`). `idle()` holds the runtime mutex and runs JS jobs
+plus every `ctx.spawn` future until the scheduler is empty. `drive()` polls
+the same scheduler but releases the lock between polls; spawning it *and*
+calling `idle()` makes two loopers fight, so den does not spawn `drive()`.
+
+Ctrl-C (and `Engine::stop()`) cancel `Engine.stop_token`. Two things read
+that token:
+
+1. The interrupt handler (`runtime.set_interrupt_handler`) — kills tight JS
+   loops on bytecode back-edges.
+2. Every `ctx.spawn` future that should not outlive the process. Timers
+   (`den-stdlib-timer`) select on it next to their own per-id token; a
+   60-second `setTimeout` therefore completes as soon as the engine stops,
+   which is what lets `idle()` return. Dropping `idle()` does **not** cancel
+   spawned futures.
+
+The REPL cannot call `engine.eval` (an `async_with`) while `idle()` holds the
+lock. `start_repl_session` only owns the rustyline task; `run_until_end`
+`ctx.spawn`s a pump that `recv`s lines and evaluates them on the same `Ctx`.
+Closing the REPL cancels the stop token so the pump and any leftover timers
+complete and `idle()` returns.
+
+Workers still take a child of the same token (`RealmStop`); `Engine::shutdown`
+joins their threads after `idle()` returns.
+
+## 3. How one Rust module becomes both `den:x` and a global
 
 `den-core/src/engine.rs` wires the same `#[rquickjs::module]` type into three
 places, and each place buys a different thing:
@@ -73,7 +103,7 @@ to find without importing anything. `den:whatwg` is `evaluate_def`'d **after**
 `den:worker` so FileReader, XMLHttpRequest, EventSource and WebSocket can
 extend `EventTarget`.
 
-## 3. Resolver and loader chain
+## 4. Resolver and loader chain
 
 rquickjs takes one resolver tuple and one loader tuple; each is tried in order.
 
@@ -141,7 +171,7 @@ hand the raw bytes to `Module::declare`. The third transpile site is
 `Engine::eval`, which uses `IsModule::Unknown` because a REPL line may be
 either a script or a module.
 
-## 4. The transpiler (`den-transpiler-oxc`)
+## 5. The transpiler (`den-transpiler-oxc`)
 
 oxc 0.146 (`oxc_parser`, `oxc_semantic`, `oxc_transformer`, `oxc_codegen`,
 `oxc_sourcemap` 8.1.2). One public type, `EasyOxcTranspiler`, which is a
@@ -181,7 +211,7 @@ text is gone.
 Every buffer is transpiled as `<anonymous>`: den transpiles in-memory sources
 whose real path is not known at this layer.
 
-## 5. `den-stdlib-wasm`
+## 6. `den-stdlib-wasm`
 
 Implements the WebAssembly JS API (`WebAssembly.{validate, compile, instantiate,
 compileStreaming, instantiateStreaming, Module, Instance, Memory, Table, Global,
@@ -190,7 +220,7 @@ Tag, Exception, CompileError, LinkError, RuntimeError}`, plus a den-specific
 (`DEFINE_STREAMING` in `lib.rs`) and duck-type the `Response`, so the crate
 does not depend on den's fetch.
 
-### 5.1 The `backend` shim
+### 6.1 The `backend` shim
 
 `src/backend/mod.rs` declares a contract; `backend/wasmtime.rs` (wasmtime 48 +
 wasmtime-wasi 48) and `backend/wasmi.rs` (wasmi 1.1) each implement it with the
@@ -242,7 +272,7 @@ Where the backends genuinely disagree, the shim owns the difference:
   half of the contract, and is the one function that changes the day a
   `wasmi_wasi` dependency appears.
 
-### 5.2 `OwnedCtx` and the `'static` store payload
+### 6.2 `OwnedCtx` and the `'static` store payload
 
 wasmtime 48 bounds `T: 'static` on `Linker<T>` / `Instance` / `Func`, so the
 store payload cannot borrow `'js`. `OwnedCtx` (`backend/mod.rs`) parks a
@@ -265,7 +295,7 @@ This is what makes the JS↔wasm bridge possible: `HostFunction::run`
 (`instance.rs`) reaches JS from inside an engine callback via
 `caller.data().with_ctx(…)`.
 
-### 5.3 Store and engine as context userdata
+### 6.3 Store and engine as context userdata
 
 The engine (`engine.rs`) and the store (`store.rs`) are separate pieces of
 userdata on purpose: compiling and validating need an engine but no store, so
@@ -273,7 +303,7 @@ userdata on purpose: compiling and validating need an engine but no store, so
 One store per JS context is what makes every `Memory`, `Table`, `Global` and
 `Instance` of that context interchangeable as imports.
 
-### 5.4 `Memory.buffer` and why it is not an ordinary `ArrayBuffer`
+### 6.4 `Memory.buffer` and why it is not an ordinary `ArrayBuffer`
 
 `memory.buffer` *aliases* the wasm linear memory: `MemoryBuffers::alias`
 (`memory.rs`) calls `JS_NewArrayBuffer` on the memory's base pointer with **no**
@@ -317,7 +347,7 @@ memory base, which QuickJS never allocated. Without the shadow,
 `new WebAssembly.Memory({initial:1}).buffer.transfer(1)` hands a foreign
 pointer to QuickJS' allocator and corrupts the heap.
 
-### 5.5 WASI is an explicit opt-in, and nothing else
+### 6.5 WASI is an explicit opt-in, and nothing else
 
 den links no host API implicitly. A module that imports
 `wasi_snapshot_preview1` and is given nothing for it fails like any other
@@ -355,14 +385,14 @@ environment — which is exactly why it may only run once a caller has spelled
 out `wasiImports()`. Holding the marker grants nothing on its own; it builds
 nothing.
 
-## 6. `den-stdlib-worker`
+## 7. `den-stdlib-worker`
 
 Web Workers, `MessageChannel`/`MessagePort`, `BroadcastChannel`, the
 `EventTarget` family, `AbortController`/`AbortSignal`, `performance`,
 `navigator`, `structuredClone` and `reportError`. The design notes are
 [`docs/research/08`-`11`](docs/research/); this is the shape they settled into.
 
-### 6.1 Why half of it is JavaScript
+### 7.1 Why half of it is JavaScript
 
 Every interface here `extends EventTarget`, and an `#[rquickjs::class]` can
 neither extend a JS class nor be extended by one. So the split is not a
@@ -395,7 +425,7 @@ error chain instead of straight onto stderr: every reporter in the process —
 entry. `den-core` reaches the same bag for `dispatchTrusted` when it fires
 `unhandledrejection`.
 
-### 6.2 The `WorkerHost` seam
+### 7.2 The `WorkerHost` seam
 
 `den-stdlib-worker` knows nothing about loaders, the transpiler or the stdlib;
 `den-core` knows nothing about threads. Between them is one trait with one
@@ -416,7 +446,7 @@ against, following the entry point rather than the working directory) and
 takes a *child* — so `Engine::stop()` interrupts a whole tree, and `shutdown()`
 then reaps it bottom-up).
 
-### 6.3 One OS thread, one tokio worker thread
+### 7.3 One OS thread, one tokio worker thread
 
 `new Worker` spawns a `std::thread` named `den-worker:<name>`, and that thread
 builds a **`new_multi_thread().worker_threads(1)`** tokio runtime of its own. A
@@ -436,7 +466,7 @@ A panic on a worker thread is caught (`panic::catch_unwind`) and sent to the
 parent as an `ErrorEvent`: every other thread is holding a live QuickJS
 runtime, so letting it unwind out would take the process down.
 
-### 6.4 Structured clone: quickjs-ng's serialiser plus a JS pre/post pass
+### 7.4 Structured clone: quickjs-ng's serialiser plus a JS pre/post pass
 
 The bytes are quickjs-ng's own `JS_WriteObject2`/`JS_ReadObject`. Around them
 sit two JS functions in `prelude/clone.js`, registered with Rust through
@@ -474,7 +504,7 @@ Anything the walk hands through unchanged that the reader then refuses becomes a
 `DataCloneError` rather than the reader's own `RangeError` (same realm) or a
 far-side `messageerror` (across a worker).
 
-### 6.5 The process-lifetime rule
+### 7.5 The process-lifetime rule
 
 `AsyncRuntime::idle()` resolves only when no `ctx.spawn`-ed future is left
 (`docs/research/09` §2.2), so "what keeps den alive" is exactly "what is
@@ -505,7 +535,7 @@ The practical consequence, and the one to remember: `new Worker("./w.js")` where
 `w.js` only prints exits 0 like Node, while a worker that registers `onmessage`
 keeps the process alive until `close()` or `terminate()`.
 
-## 7. Known limitations
+## 8. Known limitations
 
 - **No re-entrancy while an export is running.** The store is one
   `Rc<RefCell<backend::Store>>`, and `Store::with_mut` (`store.rs`) answers a
@@ -544,7 +574,7 @@ keeps the process alive until `close()` or `terminate()`.
   pins both halves.
 - **WASI grants the host's stdio and environment when it is asked for.** There
   is no sandboxing knob: `wasiImports()` is all-or-nothing, and a caller passing
-  it hands the module the real `WasiCtx` (§5.5). Nothing is linked without it.
+  it hands the module the real `WasiCtx` (§6.5). Nothing is linked without it.
 - Several `den:fs` entry points (`metadata`, `readDir`, `readLink`,
   `setPermissions`, `symlinkMetadata`) are declared but unimplemented.
 - **The binary swallows failures.** `src/main.rs` prints a load or run error and
@@ -555,7 +585,7 @@ keeps the process alive until `close()` or `terminate()`.
   - *Structured clone.* Array holes arrive as `undefined` and non-index array
     properties are dropped. `RegExp` and `Map`/`Set` are rebuilt from their
     parts rather than handed to `JS_WriteObject2`, working around two
-    quickjs-ng reference-table bugs (§6.4).
+    quickjs-ng reference-table bugs (§7.4).
   - *No shared memory between realms.* quickjs-ng does register
     `SharedArrayBuffer` and `Atomics` — including `Atomics.wait` — but a
     `SharedArrayBuffer` cannot leave its realm: the clone walk refuses it with a
@@ -592,7 +622,7 @@ keeps the process alive until `close()` or `terminate()`.
 
   The design notes are `docs/research/08`-`11`.
 
-## 8. Feature flags
+## 9. Feature flags
 
 Root `Cargo.toml` default: `stdlib, typescript, react, wasm-wasmtime, mimalloc`.
 Nearly every root feature is a pass-through to `den-core`.
@@ -617,7 +647,7 @@ without `--no-default-features` leaves `wasm-wasmtime` on and the build fails
 on `den-stdlib-wasm`'s `compile_error!`. That is why `wasm` is a plain alias
 rather than a `dep:`-only feature.
 
-## 9. Build and test
+## 10. Build and test
 
 ```bash
 cargo build                                  # debug
@@ -632,11 +662,12 @@ cargo test --workspace --all-targets --no-default-features \
   --features stdlib,typescript,react,wasm-wasmi
 ```
 
-Both invocations must be green: 363 tests on wasmtime, 361 on wasmi (two are
+Both invocations must be green: 368 tests on wasmtime, 366 on wasmi (two are
 `#[cfg(feature = "wasmtime")]`, both about WASI). The bulk is still
 `den-stdlib-worker` (132) and `den-stdlib-wasm` (93); the WinterTC crates add
 process, whatwg, fetch, fs, crypto, networking, and den-core import-map/attribute
-suites on top.
+suites on top. The timer crate now covers numeric ids, and den-core pins
+`Engine::stop()` releasing `idle()` from a long timer.
 
 `den-core/tests/workers.rs` is the layer that proves a *user* gets the worker
 semantics: it writes its fixtures under `std::env::temp_dir()` at test time and

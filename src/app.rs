@@ -1,133 +1,107 @@
-use den_core::engine::{Engine, EngineError};
+use den_core::engine::Engine;
 use futures::prelude::*;
 use rquickjs::convert::Coerced;
-use tokio::{signal, sync::mpsc, task::yield_now};
+use tokio::{signal, sync::mpsc};
 
 use crate::repl;
 
 pub struct App {
-    pub(crate) engine:      Engine,
-    wait_for_cancel_signal: bool,
+    pub(crate) engine: Engine,
+    repl_rx: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl App {
     pub async fn new() -> Self {
         Self {
-            engine:                 Engine::new().await,
-            wait_for_cancel_signal: false,
+            engine: Engine::new().await,
+            repl_rx: None,
         }
     }
 }
 
 impl App {
     pub fn start_repl_session(&mut self) {
-        let (repl_tx, mut repl_rx) = mpsc::unbounded_channel::<String>();
+        let (repl_tx, repl_rx) = mpsc::unbounded_channel::<String>();
 
-        // This task accepts all strings input from a channel, so that it can be from
-        // any data source Right now this is for stdin, but we can obviously
-        // extend this to run from a buffer for automated E2EE test
-        tokio::spawn({
-            let engine = self.engine.clone();
-            let token = engine.stop_token.child_token();
-            async move {
-                let subtoken = token.child_token();
-                token
-                    .run_until_cancelled(async move {
-                        // Each received data has to be one complete instance of script for eval,
-                        // i.e. full buffer.
-                        // Don't handle things like missing bracket balance here
-                        while let Some(source) = repl_rx.recv().await {
-                            let fut = {
-                                let engine = engine.clone();
-                                let source = source.clone();
-                                let subtoken = subtoken.child_token();
-                                async move {
-                                    match subtoken
-                                        .run_until_cancelled(
-                                            engine.eval::<Coerced<String>>(&source),
-                                        )
-                                        .await
-                                    {
-                                        Some(Ok(Coerced(res))) => {
-                                            println!("{res}")
-                                        }
-                                        // Handles runtime exception during execution
-                                        Some(Err(EngineError::Rquickjs(_))) => {
-                                            engine
-                                                .context
-                                                .async_with(async |ctx| {
-                                                    let e = ctx.catch();
-                                                    if let Some(e) = e.as_exception() {
-                                                        eprintln!("{e}")
-                                                    } else if let Ok(Coerced(e)) =
-                                                        e.get::<Coerced<String>>()
-                                                    {
-                                                        eprintln!("{e}")
-                                                    } else {
-                                                        eprintln!("unknown error")
-                                                    }
-                                                })
-                                                .await;
-                                        }
-                                        // This can be something else such as a transpiler error
-                                        #[allow(unreachable_patterns)]
-                                        Some(Err(e)) => {
-                                            eprintln!("{e}")
-                                        }
-                                        None => {}
-                                    }
-                                }
-                            };
-                            tokio::spawn(fut);
-                            yield_now().await;
-                        }
-                    })
-                    .await;
-            }
-        });
-
-        // The REPL runs on a different task, and send data to our REPL eval handler
-        // above
+        // The REPL runs on a different task and sends complete scripts to the
+        // `ctx.spawn`ed pump started in `run_until_end`. Closing the REPL
+        // cancels the engine so pending timers complete and `idle()` returns.
         tokio::spawn({
             let stop_token = self.engine.stop_token.clone();
             repl::run_repl(repl_tx).then(move |_| async move { stop_token.cancel() })
         });
 
-        self.wait_for_cancel_signal = true;
+        self.repl_rx = Some(repl_rx);
     }
 
     pub async fn run_until_end(&mut self) {
-        // This part does 4 things
-        // 1. Handle if a stop signal has been received (in the form of a cancellation)
-        // 2. Wait until all front tasks are completed (notably if REPL is involved)
-        // 3. Ensure that after being ready to stop everything, wait for the VM to
-        //    finish all the pending executions
-        // 4. Stop and join whatever the realm spawned onto other threads
-
-        tokio::spawn(self.engine.runtime.drive());
-
-        if self.wait_for_cancel_signal {
-            self.engine.stop_token.child_token().cancelled().await;
+        // Event loop is `runtime.idle()` only. `drive()` polls the same
+        // scheduler while releasing the lock; spawning it *and* calling
+        // `idle()` makes two loopers fight. The only way to do JS work during
+        // `idle()` is `ctx.spawn`, so the REPL eval pump is one of those.
+        if let Some(repl_rx) = self.repl_rx.take() {
+            let engine = self.engine.clone();
+            self.engine
+                .context
+                .with(move |ctx| {
+                    ctx.spawn(Self::repl_pump(ctx.clone(), engine, repl_rx));
+                })
+                .await;
         }
-        self.engine
-            .stop_token
-            .run_until_cancelled(self.engine.runtime.idle())
-            .await;
 
-        // Unconditional, and deliberately outside the `run_until_cancelled`
-        // above: a Ctrl-C is exactly the case where children are still running
-        // and still have to be joined.
+        self.engine.runtime.idle().await;
         self.engine.shutdown().await;
+    }
+
+    /// Eval each REPL line on this context. Lives as a `ctx.spawn`ed future so
+    /// `idle()` can poll it while holding the runtime lock; `engine.eval`
+    /// would deadlock on that lock.
+    async fn repl_pump(
+        ctx: rquickjs::Ctx<'_>,
+        engine: Engine,
+        mut repl_rx: mpsc::UnboundedReceiver<String>,
+    ) {
+        let stop = engine.stop_token.clone();
+        loop {
+            let source = tokio::select! {
+                _ = stop.cancelled() => break,
+                source = repl_rx.recv() => match source {
+                    Some(source) => source,
+                    None => break,
+                },
+            };
+            let src = match engine.prepare_eval_source(&source) {
+                Ok(src) => src,
+                Err(error) => {
+                    eprintln!("{error}");
+                    continue;
+                }
+            };
+            match Engine::eval_prepared::<Coerced<String>>(ctx.clone(), &src).await {
+                Ok(Coerced(res)) => println!("{res}"),
+                Err(rquickjs::Error::Exception) => print_js_error(&ctx),
+                Err(error) => eprintln!("{error}"),
+            }
+        }
     }
 
     // Just hooks the Ctrl-C signal and then automatically stop the VM engine
     pub fn hook_ctrlc_handler(&mut self) {
         let stop_token = self.engine.stop_token.clone();
 
-        tokio::spawn(signal::ctrl_c().then(|_| {
-            async move {
-                stop_token.cancel();
-            }
+        tokio::spawn(signal::ctrl_c().then(|_| async move {
+            stop_token.cancel();
         }));
+    }
+}
+
+fn print_js_error(ctx: &rquickjs::Ctx<'_>) {
+    let e = ctx.catch();
+    if let Some(e) = e.as_exception() {
+        eprintln!("{e}")
+    } else if let Ok(Coerced(e)) = e.get::<Coerced<String>>() {
+        eprintln!("{e}")
+    } else {
+        eprintln!("unknown error")
     }
 }
