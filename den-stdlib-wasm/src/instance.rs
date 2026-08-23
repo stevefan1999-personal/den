@@ -2,6 +2,7 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
+use den_util::Probe;
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
     Value,
@@ -14,7 +15,7 @@ use wasmtime::{
 };
 
 use crate::{
-    Probe, backend,
+    backend,
     engine::Engine,
     error::{throw_link_error, throw_runtime_error},
     memory::MemoryBuffers,
