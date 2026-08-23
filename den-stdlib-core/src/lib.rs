@@ -8,7 +8,7 @@ pub mod core {
     use rquickjs::{Coerced, Ctx, Exception, Result, module::Exports};
 
     #[rquickjs::function]
-    pub fn btoa(value: Coerced<String>) -> Result<String> {
+    pub fn btoa(Coerced(value): Coerced<String>) -> Result<String> {
         #[cfg(feature = "base64-simd")]
         {
             use base64_simd::STANDARD;
@@ -22,8 +22,14 @@ pub mod core {
         }
     }
 
+    // The macro injects `Ctx` by value, and the body only borrows it; a
+    // reference parameter is not an option at this boundary.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
     #[rquickjs::function]
-    pub fn atob(ctx: Ctx<'_>, value: Coerced<String>) -> Result<String> {
+    pub fn atob(ctx: Ctx<'_>, Coerced(value): Coerced<String>) -> Result<String> {
         #[cfg(feature = "base64-simd")]
         {
             use base64_simd::STANDARD;
@@ -42,6 +48,10 @@ pub mod core {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
     #[rquickjs::function]
     pub fn gc(ctx: Ctx<'_>) { ctx.run_gc(); }
 
@@ -55,4 +65,4 @@ pub mod core {
     }
 }
 
-pub mod report;
+pub mod exceptions;

@@ -4,6 +4,7 @@
 //! `signal instanceof EventTarget` holds. Listener state lives on the hidden
 //! EventTarget slot [`crate::events::EventTarget::resolve`] attaches.
 
+use den_util::inherit;
 use rquickjs::{
     Class, Ctx, Exception, Function, IntoJs, JsLifetime, Result, Value,
     atom::PredefinedAtom,
@@ -11,7 +12,7 @@ use rquickjs::{
     function::{FuncArg, Opt, This},
 };
 
-use crate::events::{Event, EventTarget, define_event_handler, inherit, new_dom_exception};
+use crate::events::{Event, EventTarget, define_event_handler, new_dom_exception};
 
 const ABORT_MESSAGE: &str = "This operation was aborted";
 const TIMEOUT_MESSAGE: &str = "The operation was aborted due to timeout";

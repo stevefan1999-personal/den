@@ -21,9 +21,10 @@ use std::{
     time::Duration,
 };
 
-use den_stdlib_core::report::print_exception;
+use den_stdlib_core::exceptions::print_exception;
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{EasyOxcTranspiler, IsModule, infer_transpile_syntax_by_extension};
+use den_util::inherit;
 use rquickjs::{
     AsyncContext, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime,
     Object, Persistent, Promise, Result, Value,
@@ -41,11 +42,11 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
-    events::{ErrorEvent, EventTarget, define_event_handler, dispatch_trusted, inherit},
+    events::{ErrorEvent, EventTarget, define_event_handler, dispatch_trusted},
     host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost},
     message::clone::split_transfer,
     port::{NativePort, pair, track_message_listeners},
-    report::{report_exception, sink_hook},
+    report::{report_uncaught, sink_hook},
     transport::PortHandle,
 };
 
@@ -326,12 +327,7 @@ fn report_error_at<'js>(
 
 fn escalate(ctx: &Ctx<'_>, message: String, filename: String, lineno: u32, colno: u32) {
     if let Some(hook) = sink_hook(ctx, "escalate") {
-        if let Err(error) = hook.call::<_, ()>((message, filename, lineno, colno)) {
-            match error {
-                Error::Exception => report_exception(ctx, &ctx.catch()),
-                other => eprintln!("{other}"),
-            }
-        }
+        report_uncaught(ctx, hook.call::<_, ()>((message, filename, lineno, colno)));
         return;
     }
     let text = format!("{message}\n    at {filename}:{lineno}:{colno}");
@@ -488,13 +484,8 @@ impl NativeWorker {
             let dispatched =
                 on_fault.call::<_, ()>((fault.message, fault.filename, fault.lineno, fault.colno));
             // The handler for "nobody handled an error" throwing is the end of
-            // the line; print it rather than lose it.
-            if let Err(error) = dispatched {
-                match error {
-                    Error::Exception => report_exception(&ctx, &ctx.catch()),
-                    other => eprintln!("{other}"),
-                }
-            }
+            // the line; report it rather than lose it.
+            report_uncaught(&ctx, dispatched);
         }
     }
 }

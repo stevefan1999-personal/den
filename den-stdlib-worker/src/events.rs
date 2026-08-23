@@ -12,17 +12,19 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    ffi::CString,
     rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use den_stdlib_core::report::{print_exception, report_exception, set_exception_sink};
+use den_stdlib_core::exceptions::{
+    print_exception, report_exception, report_uncaught, set_exception_sink,
+};
+use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Result, Value,
     atom::PredefinedAtom,
-    class::{JsClass, Trace, Tracer},
+    class::{Trace, Tracer},
     function::{Args, Opt, This},
     object::{Accessor, Property},
     qjs,
@@ -53,25 +55,6 @@ pub(crate) fn new_dom_exception<'js>(
     ctor.construct((message, name))
 }
 
-/// Throw `DOMException(message, name)`.
-pub(crate) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> Error {
-    let name = CString::new(name).unwrap_or_default();
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack buffer
-    // (quickjs.c:62309), so the caller's text is passed as an *argument* to a
-    // constant `%s` format, never as the format itself. Both C strings outlive
-    // the call.
-    unsafe {
-        qjs::JS_ThrowDOMException(
-            ctx.as_raw().as_ptr(),
-            name.as_ptr(),
-            c"%s".as_ptr(),
-            message.as_ptr(),
-        );
-    }
-    Error::Exception
-}
-
 fn unix_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -88,10 +71,6 @@ fn time_stamp(ctx: &Ctx<'_>) -> f64 {
         origin
     };
     unix_ms() - origin
-}
-
-fn coerce_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-    Ok(Coerced::<String>::from_js(ctx, value)?.0)
 }
 
 fn to_bool<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<bool> {
@@ -153,20 +132,6 @@ pub(crate) fn freeze<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<()> {
     } else {
         Ok(())
     }
-}
-
-pub(crate) fn inherit<'js, Sub, Super>(ctx: &Ctx<'js>) -> Result<()>
-where
-    Sub: JsClass<'js>,
-    Super: JsClass<'js>,
-{
-    if let (Some(sub), Some(super_proto)) = (
-        Class::<Sub>::prototype(ctx)?,
-        Class::<Super>::prototype(ctx)?,
-    ) {
-        sub.set_prototype(Some(&super_proto))?;
-    }
-    Ok(())
 }
 
 fn patch_length<'js>(constructors: &Object<'js>, name: &str, length: usize) -> Result<()> {
@@ -879,12 +844,7 @@ impl<'js> EventTarget<'js> {
         } else {
             Ok(())
         };
-        if let Err(error) = outcome {
-            match error {
-                Error::Exception => report_exception(ctx, &ctx.catch()),
-                error => eprintln!("{error}"),
-            }
-        }
+        report_uncaught(ctx, outcome);
     }
 
     /// DOM §2.7 dispatch, AT_TARGET only. `trusted` is the user-agent mark:
@@ -1708,7 +1668,7 @@ mod tests {
                        };"#,
                 )?;
                 let thrown = ctx.eval::<Value<'_>, _>("new Error('from rust')")?;
-                den_stdlib_core::report::report_exception(&ctx, &thrown);
+                den_stdlib_core::exceptions::report_exception(&ctx, &thrown);
                 ctx.globals().get::<_, String>("seen")
             };
             report()
