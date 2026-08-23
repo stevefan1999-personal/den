@@ -10,6 +10,8 @@ on:
   pull_request:
     paths:
       - "**/*.rs"
+      - "**/Cargo.toml"
+      - Cargo.lock
       - .github/workflows/lint.yml
 
 jobs:
@@ -17,7 +19,7 @@ jobs:
     runs-on: [self-hosted]
     steps:
       - uses: olix0r/cargo-action-fmt/setup@v2
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
       - run: cargo +nightly clippy --no-deps --message-format=json | cargo-action-fmt
 
@@ -26,7 +28,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: olix0r/cargo-action-fmt/setup@v2
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
       - run: cargo +nightly fmt --check
 
@@ -35,6 +37,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: olix0r/cargo-action-fmt/setup@v2
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
       - run: cargo +nightly doc --no-deps --message-format=json | cargo-action-fmt
+
+  test:
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # Both WebAssembly backends are exercised: they share the JS-API layer but
+      # differ in capabilities, so a green wasmtime run says nothing about wasmi.
+      matrix:
+        backend: [wasm-wasmtime, wasm-wasmi]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --workspace --no-default-features --features stdlib,typescript,react,${{ matrix.backend }}

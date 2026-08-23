@@ -21,6 +21,7 @@ members = [
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
+rust-version = "1.97"
 repository = "https://github.com/stevefan1999-personal/den"
 readme = "README.md"
 authors = [
@@ -64,11 +65,21 @@ serde = "1.0.216"
 serde_json = "1.0.133"
 log = "0.4.22"
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[workspace.lints.clippy]
+# One module layout only: `foo.rs` + `foo/`, never `foo/mod.rs`. A tree of
+# identically named `mod.rs` files is the one thing an editor tab strip, a
+# stack trace and a grep hit all fail to tell apart.
+mod_module_files = "deny"
+
 [package]
 name = "den"
 description = "One word less than Deno!"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
@@ -141,5 +152,5 @@ strip = "symbols"
 [build-dependencies]
 cargo-emit = "0.2.1"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+[lints]
+workspace = true
