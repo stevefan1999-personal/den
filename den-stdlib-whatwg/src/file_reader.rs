@@ -5,6 +5,7 @@ use std::{
     rc::Rc,
 };
 
+use den_util::coerce_string;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Function, JsLifetime, Object, Promise, Result, TypedArray, Value,
     atom::PredefinedAtom,
@@ -205,7 +206,7 @@ impl<'js> FileReader<'js> {
         let encoding = match encoding.0 {
             None => None,
             Some(value) if value.is_undefined() => None,
-            Some(value) => Some(Host::coerce_string(&ctx, value)?),
+            Some(value) => Some(coerce_string(&ctx, value)?),
         };
         Self::read(this, ctx, blob, ReadKind::Text, encoding)
     }

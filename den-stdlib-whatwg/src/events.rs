@@ -2,11 +2,10 @@
 //! `dispatchEvent` in den:worker still sees EVENT_STATE; the class wrapper
 //! then sets `[[Prototype]]` to this class.
 
+use den_util::coerce_string;
 use rquickjs::{
     Ctx, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace, function::Opt,
 };
-
-use crate::host::Host;
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
@@ -120,7 +119,7 @@ impl CloseEvent {
                 if value.is_undefined() {
                     None
                 } else {
-                    Host::coerce_string(options.ctx(), value).ok()
+                    coerce_string(options.ctx(), value).ok()
                 }
             })
             .unwrap_or_default();

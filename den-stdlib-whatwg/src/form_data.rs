@@ -1,5 +1,6 @@
 //! WHATWG `FormData`. Multipart is `Symbol.for("den.toMultipartBlob")`.
 
+use den_util::coerce_string;
 use rquickjs::{
     Class, Ctx, FromJs, Function, IntoJs, Iterable, JsLifetime, Result, Value,
     atom::PredefinedAtom,
@@ -54,7 +55,7 @@ impl FormData {
             );
             return Ok((name, FormValue::File(file)));
         }
-        Ok((name, FormValue::Text(Host::coerce_string(ctx, value)?)))
+        Ok((name, FormValue::Text(coerce_string(ctx, value)?)))
     }
 
     fn value_js<'js>(&self, ctx: &Ctx<'js>, value: &FormValue) -> Result<Value<'js>> {
@@ -159,12 +160,12 @@ impl FormData {
 
     pub fn append<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 2)?;
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
         let filename = args
             .0
             .get(2)
             .cloned()
-            .and_then(|value| Host::coerce_string(&ctx, value).ok());
+            .and_then(|value| coerce_string(&ctx, value).ok());
         let entry = Self::normalize(&ctx, name, args.0[1].clone(), filename)?;
         self.entries.push(entry);
         Ok(())
@@ -172,14 +173,14 @@ impl FormData {
 
     pub fn delete<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
         self.entries.retain(|(existing, _)| existing != &name);
         Ok(())
     }
 
     pub fn get<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Value<'js>> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
         for (existing, value) in &self.entries {
             if existing == &name {
                 return self.value_js(&ctx, value);
@@ -190,7 +191,7 @@ impl FormData {
 
     pub fn get_all<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Vec<Value<'js>>> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
         let mut result = Vec::new();
         for (existing, value) in &self.entries {
             if existing == &name {
@@ -202,18 +203,18 @@ impl FormData {
 
     pub fn has<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
         Ok(self.entries.iter().any(|(existing, _)| existing == &name))
     }
 
     pub fn set<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 2)?;
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
         let filename = args
             .0
             .get(2)
             .cloned()
-            .and_then(|value| Host::coerce_string(&ctx, value).ok());
+            .and_then(|value| coerce_string(&ctx, value).ok());
         let replacement = Self::normalize(&ctx, name.clone(), args.0[1].clone(), filename)?;
         let mut result = Vec::new();
         let mut replace = true;

@@ -8,6 +8,7 @@ use std::{
     rc::Rc,
 };
 
+use den_util::coerce_string;
 use indexmap::IndexMap;
 use rquickjs::{
     Array, Class, Ctx, Filter, FromJs, Function, IntoJs, JsLifetime, Object, Result, Symbol, Value,
@@ -339,7 +340,7 @@ fn ingest_setters<'js>(ctx: &Ctx<'js>, tables: &mut Tables, value: &Value<'js>) 
                 let Ok(field) = field else {
                     continue;
                 };
-                let Ok(name) = Host::coerce_string(ctx, field) else {
+                let Ok(name) = coerce_string(ctx, field) else {
                     continue;
                 };
                 if let Ok(value) = expected.get::<_, String>(name.as_str()) {
@@ -634,14 +635,14 @@ fn coerce_required<'js>(ctx: &Ctx<'js>, args: &[Value<'js>], name: &str) -> Resu
             &format!("Failed to execute '{name}': 1 argument required, but only 0 present."),
         ));
     }
-    Host::coerce_string(ctx, args[0].clone())
+    coerce_string(ctx, args[0].clone())
 }
 
 fn optional_usv<'js>(ctx: &Ctx<'js>, args: &[Value<'js>]) -> Result<Option<String>> {
     if args.len() < 2 || args[1].is_undefined() {
         return Ok(None);
     }
-    Ok(Some(Host::coerce_string(ctx, args[1].clone())?))
+    Ok(Some(coerce_string(ctx, args[1].clone())?))
 }
 
 fn location_href<'js>(ctx: &Ctx<'js>) -> Option<String> {
@@ -650,7 +651,7 @@ fn location_href<'js>(ctx: &Ctx<'js>) -> Option<String> {
     if href.is_undefined() || href.is_null() {
         return None;
     }
-    Host::coerce_string(ctx, href).ok()
+    coerce_string(ctx, href).ok()
 }
 
 fn location_pathname<'js>(ctx: &Ctx<'js>) -> String {
@@ -714,8 +715,8 @@ fn pair_from_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Pair> {
                     &format!("Expected name/value pair to be length 2, found {length}"),
                 ));
             }
-            let name = Host::coerce_string(ctx, object.get(0)?)?;
-            let value = Host::coerce_string(ctx, object.get(1)?)?;
+            let name = coerce_string(ctx, object.get(0)?)?;
+            let value = coerce_string(ctx, object.get(1)?)?;
             return Ok((name, value));
         }
     }
@@ -730,8 +731,8 @@ fn pair_from_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Pair> {
         ));
     }
     Ok((
-        Host::coerce_string(ctx, items[0].clone())?,
-        Host::coerce_string(ctx, items[1].clone())?,
+        coerce_string(ctx, items[0].clone())?,
+        coerce_string(ctx, items[1].clone())?,
     ))
 }
 
@@ -746,7 +747,7 @@ fn pairs_from_init<'js>(ctx: &Ctx<'js>, init: Option<Value<'js>>) -> Result<Vec<
         return Ok(parse_urlencoded("null"));
     }
     if value.as_string().is_some() || !value.is_object() {
-        return Ok(parse_urlencoded(&Host::coerce_string(ctx, value)?));
+        return Ok(parse_urlencoded(&coerce_string(ctx, value)?));
     }
     if is_iterable(&value) {
         let mut pairs = Vec::new();
@@ -756,13 +757,13 @@ fn pairs_from_init<'js>(ctx: &Ctx<'js>, init: Option<Value<'js>>) -> Result<Vec<
         return Ok(pairs);
     }
     let Some(object) = value.as_object() else {
-        return Ok(parse_urlencoded(&Host::coerce_string(ctx, value)?));
+        return Ok(parse_urlencoded(&coerce_string(ctx, value)?));
     };
     let mut record = IndexMap::new();
     for key in object.own_keys::<Value>(Filter::default()) {
         let key = key?;
-        let name = Host::coerce_string(ctx, key.clone())?;
-        let value = Host::coerce_string(ctx, object.get(key)?)?;
+        let name = coerce_string(ctx, key.clone())?;
+        let value = coerce_string(ctx, object.get(key)?)?;
         record.insert(name, value);
     }
     Ok(record.into_iter().collect())
@@ -782,7 +783,7 @@ fn coerce_url_text<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
             }
         }
     }
-    match Host::coerce_string(ctx, value.clone()) {
+    match coerce_string(ctx, value.clone()) {
         Ok(text) => Ok(text),
         Err(_) => {
             let replace: Function = ctx.eval(
@@ -950,7 +951,7 @@ impl URL {
 
     #[qjs(set, rename = "protocol")]
     pub fn set_protocol<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         let _ = quirks::set_protocol(&mut self.inner.borrow_mut(), &text);
@@ -969,7 +970,7 @@ impl URL {
 
     #[qjs(set, rename = "username")]
     pub fn set_username<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         let _ = quirks::set_username(&mut self.inner.borrow_mut(), &text);
@@ -988,7 +989,7 @@ impl URL {
 
     #[qjs(set, rename = "password")]
     pub fn set_password<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         let _ = quirks::set_password(&mut self.inner.borrow_mut(), &text);
@@ -1017,7 +1018,7 @@ impl URL {
 
     #[qjs(set, rename = "host")]
     pub fn set_host<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         let _ = quirks::set_host(&mut self.inner.borrow_mut(), &text);
@@ -1039,7 +1040,7 @@ impl URL {
 
     #[qjs(set, rename = "hostname")]
     pub fn set_hostname<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         let _ = quirks::set_hostname(&mut self.inner.borrow_mut(), &text);
@@ -1060,7 +1061,7 @@ impl URL {
 
     #[qjs(set, rename = "port")]
     pub fn set_port<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         let _ = quirks::set_port(&mut self.inner.borrow_mut(), &text);
@@ -1075,7 +1076,7 @@ impl URL {
 
     #[qjs(set, rename = "pathname")]
     pub fn set_pathname<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         quirks::set_pathname(&mut self.inner.borrow_mut(), &text);
@@ -1094,7 +1095,7 @@ impl URL {
 
     #[qjs(set, rename = "search")]
     pub fn set_search<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         quirks::set_search(&mut self.inner.borrow_mut(), &text);
@@ -1114,7 +1115,7 @@ impl URL {
 
     #[qjs(set, rename = "hash")]
     pub fn set_hash<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href_of();
         quirks::set_hash(&mut self.inner.borrow_mut(), &text);
@@ -1196,8 +1197,8 @@ impl URLSearchParams {
                 ),
             ));
         }
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
-        let value = Host::coerce_string(&ctx, args.0[1].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let value = coerce_string(&ctx, args.0[1].clone())?;
         self.query.borrow_mut().push((name, value));
         self.sync();
         Ok(())
@@ -1262,8 +1263,8 @@ impl URLSearchParams {
                 ),
             ));
         }
-        let name = Host::coerce_string(&ctx, args.0[0].clone())?;
-        let value = Host::coerce_string(&ctx, args.0[1].clone())?;
+        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let value = coerce_string(&ctx, args.0[1].clone())?;
         let mut pairs = self.query.borrow_mut();
         let mut replaced = false;
         let mut result = Vec::new();
@@ -1492,7 +1493,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "protocol")]
     pub fn set_protocol<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1512,7 +1513,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "username")]
     pub fn set_username<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1532,7 +1533,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "password")]
     pub fn set_password<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1560,7 +1561,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "host")]
     pub fn set_host<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1583,7 +1584,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "hostname")]
     pub fn set_hostname<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1605,7 +1606,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "port")]
     pub fn set_port<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1625,7 +1626,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "pathname")]
     pub fn set_pathname<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1645,7 +1646,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "search")]
     pub fn set_search<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1665,7 +1666,7 @@ impl Hyperlink {
 
     #[qjs(set, rename = "hash")]
     pub fn set_hash<'js>(&mut self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        let text = Host::coerce_string(&ctx, value)?;
+        let text = coerce_string(&ctx, value)?;
         ensure_tables(&ctx);
         let href_before = self.href();
         if let Some(url) = &mut self.url {
@@ -1835,7 +1836,7 @@ fn lookup_percent_encoding<'js>(ctx: &Ctx<'js>, input: &str, encoding: &str) -> 
 }
 
 fn read_wpt_resource<'js>(ctx: Ctx<'js>, href: Value<'js>) -> Result<Value<'js>> {
-    let href = Host::coerce_string(&ctx, href)?;
+    let href = coerce_string(&ctx, href)?;
     if looks_absolute(&href) {
         return Ok(Value::new_undefined(ctx));
     }
@@ -1853,7 +1854,7 @@ fn read_wpt_resource<'js>(ctx: Ctx<'js>, href: Value<'js>) -> Result<Value<'js>>
 }
 
 fn percent_encoding_anchor<'js>(ctx: Ctx<'js>, href: Value<'js>) -> Result<Value<'js>> {
-    let href = Host::coerce_string(&ctx, href)?;
+    let href = coerce_string(&ctx, href)?;
     let encoding = query_param(&href, "encoding").unwrap_or_else(|| "utf-8".to_string());
     let Some(value) = query_param(&href, "value") else {
         return Ok(Value::new_undefined(ctx));
@@ -1877,7 +1878,7 @@ fn percent_encoding_anchor<'js>(ctx: Ctx<'js>, href: Value<'js>) -> Result<Value
 }
 
 fn create_element<'js>(ctx: Ctx<'js>, name: Value<'js>) -> Result<Value<'js>> {
-    let name = Host::coerce_string(&ctx, name)?.to_ascii_lowercase();
+    let name = coerce_string(&ctx, name)?.to_ascii_lowercase();
     match name.as_str() {
         "a" | "area" => {
             Class::instance(ctx, Hyperlink {

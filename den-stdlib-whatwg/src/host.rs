@@ -91,10 +91,6 @@ impl Host {
         Exception::throw_message(ctx, message)
     }
 
-    pub fn coerce_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-        Ok(Coerced::<String>::from_js(ctx, value)?.0)
-    }
-
     /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with U+FFFD.
     pub fn coerce_usv_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
         let js = Coerced::<rquickjs::String>::from_js(ctx, value.clone())?;
