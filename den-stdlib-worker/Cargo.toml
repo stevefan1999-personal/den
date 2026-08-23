@@ -13,7 +13,8 @@ keywords.workspace = true
 [dependencies]
 den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", optional = true }
-rquickjs = { workspace = true, features = ["macro", "futures"] }
+indexmap.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures", "indexmap"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true

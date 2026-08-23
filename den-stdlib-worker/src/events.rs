@@ -147,7 +147,7 @@ fn call_with_this<'js>(
     function.call_arg(call)
 }
 
-fn freeze<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<()> {
+pub(crate) fn freeze<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<()> {
     // SAFETY: `JS_FreezeObject` only reads the object header and walks its
     // own properties; a negative return means a pending exception.
     let rc = unsafe { qjs::JS_FreezeObject(ctx.as_raw().as_ptr(), value.as_raw()) };

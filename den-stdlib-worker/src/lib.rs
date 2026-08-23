@@ -53,15 +53,7 @@ const API: [&str; 17] = [
 ];
 
 /// Remaining JS preludes, in dependency order. Event types are native.
-const PRELUDE: [(&str, &str); 6] = [
-    (
-        "den:worker/performance.js",
-        include_str!("prelude/performance.js"),
-    ),
-    (
-        "den:worker/navigator.js",
-        include_str!("prelude/navigator.js"),
-    ),
+const PRELUDE: [(&str, &str); 4] = [
     ("den:worker/clone.js", include_str!("prelude/clone.js")),
     ("den:worker/port.js", include_str!("prelude/port.js")),
     ("den:worker/worker.js", include_str!("prelude/worker.js")),
@@ -87,6 +79,7 @@ pub mod worker_module {
     pub use super::events::{
         CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
     };
+    pub use super::navigator::NavigatorUAData;
 
     #[rquickjs::function(rename = "reportError")]
     #[qjs(rename = "reportError")]
@@ -106,6 +99,7 @@ pub mod worker_module {
                     | "Event"
                     | "EventTarget"
                     | "MessageEvent"
+                    | "NavigatorUAData"
                     | "PromiseRejectionEvent"
                     | "reportError"
             ) {
@@ -124,8 +118,6 @@ pub mod worker_module {
         crate::port::install(ctx, &natives)?;
         crate::worker::install(ctx, &natives)?;
         crate::broadcast::install(ctx, &natives)?;
-        crate::performance::PerformanceClock::install(ctx, &natives)?;
-        crate::navigator::HostInfo::install(ctx, &natives)?;
 
         let namespace = exports.module().namespace()?;
         crate::events::finish(ctx, &namespace)?;
@@ -151,11 +143,17 @@ pub mod worker_module {
             "Event",
             "EventTarget",
             "MessageEvent",
+            "NavigatorUAData",
             "PromiseRejectionEvent",
             "reportError",
         ] {
             api.set(name, namespace.get::<_, Value>(name)?)?;
         }
+        api.set(
+            "performance",
+            crate::performance::Performance::instance(ctx)?,
+        )?;
+        crate::navigator::install_navigator(ctx, &api)?;
         api.set(
             "__defineEventHandler",
             Function::new(ctx.clone(), crate::events::define_event_handler)?,
