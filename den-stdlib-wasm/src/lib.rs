@@ -11,34 +11,6 @@ pub mod table;
 pub mod tag;
 pub mod utils;
 
-/// Speculative conversions that leave no pending exception behind.
-///
-/// `Class::from_object` is `JS_GetOpaque2` (quickjs.c:11681), which *throws* a
-/// `TypeError` when the object belongs to some other class, and a failed
-/// `FromJs` probe throws just the same. Code that reads such a failure as "not
-/// this shape, try the next one" has to take that exception back out of the
-/// context: it stays pending otherwise, and the next place den inspects the
-/// pending exception — `utils::ExportedFunction::call` and
-/// `instance::Instance::throw_instantiation_failure` above all — reports it as
-/// its own.
-pub(crate) trait Probe {
-    /// Run `attempt`, discarding whatever exception it leaves pending when it
-    /// yields `None`.
-    fn probe<T>(&self, attempt: impl FnOnce() -> Option<T>) -> Option<T>;
-}
-
-impl Probe for rquickjs::Ctx<'_> {
-    fn probe<T>(&self, attempt: impl FnOnce() -> Option<T>) -> Option<T> {
-        let outcome = attempt();
-        if outcome.is_none() && self.has_exception() {
-            // `catch` is `JS_GetException`, which is what clears the slot; the value
-            // itself is of no interest, the caller reports its own error.
-            drop(self.catch());
-        }
-        outcome
-    }
-}
-
 /// `compileStreaming` / `instantiateStreaming`.
 ///
 /// Written in JS: the algorithm is "await a response, check it, await its
@@ -196,14 +168,14 @@ const DEFINE_NAMESPACE_SHAPE: &str = r#"
 
 #[rquickjs::module]
 pub mod wasm {
-    use den_util::BufferSource;
+    use den_util::{BufferSource, Probe};
     use rquickjs::{
         Class, Ctx, Exception, Function, IntoJs, Object, Promise, Result, TypedArray, Value,
         module::Exports, prelude::Opt, promise::Promised,
     };
 
     use crate::{
-        Probe, backend,
+        backend,
         engine::Engine,
         error::WebAssemblyErrors,
         instance::ImportedFunctions,
