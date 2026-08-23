@@ -53,8 +53,7 @@ const API: [&str; 17] = [
 ];
 
 /// Remaining JS preludes, in dependency order. Event types are native.
-const PRELUDE: [(&str, &str); 3] = [
-    ("den:worker/port.js", include_str!("prelude/port.js")),
+const PRELUDE: [(&str, &str); 2] = [
     ("den:worker/worker.js", include_str!("prelude/worker.js")),
     (
         "den:worker/broadcast.js",
@@ -79,6 +78,7 @@ pub mod worker_module {
         CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
     };
     pub use super::navigator::NavigatorUAData;
+    pub use super::port::{MessageChannel, MessagePort};
 
     #[rquickjs::function(rename = "reportError")]
     #[qjs(rename = "reportError")]
@@ -107,7 +107,9 @@ pub mod worker_module {
                     | "ErrorEvent"
                     | "Event"
                     | "EventTarget"
+                    | "MessageChannel"
                     | "MessageEvent"
+                    | "MessagePort"
                     | "NavigatorUAData"
                     | "PromiseRejectionEvent"
                     | "reportError"
@@ -132,6 +134,7 @@ pub mod worker_module {
         let namespace = exports.module().namespace()?;
         crate::events::finish(ctx, &namespace)?;
         crate::abort::finish(ctx)?;
+        crate::port::finish(ctx)?;
         // Native functions have no `.prototype`; HTML `reportError` is an
         // ordinary function, and the surface test distinguishes those from
         // arrows by `typeof prototype === "object"`.
@@ -154,7 +157,9 @@ pub mod worker_module {
             "ErrorEvent",
             "Event",
             "EventTarget",
+            "MessageChannel",
             "MessageEvent",
+            "MessagePort",
             "NavigatorUAData",
             "PromiseRejectionEvent",
             "reportError",
@@ -170,6 +175,19 @@ pub mod worker_module {
         api.set(
             "__defineEventHandler",
             Function::new(ctx.clone(), crate::events::define_event_handler)?,
+        )?;
+        api.set(
+            "__trackMessageListeners",
+            Function::new(ctx.clone(), crate::port::track_message_listeners)?,
+        )?;
+        api.set(
+            "__wrapPort",
+            Function::new(
+                ctx.clone(),
+                |ctx: Ctx<'js>, native: rquickjs::Class<'js, crate::port::NativePort>| {
+                    crate::port::MessagePort::wrap(&ctx, native)
+                },
+            )?,
         )?;
 
         for (filename, source) in crate::PRELUDE {

@@ -17,7 +17,7 @@ use rquickjs::{
 
 use crate::{port::NativePort, transport::PortHandle};
 
-mod clone;
+pub(crate) mod clone;
 
 /// A structured-clone-serialised value, plus the channel ends of every
 /// transferred `MessagePort`.

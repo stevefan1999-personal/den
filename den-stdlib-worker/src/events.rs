@@ -1059,7 +1059,11 @@ impl<'js> EventTarget<'js> {
         Ok(())
     }
 
-    fn handler_value(ctx: &Ctx<'js>, this: &Value<'js>, name: &str) -> Result<Value<'js>> {
+    pub(crate) fn handler_value(
+        ctx: &Ctx<'js>,
+        this: &Value<'js>,
+        name: &str,
+    ) -> Result<Value<'js>> {
         let target = Self::resolve(ctx, this)?;
         let inner = target.try_borrow()?;
         let table = inner
