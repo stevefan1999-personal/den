@@ -1,12 +1,16 @@
 //! Shared host helpers: exceptions, buffer sources, events, prototype wiring.
 
+use std::ffi::CString;
+
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol,
-    TypedArray, Value, class::JsClass, function::Constructor,
+    TypedArray, Value, class::JsClass, function::Constructor, qjs,
 };
 
-use crate::blob::{Blob, File};
-use crate::form_data::FormData;
+use crate::{
+    blob::{Blob, File},
+    form_data::FormData,
+};
 
 pub struct Host;
 
@@ -28,10 +32,60 @@ impl Host {
     }
 
     pub fn throw_dom(ctx: &Ctx<'_>, message: &str, name: &str) -> rquickjs::Error {
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException") {
-            if let Ok(exc) = ctor.construct::<_, Value>((message, name)) {
-                return ctx.throw(exc);
+        if let Ok(name_c) = CString::new(name)
+            && let Ok(message_c) = CString::new(message)
+        {
+            // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack
+            // buffer (quickjs.c:62309), so the caller's text is passed as an
+            // *argument* to a constant `%s` format, never as the format itself.
+            // Both C strings outlive the call.
+            unsafe {
+                qjs::JS_ThrowDOMException(
+                    ctx.as_raw().as_ptr(),
+                    name_c.as_ptr(),
+                    c"%s".as_ptr(),
+                    message_c.as_ptr(),
+                );
             }
+            return rquickjs::Error::Exception;
+        }
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
+            && let Ok(exc) = ctor.construct::<_, Value>((message, name))
+        {
+            return ctx.throw(exc);
+        }
+        let code: i32 = match name {
+            "IndexSizeError" => 1,
+            "HierarchyRequestError" => 3,
+            "WrongDocumentError" => 4,
+            "InvalidCharacterError" => 5,
+            "NoModificationAllowedError" => 7,
+            "NotFoundError" => 8,
+            "NotSupportedError" => 9,
+            "InUseAttributeError" => 10,
+            "InvalidStateError" => 11,
+            "SyntaxError" => 12,
+            "InvalidModificationError" => 13,
+            "NamespaceError" => 14,
+            "InvalidAccessError" => 15,
+            "TypeMismatchError" => 17,
+            "SecurityError" => 18,
+            "NetworkError" => 19,
+            "AbortError" => 20,
+            "URLMismatchError" => 21,
+            "QuotaExceededError" => 22,
+            "TimeoutError" => 23,
+            "InvalidNodeTypeError" => 24,
+            "DataCloneError" => 25,
+            _ => 0,
+        };
+        if let Ok(error_ctor) = ctx.globals().get::<_, Constructor>("Error")
+            && let Ok(exc) = error_ctor.construct::<_, Object>((message,))
+        {
+            let _ = exc.set("name", name);
+            let _ = exc.set("message", message);
+            let _ = exc.set("code", code);
+            return ctx.throw(exc.into_value());
         }
         Exception::throw_message(ctx, message)
     }
@@ -40,29 +94,61 @@ impl Host {
         Ok(Coerced::<String>::from_js(ctx, value)?.0)
     }
 
-    pub fn buffer_source_bytes<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Option<Vec<u8>>> {
-        if let Ok(view) = TypedArray::<u8>::from_js(ctx, value.clone()) {
-            return Ok(view.as_bytes().map(|bytes| bytes.to_vec()));
-        }
-        if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
-            return Ok(buffer.as_bytes().map(|bytes| bytes.to_vec()));
-        }
-        if let Some(obj) = value.as_object() {
-            if obj.contains_key("byteLength")? && obj.contains_key("buffer")? {
-                if let (Ok(buffer), Ok(offset), Ok(len)) = (
-                    obj.get::<_, ArrayBuffer>("buffer"),
-                    obj.get::<_, usize>("byteOffset"),
-                    obj.get::<_, usize>("byteLength"),
-                ) {
-                    if let Some(bytes) = buffer.as_bytes() {
-                        let end = offset.saturating_add(len).min(bytes.len());
-                        let start = offset.min(end);
-                        return Ok(Some(bytes[start..end].to_vec()));
-                    }
-                }
+    /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with U+FFFD.
+    pub fn coerce_usv_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
+        let js = Coerced::<rquickjs::String>::from_js(ctx, value.clone())?;
+        match js.to_string() {
+            Ok(text) => Ok(text),
+            Err(_) => {
+                let convert: Function = ctx.eval(
+                    "(v) => { const s = String(v); let o = ''; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c >= 0xD800 && c <= 0xDBFF) { const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0; if (d >= 0xDC00 && d <= 0xDFFF) { o += String.fromCharCode(c, d); i++; } else { o += '\\uFFFD'; } } else if (c >= 0xDC00 && c <= 0xDFFF) { o += '\\uFFFD'; } else { o += String.fromCharCode(c); } } return o; }",
+                )?;
+                convert.call((value,))
             }
         }
+    }
+
+    pub fn buffer_source_bytes<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Option<Vec<u8>>> {
+        if Self::js_pred(ctx, "(v) => v instanceof ArrayBuffer", &value)? {
+            return Ok(Some(
+                ArrayBuffer::from_js(ctx, value)
+                    .ok()
+                    .and_then(|buffer| buffer.as_bytes().map(|bytes| bytes.to_vec()))
+                    .unwrap_or_default(),
+            ));
+        }
+        if Self::js_pred(ctx, "(v) => ArrayBuffer.isView(v)", &value)? {
+            if let Some(obj) = value.as_object() {
+                if let Ok(buffer) = obj.get::<_, ArrayBuffer>("buffer") {
+                    let offset = obj.get::<_, usize>("byteOffset").unwrap_or(0);
+                    let len = obj.get::<_, usize>("byteLength").unwrap_or(0);
+                    return Ok(Some(match buffer.as_bytes() {
+                        Some(bytes) => {
+                            let end = offset.saturating_add(len).min(bytes.len());
+                            let start = offset.min(end);
+                            bytes[start..end].to_vec()
+                        }
+                        None => Vec::new(),
+                    }));
+                }
+            }
+            return Ok(Some(Vec::new()));
+        }
+        if let Ok(view) = TypedArray::<u8>::from_js(ctx, value) {
+            return Ok(Some(
+                view.as_bytes()
+                    .map(|bytes| bytes.to_vec())
+                    .unwrap_or_default(),
+            ));
+        }
         Ok(None)
+    }
+
+    fn js_pred<'js>(ctx: &Ctx<'js>, source: &str, value: &Value<'js>) -> Result<bool> {
+        match ctx.eval::<Function<'js>, _>(source) {
+            Ok(func) => func.call((value.clone(),)),
+            Err(_) => Ok(false),
+        }
     }
 
     pub fn blob_like_bytes<'js>(_ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Vec<u8>> {
@@ -101,7 +187,7 @@ impl Host {
 
     pub fn ascii_type(value: &str) -> String {
         if value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
-            value.to_string()
+            value.to_ascii_lowercase()
         } else {
             String::new()
         }
@@ -151,11 +237,7 @@ impl Host {
     }
 
     pub fn message_event<'js>(
-        ctx: &Ctx<'js>,
-        type_: &str,
-        data: Value<'js>,
-        origin: &str,
-        last_event_id: &str,
+        ctx: &Ctx<'js>, type_: &str, data: Value<'js>, origin: &str, last_event_id: &str,
     ) -> Result<Value<'js>> {
         match ctx.globals().get::<_, Constructor<'js>>("MessageEvent") {
             Ok(ctor) => {
@@ -193,11 +275,7 @@ impl Host {
     }
 
     pub fn progress_event<'js>(
-        ctx: &Ctx<'js>,
-        type_: &str,
-        length_computable: bool,
-        loaded: f64,
-        total: f64,
+        ctx: &Ctx<'js>, type_: &str, length_computable: bool, loaded: f64, total: f64,
     ) -> Result<Value<'js>> {
         let opts = Object::new(ctx.clone())?;
         opts.set("lengthComputable", length_computable)?;
@@ -218,10 +296,7 @@ impl Host {
     }
 
     pub fn close_event<'js>(
-        ctx: &Ctx<'js>,
-        code: u16,
-        reason: &str,
-        was_clean: bool,
+        ctx: &Ctx<'js>, code: u16, reason: &str, was_clean: bool,
     ) -> Result<Value<'js>> {
         let opts = Object::new(ctx.clone())?;
         opts.set("code", code)?;
@@ -304,4 +379,134 @@ impl Host {
             Ok(value)
         }
     }
+
+    /// Install `document` after testharness chooses its environment.
+    /// `'document' in globalThis` at testharness load would select WindowTestEnvironment.
+    pub fn install_fileapi_document(ctx: &Ctx<'_>) -> Result<()> {
+        ctx.eval::<(), _>(FILEAPI_DOCUMENT_HOOK)
+    }
 }
+
+const FILEAPI_DOCUMENT_HOOK: &str = r#"
+(function () {
+  if (globalThis.__denFileapiDocHook) return;
+  globalThis.__denFileapiDocHook = true;
+
+  function installDocument() {
+  if (Object.getOwnPropertyDescriptor(globalThis, "document")) return;
+  if (globalThis.parent == null) globalThis.parent = globalThis;
+  if (globalThis.top == null) globalThis.top = globalThis;
+
+  function tagged(name) {
+    var object = {};
+    Object.defineProperty(object, Symbol.toStringTag, { value: name });
+    return object;
+  }
+
+  function collection(items, tag) {
+    var col = tagged(tag || "HTMLCollection");
+    var list = items;
+    for (var i = 0; i < list.length; i++) col[i] = list[i];
+    Object.defineProperty(col, "length", {
+      configurable: true,
+      enumerable: true,
+      get: function () { return list.length; },
+      set: function (n) { list.length = Number(n); }
+    });
+    col[Symbol.iterator] = function () {
+      var index = 0;
+      var self = this;
+      return {
+        next: function () {
+          var len = self.length;
+          if (index >= len) return { done: true, value: undefined };
+          return { done: false, value: self[index++] };
+        }
+      };
+    };
+    return col;
+  }
+
+  function createElement(name) {
+    var tag = String(name).toLowerCase();
+    var typeName =
+      tag === "select" ? "HTMLSelectElement" :
+      tag === "option" ? "HTMLOptionElement" :
+      tag === "p" ? "HTMLParagraphElement" :
+      tag === "body" ? "HTMLBodyElement" :
+      tag === "div" ? "HTMLDivElement" :
+      "HTMLElement";
+    var el = tagged(typeName);
+    var kids = [];
+    var attrs = [];
+    el.tagName = tag.toUpperCase();
+    el.localName = tag;
+    el.namespaceURI = "http://www.w3.org/1999/xhtml";
+    function syncSelect() {
+      if (tag !== "select") return;
+      for (var i = 0; i < kids.length; i++) el[i] = kids[i];
+      Object.defineProperty(el, "length", {
+        configurable: true,
+        enumerable: true,
+        get: function () { return kids.length; }
+      });
+      el[Symbol.iterator] = collection(kids, "HTMLOptionsCollection")[Symbol.iterator];
+    }
+    el.children = collection(kids, "HTMLCollection");
+    el.attributes = collection(attrs, "NamedNodeMap");
+    el.appendChild = function (child) {
+      kids.push(child);
+      el.children = collection(kids, "HTMLCollection");
+      syncSelect();
+      return child;
+    };
+    el.setAttribute = function (attrName, value) {
+      var attr = tagged("Attr");
+      attr.name = attrName;
+      attr.value = String(value);
+      attrs.push(attr);
+      el.attributes = collection(attrs, "NamedNodeMap");
+    };
+    syncSelect();
+    return el;
+  }
+
+  var document = tagged("HTMLDocument");
+  document.readyState = "complete";
+  document.body = createElement("body");
+  document.documentElement = createElement("html");
+  document.defaultView = globalThis;
+  document.createElement = createElement;
+  document.createElementNS = function (_ns, name) { return createElement(name); };
+  document.getElementsByTagName = function () { return collection([], "HTMLCollection"); };
+  document.getElementById = function () { return null; };
+  globalThis.document = document;
+  }
+
+  function wrapSetup(fn) {
+    return function () {
+      installDocument();
+      return fn.apply(this, arguments);
+    };
+  }
+
+  var existing = Object.getOwnPropertyDescriptor(globalThis, "setup");
+  if (existing && typeof existing.value === "function") {
+    globalThis.setup = wrapSetup(existing.value);
+    return;
+  }
+  Object.defineProperty(globalThis, "setup", {
+    configurable: true,
+    enumerable: false,
+    get: function () { return undefined; },
+    set: function (fn) {
+      Object.defineProperty(globalThis, "setup", {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: wrapSetup(fn)
+      });
+    }
+  });
+})();
+"#;

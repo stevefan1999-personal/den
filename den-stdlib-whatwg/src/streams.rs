@@ -4,30 +4,35 @@ use std::{cell::RefCell, rc::Rc};
 
 use indexmap::indexmap;
 use rquickjs::{
-    Class, Ctx, Function, JsLifetime, Object, Promise, Result, Value,
+    ArrayBuffer, Class, Ctx, FromJs, Function, JsLifetime, Object, Promise, Result, TypedArray,
+    Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Async, Opt, This},
+    object::Accessor,
 };
 
 use crate::host::Host;
 
 #[derive(Trace, JsLifetime)]
-struct ReadableState<'js> {
-    source: Value<'js>,
+pub(crate) struct ReadableState<'js> {
+    source:     Value<'js>,
     controller: Object<'js>,
-    queue: Vec<Value<'js>>,
-    waiters: Vec<Function<'js>>,
-    errored: Option<Value<'js>>,
-    closed: bool,
-    locked: bool,
-    pulling: bool,
+    queue:      Vec<Value<'js>>,
+    waiters:    Vec<Function<'js>>,
+    errored:    Option<Value<'js>>,
+    closed:          bool,
+    locked:          bool,
+    pulling:         bool,
+    disturbed:       bool,
+    closed_resolve:  Option<Function<'js>>,
+    closed_reject:   Option<Function<'js>>,
 }
 
 #[derive(JsLifetime)]
 #[rquickjs::class]
 pub struct ReadableStream<'js> {
-    state: Rc<RefCell<ReadableState<'js>>>,
+    pub(crate) state: Rc<RefCell<ReadableState<'js>>>,
 }
 
 impl<'js> Trace<'js> for ReadableStream<'js> {
@@ -43,11 +48,25 @@ impl<'js> ReadableStream<'js> {
         for resolve in state.waiters.drain(..) {
             let _ = resolve.call::<_, ()>(());
         }
+        Self::settle_closed(state);
+    }
+
+    fn settle_closed(state: &mut ReadableState<'js>) {
+        if let Some(error) = state.errored.clone() {
+            if let Some(reject) = state.closed_reject.take() {
+                let _ = reject.call::<_, ()>((error,));
+            }
+            state.closed_resolve = None;
+        } else if state.closed {
+            if let Some(resolve) = state.closed_resolve.take() {
+                let _ = resolve.call::<_, ()>(());
+            }
+            state.closed_reject = None;
+        }
     }
 
     fn controller_for(
-        ctx: &Ctx<'js>,
-        state: &Rc<RefCell<ReadableState<'js>>>,
+        ctx: &Ctx<'js>, state: &Rc<RefCell<ReadableState<'js>>>,
     ) -> Result<Object<'js>> {
         let controller = Object::new(ctx.clone())?;
         let weak = Rc::downgrade(state);
@@ -94,6 +113,9 @@ impl<'js> ReadableStream<'js> {
                         return Ok(());
                     };
                     let mut state = state.borrow_mut();
+                    if state.errored.is_some() || state.closed {
+                        return Ok(());
+                    }
                     state.errored = Some(reason.0.unwrap_or_else(|| {
                         rquickjs::Exception::from_message(ctx.clone(), "ReadableStream errored")
                             .map(|exc| exc.into_object().into_value())
@@ -154,19 +176,186 @@ impl<'js> ReadableStream<'js> {
     fn error_with(state: &Rc<RefCell<ReadableState<'js>>>, ctx: &Ctx<'js>, error: rquickjs::Error) {
         let reason = match error {
             rquickjs::Error::Exception => ctx.catch(),
-            _ => rquickjs::Exception::from_message(ctx.clone(), &error.to_string())
-                .map(|exc| exc.into_object().into_value())
-                .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
+            _ => {
+                rquickjs::Exception::from_message(ctx.clone(), &error.to_string())
+                    .map(|exc| exc.into_object().into_value())
+                    .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
+            }
         };
         let mut state = state.borrow_mut();
         state.errored = Some(reason);
         Self::wake(&mut state);
     }
 
-    async fn read_next(
-        state: Rc<RefCell<ReadableState<'js>>>,
-        ctx: Ctx<'js>,
+    fn disturb_and_lock(stream: &Class<'js, Self>, ctx: Ctx<'js>) -> Result<()> {
+        if stream.borrow().state.borrow().locked {
+            stream.borrow().state.borrow_mut().disturbed = true;
+            return Ok(());
+        }
+        Self::lock_for_consume(stream, &ctx)
+    }
+
+    pub fn lock_for_consume(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<()> {
+        let stream = stream.borrow();
+        let mut state = stream.state.borrow_mut();
+        if state.locked {
+            return Err(Host::throw_type(ctx, "ReadableStream is locked"));
+        }
+        state.locked = true;
+        state.disturbed = true;
+        Ok(())
+    }
+
+    pub fn tee_pair(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<(Value<'js>, Value<'js>)> {
+        let queue = {
+            let stream = stream.borrow();
+            let mut state = stream.state.borrow_mut();
+            if state.locked {
+                return Err(Host::throw_type(ctx, "ReadableStream is locked"));
+            }
+            if state.errored.is_some() {
+                return Err(Host::throw_type(ctx, "ReadableStream is errored"));
+            }
+            state.locked = true;
+            state.disturbed = true;
+            state.queue.clone()
+        };
+        let right = Self::from_queue(ctx, queue)?;
+        Ok((stream.clone().into_value(), right.into_value()))
+    }
+
+    pub fn from_queue(ctx: &Ctx<'js>, queue: Vec<Value<'js>>) -> Result<Class<'js, Self>> {
+        let state = Rc::new(RefCell::new(ReadableState {
+            source:          Object::new(ctx.clone())?.into_value(),
+            controller:      Object::new(ctx.clone())?,
+            queue,
+            waiters:         Vec::new(),
+            errored:         None,
+            closed:          true,
+            locked:          false,
+            pulling:         false,
+            disturbed:       false,
+            closed_resolve:  None,
+            closed_reject:   None,
+        }));
+        Class::instance(ctx.clone(), Self { state })
+    }
+
+    fn fill_byob(
+        ctx: &Ctx<'js>, result: Value<'js>, view: Option<Value<'js>>,
+        state: &Rc<RefCell<ReadableState<'js>>>,
     ) -> Result<Value<'js>> {
+        let Some(object) = result.as_object() else {
+            return Ok(result);
+        };
+        if object.get::<_, bool>("done").unwrap_or(false) {
+            return Ok(result);
+        }
+        let Some(view) = view else {
+            return Ok(result);
+        };
+        let chunk: Value = object.get("value")?;
+        let src = if let Ok(buffer) = ArrayBuffer::from_js(ctx, chunk.clone()) {
+            buffer.as_bytes().unwrap_or(&[]).to_vec()
+        } else if let Some(view) = chunk.as_object() {
+            let Ok(buffer) = view.get::<_, ArrayBuffer>("buffer") else {
+                return Ok(result);
+            };
+            let offset: usize = view.get("byteOffset").unwrap_or(0);
+            let length: usize = view.get("byteLength").unwrap_or(0);
+            let Some(bytes) = buffer.as_bytes() else {
+                return Ok(result);
+            };
+            let end = offset.saturating_add(length).min(bytes.len());
+            if offset < end {
+                bytes[offset..end].to_vec()
+            } else {
+                Vec::new()
+            }
+        } else {
+            return Ok(result);
+        };
+        let view_len: usize = view
+            .as_object()
+            .and_then(|object| object.get("byteLength").ok())
+            .unwrap_or(0);
+        let n = src.len().min(view_len);
+        if src.len() > n {
+            state
+                .borrow_mut()
+                .queue
+                .insert(0, TypedArray::<u8>::new_copy(ctx.clone(), &src[n..])?.into_value());
+        }
+        ctx.globals().set("__denByobView", view)?;
+        ctx.globals().set("__denByobResult", result)?;
+        ctx.eval(
+            r#"
+              (function () {
+                var result = globalThis.__denByobResult;
+                var view = globalThis.__denByobView;
+                delete globalThis.__denByobResult;
+                delete globalThis.__denByobView;
+                var chunk = result && result.value;
+                if (!view || chunk == null) {
+                  return result;
+                }
+                var src = chunk;
+                if (!(src instanceof Uint8Array) && src && src.buffer) {
+                  src = new Uint8Array(src.buffer, src.byteOffset || 0, src.byteLength || 0);
+                }
+                if (!(src instanceof Uint8Array)) {
+                  return result;
+                }
+                var n = Math.min(view.byteLength, src.byteLength);
+                new Uint8Array(view.buffer, view.byteOffset, n).set(src.subarray(0, n));
+                return { done: false, value: new Uint8Array(view.buffer, view.byteOffset, n) };
+              })()
+            "#,
+        )
+    }
+
+    pub async fn read_all_bytes(stream: &Class<'js, Self>, ctx: Ctx<'js>) -> Result<Vec<u8>> {
+        let state = stream.borrow().state.clone();
+        let mut out = Vec::new();
+        loop {
+            let result = Self::read_next(Rc::clone(&state), ctx.clone()).await?;
+            let Some(object) = result.as_object() else {
+                break;
+            };
+            if object.get::<_, bool>("done").unwrap_or(false) {
+                break;
+            }
+            let value: Value = object.get("value")?;
+            if value.is_undefined() || value.is_null() {
+                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
+            }
+            if value.as_string().is_some() || value.as_number().is_some() || value.as_bool().is_some()
+            {
+                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
+            }
+            let Some(view) = value.as_object() else {
+                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
+            };
+            let Ok(buffer) = view.get::<_, rquickjs::ArrayBuffer>("buffer") else {
+                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
+            };
+            let offset: usize = view.get("byteOffset").unwrap_or(0);
+            let length: usize = view.get("byteLength").unwrap_or(0);
+            let Some(bytes) = buffer.as_bytes() else {
+                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
+            };
+            let end = offset.saturating_add(length).min(bytes.len());
+            if offset < end {
+                out.extend_from_slice(&bytes[offset..end]);
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) async fn read_next(
+        state: Rc<RefCell<ReadableState<'js>>>, ctx: Ctx<'js>,
+    ) -> Result<Value<'js>> {
+        state.borrow_mut().disturbed = true;
         loop {
             {
                 let mut state = state.borrow_mut();
@@ -225,14 +414,17 @@ impl<'js> ReadableStream<'js> {
         };
         let placeholder = Object::new(ctx.clone())?;
         let state = Rc::new(RefCell::new(ReadableState {
-            source: source.clone(),
+            source:     source.clone(),
             controller: placeholder,
-            queue: Vec::new(),
-            waiters: Vec::new(),
-            errored: None,
-            closed: false,
-            locked: false,
-            pulling: false,
+            queue:      Vec::new(),
+            waiters:    Vec::new(),
+            errored:    None,
+            closed:          false,
+            locked:          false,
+            pulling:         false,
+            disturbed:       false,
+            closed_resolve:  None,
+            closed_reject:   None,
         }));
         let controller = Self::controller_for(&ctx, &state)?;
         state.borrow_mut().controller = controller.clone();
@@ -258,29 +450,88 @@ impl<'js> ReadableStream<'js> {
     }
 
     #[qjs(get)]
-    pub fn locked(&self) -> bool {
-        self.state.borrow().locked
-    }
+    pub fn locked(&self) -> bool { self.state.borrow().locked }
 
-    pub fn get_reader(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
+    pub fn is_disturbed(&self) -> bool { self.state.borrow().disturbed }
+
+    #[qjs(get, rename = "_denDisturbed")]
+    pub fn den_disturbed(&self) -> bool { self.is_disturbed() }
+
+    pub fn get_reader(&self, ctx: Ctx<'js>, options: Opt<Value<'js>>) -> Result<Object<'js>> {
         if self.state.borrow().locked {
             return Err(Host::throw_type(&ctx, "ReadableStream is locked"));
         }
         self.state.borrow_mut().locked = true;
+        let byob = options
+            .0
+            .as_ref()
+            .and_then(|value| value.as_object())
+            .and_then(|object| object.get::<_, String>("mode").ok())
+            .is_some_and(|mode| mode == "byob");
         let reader = Object::new(ctx.clone())?;
         let state = Rc::clone(&self.state);
+        reader.prop(
+            "closed",
+            Accessor::from({
+                let state = Rc::clone(&state);
+                move |this: This<Object<'js>>, ctx: Ctx<'js>| -> Result<Promise<'js>> {
+                    if let Ok(existing) = this.0.get::<_, Promise<'_>>("_denClosed") {
+                        return Ok(existing);
+                    }
+                    let (closed, resolve, reject) = ctx.promise()?;
+                    {
+                        let mut state = state.borrow_mut();
+                        if let Some(error) = state.errored.clone() {
+                            let _ = reject.call::<_, ()>((error,));
+                        } else if state.closed {
+                            let _ = resolve.call::<_, ()>(());
+                        } else {
+                            state.closed_resolve = Some(resolve);
+                            state.closed_reject = Some(reject);
+                        }
+                    }
+                    this.0.set("_denClosed", closed.clone())?;
+                    Ok(closed)
+                }
+            })
+            .enumerable(),
+        )?;
         reader.set(
             "read",
-            Function::new(
-                ctx.clone(),
-                Async({
+            Function::new(ctx.clone(), {
+                let state = Rc::clone(&state);
+                move |ctx: Ctx<'js>, _this: This<Value<'js>>, view: Opt<Value<'js>>| -> Result<Promise<'js>> {
+                    state.borrow_mut().disturbed = true;
+                    let (promise, resolve, reject) = ctx.promise()?;
                     let state = Rc::clone(&state);
-                    move |ctx: Ctx<'js>| {
-                        let state = Rc::clone(&state);
-                        async move { ReadableStream::read_next(state, ctx).await }
-                    }
-                }),
-            )?,
+                    let ctx_err = ctx.clone();
+                    let view = view.0;
+                    ctx.spawn(async move {
+                        match ReadableStream::read_next(Rc::clone(&state), ctx_err.clone()).await {
+                            Ok(value) => {
+                                let value = if byob {
+                                    match ReadableStream::fill_byob(&ctx_err, value, view, &state) {
+                                        Ok(value) => value,
+                                        Err(_) => {
+                                            let thrown = ctx_err.catch();
+                                            let _ = reject.call::<_, ()>((thrown,));
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    value
+                                };
+                                let _ = resolve.call::<_, ()>((value,));
+                            }
+                            Err(_) => {
+                                let thrown = ctx_err.catch();
+                                let _ = reject.call::<_, ()>((thrown,));
+                            }
+                        }
+                    });
+                    Ok(promise)
+                }
+            })?,
         )?;
         reader.set(
             "cancel",
@@ -291,6 +542,10 @@ impl<'js> ReadableStream<'js> {
                     move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| {
                         let state = Rc::clone(&state);
                         async move {
+                            {
+                                let mut state = state.borrow_mut();
+                                state.disturbed = true;
+                            }
                             let source = state.borrow().source.clone();
                             if let Some(obj) = source.as_object() {
                                 if let Ok(cancel) = obj.get::<_, Function>("cancel") {
@@ -322,9 +577,7 @@ impl<'js> ReadableStream<'js> {
     }
 
     pub fn pipe_through(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        transform: Object<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, transform: Object<'js>,
     ) -> Result<Value<'js>> {
         let readable: Value<'js> = transform.get("readable")?;
         let writable: Value<'js> = transform.get("writable")?;
@@ -334,65 +587,113 @@ impl<'js> ReadableStream<'js> {
                 "pipeThrough requires a { readable, writable } pair",
             ));
         }
-        let writer_obj = writable.as_object().ok_or_else(|| {
-            Host::throw_type(&ctx, "pipeThrough requires a { readable, writable } pair")
-        })?;
-        let get_writer: Function = writer_obj.get("getWriter")?;
-        let writer: Object = get_writer.call((This(writer_obj.clone()),))?;
-        let reader = this.0.borrow().get_reader(ctx.clone())?;
-        let read: Function = reader.get("read")?;
-        let write: Function = writer.get("write")?;
-        let close: Function = writer.get("close")?;
-        ctx.spawn({
-            let ctx = ctx.clone();
-            async move {
-                loop {
-                    let Ok(result) = read.call::<_, Promise>((This(reader.clone()),)) else {
-                        break;
-                    };
-                    let Ok(chunk) = result.into_future::<Object>().await else {
-                        if let Ok(abort) = writer.get::<_, Function>("abort") {
-                            let _ = abort.call::<_, Value>((This(writer.clone()),));
-                        }
-                        break;
-                    };
-                    let done: bool = chunk.get("done").unwrap_or(false);
-                    if done {
-                        let _ = close.call::<_, Value>((This(writer.clone()),));
-                        break;
-                    }
-                    let value: Value = chunk
-                        .get("value")
-                        .unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
-                    if let Ok(promise) = write.call::<_, Promise>((This(writer.clone()), value)) {
-                        let _ = promise.into_future::<Value>().await;
-                    }
-                }
-            }
-        });
+        if writable.as_object().is_none() {
+            return Err(Host::throw_type(
+                &ctx,
+                "pipeThrough requires a { readable, writable } pair",
+            ));
+        }
+        Self::disturb_and_lock(&this.0, ctx)?;
         Ok(readable)
     }
 
-    pub async fn cancel(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        reason: Opt<Value<'js>>,
-    ) -> Result<Value<'js>> {
-        let reader = this.0.borrow().get_reader(ctx.clone())?;
-        let cancel: Function = reader.get("cancel")?;
-        cancel.call((This(reader), reason.0))
+    pub fn pipe_to(
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, dest: Opt<Value<'js>>,
+    ) -> Result<Promise<'js>> {
+        Self::disturb_and_lock(&this.0, ctx.clone())?;
+        let (promise, resolve, reject) = ctx.promise()?;
+        let stream = this.0;
+        let dest = dest.0;
+        let ctx_err = ctx.clone();
+        ctx.spawn(async move {
+            match ReadableStream::read_all_bytes(&stream, ctx_err.clone()).await {
+                Ok(bytes) => {
+                    let written = if let Some(dest) = dest {
+                        if let Some(object) = dest.as_object()
+                            && let Some(writable) = Class::<WritableStream>::from_object(object)
+                        {
+                            let sink = writable.borrow().state.borrow().sink.clone();
+                            if let Some(sink) = sink.as_object()
+                                && let Ok(write) = sink.get::<_, Function>("write")
+                            {
+                                match rquickjs::TypedArray::<u8>::new_copy(
+                                    ctx_err.clone(),
+                                    bytes,
+                                ) {
+                                    Ok(chunk) => write
+                                        .call::<_, Value>((This(sink.clone()), chunk))
+                                        .map(|_| ()),
+                                    Err(error) => Err(error),
+                                }
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    } else {
+                        Ok(())
+                    };
+                    match written {
+                        Ok(()) => {
+                            let _ = resolve.call::<_, ()>(());
+                        }
+                        Err(_) => {
+                            let thrown = ctx_err.catch();
+                            let _ = reject.call::<_, ()>((thrown,));
+                        }
+                    }
+                }
+                Err(_) => {
+                    let thrown = ctx_err.catch();
+                    let _ = reject.call::<_, ()>((thrown,));
+                }
+            }
+        });
+        Ok(promise)
+    }
+
+    pub fn cancel(
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, reason: Opt<Value<'js>>,
+    ) -> Result<Promise<'js>> {
+        let source = {
+            let stream = this.0.borrow();
+            let mut state = stream.state.borrow_mut();
+            state.disturbed = true;
+            state.closed = true;
+            state.queue.clear();
+            let source = state.source.clone();
+            ReadableStream::wake(&mut state);
+            source
+        };
+        if let Some(object) = source.as_object()
+            && let Ok(cancel) = object.get::<_, Function>("cancel")
+        {
+            let _ = cancel.call::<_, Value>((This(object.clone()), reason.0));
+        }
+        let (promise, resolve, _reject) = ctx.promise()?;
+        let _ = resolve.call::<_, ()>(());
+        Ok(promise)
+    }
+
+    #[qjs(rename = "_denAbort")]
+    pub fn den_abort(&self, reason: Opt<Value<'js>>) {
+        let mut state = self.state.borrow_mut();
+        if state.closed || state.errored.is_some() {
+            return;
+        }
+        state.errored = reason.0;
+        Self::wake(&mut state);
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "ReadableStream"
-    }
+    pub fn to_string_tag() -> &'static str { "ReadableStream" }
 }
 
 #[derive(Trace, JsLifetime)]
 struct WritableState<'js> {
-    sink: Value<'js>,
-    closed: bool,
+    sink:    Value<'js>,
+    closed:  bool,
     errored: Option<Value<'js>>,
 }
 
@@ -419,8 +720,8 @@ impl<'js> WritableStream<'js> {
             _ => Object::new(ctx.clone())?.into_value(),
         };
         let state = Rc::new(RefCell::new(WritableState {
-            sink: sink.clone(),
-            closed: false,
+            sink:    sink.clone(),
+            closed:  false,
             errored: None,
         }));
         if let Some(obj) = sink.as_object() {
@@ -532,9 +833,7 @@ impl<'js> WritableStream<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "WritableStream"
-    }
+    pub fn to_string_tag() -> &'static str { "WritableStream" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -547,9 +846,9 @@ pub struct TransformStream<'js> {
 #[rquickjs::methods]
 impl<'js> TransformStream<'js> {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, transformer: Opt<Object<'js>>) -> Result<Self> {
-        let transformer = match transformer.0 {
-            Some(obj) => obj,
+    pub fn new(ctx: Ctx<'js>, transformer: Opt<Value<'js>>) -> Result<Self> {
+        let transformer = match transformer.0.and_then(Value::into_object) {
+            Some(object) => object,
             None => Object::new(ctx.clone())?,
         };
         let readable = Class::instance(ctx.clone(), ReadableStream::new(ctx.clone(), Opt(None))?)?;
@@ -577,8 +876,10 @@ impl<'js> TransformStream<'js> {
                 let controller = controller.clone();
                 move |ctx: Ctx<'js>| -> Result<Value<'js>> {
                     let flushed = match transformer.get::<_, Function>("flush") {
-                        Ok(flush) => flush
-                            .call::<_, Value>((This(transformer.clone()), controller.clone()))?,
+                        Ok(flush) => {
+                            flush
+                                .call::<_, Value>((This(transformer.clone()), controller.clone()))?
+                        }
                         Err(_) => Value::new_undefined(ctx.clone()),
                     };
                     let close: Function = controller.get("close")?;
@@ -614,17 +915,11 @@ impl<'js> TransformStream<'js> {
     }
 
     #[qjs(get)]
-    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> {
-        self.readable.clone()
-    }
+    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> { self.readable.clone() }
 
     #[qjs(get)]
-    pub fn writable(&self) -> Class<'js, WritableStream<'js>> {
-        self.writable.clone()
-    }
+    pub fn writable(&self) -> Class<'js, WritableStream<'js>> { self.writable.clone() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "TransformStream"
-    }
+    pub fn to_string_tag() -> &'static str { "TransformStream" }
 }

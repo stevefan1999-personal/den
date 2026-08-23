@@ -11,28 +11,28 @@ use crate::host::Host;
 #[derive(Trace, JsLifetime)]
 struct Listener<'js> {
     callback: Value<'js>,
-    capture: bool,
-    once: bool,
-    removed: bool,
+    capture:  bool,
+    once:     bool,
+    removed:  bool,
 }
 
 #[derive(Trace, JsLifetime)]
 struct Handler<'js> {
-    value: Value<'js>,
+    value:    Value<'js>,
     listener: Option<Value<'js>>,
 }
 
 #[derive(Trace, JsLifetime)]
 pub struct HostEventTarget<'js> {
     listeners: HashMap<String, Vec<Listener<'js>>>,
-    handlers: HashMap<String, Handler<'js>>,
+    handlers:  HashMap<String, Handler<'js>>,
 }
 
 impl<'js> Default for HostEventTarget<'js> {
     fn default() -> Self {
         Self {
             listeners: HashMap::new(),
-            handlers: HashMap::new(),
+            handlers:  HashMap::new(),
         }
     }
 }
@@ -40,20 +40,12 @@ impl<'js> Default for HostEventTarget<'js> {
 pub type SharedEvents<'js> = Rc<RefCell<HostEventTarget<'js>>>;
 
 impl<'js> HostEventTarget<'js> {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
-    pub fn share() -> SharedEvents<'js> {
-        Rc::new(RefCell::new(Self::new()))
-    }
+    pub fn share() -> SharedEvents<'js> { Rc::new(RefCell::new(Self::new())) }
 
     pub fn add(
-        &mut self,
-        ctx: &Ctx<'js>,
-        type_: String,
-        callback: Value<'js>,
-        options: Option<Value<'js>>,
+        &mut self, ctx: &Ctx<'js>, type_: String, callback: Value<'js>, options: Option<Value<'js>>,
     ) -> Result<()> {
         if callback.is_null() || callback.is_undefined() {
             return Ok(());
@@ -106,10 +98,7 @@ impl<'js> HostEventTarget<'js> {
     }
 
     pub fn dispatch_shared(
-        this: &RefCell<Self>,
-        ctx: &Ctx<'js>,
-        target: &Object<'js>,
-        event: Value<'js>,
+        this: &RefCell<Self>, ctx: &Ctx<'js>, target: &Object<'js>, event: Value<'js>,
     ) -> Result<bool> {
         let type_ = event
             .as_object()
@@ -141,11 +130,7 @@ impl<'js> HostEventTarget<'js> {
     }
 
     pub fn set_handler(
-        &mut self,
-        ctx: &Ctx<'js>,
-        target: Object<'js>,
-        type_: &str,
-        value: Value<'js>,
+        &mut self, ctx: &Ctx<'js>, target: Object<'js>, type_: &str, value: Value<'js>,
     ) -> Result<()> {
         let stored = if value.is_function() {
             value
@@ -185,13 +170,10 @@ impl<'js> HostEventTarget<'js> {
         })?;
         let wrapper_value = wrapper.clone().into_value();
         self.add(ctx, type_.to_string(), wrapper_value.clone(), None)?;
-        self.handlers.insert(
-            type_.to_string(),
-            Handler {
-                value: stored,
-                listener: Some(wrapper_value),
-            },
-        );
+        self.handlers.insert(type_.to_string(), Handler {
+            value:    stored,
+            listener: Some(wrapper_value),
+        });
         Ok(())
     }
 
@@ -235,9 +217,9 @@ impl<'js> Clone for Listener<'js> {
     fn clone(&self) -> Self {
         Self {
             callback: self.callback.clone(),
-            capture: self.capture,
-            once: self.once,
-            removed: self.removed,
+            capture:  self.capture,
+            once:     self.once,
+            removed:  self.removed,
         }
     }
 }

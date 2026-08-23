@@ -1,6 +1,9 @@
 //! WHATWG FileReader.
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Function, JsLifetime, Object, Promise, Result, TypedArray, Value,
@@ -41,16 +44,17 @@ impl<'js> Trace<'js> for FileReader<'js> {
 
 impl<'js> FileReader<'js> {
     fn dispatch(this: &Class<'js, Self>, ctx: &Ctx<'js>, event: Value<'js>) -> Result<()> {
-        HostEventTarget::dispatch_shared(&this.borrow().events, ctx, this.as_inner(), event)?;
+        let events = this.borrow().events.clone();
+        HostEventTarget::dispatch_shared(&events, ctx, this.as_inner(), event)?;
         Ok(())
     }
 
+    fn is_loading(this: &Class<'js, Self>, aborted: &Rc<Cell<bool>>) -> bool {
+        !aborted.get() && this.borrow().ready_state == LOADING
+    }
+
     fn fire_progress(
-        this: &Class<'js, Self>,
-        ctx: &Ctx<'js>,
-        type_: &str,
-        loaded: f64,
-        total: f64,
+        this: &Class<'js, Self>, ctx: &Ctx<'js>, type_: &str, loaded: f64, total: f64,
     ) -> Result<()> {
         let event = Host::progress_event(ctx, type_, true, loaded, total)?;
         Self::dispatch(this, ctx, event)
@@ -61,10 +65,7 @@ impl<'js> FileReader<'js> {
     }
 
     fn set_handler(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        type_: &'static str,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str, value: Value<'js>,
     ) -> Result<()> {
         this.0.borrow().events.borrow_mut().set_handler(
             &ctx,
@@ -72,6 +73,19 @@ impl<'js> FileReader<'js> {
             type_,
             value,
         )
+    }
+
+    /// Web IDL `const` members also live on the prototype so `reader.EMPTY`
+    /// works. rquickjs rejects a second getter with the same rename.
+    pub fn install_idl_constants(ctx: &Ctx<'js>) -> Result<()> {
+        let Some(proto) = Class::<Self>::prototype(ctx)? else {
+            return Ok(());
+        };
+        proto.set("EMPTY", EMPTY)?;
+        proto.set("LOADING", LOADING)?;
+        proto.set("DONE", DONE)?;
+        Host::install_fileapi_document(ctx)?;
+        Ok(())
     }
 }
 
@@ -119,10 +133,7 @@ impl<'js> FileReader<'js> {
     }
 
     pub fn add_event_listener(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        type_: String,
-        callback: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: String, callback: Value<'js>,
         options: Opt<Value<'js>>,
     ) -> Result<()> {
         this.0
@@ -133,10 +144,7 @@ impl<'js> FileReader<'js> {
     }
 
     pub fn remove_event_listener(
-        this: This<Class<'js, Self>>,
-        type_: String,
-        callback: Value<'js>,
-        options: Opt<Value<'js>>,
+        this: This<Class<'js, Self>>, type_: String, callback: Value<'js>, options: Opt<Value<'js>>,
     ) {
         this.0
             .borrow()
@@ -146,9 +154,7 @@ impl<'js> FileReader<'js> {
     }
 
     pub fn dispatch_event(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        event: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, event: Value<'js>,
     ) -> Result<bool> {
         HostEventTarget::dispatch_shared(&this.0.borrow().events, &ctx, this.0.as_inner(), event)
     }
@@ -181,105 +187,103 @@ impl<'js> FileReader<'js> {
     }
 
     pub fn read_as_array_buffer(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        blob: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, blob: Value<'js>,
     ) -> Result<()> {
         Self::read(this, ctx, blob, ReadKind::ArrayBuffer, None)
     }
 
+    #[qjs(rename = "readAsDataURL")]
     pub fn read_as_data_url(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        blob: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, blob: Value<'js>,
     ) -> Result<()> {
         Self::read(this, ctx, blob, ReadKind::DataUrl, None)
     }
 
     pub fn read_as_text(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        blob: Value<'js>,
-        encoding: Opt<String>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, blob: Value<'js>, encoding: Opt<Value<'js>>,
     ) -> Result<()> {
-        Self::read(
-            this,
-            ctx,
-            blob,
-            ReadKind::Text,
-            Some(encoding.0.unwrap_or_else(|| "utf-8".to_string())),
-        )
+        let encoding = match encoding.0 {
+            None => None,
+            Some(value) if value.is_undefined() => None,
+            Some(value) => Some(Host::coerce_string(&ctx, value)?),
+        };
+        Self::read(this, ctx, blob, ReadKind::Text, encoding)
+    }
+
+    pub fn read_as_binary_string(
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, blob: Value<'js>,
+    ) -> Result<()> {
+        Self::read(this, ctx, blob, ReadKind::BinaryString, None)
     }
 
     #[qjs(get, rename = "onload")]
     pub fn onload(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "load")
     }
+
     #[qjs(set, rename = "onload")]
     pub fn set_onload(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "load", value)
     }
+
     #[qjs(get, rename = "onerror")]
     pub fn onerror(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "error")
     }
+
     #[qjs(set, rename = "onerror")]
     pub fn set_onerror(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "error", value)
     }
+
     #[qjs(get, rename = "onloadend")]
     pub fn onloadend(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "loadend")
     }
+
     #[qjs(set, rename = "onloadend")]
     pub fn set_onloadend(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "loadend", value)
     }
+
     #[qjs(get, rename = "onloadstart")]
     pub fn onloadstart(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "loadstart")
     }
+
     #[qjs(set, rename = "onloadstart")]
     pub fn set_onloadstart(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "loadstart", value)
     }
+
     #[qjs(get, rename = "onprogress")]
     pub fn onprogress(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "progress")
     }
+
     #[qjs(set, rename = "onprogress")]
     pub fn set_onprogress(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "progress", value)
     }
+
     #[qjs(get, rename = "onabort")]
     pub fn onabort(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "abort")
     }
+
     #[qjs(set, rename = "onabort")]
     pub fn set_onabort(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "abort", value)
     }
@@ -290,18 +294,17 @@ impl<'js> FileReader<'js> {
     }
 }
 
+#[derive(Clone, Copy)]
 enum ReadKind {
     ArrayBuffer,
+    BinaryString,
     DataUrl,
     Text,
 }
 
 impl<'js> FileReader<'js> {
     fn read(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        blob: Value<'js>,
-        kind: ReadKind,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, blob: Value<'js>, kind: ReadKind,
         encoding: Option<String>,
     ) -> Result<()> {
         if this.0.borrow().ready_state == LOADING {
@@ -326,89 +329,134 @@ impl<'js> FileReader<'js> {
         ctx.spawn({
             let ctx = ctx.clone();
             async move {
-                let loadstart = Host::progress_event(&ctx, "loadstart", false, 0.0, 0.0);
-                if let Ok(event) = loadstart {
-                    if !aborted.get() {
+                if !FileReader::is_loading(&this, &aborted) {
+                    return;
+                }
+                if let Ok(event) = Host::progress_event(&ctx, "loadstart", false, 0.0, 0.0) {
+                    if FileReader::is_loading(&this, &aborted) {
                         let _ = FileReader::dispatch(&this, &ctx, event);
                     }
                 }
-                if aborted.get() {
+                if !FileReader::is_loading(&this, &aborted) {
                     return;
                 }
-                let mime = Host::blob_like_type(&blob);
-                let bytes = match FileReader::take_bytes(ctx.clone(), blob).await {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        if aborted.get() {
-                            return;
-                        }
-                        let reason = match error {
-                            rquickjs::Error::Exception => ctx.catch(),
-                            _ => Value::new_undefined(ctx.clone()),
-                        };
-                        {
-                            let mut reader = this.borrow_mut();
-                            reader.ready_state = DONE;
-                            reader.error = reason;
-                        }
-                        let _ = FileReader::dispatch(
-                            &this,
-                            &ctx,
-                            Host::progress_event(&ctx, "error", false, 0.0, 0.0)
-                                .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
-                        );
-                        if this.borrow().ready_state != LOADING {
-                            let _ = FileReader::dispatch(
-                                &this,
-                                &ctx,
-                                Host::progress_event(&ctx, "loadend", false, 0.0, 0.0)
-                                    .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
-                            );
-                        }
-                        return;
-                    }
-                };
-                if aborted.get() {
+                FileReader::later(&ctx, move |ctx| {
+                    let ctx_run = ctx.clone();
+                    ctx_run.spawn(async move {
+                        FileReader::finish_read(this, ctx, blob, kind, encoding, aborted).await;
+                    });
+                });
+            }
+        });
+        Ok(())
+    }
+
+    async fn finish_read(
+        this: Class<'js, Self>, ctx: Ctx<'js>, blob: Value<'js>, kind: ReadKind,
+        encoding: Option<String>, aborted: Rc<Cell<bool>>,
+    ) {
+        if !FileReader::is_loading(&this, &aborted) {
+            return;
+        }
+        let mime = Host::blob_like_type(&blob);
+        let bytes = match FileReader::take_bytes(ctx.clone(), blob).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if !FileReader::is_loading(&this, &aborted) {
                     return;
                 }
-                let size = bytes.len() as f64;
-                let result = match kind {
-                    ReadKind::ArrayBuffer => ArrayBuffer::new_copy(ctx.clone(), &bytes)
-                        .map(|buffer| buffer.into_value())
-                        .unwrap_or_else(|_| Value::new_null(ctx.clone())),
-                    ReadKind::Text => {
-                        let text = FileReader::decode(
-                            &ctx,
-                            &bytes,
-                            encoding.as_deref().unwrap_or("utf-8"),
-                        );
-                        rquickjs::IntoJs::into_js(text, &ctx)
-                            .unwrap_or_else(|_| Value::new_null(ctx.clone()))
-                    }
-                    ReadKind::DataUrl => {
-                        let media = if mime.is_empty() {
-                            "application/octet-stream"
-                        } else {
-                            mime.as_str()
-                        };
-                        let url = format!("data:{media};base64,{}", Host::encode_base64(&bytes));
-                        rquickjs::IntoJs::into_js(url, &ctx)
-                            .unwrap_or_else(|_| Value::new_null(ctx.clone()))
-                    }
+                let reason = match error {
+                    rquickjs::Error::Exception => ctx.catch(),
+                    _ => Value::new_undefined(ctx.clone()),
                 };
                 {
                     let mut reader = this.borrow_mut();
                     reader.ready_state = DONE;
-                    reader.result = result;
+                    reader.error = reason;
                 }
-                let _ = FileReader::fire_progress(&this, &ctx, "progress", size, size);
-                let _ = FileReader::fire_progress(&this, &ctx, "load", size, size);
+                let _ = FileReader::dispatch(
+                    &this,
+                    &ctx,
+                    Host::progress_event(&ctx, "error", false, 0.0, 0.0)
+                        .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
+                );
                 if this.borrow().ready_state != LOADING {
-                    let _ = FileReader::fire_progress(&this, &ctx, "loadend", size, size);
+                    let _ = FileReader::dispatch(
+                        &this,
+                        &ctx,
+                        Host::progress_event(&ctx, "loadend", false, 0.0, 0.0)
+                            .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
+                    );
                 }
+                return;
+            }
+        };
+        if !FileReader::is_loading(&this, &aborted) {
+            return;
+        }
+        let size = bytes.len() as f64;
+        if !bytes.is_empty() {
+            let _ = FileReader::fire_progress(&this, &ctx, "progress", size, size);
+            if !FileReader::is_loading(&this, &aborted) {
+                return;
+            }
+        }
+        FileReader::later(&ctx, move |ctx| {
+            let ctx_run = ctx.clone();
+            ctx_run.spawn(async move {
+                FileReader::finish_load(this, ctx, bytes, kind, encoding, mime, aborted).await;
+            });
+        });
+    }
+
+    async fn finish_load(
+        this: Class<'js, Self>, ctx: Ctx<'js>, bytes: Vec<u8>, kind: ReadKind,
+        encoding: Option<String>, mime: String, aborted: Rc<Cell<bool>>,
+    ) {
+        if !FileReader::is_loading(&this, &aborted) {
+            return;
+        }
+        let size = bytes.len() as f64;
+        let result = match kind {
+            ReadKind::ArrayBuffer => ArrayBuffer::new_copy(ctx.clone(), &bytes)
+                .map(|buffer| buffer.into_value())
+                .unwrap_or_else(|_| Value::new_null(ctx.clone())),
+            ReadKind::Text => {
+                let label = FileReader::resolve_encoding(encoding.as_deref(), &mime);
+                let text = FileReader::decode(&ctx, &bytes, &label);
+                rquickjs::IntoJs::into_js(text, &ctx)
+                    .unwrap_or_else(|_| Value::new_null(ctx.clone()))
+            }
+            ReadKind::BinaryString => {
+                let text: String = bytes.iter().map(|&byte| byte as char).collect();
+                rquickjs::IntoJs::into_js(text, &ctx)
+                    .unwrap_or_else(|_| Value::new_null(ctx.clone()))
+            }
+            ReadKind::DataUrl => {
+                let media = if mime.is_empty() {
+                    "application/octet-stream"
+                } else {
+                    mime.as_str()
+                };
+                let url = format!("data:{media};base64,{}", Host::encode_base64(&bytes));
+                rquickjs::IntoJs::into_js(url, &ctx)
+                    .unwrap_or_else(|_| Value::new_null(ctx.clone()))
+            }
+        };
+        if !FileReader::is_loading(&this, &aborted) {
+            return;
+        }
+        {
+            let mut reader = this.borrow_mut();
+            reader.ready_state = DONE;
+            reader.result = result;
+        }
+        let _ = FileReader::fire_progress(&this, &ctx, "load", size, size);
+        FileReader::later(&ctx, move |ctx| {
+            if this.borrow().ready_state != LOADING {
+                let _ = FileReader::fire_progress(&this, &ctx, "loadend", size, size);
             }
         });
-        Ok(())
     }
 
     async fn take_bytes(ctx: Ctx<'js>, blob: Value<'js>) -> Result<Vec<u8>> {
@@ -445,5 +493,56 @@ impl<'js> FileReader<'js> {
             }
         }
         String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    fn later<F>(ctx: &Ctx<'js>, work: F)
+    where
+        F: FnOnce(Ctx<'js>) + 'js,
+    {
+        let work = Rc::new(RefCell::new(Some(work)));
+        if let Ok(set_timeout) = ctx.globals().get::<_, Function>("setTimeout")
+            && let Ok(callback) = Function::new(ctx.clone(), {
+                let work = Rc::clone(&work);
+                move |ctx: Ctx<'js>| {
+                    if let Some(work) = work.borrow_mut().take() {
+                        work(ctx);
+                    }
+                    Ok::<(), rquickjs::Error>(())
+                }
+            })
+        {
+            let _ = set_timeout.call::<_, Value>((callback, 0));
+            return;
+        }
+        if let Some(work) = work.borrow_mut().take() {
+            work(ctx.clone());
+        }
+    }
+
+    fn resolve_encoding(encoding_name: Option<&str>, mime: &str) -> String {
+        if let Some(name) = encoding_name.filter(|name| !name.is_empty()) {
+            return name.to_string();
+        }
+        if let Some(charset) = charset_from_type(mime) {
+            return charset;
+        }
+        "utf-8".to_string()
+    }
+
+}
+
+fn charset_from_type(mime: &str) -> Option<String> {
+    let lower = mime.to_ascii_lowercase();
+    let rest = lower.split("charset=").nth(1)?;
+    let token = rest
+        .split(';')
+        .next()
+        .unwrap_or(rest)
+        .trim()
+        .trim_matches(|ch| ch == '"' || ch == '\'');
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
     }
 }

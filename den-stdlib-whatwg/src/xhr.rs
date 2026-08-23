@@ -23,26 +23,26 @@ const DONE: i32 = 4;
 #[derive(JsLifetime)]
 #[rquickjs::class]
 pub struct XMLHttpRequest<'js> {
-    events: SharedEvents<'js>,
-    ready_state: i32,
-    status: u16,
-    status_text: String,
-    response_url: String,
+    events:           SharedEvents<'js>,
+    ready_state:      i32,
+    status:           u16,
+    status_text:      String,
+    response_url:     String,
     response_headers: String,
     #[qjs(skip_trace)]
-    response_body: Vec<u8>,
-    response_type: String,
+    response_body:    Vec<u8>,
+    response_type:    String,
     override_charset: Option<String>,
-    timeout: u64,
+    timeout:          u64,
     with_credentials: bool,
-    method: String,
-    url: String,
+    method:           String,
+    url:              String,
     #[qjs(skip_trace)]
-    request_headers: Vec<(String, String)>,
+    request_headers:  Vec<(String, String)>,
     #[qjs(skip_trace)]
-    aborted: Rc<Cell<bool>>,
+    aborted:          Rc<Cell<bool>>,
     #[qjs(skip_trace)]
-    timed_out: Rc<Cell<bool>>,
+    timed_out:        Rc<Cell<bool>>,
 }
 
 impl<'js> Trace<'js> for XMLHttpRequest<'js> {
@@ -72,10 +72,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     fn set_handler(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        type_: &'static str,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str, value: Value<'js>,
     ) -> Result<()> {
         this.0.borrow().events.borrow_mut().set_handler(
             &ctx,
@@ -175,74 +172,61 @@ impl<'js> XMLHttpRequest<'js> {
     #[qjs(constructor)]
     pub fn new(_ctx: Ctx<'js>) -> Self {
         Self {
-            events: HostEventTarget::share(),
-            ready_state: UNSENT,
-            status: 0,
-            status_text: String::new(),
-            response_url: String::new(),
+            events:           HostEventTarget::share(),
+            ready_state:      UNSENT,
+            status:           0,
+            status_text:      String::new(),
+            response_url:     String::new(),
             response_headers: String::new(),
-            response_body: Vec::new(),
-            response_type: String::new(),
+            response_body:    Vec::new(),
+            response_type:    String::new(),
             override_charset: None,
-            timeout: 0,
+            timeout:          0,
             with_credentials: false,
-            method: String::new(),
-            url: String::new(),
-            request_headers: Vec::new(),
-            aborted: Rc::new(Cell::new(false)),
-            timed_out: Rc::new(Cell::new(false)),
+            method:           String::new(),
+            url:              String::new(),
+            request_headers:  Vec::new(),
+            aborted:          Rc::new(Cell::new(false)),
+            timed_out:        Rc::new(Cell::new(false)),
         }
     }
 
     #[qjs(static, get, rename = "UNSENT")]
-    pub fn unsent_const() -> i32 {
-        UNSENT
-    }
+    pub fn unsent_const() -> i32 { UNSENT }
+
     #[qjs(static, get, rename = "OPENED")]
-    pub fn opened_const() -> i32 {
-        OPENED
-    }
+    pub fn opened_const() -> i32 { OPENED }
+
     #[qjs(static, get, rename = "HEADERS_RECEIVED")]
-    pub fn headers_received_const() -> i32 {
-        HEADERS_RECEIVED
-    }
+    pub fn headers_received_const() -> i32 { HEADERS_RECEIVED }
+
     #[qjs(static, get, rename = "LOADING")]
-    pub fn loading_const() -> i32 {
-        LOADING
-    }
+    pub fn loading_const() -> i32 { LOADING }
+
     #[qjs(static, get, rename = "DONE")]
-    pub fn done_const() -> i32 {
-        DONE
-    }
+    pub fn done_const() -> i32 { DONE }
 
     #[qjs(get)]
-    pub fn ready_state(&self) -> i32 {
-        self.ready_state
-    }
+    pub fn ready_state(&self) -> i32 { self.ready_state }
+
     #[qjs(get)]
-    pub fn status(&self) -> u16 {
-        self.status
-    }
+    pub fn status(&self) -> u16 { self.status }
+
     #[qjs(get)]
-    pub fn status_text(&self) -> String {
-        self.status_text.clone()
-    }
+    pub fn status_text(&self) -> String { self.status_text.clone() }
+
     #[qjs(get)]
-    pub fn response_url(&self) -> String {
-        self.response_url.clone()
-    }
+    pub fn response_url(&self) -> String { self.response_url.clone() }
+
     #[qjs(get)]
-    pub fn response_type(&self) -> String {
-        self.response_type.clone()
-    }
+    pub fn response_type(&self) -> String { self.response_type.clone() }
+
     #[qjs(set, rename = "responseType")]
-    pub fn set_response_type(&mut self, value: String) {
-        self.response_type = value;
-    }
+    pub fn set_response_type(&mut self, value: String) { self.response_type = value; }
+
     #[qjs(get)]
-    pub fn timeout(&self) -> u64 {
-        self.timeout
-    }
+    pub fn timeout(&self) -> u64 { self.timeout }
+
     #[qjs(set, rename = "timeout")]
     pub fn set_timeout(&mut self, value: f64) {
         self.timeout = if value.is_finite() && value > 0.0 {
@@ -251,22 +235,18 @@ impl<'js> XMLHttpRequest<'js> {
             0
         };
     }
+
     #[qjs(get)]
-    pub fn with_credentials(&self) -> bool {
-        self.with_credentials
-    }
+    pub fn with_credentials(&self) -> bool { self.with_credentials }
+
     #[qjs(set, rename = "withCredentials")]
-    pub fn set_with_credentials(&mut self, value: bool) {
-        self.with_credentials = value;
-    }
+    pub fn set_with_credentials(&mut self, value: bool) { self.with_credentials = value; }
+
     #[qjs(get)]
-    pub fn upload(&self, ctx: Ctx<'js>) -> Value<'js> {
-        Value::new_undefined(ctx)
-    }
+    pub fn upload(&self, ctx: Ctx<'js>) -> Value<'js> { Value::new_undefined(ctx) }
+
     #[qjs(get, rename = "responseXML")]
-    pub fn response_xml(&self, ctx: Ctx<'js>) -> Value<'js> {
-        Value::new_null(ctx)
-    }
+    pub fn response_xml(&self, ctx: Ctx<'js>) -> Value<'js> { Value::new_null(ctx) }
 
     #[qjs(get)]
     pub fn response(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
@@ -315,9 +295,7 @@ impl<'js> XMLHttpRequest<'js> {
         Ok(Self::decode(&this.0, &ctx))
     }
 
-    pub fn get_all_response_headers(&self) -> String {
-        self.response_headers.clone()
-    }
+    pub fn get_all_response_headers(&self) -> String { self.response_headers.clone() }
 
     pub fn get_response_header(&self, ctx: Ctx<'js>, name: String) -> Result<Value<'js>> {
         match self.response_header(&name) {
@@ -327,10 +305,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     pub fn open(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        method: String,
-        url: String,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, method: String, url: String,
         async_flag: Opt<Value<'js>>,
     ) -> Result<()> {
         if async_flag.0.as_ref().and_then(Value::as_bool) == Some(false) {
@@ -352,9 +327,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     pub fn override_mime_type(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        mime: String,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, mime: String,
     ) -> Result<()> {
         let ready = this.0.borrow().ready_state;
         if ready == LOADING || ready == DONE {
@@ -369,10 +342,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     pub fn set_request_header(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        name: String,
-        value: String,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, name: String, value: String,
     ) -> Result<()> {
         if this.0.borrow().ready_state != OPENED {
             return Err(Host::throw_dom(
@@ -386,10 +356,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     pub fn add_event_listener(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        type_: String,
-        callback: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: String, callback: Value<'js>,
         options: Opt<Value<'js>>,
     ) -> Result<()> {
         this.0
@@ -400,10 +367,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     pub fn remove_event_listener(
-        this: This<Class<'js, Self>>,
-        type_: String,
-        callback: Value<'js>,
-        options: Opt<Value<'js>>,
+        this: This<Class<'js, Self>>, type_: String, callback: Value<'js>, options: Opt<Value<'js>>,
     ) {
         this.0
             .borrow()
@@ -413,16 +377,12 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     pub fn dispatch_event(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        event: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, event: Value<'js>,
     ) -> Result<bool> {
         HostEventTarget::dispatch_shared(&this.0.borrow().events, &ctx, this.0.as_inner(), event)
     }
 
-    pub fn abort(this: This<Class<'js, Self>>) {
-        this.0.borrow().aborted.set(true);
-    }
+    pub fn abort(this: This<Class<'js, Self>>) { this.0.borrow().aborted.set(true); }
 
     pub fn send(this: This<Class<'js, Self>>, ctx: Ctx<'js>, body: Opt<Value<'js>>) -> Result<()> {
         if this.0.borrow().ready_state != OPENED {
@@ -549,103 +509,100 @@ impl<'js> XMLHttpRequest<'js> {
     pub fn onreadystatechange(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "readystatechange")
     }
+
     #[qjs(set, rename = "onreadystatechange")]
     pub fn set_onreadystatechange(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "readystatechange", value)
     }
+
     #[qjs(get, rename = "onload")]
     pub fn onload(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "load")
     }
+
     #[qjs(set, rename = "onload")]
     pub fn set_onload(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "load", value)
     }
+
     #[qjs(get, rename = "onerror")]
     pub fn onerror(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "error")
     }
+
     #[qjs(set, rename = "onerror")]
     pub fn set_onerror(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "error", value)
     }
+
     #[qjs(get, rename = "onloadend")]
     pub fn onloadend(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "loadend")
     }
+
     #[qjs(set, rename = "onloadend")]
     pub fn set_onloadend(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "loadend", value)
     }
+
     #[qjs(get, rename = "onloadstart")]
     pub fn onloadstart(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "loadstart")
     }
+
     #[qjs(set, rename = "onloadstart")]
     pub fn set_onloadstart(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "loadstart", value)
     }
+
     #[qjs(get, rename = "onprogress")]
     pub fn onprogress(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "progress")
     }
+
     #[qjs(set, rename = "onprogress")]
     pub fn set_onprogress(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "progress", value)
     }
+
     #[qjs(get, rename = "onabort")]
     pub fn onabort(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "abort")
     }
+
     #[qjs(set, rename = "onabort")]
     pub fn set_onabort(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "abort", value)
     }
+
     #[qjs(get, rename = "ontimeout")]
     pub fn ontimeout(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
         Self::handler(this, ctx, "timeout")
     }
+
     #[qjs(set, rename = "ontimeout")]
     pub fn set_ontimeout(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         Self::set_handler(this, ctx, "timeout", value)
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "XMLHttpRequest"
-    }
+    pub fn to_string_tag() -> &'static str { "XMLHttpRequest" }
 }
 
 impl<'js> XMLHttpRequest<'js> {
@@ -681,9 +638,7 @@ impl<'js> XMLHttpRequest<'js> {
     }
 
     fn fail(
-        this: &Class<'js, Self>,
-        ctx: &Ctx<'js>,
-        aborted: &Rc<Cell<bool>>,
+        this: &Class<'js, Self>, ctx: &Ctx<'js>, aborted: &Rc<Cell<bool>>,
         timed_out: &Rc<Cell<bool>>,
     ) {
         if timed_out.get() {

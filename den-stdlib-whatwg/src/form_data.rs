@@ -27,10 +27,7 @@ pub struct FormData {
 
 impl FormData {
     fn normalize<'js>(
-        ctx: &Ctx<'js>,
-        name: String,
-        value: Value<'js>,
-        filename: Option<String>,
+        ctx: &Ctx<'js>, name: String, value: Value<'js>, filename: Option<String>,
     ) -> Result<(String, FormValue)> {
         if Host::is_blob_like(&value) {
             let filename = filename
@@ -262,9 +259,7 @@ impl FormData {
     }
 
     pub fn for_each<'js>(
-        this: This<Class<'js, Self>>,
-        ctx: Ctx<'js>,
-        args: Rest<Value<'js>>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, args: Rest<Value<'js>>,
     ) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 1)?;
         let callback = Function::from_js(&ctx, args.0[0].clone())?;
@@ -287,9 +282,7 @@ impl FormData {
     }
 
     #[qjs(rename = PredefinedAtom::SymbolIterator)]
-    pub fn js_iterator<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        self.entries(ctx)
-    }
+    pub fn js_iterator<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> { self.entries(ctx) }
 
     #[qjs(rename = "toMultipartBlob")]
     pub fn to_multipart_blob_js<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, Blob>> {
@@ -297,7 +290,5 @@ impl FormData {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "FormData"
-    }
+    pub fn to_string_tag() -> &'static str { "FormData" }
 }

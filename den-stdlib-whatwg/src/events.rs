@@ -16,9 +16,7 @@ pub struct ProgressEvent {}
 impl ProgressEvent {
     #[qjs(constructor)]
     pub fn new<'js>(
-        ctx: Ctx<'js>,
-        type_: String,
-        options: Opt<Object<'js>>,
+        ctx: Ctx<'js>, type_: String, options: Opt<Object<'js>>,
     ) -> Result<Object<'js>> {
         let event = match ctx
             .globals()
@@ -39,9 +37,7 @@ impl ProgressEvent {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "ProgressEvent"
-    }
+    pub fn to_string_tag() -> &'static str { "ProgressEvent" }
 
     #[qjs(skip)]
     fn fields(options: Option<&Object<'_>>) -> (bool, f64, f64) {
@@ -77,9 +73,7 @@ pub struct CloseEvent {}
 impl CloseEvent {
     #[qjs(constructor)]
     pub fn new<'js>(
-        ctx: Ctx<'js>,
-        type_: String,
-        options: Opt<Object<'js>>,
+        ctx: Ctx<'js>, type_: String, options: Opt<Object<'js>>,
     ) -> Result<Object<'js>> {
         let event = match ctx
             .globals()
@@ -100,9 +94,7 @@ impl CloseEvent {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "CloseEvent"
-    }
+    pub fn to_string_tag() -> &'static str { "CloseEvent" }
 
     #[qjs(skip)]
     fn fields(options: Option<&Object<'_>>) -> (f64, String, bool) {

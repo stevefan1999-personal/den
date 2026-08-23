@@ -14,6 +14,7 @@ pub mod file_reader;
 pub mod form_data;
 pub mod host;
 pub mod streams;
+mod url;
 pub mod urlpattern;
 pub mod websocket;
 pub mod xhr;
@@ -23,6 +24,7 @@ pub mod xhr;
 /// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
 /// job, and putting them here would duplicate the types fetch already
 /// constructs.
+#[cfg(test)]
 const API: [&str; 14] = [
     "Blob",
     "CloseEvent",
@@ -45,7 +47,6 @@ pub mod whatwg {
     use rquickjs::{Class, Ctx, Result, class::JsClass, module::Exports};
 
     use crate::host::Host;
-
     pub use crate::{
         blob::{Blob, File},
         compression::{CompressionStream, DecompressionStream},
@@ -79,6 +80,9 @@ pub mod whatwg {
         install::<ProgressEvent>(ctx, "ProgressEvent")?;
         install::<ReadableStream>(ctx, "ReadableStream")?;
         install::<TransformStream>(ctx, "TransformStream")?;
+        install::<crate::url::URL>(ctx, "URL")?;
+        install::<crate::url::URLSearchParams>(ctx, "URLSearchParams")?;
+        crate::url::install_shell(ctx)?;
         install::<URLPattern>(ctx, "URLPattern")?;
         install::<WebSocket>(ctx, "WebSocket")?;
         install::<XMLHttpRequest>(ctx, "XMLHttpRequest")?;
@@ -90,6 +94,8 @@ pub mod whatwg {
         Host::set_event_target_proto::<XMLHttpRequest>(ctx, "EventTarget")?;
         Host::set_event_target_proto::<EventSource>(ctx, "EventTarget")?;
         Host::set_event_target_proto::<WebSocket>(ctx, "EventTarget")?;
+        WebSocket::install_idl_constants(ctx)?;
+        FileReader::install_idl_constants(ctx)?;
         Host::install_formdata_symbol(ctx)?;
         Ok(())
     }
@@ -151,9 +157,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    async fn text(source: &str) -> String {
-        eval::<String>(source).await
-    }
+    async fn text(source: &str) -> String { eval::<String>(source).await }
 
     async fn text_async(source: &str) -> String {
         let (_runtime, context) = realm().await;
@@ -323,14 +327,14 @@ mod tests {
                 super::local_http::Outgoing::ok(incoming.body, "text/plain")
             } else {
                 super::local_http::Outgoing {
-                    status: 200,
+                    status:  200,
                     headers: vec![
                         ("Content-Type".into(), "text/plain".into()),
                         ("X-Echo".into(), "yes".into()),
                     ],
-                    body: b"hello-xhr".to_vec(),
-                    hang: false,
-                    silent: false,
+                    body:    b"hello-xhr".to_vec(),
+                    hang:    false,
+                    silent:  false,
                 }
             }
         })
@@ -530,17 +534,24 @@ mod tests {
                     break;
                 };
                 tokio::spawn(async move {
-                    let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                    let Ok(ws) =
+                        den_stdlib_networking::websocket::NativeWebSocket::accept(stream).await
+                    else {
                         return;
                     };
-                    use futures::{SinkExt, StreamExt};
-                    while let Some(message) = ws.next().await {
-                        let Ok(message) = message else { break };
-                        if message.is_close() {
-                            break;
-                        }
-                        if message.is_text() || message.is_binary() {
-                            let _ = ws.send(message).await;
+                    while let Some(event) = ws.next_event().await {
+                        match event {
+                            den_stdlib_networking::websocket::NativeWsEvent::Text(text) => {
+                                let _ = ws.send_text(text);
+                            }
+                            den_stdlib_networking::websocket::NativeWsEvent::Binary(bytes) => {
+                                let _ = ws.send_binary(bytes);
+                            }
+                            den_stdlib_networking::websocket::NativeWsEvent::Close { .. } => {
+                                break;
+                            }
+                            den_stdlib_networking::websocket::NativeWsEvent::Open { .. }
+                            | den_stdlib_networking::websocket::NativeWsEvent::Error(_) => {}
                         }
                     }
                 });
@@ -568,16 +579,115 @@ mod tests {
                       ws.onmessage = (event) => resolve(event.data);
                     }});
                     ws.close();
-                    return [data, ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED].join("|");
+                    return [
+                      data,
+                      ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED,
+                      ws instanceof EventTarget,
+                      WebSocket.CONNECTING === 0,
+                      WebSocket.OPEN === 1,
+                    ].join("|");
                   }})()
                 "#
             )),
         )
         .await
         .expect("WebSocket test timed out");
-        assert_eq!(report, "ping|true");
+        assert_eq!(report, "ping|true|true|true|true");
+    }
+
+    #[tokio::test]
+    async fn websocket_constructor_and_send_follow_idl() {
+        assert_eq!(
+            text(
+                r#"
+                  (() => {
+                    const infoOf = (fn) => {
+                      try { fn(); return "none"; }
+                      catch (error) {
+                        return [
+                          error instanceof DOMException ? "dom" : "plain",
+                          error.name,
+                          error.code,
+                        ].join(":");
+                      }
+                    };
+                    const ws = new WebSocket("ws://127.0.0.1:1/");
+                    ws.onopen = () => {};
+                    ws.onerror = () => {};
+                    ws.addEventListener("close", () => {});
+                    ws.binaryType = "nope";
+                    const kept = ws.binaryType;
+                    ws.binaryType = "arraybuffer";
+                    return [
+                      infoOf(() => new WebSocket("not a url")),
+                      infoOf(() => new WebSocket("http://example.com/")),
+                      infoOf(() => new WebSocket("ws://example.com/#frag")),
+                      infoOf(() => new WebSocket("ws://user@example.com/")),
+                      infoOf(() => new WebSocket("ws://example.com/", ["a", "a"])),
+                      infoOf(() => new WebSocket("ws://example.com/", ["bad protocol"])),
+                      infoOf(() => ws.send("early")),
+                      infoOf(() => ws.close(1001)),
+                      infoOf(() => ws.close(1000, "x".repeat(124))),
+                      kept,
+                      ws.binaryType,
+                      ws.CONNECTING === 0,
+                    ].join("|");
+                  })()
+                "#,
+            )
+            .await,
+            "dom:SyntaxError:12|dom:SyntaxError:12|dom:SyntaxError:12|dom:SyntaxError:12|dom:\
+             SyntaxError:12|dom:SyntaxError:12|dom:InvalidStateError:11|dom:InvalidAccessError:\
+             15|dom:SyntaxError:12|blob|arraybuffer|true"
+        );
+    }
+
+    #[tokio::test]
+    async fn readable_stream_read_all_bytes_drains_enqueued_chunks() {
+        let (_runtime, context) = realm().await;
+        let bytes: Vec<u8> = context
+            .async_with(async |ctx| {
+                let run = async {
+                    let stream: rquickjs::Class<crate::streams::ReadableStream> = ctx.eval(
+                        r#"
+                          new ReadableStream({
+                            start(controller) {
+                              controller.enqueue(new Uint8Array([1, 2]));
+                              controller.enqueue(new Uint8Array([3]));
+                              controller.close();
+                            }
+                          })
+                        "#,
+                    )?;
+                    crate::streams::ReadableStream::read_all_bytes(&stream, ctx.clone()).await
+                };
+                run.await.catch(&ctx).map_err(|error| error.to_string())
+            })
+            .await
+            .expect("drain");
+        assert_eq!(bytes, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn response_body_used_tracks_a_pending_stream_read() {
+        assert_eq!(
+            text(
+                r#"
+                  (() => {
+                    const stream = new ReadableStream();
+                    const response = new Response(stream);
+                    const before = response.bodyUsed;
+                    const reader = stream.getReader();
+                    const afterReader = response.bodyUsed;
+                    reader.read();
+                    return [before, afterReader, response.bodyUsed].join("|");
+                  })()
+                "#,
+            )
+            .await,
+            "false|false|true"
+        );
     }
 }
 
-#[cfg(test)]
-mod local_http;
+#[cfg(test)] mod local_http;

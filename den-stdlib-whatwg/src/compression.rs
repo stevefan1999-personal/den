@@ -31,10 +31,12 @@ impl Format {
             "gzip" => Ok(Self::Gzip),
             "deflate" => Ok(Self::Deflate),
             "deflate-raw" => Ok(Self::DeflateRaw),
-            _ => Err(Host::throw_type(
-                ctx,
-                &format!("Unsupported compression format: '{label}'"),
-            )),
+            _ => {
+                Err(Host::throw_type(
+                    ctx,
+                    &format!("Unsupported compression format: '{label}'"),
+                ))
+            }
         }
     }
 }
@@ -249,7 +251,7 @@ impl<'js> CompressionStream<'js> {
                 }
             })?,
         )?;
-        let transform = TransformStream::new(ctx.clone(), Opt(Some(transformer)))?;
+        let transform = TransformStream::new(ctx.clone(), Opt(Some(transformer.into_value())))?;
         Ok(Self {
             readable: transform.readable(),
             writable: transform.writable(),
@@ -257,19 +259,13 @@ impl<'js> CompressionStream<'js> {
     }
 
     #[qjs(get)]
-    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> {
-        self.readable.clone()
-    }
+    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> { self.readable.clone() }
 
     #[qjs(get)]
-    pub fn writable(&self) -> Class<'js, WritableStream<'js>> {
-        self.writable.clone()
-    }
+    pub fn writable(&self) -> Class<'js, WritableStream<'js>> { self.writable.clone() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "CompressionStream"
-    }
+    pub fn to_string_tag() -> &'static str { "CompressionStream" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -296,7 +292,7 @@ impl<'js> DecompressionStream<'js> {
                 }
             })?,
         )?;
-        let transform = TransformStream::new(ctx.clone(), Opt(Some(transformer)))?;
+        let transform = TransformStream::new(ctx.clone(), Opt(Some(transformer.into_value())))?;
         Ok(Self {
             readable: transform.readable(),
             writable: transform.writable(),
@@ -304,17 +300,11 @@ impl<'js> DecompressionStream<'js> {
     }
 
     #[qjs(get)]
-    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> {
-        self.readable.clone()
-    }
+    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> { self.readable.clone() }
 
     #[qjs(get)]
-    pub fn writable(&self) -> Class<'js, WritableStream<'js>> {
-        self.writable.clone()
-    }
+    pub fn writable(&self) -> Class<'js, WritableStream<'js>> { self.writable.clone() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "DecompressionStream"
-    }
+    pub fn to_string_tag() -> &'static str { "DecompressionStream" }
 }
