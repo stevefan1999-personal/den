@@ -15,7 +15,7 @@ rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

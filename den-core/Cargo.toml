@@ -10,12 +10,12 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-cfg-if = "1.0.4"
+cfg-if.workspace = true
 derive_more.workspace = true
-fmmap = { version = "0.5.0", features = ["tokio"] }
-matchit = "0.9.2"
-mime = "0.3.17"
-relative-path = "2.0.1"
+fmmap = { workspace = true, features = ["tokio"] }
+matchit.workspace = true
+mime.workspace = true
+relative-path.workspace = true
 # reqwest 0.13 flipped `default-tls` from native-tls to rustls, so leaving the defaults on next to
 # `native-tls` compiles both TLS stacks. `charset`/`http2`/`system-proxy` are named explicitly so
 # that dropping the defaults (which has to happen in the workspace dependency) changes nothing here.
@@ -35,35 +35,39 @@ serde_json.workspace = true
 # builds when something else in the graph turns them on.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 tokio-util.workspace = true
-url = "2.5.8"
+url.workspace = true
 typed-builder.workspace = true
 
 # Den specific stuff
-den-stdlib-console = { version = "*", path = "../den-stdlib-console", optional = true }
-den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
-den-stdlib-crypto = { version = "*", path = "../den-stdlib-crypto", optional = true }
-den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
-den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
-den-stdlib-process = { version = "*", path = "../den-stdlib-process", optional = true }
-den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = true }
-den-stdlib-temporal = { version = "*", path = "../den-stdlib-temporal", optional = true }
-den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
-den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
-den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true, default-features = false }
-den-stdlib-whatwg = { version = "*", path = "../den-stdlib-whatwg", optional = true }
-den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch", optional = true }
-den-stdlib-worker = { version = "*", path = "../den-stdlib-worker", optional = true, default-features = false }
-den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-features = false, optional = true }
+den-stdlib-console = { workspace = true, optional = true }
+den-stdlib-core = { workspace = true, optional = true }
+den-stdlib-crypto = { workspace = true, optional = true }
+den-stdlib-fs = { workspace = true, optional = true }
+den-stdlib-networking = { workspace = true, optional = true }
+den-stdlib-process = { workspace = true, optional = true }
+den-stdlib-sqlite = { workspace = true, optional = true }
+den-stdlib-temporal = { workspace = true, optional = true }
+den-stdlib-text = { workspace = true, optional = true }
+den-stdlib-timer = { workspace = true, optional = true }
+den-stdlib-wasm = { workspace = true, optional = true, default-features = false }
+den-stdlib-whatwg = { workspace = true, optional = true }
+den-stdlib-whatwg-fetch = { workspace = true, optional = true }
+den-stdlib-worker = { workspace = true, optional = true, default-features = false }
+den-transpiler-oxc = { workspace = true, default-features = false, optional = true }
 
 [dev-dependencies]
-color-eyre = "0.6.5"
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+color-eyre.workspace = true
+futures.workspace = true
+libtest-mimic.workspace = true
+rquickjs.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net"] }
+tokio-tungstenite = { workspace = true, features = ["handshake"] }
 # Reference assembler for the WebAssembly fixtures, and the yardstick den's own
-# `WebAssembly.wat2wasm` is pinned against.
-wat = "1.257.1"
+# `den:wasm` `wat2wasm` is pinned against.
+wat.workspace = true
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm-wasmtime"]
+default = ["stdlib", "typescript", "react", "wasm", "jit"]
 typescript = [
     "transpile",
     "den-transpiler-oxc?/typescript",
@@ -104,11 +108,16 @@ stdlib-whatwg = ["dep:den-stdlib-whatwg"]
 stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
 stdlib-worker = ["dep:den-stdlib-worker"]
 
-# `wasm` is a plain alias for the default backend: making it `dep:`-only would let
-# `--features wasm-wasmi` drag wasmtime in through den-stdlib-wasm's own defaults.
-wasm = ["wasm-wasmtime"]
-wasm-wasmtime = ["dep:den-stdlib-wasm", "den-stdlib-wasm?/wasmtime"]
-wasm-wasmi = ["dep:den-stdlib-wasm", "den-stdlib-wasm?/wasmi"]
+# `default-features = false` on the dep keeps `--features wasm` (no `jit`) from
+# pulling Cranelift-native through den-stdlib-wasm's own default.
+wasm = ["dep:den-stdlib-wasm"]
+jit = ["den-stdlib-wasm?/jit"]
+
+[[test]]
+name = "wpt"
+path = "tests/wpt.rs"
+harness = false
+required-features = ["stdlib"]
 
 [lints]
 workspace = true

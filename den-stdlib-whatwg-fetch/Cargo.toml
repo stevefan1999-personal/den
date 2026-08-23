@@ -28,17 +28,21 @@ reqwest = { workspace = true, features = [
     "cookies",
     "brotli",
     "native-tls",
+    "charset",
+    "http2",
+    "system-proxy",
 ] }
 serde_json.workspace = true
+den-stdlib-whatwg.workspace = true
 
 [dev-dependencies]
 # `http::Response` is what `reqwest::Response` is built from, which is the only
 # way to exercise a body without a socket.
-http = "1.2.0"
+http.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
-den-stdlib-text = { version = "*", path = "../den-stdlib-text" }
-den-stdlib-whatwg = { version = "*", path = "../den-stdlib-whatwg" }
-den-stdlib-worker = { version = "*", path = "../den-stdlib-worker" }
+den-stdlib-text.workspace = true
+den-stdlib-whatwg.workspace = true
+den-stdlib-worker = { workspace = true, features = ["transpile"] }
 
 [lints]
 workspace = true

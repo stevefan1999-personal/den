@@ -11,24 +11,24 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
-den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", optional = true }
+den-stdlib-core.workspace = true
+den-transpiler-oxc = { workspace = true, optional = true }
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "indexmap"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
-url = "2.5.8"
+url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = ["transpile"]
-transpile = ["dep:den-transpiler-oxc"]
+transpile = ["dep:den-transpiler-oxc", "den-transpiler-oxc/transpile"]
 
 [lints]
 workspace = true

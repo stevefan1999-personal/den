@@ -12,7 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 rquickjs = { workspace = true, features = ["macro", "futures"] }
-den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
+den-stdlib-core.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tokio-util.workspace = true
 

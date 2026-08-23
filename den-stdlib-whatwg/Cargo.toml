@@ -11,22 +11,19 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-flate2 = "1"
+den-stdlib-networking.workspace = true
+flate2.workspace = true
 futures.workspace = true
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "indexmap"] }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
-tokio-tungstenite = { version = "0.26", default-features = false, features = [
-  "connect",
-  "handshake",
-] }
-url = "2.5.8"
-urlpattern = "0.6"
+url.workspace = true
+urlpattern.workspace = true
 
 [dev-dependencies]
-den-stdlib-text = { version = "*", path = "../den-stdlib-text" }
-den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch" }
-den-stdlib-worker = { version = "*", path = "../den-stdlib-worker" }
+den-stdlib-text.workspace = true
+den-stdlib-whatwg-fetch.workspace = true
+den-stdlib-worker = { workspace = true, features = ["transpile"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 
 [lints]

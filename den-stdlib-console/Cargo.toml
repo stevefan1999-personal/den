@@ -12,7 +12,7 @@ keywords.workspace = true
 
 
 [dependencies]
-colored = "3.1.1"
+colored.workspace = true
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 tracing.workspace = true

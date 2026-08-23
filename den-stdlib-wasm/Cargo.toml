@@ -15,19 +15,26 @@ derive_more.workspace = true
 either.workspace = true
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
-wat = "1.257.1"
-wasmi = { version = "1.1.0", optional = true, features = ["simd"] }
-wasmtime = { version = "48.0.0", optional = true }
-wasmtime-wasi = { version = "48.0.0", optional = true }
+wat.workspace = true
+wasmtime = { workspace = true, features = ["reexport-wasmparser", "pulley"] }
+wasmtime-wasi.workspace = true
 
 [dev-dependencies]
+libtest-mimic.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wast.workspace = true
+
+[[test]]
+name = "spec_core"
+path = "tests/spec_core.rs"
+harness = false
 
 [features]
-default = ["wasmtime"]
-wasmtime = ["dep:wasmtime", "dep:wasmtime-wasi"]
-wasmi = ["dep:wasmi"]
+default = ["jit"]
+# cfg only: Cranelift and Pulley stay linked so modules compile at runtime.
+# `jit` picks the native host triple; without it, Cranelift emits Pulley.
+jit = []
 
 [lints]
 workspace = true
