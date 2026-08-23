@@ -362,7 +362,7 @@ impl Engine {
 
         runtime
             .set_interrupt_handler({
-                let world_end = stop_token.child_token();
+                let world_end = stop_token.clone();
                 Some(Box::new(move || world_end.is_cancelled()))
             })
             .await;
@@ -401,6 +401,10 @@ impl Engine {
 
                 #[cfg(feature = "stdlib-timer")]
                 {
+                    // Stored before the module evaluates so a timer armed during
+                    // install (none today) would still observe Ctrl-C. The
+                    // interrupt handler reads the same token.
+                    Self::store_userdata(&ctx, den_stdlib_timer::StopToken(stop_token.clone()))?;
                     let _ = Module::evaluate_def::<den_stdlib_timer::js_timer, _>(
                         ctx.clone(),
                         "den:timer",
@@ -561,39 +565,57 @@ impl Engine {
         self.transpiler.transpile(src, syntax, module, false)
     }
 
+    /// Transpile a REPL/eval snippet when this engine was built with the
+    /// transpiler; otherwise the source is used as-is. Independent of the
+    /// runtime lock, so a `ctx.spawn`ed pump can prepare a line without
+    /// waiting for `idle()`.
+    pub fn prepare_eval_source(&self, src: &str) -> Result<String, EngineError> {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "transpile")] {
+                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling()).unwrap_or_default();
+                let (src, _) = self.transpile(src, syntax, IsModule::Unknown)?;
+                Ok(src)
+            } else {
+                let _ = self;
+                Ok(src.to_owned())
+            }
+        }
+    }
+
+    /// Evaluate an already-prepared snippet on a context the caller is holding.
+    ///
+    /// Used by `eval` (under `async_with`) and by the REPL pump (`ctx.spawn`
+    /// while `idle()` holds the runtime lock). A separate tokio task calling
+    /// `async_with` during `idle()` would park on the mutex until idle
+    /// returned.
+    pub async fn eval_prepared<'js, U: FromJs<'js>>(
+        ctx: Ctx<'js>,
+        src: &str,
+    ) -> rquickjs::Result<U> {
+        ctx.eval_with_options::<Promise, _>(src, {
+            let mut options = EvalOptions::default();
+            options.global = true;
+            options.promise = true;
+            options.strict = true;
+            // A REPL line has no file; naming it after one would be a
+            // lie the resolver could act on, so it gets a name no URL
+            // parser accepts.
+            options.filename = Some(Self::EVAL_SCRIPT_NAME.to_owned());
+            options
+        })?
+        .into_future::<Object>()
+        .await?
+        .get("value")
+    }
+
     pub async fn eval<U: for<'js> FromJs<'js> + Send + Sync + 'static>(
         &self,
         src: &str,
     ) -> Result<U, EngineError> {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "transpile")] {
-                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling()).unwrap_or_default();
-                let (src, _) = self.transpile(
-                    src,
-                    syntax,
-                    IsModule::Unknown,
-                )?;
-            }
-        }
-
+        let src = self.prepare_eval_source(src)?;
         Ok(self
             .context
-            .async_with(async |ctx| {
-                ctx.eval_with_options::<Promise, _>(src, {
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.promise = true;
-                    options.strict = true;
-                    // A REPL line has no file; naming it after one would be a
-                    // lie the resolver could act on, so it gets a name no URL
-                    // parser accepts.
-                    options.filename = Some(Self::EVAL_SCRIPT_NAME.to_owned());
-                    options
-                })?
-                .into_future::<Object>()
-                .await?
-                .get("value")
-            })
+            .async_with(async |ctx| Self::eval_prepared(ctx, &src).await)
             .await?)
     }
 
@@ -1143,6 +1165,38 @@ mod tests {
         engine.shutdown().await;
         fs::remove_file(parent)?;
         fs::remove_file(child)?;
+        Ok(())
+    }
+
+    /// Ctrl-C / `Engine::stop()` must complete every `ctx.spawn`ed timer so
+    /// `idle()` can return; dropping `idle()` itself does not cancel them.
+    #[cfg(feature = "stdlib-timer")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stopping_the_engine_releases_idle_from_a_long_timer() -> eyre::Result<()> {
+        let engine = Engine::new().await;
+        engine
+            .eval::<()>("setTimeout(() => {}, 60000);\nundefined;")
+            .await?;
+        engine.stop();
+        tokio::time::timeout(std::time::Duration::from_secs(2), engine.runtime.idle())
+            .await
+            .expect("idle() should return once the timer observes the stop token");
+        Ok(())
+    }
+
+    #[cfg(feature = "stdlib-timer")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_timeout_returns_a_number_and_clear_timeout_is_a_function() -> eyre::Result<()> {
+        let engine = Engine::new().await;
+        let report: String = engine
+            .eval(
+                r#"
+                  const id = setTimeout("x", 0);
+                  [typeof clearTimeout, typeof id].join(",")
+                "#,
+            )
+            .await?;
+        assert_eq!(report, "function,number");
         Ok(())
     }
 

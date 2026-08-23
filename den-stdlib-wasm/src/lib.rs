@@ -105,8 +105,8 @@ const DEFINE_NAMESPACE_SHAPE: &str = r#"
 #[rquickjs::module]
 pub mod wasm {
     use rquickjs::{
-        Class, Ctx, Exception, Function, Object, Result, TypedArray, Value, module::Exports,
-        prelude::Opt,
+        Class, Ctx, Exception, Function, IntoJs, Object, Result, TypedArray, Value,
+        module::Exports, prelude::Opt,
     };
 
     use crate::{
@@ -162,10 +162,11 @@ pub mod wasm {
         let bytes = <BufferSource as rquickjs::FromJs>::from_js(&ctx, source)?;
         let module = Module::compile(&ctx, bytes.into_bytes())?;
         let instance = Instance::instantiate(&ctx, &module, import_object.0)?;
-        let result = Object::new(ctx.clone())?;
-        result.set("module", Class::instance(ctx.clone(), module)?)?;
-        result.set("instance", Class::instance(ctx.clone(), instance)?)?;
-        Ok(result.into_value())
+        indexmap::indexmap! {
+            "module" => Class::instance(ctx.clone(), module)?.into_js(&ctx)?,
+            "instance" => Class::instance(ctx.clone(), instance)?.into_js(&ctx)?,
+        }
+        .into_js(&ctx)
     }
 
     /// den extension: the WASI preview1 import namespace, for the caller who
@@ -200,12 +201,10 @@ pub mod wasm {
             // aborted the process. One copy of a wat blob buys a buffer script
             // can detach and transfer like any other.
             Ok(bytes) => TypedArray::new_copy(ctx.clone(), bytes),
-            Err(err) => {
-                Err(Exception::throw_type(
-                    &ctx,
-                    &format!("wat2wasm error: {err}"),
-                ))
-            }
+            Err(err) => Err(Exception::throw_type(
+                &ctx,
+                &format!("wat2wasm error: {err}"),
+            )),
         }
     }
 

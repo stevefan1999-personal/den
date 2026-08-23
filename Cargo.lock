@@ -1094,10 +1094,7 @@ version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "base64-simd",
- "delegate-attr",
- "derive_more",
  "rquickjs",
- "tokio-util",
 ]
 
 [[package]]
@@ -1141,6 +1138,7 @@ name = "den-stdlib-process"
 version = "0.4.0"
 dependencies = [
  "either",
+ "indexmap",
  "libc",
  "rquickjs",
  "tokio",
@@ -1175,6 +1173,7 @@ dependencies = [
  "den-stdlib-core",
  "rquickjs",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
