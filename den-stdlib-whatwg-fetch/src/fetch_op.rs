@@ -716,30 +716,6 @@ fn same_site(request_origin: &str, response_origin: &str) -> bool {
     a.host_str() == b.host_str() && a.scheme() == b.scheme()
 }
 
-fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let a = chunk[0] as u32;
-        let b = chunk.get(1).copied().unwrap_or(0) as u32;
-        let c = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (a << 16) | (b << 8) | c;
-        out.push(TABLE[(n >> 18) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(TABLE[((n >> 6) & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(TABLE[(n & 63) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
-
 fn normalize_sri_b64(input: &str) -> String {
     let mut filtered: String = input
         .chars()
@@ -768,7 +744,7 @@ async fn digest_b64<'js>(ctx: &Ctx<'js>, algorithm: &str, bytes: &[u8]) -> Resul
     let resolved = MaybePromise::from_value(produced)
         .into_future::<ArrayBuffer>()
         .await?;
-    Ok(encode_base64(resolved.as_bytes().unwrap_or(&[])))
+    Ok(den_util::base64_encode(resolved.as_bytes().unwrap_or(&[])))
 }
 
 async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> Result<()> {
