@@ -1004,6 +1004,7 @@ dependencies = [
  "den-stdlib-text",
  "den-stdlib-timer",
  "den-stdlib-wasm",
+ "den-stdlib-whatwg",
  "den-stdlib-whatwg-fetch",
  "den-stdlib-worker",
  "den-transpiler-oxc",
@@ -1115,6 +1116,16 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wat",
+]
+
+[[package]]
+name = "den-stdlib-whatwg"
+version = "0.4.0"
+dependencies = [
+ "den-stdlib-text",
+ "den-stdlib-worker",
+ "rquickjs",
+ "tokio",
 ]
 
 [[package]]

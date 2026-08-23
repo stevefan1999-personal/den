@@ -1,0 +1,302 @@
+//! WHATWG web-platform APIs for den: Blob/File/FileReader/FormData, and later
+//! XMLHttpRequest, EventSource, URLPattern, compression streams and WebSocket.
+//!
+//! The split follows txiki.js and `den-stdlib-worker`: **Rust owns bytes-in /
+//! bytes-out natives**, the JS-visible classes that `extend EventTarget` live
+//! in `src/prelude/*.js`. FileReader, XHR, EventSource and WebSocket all need
+//! `EventTarget`, so `den:whatwg` is evaluated **after** `den:worker`.
+
+/// Everything `den:whatwg` exports and installs as a global.
+///
+/// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
+/// job, and putting them here would duplicate the types fetch already
+/// constructs.
+const API: [&str; 8] = [
+    "Blob",
+    "CloseEvent",
+    "File",
+    "FileReader",
+    "FormData",
+    "ProgressEvent",
+    "ReadableStream",
+    "TransformStream",
+];
+
+/// The prelude, in dependency order. Filenames show up in stack traces.
+const PRELUDE: [(&str, &str); 6] = [
+    ("den:whatwg/streams.js", include_str!("prelude/streams.js")),
+    (
+        "den:whatwg/platform.js",
+        include_str!("prelude/platform.js"),
+    ),
+    ("den:whatwg/blob.js", include_str!("prelude/blob.js")),
+    ("den:whatwg/file.js", include_str!("prelude/file.js")),
+    (
+        "den:whatwg/form-data.js",
+        include_str!("prelude/form-data.js"),
+    ),
+    (
+        "den:whatwg/file-reader.js",
+        include_str!("prelude/file-reader.js"),
+    ),
+];
+
+/// WritableStream is part of the streams polyfill CompressionStream needs, but
+/// is not on [`API`]: the WinterTC surface this crate is asked to install does
+/// not list it, and a test that iterated API would then demand it as a global.
+const STREAM_EXTRAS: [&str; 1] = ["WritableStream"];
+
+#[rquickjs::module]
+pub mod whatwg {
+    use rquickjs::{
+        Ctx, Function, Object, Result, Value,
+        context::EvalOptions,
+        module::{Declarations, Exports},
+    };
+
+    #[qjs(declare)]
+    pub fn declare(declare: &Declarations) -> Result<()> {
+        for name in crate::API {
+            declare.declare(name)?;
+        }
+        Ok(())
+    }
+
+    #[qjs(evaluate)]
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
+        let natives = Object::new(ctx.clone())?;
+        let mut api = Object::new(ctx.clone())?;
+        for (filename, source) in crate::PRELUDE {
+            let mut options = EvalOptions::default();
+            options.filename = Some(filename.to_owned());
+            let factory: Function<'js> = ctx.eval_with_options(source, options)?;
+            api = factory.call((natives.clone(), api))?;
+        }
+
+        let globals = ctx.globals();
+        for name in crate::API {
+            let value: Value<'js> = api.get(name)?;
+            if !value.is_undefined() {
+                globals.set(name, value.clone())?;
+            }
+            exports.export(name, value)?;
+        }
+        for name in crate::STREAM_EXTRAS {
+            let value: Value<'js> = api.get(name)?;
+            if !value.is_undefined() {
+                globals.set(name, value)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Promise};
+
+    /// A realm with `den:text`, `den:worker` and `den:whatwg` evaluated, in that
+    /// order: Blob uses TextEncoder, FileReader extends EventTarget.
+    async fn realm() -> (AsyncRuntime, AsyncContext) {
+        let runtime = AsyncRuntime::new().expect("runtime");
+        let context = AsyncContext::full(&runtime).await.expect("context");
+        context
+            .with(|ctx| {
+                let install = || -> rquickjs::Result<()> {
+                    Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?
+                        .1
+                        .finish::<()>()?;
+                    Module::evaluate_def::<den_stdlib_worker::js_worker, _>(
+                        ctx.clone(),
+                        "den:worker",
+                    )?
+                    .1
+                    .finish::<()>()?;
+                    Module::evaluate_def::<crate::js_whatwg, _>(ctx.clone(), "den:whatwg")?
+                        .1
+                        .finish::<()>()?;
+                    Ok(())
+                };
+                install()
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())
+                    .expect("den:whatwg evaluates");
+            })
+            .await;
+        (runtime, context)
+    }
+
+    async fn eval<T>(source: &str) -> T
+    where
+        T: for<'js> FromJs<'js> + Send + 'static,
+    {
+        let (_runtime, context) = realm().await;
+        context
+            .with(|ctx| {
+                ctx.eval::<T, _>(source)
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    async fn text(source: &str) -> String {
+        eval::<String>(source).await
+    }
+
+    async fn text_async(source: &str) -> String {
+        let (_runtime, context) = realm().await;
+        context
+            .async_with(async |ctx| {
+                let run = async {
+                    let promise: Promise<'_> = ctx.eval(source)?;
+                    promise.into_future::<String>().await
+                };
+                run.await.catch(&ctx).map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    const DOCUMENTED: [&str; 8] = [
+        "Blob",
+        "CloseEvent",
+        "File",
+        "FileReader",
+        "FormData",
+        "ProgressEvent",
+        "ReadableStream",
+        "TransformStream",
+    ];
+
+    #[tokio::test]
+    async fn den_whatwg_installs_every_documented_name() {
+        assert_eq!(crate::API, DOCUMENTED, "the API list and its tests drifted");
+        let report = eval::<Vec<String>>(
+            r#"
+        "Blob,CloseEvent,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream"
+          .split(",").map((name) => {
+            const value = globalThis[name];
+            if (typeof value !== "function") return `${name}: missing`;
+            if (value.name !== name) return `${name}: named ${value.name}`;
+            return `${name}: ok`;
+          })
+      "#,
+        )
+        .await;
+        let expected: Vec<String> = DOCUMENTED
+            .iter()
+            .map(|name| format!("{name}: ok"))
+            .collect();
+        assert_eq!(report, expected);
+    }
+
+    #[tokio::test]
+    async fn blob_concatenates_parts_and_slices() {
+        assert_eq!(
+            text_async(
+                r#"
+          (async () => {
+            const blob = new Blob(["hello ", "world"], { type: "text/plain" });
+            const sliced = blob.slice(6);
+            const buffer = await blob.arrayBuffer();
+            const stream = blob.stream();
+            const reader = stream.getReader();
+            const first = await reader.read();
+            return [
+              blob.size,
+              blob.type,
+              await blob.text(),
+              await sliced.text(),
+              buffer.byteLength,
+              first.done ? "done" : new TextDecoder().decode(first.value).slice(0, 5),
+              blob instanceof Blob,
+            ].join("|");
+          })()
+        "#,
+            )
+            .await,
+            "11|text/plain|hello world|world|11|hello|true"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_extends_blob_and_keeps_its_name() {
+        assert_eq!(
+            text(
+                r#"
+          (() => {
+            const file = new File(["data"], "name.txt", { type: "text/plain", lastModified: 1 });
+            return [
+              file.name,
+              file.type,
+              file.lastModified,
+              file instanceof Blob,
+              file instanceof File,
+              file.size,
+            ].join("|");
+          })()
+        "#,
+            )
+            .await,
+            "name.txt|text/plain|1|true|true|4"
+        );
+    }
+
+    #[tokio::test]
+    async fn form_data_appends_gets_and_iterates() {
+        assert_eq!(
+            text(
+                r#"
+          (() => {
+            const form = new FormData();
+            form.append("a", "1");
+            form.append("a", "2");
+            form.set("b", "3");
+            form.append("c", new Blob(["x"], { type: "text/plain" }), "x.txt");
+            const file = form.get("c");
+            const multipart = form[Symbol.for("den.toMultipartBlob")]();
+            return [
+              form.get("a"),
+              form.getAll("a").join(","),
+              form.has("b"),
+              [...form.keys()].join(","),
+              file instanceof File,
+              file.name,
+              multipart.type.startsWith("multipart/form-data; boundary="),
+              multipart.size > 0,
+            ].join("|");
+          })()
+        "#,
+            )
+            .await,
+            "1|1,2|true|a,a,b,c|true|x.txt|true|true"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_reader_reads_a_blob_as_text() {
+        assert_eq!(
+            text_async(
+                r#"
+          (async () => {
+            const reader = new FileReader();
+            const result = await new Promise((resolve, reject) => {
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = () => reject(reader.error);
+              reader.readAsText(new Blob(["hello"]));
+            });
+            return [
+              result,
+              reader.readyState === FileReader.DONE,
+              reader instanceof EventTarget,
+            ].join("|");
+          })()
+        "#,
+            )
+            .await,
+            "hello|true|true"
+        );
+    }
+}

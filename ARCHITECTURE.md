@@ -21,7 +21,10 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-sqlite     den:sqlite (rusqlite, bundled)
       ├── den-stdlib-text       TextEncoder / TextDecoder
       ├── den-stdlib-timer      setTimeout / setInterval
-      ├── den-stdlib-whatwg-fetch  fetch() + Response (reqwest)
+      ├── den-stdlib-whatwg-fetch  fetch() + Response (reqwest); Headers, Request
+      ├── den-stdlib-whatwg     Blob/File/FileReader/FormData, XMLHttpRequest,
+                                EventSource, URLPattern, CompressionStream,
+                                WebSocket (evaluated after den:worker)
       ├── den-stdlib-wasm       the WebAssembly JS API (optional, one backend)
       └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
                                 BroadcastChannel, EventTarget, structuredClone
@@ -60,9 +63,12 @@ the others is the failure mode to watch for.
 
 `den:fs`, `den:networking` and `den:sqlite` are import-only: they appear in the
 resolver and loader lists but are not `evaluate_def`'d, so they contribute no
-globals. The seven that are — `den:console`, `den:core`, `den:text`,
-`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:wasm` — are exactly the
-ones whose APIs a script expects to find without importing anything.
+globals. The ones that are — `den:console`, `den:core`, `den:text`,
+`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:wasm`, `den:worker`,
+`den:whatwg` — are exactly the ones whose APIs a script expects to find
+without importing anything. `den:whatwg` is `evaluate_def`'d **after**
+`den:worker` so FileReader, XMLHttpRequest, EventSource and WebSocket can
+extend `EventTarget`.
 
 ## 3. Resolver and loader chain
 

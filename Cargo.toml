@@ -11,6 +11,7 @@ members = [
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
+    "den-stdlib-whatwg",
     "den-stdlib-whatwg-fetch",
     "den-stdlib-worker",
     "den-transpiler-oxc",
@@ -115,6 +116,7 @@ stdlib-networking = ["den-core/stdlib-networking"]
 stdlib-sqlite = ["den-core/stdlib-sqlite"]
 stdlib-text = ["den-core/stdlib-text"]
 stdlib-timer = ["den-core/stdlib-timer"]
+stdlib-whatwg = ["den-core/stdlib-whatwg"]
 stdlib-whatwg-fetch = ["den-core/stdlib-whatwg-fetch"]
 stdlib-worker = ["den-core/stdlib-worker"]
 

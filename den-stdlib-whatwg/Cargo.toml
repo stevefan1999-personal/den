@@ -1,0 +1,22 @@
+[package]
+name = "den-stdlib-whatwg"
+description = "WHATWG web platform APIs for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+
+[dev-dependencies]
+den-stdlib-text = { version = "*", path = "../den-stdlib-text" }
+den-stdlib-worker = { version = "*", path = "../den-stdlib-worker" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
