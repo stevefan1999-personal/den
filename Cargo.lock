@@ -407,12 +407,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-emit"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1582e1c9e755dd6ad6b224dcffb135d199399a4568d454bd89fe515ca8425695"
-
-[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -982,7 +976,6 @@ dependencies = [
 name = "den"
 version = "0.4.0"
 dependencies = [
- "cargo-emit",
  "clap",
  "color-eyre",
  "console-subscriber",

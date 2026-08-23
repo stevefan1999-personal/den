@@ -138,8 +138,5 @@ codegen-units = 1
 lto = "fat"
 opt-level = "s"
 
-[build-dependencies]
-cargo-emit = "0.2.1"
-
 [lints]
 workspace = true
