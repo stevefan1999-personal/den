@@ -196,6 +196,7 @@ const DEFINE_NAMESPACE_SHAPE: &str = r#"
 
 #[rquickjs::module]
 pub mod wasm {
+    use den_util::BufferSource;
     use rquickjs::{
         Class, Ctx, Exception, Function, IntoJs, Object, Promise, Result, TypedArray, Value,
         module::Exports, prelude::Opt, promise::Promised,
@@ -207,7 +208,6 @@ pub mod wasm {
         error::WebAssemblyErrors,
         instance::ImportedFunctions,
         memory::MemoryBuffers,
-        module::BufferSource,
         store::{Store, WasiImports},
     };
     pub use crate::{
