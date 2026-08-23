@@ -9,30 +9,30 @@ use tokio::{
 
 #[allow(dead_code)]
 pub struct Incoming {
-    pub method: String,
-    pub path: String,
+    pub method:  String,
+    pub path:    String,
     pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
+    pub body:    Vec<u8>,
 }
 
 pub struct Outgoing {
-    pub status: u16,
+    pub status:  u16,
     pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+    pub body:    Vec<u8>,
     /// Write the response, then leave the socket open.
-    pub hang: bool,
+    pub hang:    bool,
     /// Accept the request and never write a response (abort tests).
-    pub silent: bool,
+    pub silent:  bool,
 }
 
 impl Outgoing {
     pub fn ok(body: impl Into<Vec<u8>>, content_type: &str) -> Self {
         Self {
-            status: 200,
+            status:  200,
             headers: vec![("Content-Type".into(), content_type.into())],
-            body: body.into(),
-            hang: false,
-            silent: false,
+            body:    body.into(),
+            hang:    false,
+            silent:  false,
         }
     }
 }
@@ -42,9 +42,7 @@ pub struct LocalServer {
 }
 
 impl LocalServer {
-    pub fn url(&self, path: &str) -> String {
-        format!("http://127.0.0.1:{}{path}", self.port)
-    }
+    pub fn url(&self, path: &str) -> String { format!("http://127.0.0.1:{}{path}", self.port) }
 }
 
 pub async fn serve(handler: impl Fn(Incoming) -> Outgoing + Send + Sync + 'static) -> LocalServer {
@@ -70,8 +68,7 @@ pub async fn serve(handler: impl Fn(Incoming) -> Outgoing + Send + Sync + 'stati
 }
 
 async fn handle(
-    mut stream: TcpStream,
-    handler: Arc<dyn Fn(Incoming) -> Outgoing + Send + Sync>,
+    mut stream: TcpStream, handler: Arc<dyn Fn(Incoming) -> Outgoing + Send + Sync>,
 ) -> std::io::Result<()> {
     let incoming = read_request(&mut stream).await?;
     let outgoing = handler(incoming);
