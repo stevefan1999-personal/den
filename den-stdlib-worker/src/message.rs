@@ -9,8 +9,9 @@
 //! pre/post pass in [`clone`]. The whole investigation, with quickjs.c line
 //! references, is docs/research/10-structured-clone-strategy.md.
 
-use std::{ffi::CString, ptr, slice};
+use std::{ptr, slice};
 
+use den_util::throw_dom_exception;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Error, Exception, Object, Result, Value, object::Filter, qjs,
 };
@@ -339,20 +340,7 @@ impl Message {
 /// quickjs-ng ships `DOMException` natively and `JS_NewContext` registers it
 /// unconditionally, so nothing has to be built in JS-land for this.
 pub fn throw_data_clone(ctx: &Ctx<'_>, message: &str) -> Error {
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack buffer
-    // (quickjs.c:62309), so the caller's text is passed as an *argument* to a
-    // constant `%s` format, never as the format itself. Both C strings outlive
-    // the call. The returned `JS_EXCEPTION` tag owns nothing to free.
-    unsafe {
-        qjs::JS_ThrowDOMException(
-            ctx.as_raw().as_ptr(),
-            c"DataCloneError".as_ptr(),
-            c"%s".as_ptr(),
-            message.as_ptr(),
-        )
-    };
-    Error::Exception
+    throw_dom_exception(ctx, "DataCloneError", message)
 }
 
 /// `structuredClone(value, { transfer })`.
