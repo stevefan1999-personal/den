@@ -20,6 +20,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-networking den:networking (TCP, UDP, Unix, TLS sockets)
       ├── den-stdlib-process    den:process (env, argv, cwd, spawn, signals, DNS)
       ├── den-stdlib-sqlite     den:sqlite (rusqlite, bundled)
+      ├── den-stdlib-temporal   Temporal API (temporal_rs); globalThis.Temporal
       ├── den-stdlib-text       TextEncoder / TextDecoder
       ├── den-stdlib-timer      setTimeout / setInterval
       ├── den-stdlib-whatwg-fetch  fetch() + Response (reqwest); Headers, Request
@@ -67,11 +68,13 @@ the others is the failure mode to watch for.
 `den:fs`, `den:networking` and `den:sqlite` are import-only: they appear in the
 resolver and loader lists but are not `evaluate_def`'d, so they contribute no
 globals. The ones that are — `den:console`, `den:core`, `den:text`,
-`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:process`, `den:wasm`,
-`den:worker`, `den:whatwg` — are exactly the ones whose APIs a script expects
-to find without importing anything. `den:whatwg` is `evaluate_def`'d **after**
-`den:worker` so FileReader, XMLHttpRequest, EventSource and WebSocket can
-extend `EventTarget`.
+`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:process`, `den:temporal`,
+`den:wasm`, `den:worker`, `den:whatwg` — are exactly the ones whose APIs a
+script expects to find without importing anything. `den:whatwg` is
+`evaluate_def`'d **after** `den:worker` so FileReader, XMLHttpRequest,
+EventSource and WebSocket can extend `EventTarget`. `den:temporal` installs
+`globalThis.Temporal` from `temporal_rs` (Instant, Duration, PlainDate,
+PlainTime, PlainDateTime, PlainYearMonth, PlainMonthDay, ZonedDateTime, Now).
 
 ## 3. Resolver and loader chain
 
@@ -617,7 +620,20 @@ without `--no-default-features` leaves `wasm-wasmtime` on and the build fails
 on `den-stdlib-wasm`'s `compile_error!`. That is why `wasm` is a plain alias
 rather than a `dep:`-only feature.
 
-## 9. Build and test
+## 9. test262 (`vendor/test262`)
+
+The [test262](https://github.com/tc39/test262) harness lives as a git submodule
+at `vendor/test262` (not a second vendored copy). Temporal tests are
+`vendor/test262/test/built-ins/Temporal/`. `den-stdlib-temporal` walks Instant
+and Duration from that tree (`cargo test -p den-stdlib-temporal --test test262`):
+it concatenates `harness/assert.js`, `harness/sta.js` and any frontmatter
+`includes`, evals them with `den:temporal` installed, and prints pass / skip /
+fail. Tests whose `features` we do not support yet (anything `Intl*`, `module`,
+`async`) are skipped. If the submodule checkout is empty, `git submodule
+update --init vendor/test262` (or `git -C vendor/test262 fetch --depth 1 origin
+master` on a shallow clone).
+
+## 10. Build and test
 
 ```bash
 cargo build                                  # debug
