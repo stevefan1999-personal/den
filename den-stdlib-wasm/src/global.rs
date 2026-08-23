@@ -6,6 +6,7 @@ use rquickjs::{
     Coerced, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace,
     prelude::Opt,
 };
+use wasmtime::{Global as WasmGlobal, Mutability, ValType};
 
 use crate::{
     backend,
@@ -17,7 +18,7 @@ use crate::{
 /// A `GlobalDescriptor`.
 #[derive(Clone, Debug)]
 pub struct GlobalDescriptor {
-    value: String,
+    value:   String,
     mutable: bool,
 }
 
@@ -25,7 +26,7 @@ impl<'js> FromJs<'js> for GlobalDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the global descriptor")?;
         Ok(Self {
-            value: object.required(ctx, "value")?,
+            value:   object.required(ctx, "value")?,
             mutable: object
                 .get::<_, Option<Coerced<bool>>>("mutable")?
                 .is_some_and(|mutable| mutable.0),
@@ -35,7 +36,7 @@ impl<'js> FromJs<'js> for GlobalDescriptor {
 
 impl GlobalDescriptor {
     /// `ToValueType(descriptor["value"])`.
-    fn value_type(&self, ctx: &Ctx<'_>) -> Result<backend::ValType> {
+    fn value_type(&self, ctx: &Ctx<'_>) -> Result<ValType> {
         ValueTypeName::resolve(ctx, &self.value, ValueTypeName::GLOBAL, "global value type")
     }
 }
@@ -44,22 +45,22 @@ impl GlobalDescriptor {
 #[rquickjs::class]
 pub struct Global {
     #[qjs(skip_trace)]
-    pub(crate) inner: backend::Global,
+    pub(crate) inner: WasmGlobal,
 }
 
 #[rquickjs::methods]
 impl Global {
     #[qjs(constructor)]
     pub fn new<'js>(
-        descriptor: GlobalDescriptor,
-        value: Opt<Value<'js>>,
-        ctx: Ctx<'js>,
+        descriptor: GlobalDescriptor, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let ty = descriptor.value_type(&ctx)?;
         let initial = match value.0 {
             Some(value) => WasmValue::from_js(&ctx, &value, &ty)?,
-            None => WasmValue::default_for(&ty)
-                .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?,
+            None => {
+                WasmValue::default_for(&ty)
+                    .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?
+            }
         };
 
         Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
@@ -73,7 +74,7 @@ impl Global {
 
     /// `GetGlobalValue(this)`. An `i64` global reads as a `BigInt`; a `v128`
     /// one is a `TypeError`, which [`WasmValue::to_js`] raises.
-    #[qjs(get, enumerable, rename = "value")]
+    #[qjs(get, enumerable, configurable, rename = "value")]
     pub fn get_value<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let value = Store::from_ctx(&ctx)?
             .with_mut(&ctx, |store| Ok(WasmValue(self.inner.get(&mut *store))))?;
@@ -83,20 +84,20 @@ impl Global {
     /// The setter is where immutability is enforced: wasmtime's own error for
     /// writing a constant global is indistinguishable from a type mismatch,
     /// and the spec wants a `TypeError` raised *before* the write is attempted.
-    #[qjs(set, enumerable, rename = "value")]
+    #[qjs(set, enumerable, configurable, rename = "value")]
     pub fn set_value<'js>(&self, value: Value<'js>, ctx: Ctx<'js>) -> Result<()> {
         let store = Store::from_ctx(&ctx)?;
         // The type is read under its own short borrow: `ToWebAssemblyValue` below
         // runs arbitrary JS and allocates externrefs in the store, neither of which
         // may happen while the store is borrowed.
         let ty = store.with_mut(&ctx, |store| Ok(self.inner.ty(&*store)))?;
-        if !matches!(ty.mutability(), backend::Mutability::Var) {
+        if !matches!(ty.mutability(), Mutability::Var) {
             return Err(Exception::throw_type(
                 &ctx,
                 "cannot set the value of an immutable WebAssembly.Global",
             ));
         }
-        let value = WasmValue::from_js(&ctx, &value, &backend::global_content(&ty))?;
+        let value = WasmValue::from_js(&ctx, &value, ty.content())?;
         store.with_mut(&ctx, |store| {
             self.inner
                 .set(&mut *store, value.into_inner())
@@ -112,12 +113,11 @@ impl Global {
         let declared = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| Ok(self.inner.ty(&*store)))?;
         // Built outside the borrow: a `set` walks the prototype chain, so a setter
         // planted on `Object.prototype` would run JS here.
-        let value =
-            backend::val_type_name(&backend::global_content(&declared)).ok_or_else(|| {
-                Exception::throw_type(&ctx, "this global's value type has no JS name")
-            })?;
+        let value = backend::val_type_name(declared.content()).ok_or_else(|| {
+            Exception::throw_type(&ctx, "this global's value type has no JS name")
+        })?;
         indexmap! {
-            "mutable" => matches!(declared.mutability(), backend::Mutability::Var).into_js(&ctx)?,
+            "mutable" => matches!(declared.mutability(), Mutability::Var).into_js(&ctx)?,
             "value" => value.into_js(&ctx)?,
         }
         .into_js(&ctx)?
@@ -126,9 +126,7 @@ impl Global {
     }
 
     #[qjs(rename = "valueOf")]
-    pub fn value_of<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        self.get_value(ctx)
-    }
+    pub fn value_of<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> { self.get_value(ctx) }
 }
 
 #[cfg(test)]
@@ -137,9 +135,7 @@ mod tests {
     use crate::memory::testing::{js, pending_error_name, with_wasm_context};
 
     fn global(
-        ctx: &Ctx<'_>,
-        descriptor: &str,
-        value: Option<&str>,
+        ctx: &Ctx<'_>, descriptor: &str, value: Option<&str>,
     ) -> core::result::Result<Global, String> {
         GlobalDescriptor::from_js(ctx, js(ctx, descriptor))
             .and_then(|descriptor| {

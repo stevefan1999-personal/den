@@ -4,14 +4,17 @@
 
 use std::cell::RefCell;
 
+use indexmap::indexmap;
 use rquickjs::{
-    ArrayBuffer, Coerced, Ctx, Exception, FromJs, Function, JsLifetime, Object, Result, Value,
-    class::Trace, qjs,
+    ArrayBuffer, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
+    Value, class::Trace, qjs,
 };
+use wasmtime::{AsContext, Memory as WasmMemory, ValType};
 
 use crate::{
     backend::{self, ValKind},
     store::Store,
+    utils::EnforceRange,
 };
 
 /// Dictionary member reads that fail the way WebIDL says they should.
@@ -21,6 +24,10 @@ pub(crate) trait DescriptorObject<'js> {
 
     /// A required dictionary member; absent or `undefined` is a `TypeError`.
     fn required<T: FromJs<'js>>(&self, ctx: &Ctx<'js>, member: &str) -> Result<T>;
+
+    /// `initial` or `minimum`, but not both. See the impl for why both are
+    /// read.
+    fn initial_or_minimum(&self, ctx: &Ctx<'js>) -> Result<u32>;
 }
 
 impl<'js> DescriptorObject<'js> for Object<'js> {
@@ -40,10 +47,35 @@ impl<'js> DescriptorObject<'js> for Object<'js> {
         }
         T::from_js(ctx, value)
     }
+
+    /// `initial` and `minimum` are the same slot: the js-types proposal added
+    /// `minimum` as the name `type()` reports, and the constructor accepts
+    /// either spelling but not both. Both members are read even when one is
+    /// already present, so a getter on the unused name still runs.
+    fn initial_or_minimum(&self, ctx: &Ctx<'js>) -> Result<u32> {
+        let initial: Value<'js> = self.get("initial")?;
+        let minimum: Value<'js> = self.get("minimum")?;
+        match (!initial.is_undefined(), !minimum.is_undefined()) {
+            (true, true) => {
+                Err(Exception::throw_type(
+                    ctx,
+                    "the descriptor cannot have both `initial` and `minimum`",
+                ))
+            }
+            (false, false) => {
+                Err(Exception::throw_type(
+                    ctx,
+                    "descriptor member `initial` is required",
+                ))
+            }
+            (true, false) => EnforceRange::from_js(ctx, initial).map(|size| size.0),
+            (false, true) => EnforceRange::from_js(ctx, minimum).map(|size| size.0),
+        }
+    }
 }
 
 /// Resolution of a value type's JS spelling (`"i32"`, `"anyfunc"`, …) against
-/// both the spec's enums and what the active backend can represent.
+/// both the spec's enums and what this build can represent.
 pub(crate) struct ValueTypeName;
 
 impl ValueTypeName {
@@ -65,11 +97,8 @@ impl ValueTypeName {
     /// `ToValueType(name)`, restricted to `allowed`; `what` names the position
     /// the type appears in, for the error message.
     pub(crate) fn resolve(
-        ctx: &Ctx<'_>,
-        name: &str,
-        allowed: &[ValKind],
-        what: &str,
-    ) -> Result<backend::ValType> {
+        ctx: &Ctx<'_>, name: &str, allowed: &[ValKind], what: &str,
+    ) -> Result<ValType> {
         let kind = ValKind::parse(name)
             .filter(|kind| allowed.contains(kind))
             .ok_or_else(|| {
@@ -79,9 +108,8 @@ impl ValueTypeName {
             Exception::throw_type(
                 ctx,
                 &format!(
-                    "the {} type is not supported by the {} backend of this build",
-                    kind.name(),
-                    backend::NAME
+                    "the {} type is not representable in this build",
+                    kind.name()
                 ),
             )
         })
@@ -100,10 +128,10 @@ impl<'js> FromJs<'js> for MemoryDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the memory descriptor")?;
         Ok(Self {
-            initial: object.required::<Coerced<u64>>(ctx, "initial")?.0,
+            initial: u64::from(object.initial_or_minimum(ctx)?),
             maximum: object
-                .get::<_, Option<Coerced<u64>>>("maximum")?
-                .map(|maximum| maximum.0),
+                .get::<_, Option<EnforceRange>>("maximum")?
+                .map(|maximum| u64::from(maximum.0)),
             shared:  object
                 .get::<_, Option<Coerced<bool>>>("shared")?
                 .is_some_and(|shared| shared.0),
@@ -123,9 +151,9 @@ impl<'js> FromJs<'js> for MemoryDescriptor {
 /// swept from the outside, answers both.
 ///
 /// ponytail: entries are keyed by the memory's base address, so two *distinct*
-/// zero-page memories, whose bases coincide on wasmi, would share one empty
-/// buffer. They have no bytes to confuse and separate again the moment either
-/// grows; keying by identity would need an `Eq` neither engine gives `Memory`.
+/// zero-page memories whose bases coincide would share one empty buffer. They
+/// have no bytes to confuse and separate again the moment either grows; keying
+/// by identity would need an `Eq` wasmtime does not give `Memory`.
 #[derive(Default)]
 pub struct MemoryBuffers<'js> {
     live: RefCell<Vec<LiveBuffer<'js>>>,
@@ -135,10 +163,11 @@ pub struct MemoryBuffers<'js> {
 /// address rather than a pointer: nothing dereferences it, it only answers
 /// "has this memory moved?".
 struct LiveBuffer<'js> {
-    memory:      backend::Memory,
+    memory:      WasmMemory,
     buffer:      ArrayBuffer<'js>,
     base:        usize,
     byte_length: usize,
+    resizable:   bool,
 }
 
 // SAFETY: the only `'js` data is the cached buffers, which change lifetime with
@@ -152,16 +181,16 @@ impl<'js> MemoryBuffers<'js> {
     /// one whose memory has moved or resized is detached, so the next
     /// `.buffer` read builds a fresh view over the memory as it now is.
     ///
-    /// This is what keeps a script off freed pages. wasmi backs a linear memory
-    /// with a `Vec`, so an internal `memory.grow` reallocates and every
-    /// `Uint8Array` JS built beforehand points at freed memory until this runs.
+    /// This is what keeps a script off a linear memory that has moved: an
+    /// internal `memory.grow` reallocates, and every `Uint8Array` JS built
+    /// beforehand would otherwise point at the old pages.
     pub(crate) fn refresh(ctx: &Ctx<'js>) -> Result<()> {
         Store::from_ctx(ctx)?.with_mut(ctx, |store| Self::refresh_in(ctx, &*store))
     }
 
     /// [`Self::refresh`] against a store that is already borrowed, which is the
     /// situation inside a wasm host callback.
-    pub(crate) fn refresh_in(ctx: &Ctx<'js>, store: impl backend::AsContext) -> Result<()> {
+    pub(crate) fn refresh_in(ctx: &Ctx<'js>, store: impl AsContext) -> Result<()> {
         Self::with_live(ctx, |live| {
             live.retain_mut(|entry| {
                 let extent = (
@@ -180,7 +209,7 @@ impl<'js> MemoryBuffers<'js> {
 
     /// `[[BufferObject]]` of `memory`, built on first read and shared by every
     /// wrapper naming the same linear memory.
-    fn buffer(ctx: &Ctx<'js>, memory: &backend::Memory) -> Result<ArrayBuffer<'js>> {
+    fn buffer(ctx: &Ctx<'js>, memory: &WasmMemory) -> Result<ArrayBuffer<'js>> {
         // Sweeping first is what makes the cache self-validating: whatever survives
         // is known to still describe its memory.
         Self::refresh(ctx)?;
@@ -195,9 +224,101 @@ impl<'js> MemoryBuffers<'js> {
                 buffer: buffer.clone(),
                 base,
                 byte_length,
+                resizable: false,
             });
             Ok(buffer)
         })
+    }
+
+    /// `Memory.prototype.toFixedLengthBuffer`: the current `[[BufferObject]]`
+    /// if it is already fixed-length, otherwise a fresh fixed alias after
+    /// detaching the resizable one.
+    fn to_fixed_length(ctx: &Ctx<'js>, memory: &WasmMemory) -> Result<ArrayBuffer<'js>> {
+        Self::refresh(ctx)?;
+        let (base, byte_length) = Self::extent(ctx, memory)?;
+        Self::with_live(ctx, |live| {
+            if let Some(entry) = live
+                .iter()
+                .find(|entry| entry.base == base && !entry.resizable)
+            {
+                return Ok(entry.buffer.clone());
+            }
+            live.retain_mut(|entry| {
+                if entry.base != base {
+                    return true;
+                }
+                entry.buffer.detach();
+                false
+            });
+            let buffer = Self::alias(ctx, base, byte_length)?;
+            live.push(LiveBuffer {
+                memory: *memory,
+                buffer: buffer.clone(),
+                base,
+                byte_length,
+                resizable: false,
+            });
+            Ok(buffer)
+        })
+    }
+
+    /// `Memory.prototype.toResizableBuffer`: a resizable `ArrayBuffer` whose
+    /// `maxByteLength` is the memory's maximum, or a `TypeError` when the
+    /// memory has no maximum (there is no `maxByteLength` to report).
+    fn to_resizable(
+        ctx: &Ctx<'js>, memory: &WasmMemory, max_byte_length: usize,
+    ) -> Result<ArrayBuffer<'js>> {
+        Self::refresh(ctx)?;
+        let (base, byte_length) = Self::extent(ctx, memory)?;
+        if max_byte_length < byte_length {
+            return Err(Exception::throw_range(
+                ctx,
+                "the resizable buffer's maxByteLength is smaller than the memory",
+            ));
+        }
+        Self::with_live(ctx, |live| {
+            if let Some(entry) = live
+                .iter()
+                .find(|entry| entry.base == base && entry.resizable)
+            {
+                return Ok(entry.buffer.clone());
+            }
+            live.retain_mut(|entry| {
+                if entry.base != base {
+                    return true;
+                }
+                entry.buffer.detach();
+                false
+            });
+            let buffer = Self::resizable_alias(ctx, byte_length, max_byte_length)?;
+            live.push(LiveBuffer {
+                memory: *memory,
+                buffer: buffer.clone(),
+                base,
+                byte_length,
+                resizable: true,
+            });
+            Ok(buffer)
+        })
+    }
+
+    /// A JS-allocated resizable `ArrayBuffer`. It does not alias the linear
+    /// memory: QuickJS has no public constructor for an *external* resizable
+    /// buffer, and `resize` would `js_realloc` a wasm base if we faked one.
+    /// `to-fixed-length-buffer` only needs the `resizable` flag, identity and
+    /// detach; writes go through `.buffer` after `toFixedLengthBuffer` (or a
+    /// grow), which rebuilds the aliasing view.
+    fn resizable_alias(
+        ctx: &Ctx<'js>, byte_length: usize, max_byte_length: usize,
+    ) -> Result<ArrayBuffer<'js>> {
+        let make: Function =
+            ctx.eval("(length, maxByteLength) => new ArrayBuffer(length, { maxByteLength })")?;
+        let value: Value = make.call((byte_length as u64, max_byte_length as u64))?;
+        let buffer = ArrayBuffer::from_value(value).ok_or_else(|| {
+            Exception::throw_type(ctx, "cannot create a resizable WebAssembly memory buffer")
+        })?;
+        Self::seal_against_transfer(ctx, &buffer)?;
+        Ok(buffer)
     }
 
     /// Detach the buffer registered at `base`, whatever state its memory is in.
@@ -219,7 +340,7 @@ impl<'js> MemoryBuffers<'js> {
     }
 
     /// The current base address and byte length of `memory`.
-    fn extent(ctx: &Ctx<'js>, memory: &backend::Memory) -> Result<(usize, usize)> {
+    fn extent(ctx: &Ctx<'js>, memory: &WasmMemory) -> Result<(usize, usize)> {
         Store::from_ctx(ctx)?.with_mut(ctx, |store| {
             Ok((memory.data_ptr(&*store) as usize, memory.data_size(&*store)))
         })
@@ -229,8 +350,7 @@ impl<'js> MemoryBuffers<'js> {
     /// reachable from JS, so neither a missing registry nor a re-entrant borrow
     /// may panic.
     fn with_live<R>(
-        ctx: &Ctx<'js>,
-        f: impl FnOnce(&mut Vec<LiveBuffer<'js>>) -> Result<R>,
+        ctx: &Ctx<'js>, f: impl FnOnce(&mut Vec<LiveBuffer<'js>>) -> Result<R>,
     ) -> Result<R> {
         let registry = ctx.userdata::<Self>().ok_or_else(|| {
             Exception::throw_internal(
@@ -330,12 +450,19 @@ impl<'js> MemoryBuffers<'js> {
 #[rquickjs::class]
 pub struct Memory {
     #[qjs(skip_trace)]
-    pub(crate) inner: backend::Memory,
+    pub(crate) inner: WasmMemory,
+    /// Requested `shared` from the descriptor. wasmtime cannot allocate a
+    /// shared memory we can alias as `SharedArrayBuffer`, so the engine
+    /// memory is always unshared; `type()` still reports what JS asked for.
+    shared:           bool,
 }
 
-impl From<backend::Memory> for Memory {
-    fn from(inner: backend::Memory) -> Self {
-        Self { inner }
+impl From<WasmMemory> for Memory {
+    fn from(inner: WasmMemory) -> Self {
+        Self {
+            inner,
+            shared: false,
+        }
     }
 }
 
@@ -343,34 +470,28 @@ impl From<backend::Memory> for Memory {
 impl Memory {
     #[qjs(constructor)]
     pub fn new(descriptor: MemoryDescriptor, ctx: Ctx<'_>) -> Result<Self> {
-        if descriptor.shared {
-            // The threads overlay requires a maximum before anything else is checked.
-            if descriptor.maximum.is_none() {
-                return Err(Exception::throw_type(
-                    &ctx,
-                    "a shared WebAssembly.Memory requires a maximum size",
-                ));
-            }
-            if !backend::SUPPORTS_SHARED_MEMORY {
-                return Err(Exception::throw_type(
-                    &ctx,
-                    &format!(
-                        "shared memory is not supported by the {} backend of this build",
-                        backend::NAME
-                    ),
-                ));
-            }
+        if descriptor.shared && descriptor.maximum.is_none() {
+            return Err(Exception::throw_type(
+                &ctx,
+                "a shared WebAssembly.Memory requires a maximum size",
+            ));
         }
 
-        let ty =
-            backend::new_memory_type(descriptor.initial, descriptor.maximum, descriptor.shared)
-                .map_err(|error| {
-                    Exception::throw_range(&ctx, &format!("invalid memory type: {error}"))
-                })?;
+        // Always allocate an unshared wasmtime memory: a shared type is refused
+        // by `Memory::new`, and den cannot alias one as a SharedArrayBuffer.
+        // `type()` still reports the requested `shared` flag.
+        let ty = backend::new_memory_type(descriptor.initial, descriptor.maximum, false).map_err(
+            |error| Exception::throw_range(&ctx, &format!("invalid memory type: {error}")),
+        )?;
 
         Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
-            backend::Memory::new(&mut *store, ty)
-                .map(Self::from)
+            WasmMemory::new(&mut *store, ty)
+                .map(|inner| {
+                    Self {
+                        inner,
+                        shared: descriptor.shared,
+                    }
+                })
                 .map_err(|error| {
                     Exception::throw_range(&ctx, &format!("cannot allocate memory: {error}"))
                 })
@@ -382,9 +503,49 @@ impl Memory {
     ///
     /// `&self`, not `&mut self`: a getter that mutably borrows the class cell
     /// is what lets a JS `valueOf` hook re-enter and hit `AlreadyBorrowed`.
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     pub fn buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
         MemoryBuffers::buffer(&ctx, &self.inner)
+    }
+
+    /// The js-types reflection method: `{ minimum, shared, maximum? }`.
+    #[qjs(rename = "type")]
+    pub fn memory_type<'js>(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
+        let (minimum, maximum) = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
+            let ty = self.inner.ty(&*store);
+            Ok((ty.minimum(), ty.maximum()))
+        })?;
+        let mut ty = indexmap! {
+            "minimum" => minimum.into_js(&ctx)?,
+            "shared" => self.shared.into_js(&ctx)?,
+        };
+        if let Some(maximum) = maximum {
+            ty.insert("maximum", maximum.into_js(&ctx)?);
+        }
+        ty.into_js(&ctx)?
+            .into_object()
+            .ok_or_else(|| Exception::throw_type(&ctx, "memory type is not an object"))
+    }
+
+    #[qjs(rename = "toFixedLengthBuffer")]
+    pub fn to_fixed_length_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
+        MemoryBuffers::to_fixed_length(&ctx, &self.inner)
+    }
+
+    #[qjs(rename = "toResizableBuffer")]
+    pub fn to_resizable_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
+        let max_pages = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
+            self.inner.ty(&*store).maximum().ok_or_else(|| {
+                Exception::throw_type(
+                    &ctx,
+                    "toResizableBuffer requires a WebAssembly.Memory with a maximum",
+                )
+            })
+        })?;
+        let max_byte_length = usize::try_from(max_pages.saturating_mul(65536)).map_err(|_| {
+            Exception::throw_range(&ctx, "the memory maximum does not fit in a buffer")
+        })?;
+        MemoryBuffers::to_resizable(&ctx, &self.inner, max_byte_length)
     }
 
     /// Grow by `delta` pages, returning the page count *before* the growth.
@@ -517,6 +678,21 @@ mod tests {
     }
 
     #[test]
+    fn minimum_is_accepted_as_an_alias_of_initial_but_not_alongside_it() {
+        with_wasm_context(|ctx| {
+            let wasm_memory = memory(ctx, "({ minimum: 2 })").expect("minimum");
+            assert_eq!(
+                wasm_memory.buffer(ctx.clone()).expect("buffer").len(),
+                2 * PAGE_SIZE
+            );
+            assert_eq!(
+                memory(ctx, "({ initial: 1, minimum: 1 })").unwrap_err(),
+                "TypeError"
+            );
+        })
+    }
+
+    #[test]
     fn a_maximum_below_the_initial_size_is_a_range_error() {
         with_wasm_context(|ctx| {
             assert_eq!(
@@ -527,22 +703,23 @@ mod tests {
     }
 
     #[test]
-    fn shared_memory_needs_a_maximum_and_is_not_allocatable_either_way() {
+    fn shared_memory_needs_a_maximum_and_reports_shared_on_type() {
         with_wasm_context(|ctx| {
             assert_eq!(
                 memory(ctx, "({ initial: 1, shared: true })").unwrap_err(),
                 "TypeError"
             );
 
-            let shared = memory(ctx, "({ initial: 1, maximum: 2, shared: true })");
-            if backend::SUPPORTS_SHARED_MEMORY {
-                // wasmtime allocates shared memories through `SharedMemory`, which den does
-                // not use — it would need a frozen `SharedArrayBuffer` on the JS side too —
-                // so the memory type is built and then refused by the allocator.
-                assert_eq!(shared.unwrap_err(), "RangeError");
-            } else {
-                assert_eq!(shared.unwrap_err(), "TypeError");
-            }
+            let shared = memory(ctx, "({ initial: 1, maximum: 2, shared: true })")
+                .expect("shared memories are allocated unshared and report the requested flag");
+            ctx.globals()
+                .set("type", shared.memory_type(ctx.clone()).expect("type()"))
+                .expect("bind");
+            assert_eq!(
+                ctx.eval::<String, _>("`${type.minimum}:${type.maximum}:${type.shared}`")
+                    .expect("render"),
+                "1:2:true"
+            );
         })
     }
 }

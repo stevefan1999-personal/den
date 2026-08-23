@@ -78,26 +78,118 @@ const DEFINE_STREAMING: &str = r#"
 /// is a *value* rather than a function or a class: the tag `(param externref)`
 /// that a JS exception crossing into wasm carries. WebIDL exposes a namespace's
 /// `readonly attribute` as an accessor, so a getter it is.
+///
+/// Every `defineProperty` is fallible: rquickjs class prototypes lock some
+/// slots, and a throw here would keep `den:wasm` from evaluating at all
+/// (every spec_core file shares that evaluate hook).
 const DEFINE_NAMESPACE_SHAPE: &str = r#"
 (namespace, interfaces, supportsTags) => {
+  const define = (object, key, descriptor) => {
+    try { Object.defineProperty(object, key, descriptor); } catch { /* frozen */ }
+  };
+  const rename = (fn, name) => {
+    if (typeof fn === "function") define(fn, "name", { value: name, configurable: true });
+  };
   const tag = (target, value) =>
-    target && Object.defineProperty(target, Symbol.toStringTag, { value, configurable: true });
-  // Only the enumerable members need fixing; the error classes and the
-  // streaming functions were defined with the right attributes already.
-  // Every attribute is spelled out: redefining an existing property leaves the
-  // ones the descriptor omits exactly as they were, so `enumerable: false` is
-  // the whole point of this loop and cannot be left implicit.
-  for (const name of Object.keys(namespace)) {
-    Object.defineProperty(namespace, name,
-      { value: namespace[name], writable: true, enumerable: false, configurable: true });
+    target && define(target, Symbol.toStringTag, { value, configurable: true });
+  // WebIDL namespaces are non-enumerable; WPT `interface.any.js` still wants
+  // the five operations enumerable, so those five are the exception.
+  const operations = new Set([
+    "validate", "compile", "instantiate", "compileStreaming", "instantiateStreaming",
+  ]);
+  for (const name of Object.getOwnPropertyNames(namespace)) {
+    const value = namespace[name];
+    define(namespace, name, {
+      value, writable: true, enumerable: operations.has(name), configurable: true,
+    });
+    if (typeof value === "function" && operations.has(name)) rename(value, name);
   }
-  for (const name of interfaces) {
-    tag(namespace[name]?.prototype, `WebAssembly.${name}`);
+  for (const [name, length] of [["validate", 1], ["compile", 1], ["instantiate", 1]]) {
+    if (typeof namespace[name] === "function") {
+      define(namespace[name], "length", { value: length, configurable: true });
+    }
   }
+
+  const lockPrototype = (constructor) => {
+    try {
+      Object.defineProperty(constructor, "prototype", {
+        value: constructor.prototype, writable: false, enumerable: false, configurable: false,
+      });
+    } catch {
+      try { Object.defineProperty(constructor, "prototype", { writable: false }); } catch { /* locked */ }
+    }
+  };
+  const wrapGet = (fn, name) => {
+    const wrapped = function () { return fn.apply(this, arguments); };
+    rename(wrapped, name);
+    define(wrapped, "length", { value: 0, configurable: true });
+    return wrapped;
+  };
+  const wrapSet = (fn, name) => {
+    const wrapped = function (value) { return fn.call(this, value); };
+    rename(wrapped, name);
+    define(wrapped, "length", { value: 1, configurable: true });
+    return wrapped;
+  };
+  const shapeInterface = (name) => {
+    const constructor = namespace[name];
+    if (!constructor) return;
+    const proto = constructor.prototype;
+    const ctorDesc = Object.getOwnPropertyDescriptor(proto, "constructor");
+    if (!ctorDesc || ctorDesc.configurable) {
+      define(proto, "constructor", {
+        value: constructor, writable: true, enumerable: false, configurable: true,
+      });
+    }
+    tag(proto, `WebAssembly.${name}`);
+    for (const key of Object.getOwnPropertyNames(proto)) {
+      if (key === "constructor") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(proto, key);
+      if (!descriptor) continue;
+      if (typeof descriptor.value === "function") {
+        rename(descriptor.value, key);
+        if (descriptor.configurable) {
+          define(proto, key, {
+            value: descriptor.value, writable: true, enumerable: true, configurable: true,
+          });
+        }
+      } else if (descriptor.get && descriptor.configurable) {
+        const next = {
+          get: wrapGet(descriptor.get, "get " + key),
+          enumerable: true,
+          configurable: true,
+        };
+        if (descriptor.set) next.set = wrapSet(descriptor.set, "set " + key);
+        define(proto, key, next);
+      } else if (descriptor.get) {
+        rename(descriptor.get, "get " + key);
+        if (descriptor.set) rename(descriptor.set, "set " + key);
+      }
+    }
+    lockPrototype(constructor);
+  };
+  for (const name of interfaces) shapeInterface(name);
+  for (const name of ["CompileError", "LinkError", "RuntimeError"]) shapeInterface(name);
+
+  if (namespace.Module) {
+    for (const [name, length] of [["exports", 1], ["imports", 1], ["customSections", 2]]) {
+      const fn = namespace.Module[name];
+      if (!fn) continue;
+      rename(fn, name);
+      define(fn, "length", { value: length, configurable: true });
+      define(namespace.Module, name, {
+        value: fn, writable: true, enumerable: true, configurable: true,
+      });
+    }
+  }
+
   tag(namespace, "WebAssembly");
+  define(globalThis, "WebAssembly", {
+    value: namespace, writable: true, enumerable: false, configurable: true,
+  });
   if (supportsTags) {
     const jsTag = new namespace.Tag({ parameters: ["externref"] });
-    Object.defineProperty(namespace, "JSTag", { get: () => jsTag, configurable: true });
+    define(namespace, "JSTag", { get: () => jsTag, configurable: true });
   }
 }
 "#;
@@ -105,8 +197,8 @@ const DEFINE_NAMESPACE_SHAPE: &str = r#"
 #[rquickjs::module]
 pub mod wasm {
     use rquickjs::{
-        Class, Ctx, Exception, Function, IntoJs, Object, Result, TypedArray, Value,
-        module::Exports, prelude::Opt,
+        Class, Ctx, Exception, Function, IntoJs, Object, Promise, Result, TypedArray, Value,
+        module::Exports, prelude::Opt, promise::Promised,
     };
 
     use crate::{
@@ -131,42 +223,96 @@ pub mod wasm {
         Ok(backend::compile_module(&Engine::from_ctx(&ctx)?, bytes.bytes()).is_ok())
     }
 
-    /// Asynchronous, so a decode failure *rejects* with `CompileError` rather
-    /// than throwing.
+    /// Promise-returning: argument conversion and the byte copy are
+    /// synchronous, a decode failure *rejects* with `CompileError` rather than
+    /// throwing. Missing or invalid arguments reject with `TypeError` — they
+    /// must not throw, because `promise_rejects_js` only accepts a thenable.
     #[rquickjs::function]
-    pub async fn compile<'js>(bytes: BufferSource, ctx: Ctx<'js>) -> Result<Module> {
-        Module::compile(&ctx, bytes.into_bytes())
+    pub fn compile<'js>(bytes: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
+        let Some(bytes) = bytes.0 else {
+            return reject_type(&ctx, "expected a BufferSource");
+        };
+        match <BufferSource as rquickjs::FromJs>::from_js(&ctx, bytes) {
+            Ok(source) => {
+                let bytes = source.into_bytes();
+                let compile_ctx = ctx.clone();
+                Promised(async move { Module::compile(&compile_ctx, bytes) }).into_js(&ctx)
+            }
+            Err(_) => reject_pending(&ctx),
+        }
     }
 
-    /// Both overloads: a `Module` resolves with a bare `Instance`, a
-    /// `BufferSource` with `{ module, instance }`.
+    /// Both overloads: a `Module` instantiates *now* and the promise resolves
+    /// with a bare `Instance` (import getters have already run); a
+    /// `BufferSource` is copied now and compiled/instantiated later, so import
+    /// getters run after the promise is returned.
     #[rquickjs::function]
-    pub async fn instantiate<'js>(
-        source: Value<'js>,
-        import_object: Opt<Value<'js>>,
-        ctx: Ctx<'js>,
+    pub fn instantiate<'js>(
+        source: Opt<Value<'js>>, import_object: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Value<'js>> {
+        let Some(source) = source.0 else {
+            return reject_type(&ctx, "expected a Module or a BufferSource");
+        };
         // A `Module` argument and a `BufferSource` argument are told apart by
         // probing, so the probe must not leave its `TypeError` pending.
         if let Some(module) =
             ctx.probe(|| source.as_object().and_then(Class::<Module>::from_object))
         {
-            let module = module.try_borrow().map(|module| Module::clone(&module));
-            let module = module.map_err(|_| {
-                Exception::throw_type(&ctx, "the WebAssembly.Module is already in use")
-            })?;
-            let instance = Instance::instantiate(&ctx, &module, import_object.0)?;
-            return Ok(Class::instance(ctx.clone(), instance)?.into_value());
+            let module = match module.try_borrow().map(|module| Module::clone(&module)) {
+                Ok(module) => module,
+                Err(_) => return reject_type(&ctx, "the WebAssembly.Module is already in use"),
+            };
+            return match Instance::instantiate(&ctx, &module, import_object.0) {
+                Ok(instance) => {
+                    resolve_value(&ctx, Class::instance(ctx.clone(), instance)?.into_value())
+                }
+                Err(_) => reject_pending(&ctx),
+            };
         }
 
-        let bytes = <BufferSource as rquickjs::FromJs>::from_js(&ctx, source)?;
-        let module = Module::compile(&ctx, bytes.into_bytes())?;
-        let instance = Instance::instantiate(&ctx, &module, import_object.0)?;
-        indexmap::indexmap! {
-            "module" => Class::instance(ctx.clone(), module)?.into_js(&ctx)?,
-            "instance" => Class::instance(ctx.clone(), instance)?.into_js(&ctx)?,
+        match <BufferSource as rquickjs::FromJs>::from_js(&ctx, source) {
+            Ok(bytes) => {
+                let bytes = bytes.into_bytes();
+                let imports = import_object.0;
+                let instantiate_ctx = ctx.clone();
+                Promised(async move {
+                    let module = Module::compile(&instantiate_ctx, bytes)?;
+                    let instance = Instance::instantiate(&instantiate_ctx, &module, imports)?;
+                    indexmap::indexmap! {
+                        "module" => Class::instance(instantiate_ctx.clone(), module)?.into_js(&instantiate_ctx)?,
+                        "instance" => Class::instance(instantiate_ctx.clone(), instance)?.into_js(&instantiate_ctx)?,
+                    }
+                    .into_js(&instantiate_ctx)
+                })
+                .into_js(&ctx)
+            }
+            Err(_) => reject_pending(&ctx),
         }
-        .into_js(&ctx)
+    }
+
+    fn reject_type<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
+        let _ = Exception::throw_type(ctx, message);
+        reject_pending(ctx)
+    }
+
+    fn reject_pending<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        let error = if ctx.has_exception() {
+            ctx.catch()
+        } else {
+            return Err(Exception::throw_internal(
+                ctx,
+                "rejected a WebAssembly promise with no pending exception",
+            ));
+        };
+        let (promise, _resolve, reject) = Promise::new(ctx)?;
+        reject.call::<_, ()>((error,))?;
+        Ok(promise.into_value())
+    }
+
+    fn resolve_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
+        let (promise, resolve, _reject) = Promise::new(ctx)?;
+        resolve.call::<_, ()>((value,))?;
+        Ok(promise.into_value())
     }
 
     /// den extension: the WASI preview1 import namespace, for the caller who
@@ -185,9 +331,7 @@ pub mod wasm {
     /// `Instance::read_imports` that still has to honour it.
     #[rquickjs::function(rename = "wasiImports")]
     #[qjs(rename = "wasiImports")]
-    pub fn wasi_imports<'js>(ctx: Ctx<'js>) -> Result<Value<'js>> {
-        WasiImports::namespace(&ctx)
-    }
+    pub fn wasi_imports<'js>(ctx: Ctx<'js>) -> Result<Value<'js>> { WasiImports::namespace(&ctx) }
 
     /// den extension: assemble WebAssembly Text, so tests and scripts need no
     /// checked-in binaries.
@@ -201,10 +345,12 @@ pub mod wasm {
             // aborted the process. One copy of a wat blob buys a buffer script
             // can detach and transfer like any other.
             Ok(bytes) => TypedArray::new_copy(ctx.clone(), bytes),
-            Err(err) => Err(Exception::throw_type(
-                &ctx,
-                &format!("wat2wasm error: {err}"),
-            )),
+            Err(err) => {
+                Err(Exception::throw_type(
+                    &ctx,
+                    &format!("wat2wasm error: {err}"),
+                ))
+            }
         }
     }
 
@@ -228,7 +374,6 @@ pub mod wasm {
         namespace.set("validate", js_validate)?;
         namespace.set("compile", js_compile)?;
         namespace.set("instantiate", js_instantiate)?;
-        namespace.set("wat2wasm", js_wat2wasm)?;
 
         let interfaces = [
             ("Module", Class::<Module>::create_constructor(ctx)?),
@@ -253,11 +398,11 @@ pub mod wasm {
         WebAssemblyErrors::install(ctx, &namespace)?;
         ctx.eval::<Function, _>(crate::DEFINE_STREAMING)?
             .call::<_, ()>((namespace.clone(),))?;
-        // Last, so that every member is already on the namespace when its
-        // property attributes are corrected.
+        ctx.globals().set("WebAssembly", namespace.clone())?;
+        // After the global is installed, so the shape script can correct the
+        // property attributes of `globalThis.WebAssembly` itself.
         ctx.eval::<Function, _>(crate::DEFINE_NAMESPACE_SHAPE)?
-            .call::<_, ()>((namespace.clone(), interface_names, backend::SUPPORTS_TAGS))?;
-        ctx.globals().set("WebAssembly", namespace)?;
+            .call::<_, ()>((namespace, interface_names, backend::SUPPORTS_TAGS))?;
         Ok(())
     }
 }
@@ -268,8 +413,6 @@ mod tests {
         AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Object, Promise, TypedArray,
         context::EvalOptions,
     };
-
-    use crate::backend;
 
     const ADD: &str = r#"
         (module
@@ -321,7 +464,6 @@ mod tests {
     /// A module that asks WASI for something only the engine can answer: the
     /// environment count is written into the *caller's* linear memory. The
     /// result is the errno, `0` for success.
-    #[cfg(feature = "wasmtime")]
     const CALLS_WASI: &str = r#"
         (module
           (import "wasi_snapshot_preview1" "environ_sizes_get"
@@ -333,8 +475,7 @@ mod tests {
     const EXPORTS_A_TAG: &str = r#"(module (tag (export "t") (param i32)))"#;
 
     /// Imports and exports whose declaration order is neither alphabetical nor
-    /// grouped by kind, so the two backends disagree unless the order is read
-    /// back out of the binary.
+    /// grouped by kind, so a sorted or kind-grouped listing would fail.
     const DECLARATION_ORDER: &str = r#"
         (module
           (import "env" "zebra" (func $zebra))
@@ -666,9 +807,8 @@ mod tests {
         assert_eq!(thrown, "same");
     }
 
-    /// `memory.grow` executed as a wasm instruction moves the linear memory —
-    /// on wasmi it is a `Vec`, so the old pages are freed outright — and the
-    /// buffer JS is holding has to be detached on the way back out.
+    /// `memory.grow` executed as a wasm instruction moves the linear memory,
+    /// and the buffer JS is holding has to be detached on the way back out.
     #[tokio::test]
     async fn a_grow_inside_wasm_detaches_the_buffer_js_is_holding() {
         let outcome: String = eval(
@@ -849,12 +989,22 @@ mod tests {
         )
         .await
         .expect("the snippet evaluates");
-        let asked = if backend::SUPPORTS_WASI {
-            "object"
-        } else {
-            "TypeError: WASI is not supported by the wasmi backend of this build"
-        };
-        assert_eq!(outcome, format!("false,{asked}"));
+        assert_eq!(outcome, "false,object");
+    }
+
+    /// The den-extension half of the same rule: `wat2wasm` is a `den:wasm`
+    /// export, never a `WebAssembly` member.
+    #[tokio::test]
+    async fn wat2wasm_is_a_den_wasm_export_rather_than_a_webassembly_member() {
+        let outcome: String = eval(
+            None,
+            r#"
+              [("wat2wasm" in WebAssembly), typeof denWasm.wat2wasm].join(",")
+            "#,
+        )
+        .await
+        .expect("the snippet evaluates");
+        assert_eq!(outcome, "false,function");
     }
 
     /// The whole opt-in path, end to end through JS: the marker stands in for
@@ -862,7 +1012,6 @@ mod tests {
     /// and the module then calls a preview1 function that writes the caller's
     /// own linear memory. Without the hook in `read_imports` the marker is just
     /// an object with no `environ_sizes_get` on it and this is a `LinkError`.
-    #[cfg(feature = "wasmtime")]
     #[tokio::test]
     async fn wasi_imports_satisfies_the_preview1_namespace_of_a_module_that_asks_for_it() {
         let outcome: String = eval(
@@ -899,13 +1048,7 @@ mod tests {
         )
         .await
         .expect("the snippet evaluates");
-        if backend::SUPPORTS_TAGS {
-            assert_eq!(outcome, "true,i32");
-        } else {
-            // wasmi implements no part of exception handling, so the fixture does
-            // not even compile there.
-            assert_eq!(outcome, "CompileError");
-        }
+        assert_eq!(outcome, "true,i32");
     }
 
     /// WebIDL: a namespace member and an interface object are writable,
@@ -917,14 +1060,22 @@ mod tests {
         let shape: String = eval(
             None,
             r#"
+              const operations = new Set([
+                "validate", "compile", "instantiate", "compileStreaming", "instantiateStreaming",
+              ]);
               const wrong = Object.getOwnPropertyNames(WebAssembly).filter((name) => {
                 const descriptor = Object.getOwnPropertyDescriptor(WebAssembly, name);
                 // `JSTag` is a readonly attribute, hence an accessor with no `writable`.
-                return descriptor.enumerable || !descriptor.configurable
+                if (name === "JSTag") {
+                  return descriptor.enumerable || !descriptor.configurable || descriptor.set;
+                }
+                const shouldEnumerate = operations.has(name);
+                return descriptor.enumerable !== shouldEnumerate || !descriptor.configurable
                   || ("value" in descriptor && !descriptor.writable);
               });
+              const leaked = Object.keys(WebAssembly).filter((name) => !operations.has(name));
               [wrong.join("|"),
-               Object.keys(WebAssembly).length,
+               leaked.join("|"),
                String(WebAssembly),
                Object.prototype.toString.call(new WebAssembly.Memory({ initial: 1 }))].join(";")
             "#,
@@ -948,11 +1099,7 @@ mod tests {
         )
         .await
         .expect("the snippet evaluates");
-        if backend::SUPPORTS_TAGS {
-            assert_eq!(js_tag, "true,true,externref,true,true");
-        } else {
-            assert_eq!(js_tag, "absent");
-        }
+        assert_eq!(js_tag, "true,true,externref,true,true");
     }
 
     /// `BufferSource` is `ArrayBuffer or ArrayBufferView` and nothing else, so
@@ -978,9 +1125,7 @@ mod tests {
         assert_eq!(names, "compiled,compiled,compiled,TypeError,TypeError");
     }
 
-    /// Both backends must present imports and exports in *module declaration*
-    /// order: wasmtime does already, wasmi groups imports by kind and sorts
-    /// exports, so the order is recovered from the module binary.
+    /// Imports and exports must be observed in *module declaration* order.
     #[tokio::test]
     async fn imports_and_exports_are_observed_in_module_declaration_order() {
         let orders: String = eval(

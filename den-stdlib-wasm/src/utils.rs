@@ -14,9 +14,10 @@ use rquickjs::{
     Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Result, Value,
     function::Rest,
 };
+use wasmtime::{Func, Val, ValType};
 
 use crate::{
-    backend::{self, Val, ValKind, ValType, ValView},
+    backend::{self, ValKind, ValView},
     error::throw_runtime_error,
     memory::MemoryBuffers,
     store::Store,
@@ -67,7 +68,7 @@ impl WasmValue {
             ValKind::ExternRef => HostReferences::extern_ref(ctx, value)?,
             ValKind::FuncRef => HostReferences::func_ref(ctx, value)?,
             // `anyref` is not in the spec's `ValueType` enum at all — it can only
-            // reach here from a wasmtime function signature that uses the GC
+            // reach here from a function signature that uses the GC
             // proposal, and den has no `i31`/`struct`/`array` conversions.
             ValKind::AnyRef => {
                 return Err(Exception::throw_type(
@@ -120,13 +121,12 @@ impl WasmValue {
         }
     }
 
-    pub fn into_inner(self) -> Val {
-        self.0
-    }
+    pub fn into_inner(self) -> Val { self.0 }
 
     /// `ToBigInt64(v)`: a Number is a `TypeError` (that is the whole reason
     /// `i64` needs its own path), everything else goes through JS's own
-    /// `ToBigInt` and is then wrapped modulo 2^64.
+    /// `ToBigInt` and is then wrapped modulo 2^64 — `2n ** 63n` is `i64::MIN`,
+    /// not a conversion failure.
     fn to_big_int_64<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i64> {
         if value.is_number() {
             return Err(Exception::throw_type(
@@ -134,15 +134,11 @@ impl WasmValue {
                 "cannot convert a Number to a WebAssembly i64 value; pass a BigInt",
             ));
         }
-        let big_int = match value.as_big_int() {
-            Some(big_int) => big_int.clone(),
-            None => {
-                ctx.globals()
-                    .get::<_, Function>("BigInt")?
-                    .call::<_, BigInt>((value.clone(),))?
-            }
-        };
-        big_int.to_i64()
+        let as_int_n = ctx
+            .globals()
+            .get::<_, rquickjs::Object>("BigInt")?
+            .get::<_, Function>("asIntN")?;
+        as_int_n.call::<_, BigInt>((64, value.clone()))?.to_i64()
     }
 }
 
@@ -176,22 +172,18 @@ impl<'js> FromJs<'js> for EnforceRange {
 }
 
 impl EnforceRange {
-    /// The value as the `u64` both engines count sizes and indices in.
-    pub fn size(self) -> u64 {
-        u64::from(self.0)
-    }
+    /// The value as the `u64` wasmtime counts sizes and indices in.
+    pub fn size(self) -> u64 { u64::from(self.0) }
 }
 
 /// The reference a [`Val`] carries, in the one shape shared code can use.
 ///
 /// [`ValView`] deliberately stops at "some reference": telling a `funcref`
 /// from an `externref`, and reading an `externref`'s payload back out, needs
-/// each engine's own `Val` enum and `ExternRef` type. That is the only thing
-/// per-backend in this file — the same split `table.rs` makes for its element
-/// type.
+/// wasmtime's `Val` enum and `ExternRef` type.
 enum Reference {
     /// A function reference. Its JS side is an Exported Function.
-    Func(backend::Func),
+    Func(Func),
     /// An `externref` carrying the index of a JS value in [`HostReferences`].
     Host(usize),
     /// A reference this layer cannot name: a GC reference, or an `externref`
@@ -199,7 +191,6 @@ enum Reference {
     Foreign,
 }
 
-#[cfg(feature = "wasmtime")]
 impl Reference {
     fn read(ctx: &Ctx<'_>, store: &mut backend::Store, value: &Val) -> Result<Self> {
         Ok(match value {
@@ -226,52 +217,13 @@ impl Reference {
             .map_err(|err| throw_runtime_error(ctx, err))
     }
 
-    fn function(func: backend::Func) -> Val {
-        Val::FuncRef(Some(func))
-    }
+    fn function(func: Func) -> Val { Val::FuncRef(Some(func)) }
 
     /// Identity of a `Func`, the key of the Exported Function cache.
     /// `to_raw` is the `VMFuncRef` pointer — wasmtime's own notion of which
     /// function this is within a store.
-    fn identity(store: &mut backend::Store, func: &backend::Func) -> String {
+    fn identity(store: &mut backend::Store, func: &Func) -> String {
         format!("{:p}", func.to_raw(store))
-    }
-}
-
-#[cfg(not(feature = "wasmtime"))]
-impl Reference {
-    fn read(_ctx: &Ctx<'_>, store: &mut backend::Store, value: &Val) -> Result<Self> {
-        use ::wasmi::Ref;
-
-        Ok(match value {
-            Val::FuncRef(Ref::Val(func)) => Self::Func(*func),
-            Val::ExternRef(Ref::Val(reference)) => {
-                reference
-                    .data(&*store)
-                    .downcast_ref::<usize>()
-                    .copied()
-                    .map_or(Self::Foreign, Self::Host)
-            }
-            _ => Self::Foreign,
-        })
-    }
-
-    fn host(_ctx: &Ctx<'_>, store: &mut backend::Store, index: usize) -> Result<Val> {
-        Ok(Val::ExternRef(::wasmi::ExternRef::new(store, index).into()))
-    }
-
-    fn function(func: backend::Func) -> Val {
-        Val::FuncRef(func.into())
-    }
-
-    /// wasmi publishes no identity accessor for a `Func` at all: it is a
-    /// transparent newtype over a store-guarded arena index whose *derived*
-    /// `Debug` prints exactly that pair, which is why it is the key here.
-    /// `func_identity_tells_two_functions_apart` is the guard — if a future
-    /// wasmi ever renders two distinct funcs the same, that test fails rather
-    /// than the cache silently handing out the wrong callable.
-    fn identity(_store: &mut backend::Store, func: &backend::Func) -> String {
-        format!("{func:?}")
     }
 }
 
@@ -280,11 +232,10 @@ impl Reference {
 /// Two caches, both owned by the JS context rather than by a wrapper object,
 /// because a reference outlives the `Table` or `Global` it was read from:
 ///
-/// * `values` — the JS values an `externref` stands for. Neither engine can
-///   hold a `Value<'js>` itself (`ExternRef::new` wants `'static + Send +
-///   Sync`), so the reference carries an index into this list while the value
-///   stays on the JS side. That is what makes `table.set(0, o); table.get(0)
-///   === o` hold.
+/// * `values` — the JS values an `externref` stands for. wasmtime cannot hold a
+///   `Value<'js>` itself (`ExternRef::new` wants `'static + Send + Sync`), so
+///   the reference carries an index into this list while the value stays on the
+///   JS side. That is what makes `table.set(0, o); table.get(0) === o` hold.
 /// * `functions` — the spec's Exported Function cache (§ "create a new Exported
 ///   Function from funcaddr"), so that reading the same `funcref` twice yields
 ///   the same JS function object, and so that a function handed *back* to wasm
@@ -305,7 +256,7 @@ pub struct HostReferences<'js> {
 #[derive(JsLifetime)]
 struct ExportedFunction<'js> {
     identity: String,
-    func:     backend::Func,
+    func:     Func,
     object:   Function<'js>,
 }
 
@@ -339,36 +290,59 @@ impl<'js> HostReferences<'js> {
         })
     }
 
-    /// `ToWebAssemblyValue(v, funcref)`: a `funcref` is a function *address*,
-    /// and only an Exported Function has one. A plain JS function is a
-    /// `TypeError` — there is no address den could invent for it.
-    fn func_ref(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Val> {
-        let function = value.as_function().ok_or_else(|| {
-            Exception::throw_type(
-                ctx,
-                "only null or a WebAssembly Exported Function is convertible to a funcref",
-            )
-        })?;
-        let func = Self::with(ctx, |registry| {
+    /// The `[[FunctionAddress]]` of an Exported Function den created, if
+    /// `value` is one. Used when an import should reuse that address rather
+    /// than wrap the callable as a fresh host function — which is what
+    /// makes `instance.exports.f === imported.f` hold.
+    pub fn existing_func(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<Func>> {
+        let address = value.as_object().and_then(|object| {
+            object
+                .get::<_, String>(Self::function_address_key(ctx).ok()?)
+                .ok()
+        });
+        Self::with(ctx, |registry| {
             Ok(registry
                 .functions
                 .try_borrow()
                 .map_err(|_| Self::busy(ctx))?
                 .iter()
-                .find(|entry| entry.object.as_value() == function.as_value())
+                .find(|entry| {
+                    address.as_ref().is_some_and(|id| *id == entry.identity)
+                        || *entry.object.as_value() == *value
+                })
                 .map(|entry| entry.func))
-        })?;
-        func.map(Reference::function).ok_or_else(|| {
-            Exception::throw_type(
-                ctx,
-                "this function is not a WebAssembly Exported Function, so it has no function \
-                 address to store in a funcref",
-            )
         })
     }
 
+    /// A `Symbol.for` key so an Exported Function can be recognised after
+    /// passing through JS, even when `Value` identity comparison misses.
+    fn function_address_key(ctx: &Ctx<'js>) -> Result<Value<'js>> {
+        ctx.eval("Symbol.for('den.WebAssembly.[[FunctionAddress]]')")
+    }
+
+    /// `ToWebAssemblyValue(v, funcref)`: a `funcref` is a function *address*,
+    /// and only an Exported Function has one. A plain JS function is a
+    /// `TypeError` — there is no address den could invent for it.
+    fn func_ref(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Val> {
+        value.as_function().ok_or_else(|| {
+            Exception::throw_type(
+                ctx,
+                "only null or a WebAssembly Exported Function is convertible to a funcref",
+            )
+        })?;
+        Self::existing_func(ctx, value)?
+            .map(Reference::function)
+            .ok_or_else(|| {
+                Exception::throw_type(
+                    ctx,
+                    "this function is not a WebAssembly Exported Function, so it has no function \
+                     address to store in a funcref",
+                )
+            })
+    }
+
     /// "Create a new Exported Function from funcaddr" — the *only* place a
-    /// `backend::Func` becomes a JS function, `instance.exports` included. The
+    /// `wasmtime::Func` becomes a JS function, `instance.exports` included. The
     /// cache lookup is the spec's own first step, and is what makes both
     /// `table.get(0) === table.get(0)` and `table.get(0) ===
     /// instance.exports.f` hold.
@@ -379,9 +353,7 @@ impl<'js> HostReferences<'js> {
     /// on a cache miss, because renaming a callable JS already holds would
     /// change an object the spec says is created once.
     pub fn exported_function(
-        ctx: &Ctx<'js>,
-        func: backend::Func,
-        name: Option<u32>,
+        ctx: &Ctx<'js>, func: Func, name: Option<u32>,
     ) -> Result<Function<'js>> {
         let store = Store::from_ctx(ctx)?;
         let (identity, arity) = store.with_mut(ctx, |backend_store| {
@@ -396,7 +368,7 @@ impl<'js> HostReferences<'js> {
                 .try_borrow()
                 .map_err(|_| Self::busy(ctx))?
                 .iter()
-                .find(|entry| entry.identity == identity)
+                .find(|entry| entry.identity == identity || handles_eq(&entry.func, &func))
                 .map(|entry| entry.object.clone()))
         })?;
         if let Some(cached) = cached {
@@ -415,6 +387,9 @@ impl<'js> HostReferences<'js> {
         object.set_length(arity)?;
         if let Some(name) = name {
             object.set_name(name.to_string())?;
+        }
+        if let Some(object) = object.as_value().as_object() {
+            object.set(Self::function_address_key(ctx)?, identity.clone())?;
         }
         Self::with(ctx, |registry| {
             registry
@@ -458,6 +433,143 @@ impl<'js> HostReferences<'js> {
     }
 }
 
+/// The JS wrappers for every `Memory` / `Table` / `Global` this context has
+/// handed out.
+///
+/// The spec caches these by store address so that importing a wrapper and
+/// exporting it again yields the *same* JS object. wasmtime's handles are
+/// `Copy` store indices; two handles that compare equal name one object.
+#[derive(Default)]
+pub struct HostWrappers<'js> {
+    memories: RefCell<Vec<(wasmtime::Memory, Value<'js>)>>,
+    tables:   RefCell<Vec<(wasmtime::Table, Value<'js>)>>,
+    globals:  RefCell<Vec<(wasmtime::Global, Value<'js>)>>,
+}
+
+// SAFETY: the only `'js` data is the cached wrappers, which change lifetime
+// with the struct. The wasmtime handles are store indices, not JS values.
+unsafe impl<'js> JsLifetime<'js> for HostWrappers<'js> {
+    type Changed<'to> = HostWrappers<'to>;
+}
+
+impl<'js> HostWrappers<'js> {
+    pub fn memory(ctx: &Ctx<'js>, handle: wasmtime::Memory) -> Result<Value<'js>> {
+        Self::wrap(
+            ctx,
+            handle,
+            |wrappers| &wrappers.memories,
+            |handle| crate::memory::Memory::from(handle).into_js(ctx),
+        )
+    }
+
+    pub fn table(ctx: &Ctx<'js>, handle: wasmtime::Table) -> Result<Value<'js>> {
+        Self::wrap(
+            ctx,
+            handle,
+            |wrappers| &wrappers.tables,
+            |handle| crate::table::Table::from(handle).into_js(ctx),
+        )
+    }
+
+    pub fn global(ctx: &Ctx<'js>, handle: wasmtime::Global) -> Result<Value<'js>> {
+        Self::wrap(
+            ctx,
+            handle,
+            |wrappers| &wrappers.globals,
+            |handle| crate::global::Global::from(handle).into_js(ctx),
+        )
+    }
+
+    pub fn remember_memory(
+        ctx: &Ctx<'js>, handle: wasmtime::Memory, object: Value<'js>,
+    ) -> Result<()> {
+        Self::remember(ctx, handle, object, |wrappers| &wrappers.memories)
+    }
+
+    pub fn remember_table(
+        ctx: &Ctx<'js>, handle: wasmtime::Table, object: Value<'js>,
+    ) -> Result<()> {
+        Self::remember(ctx, handle, object, |wrappers| &wrappers.tables)
+    }
+
+    pub fn remember_global(
+        ctx: &Ctx<'js>, handle: wasmtime::Global, object: Value<'js>,
+    ) -> Result<()> {
+        Self::remember(ctx, handle, object, |wrappers| &wrappers.globals)
+    }
+
+    fn wrap<H: Copy>(
+        ctx: &Ctx<'js>, handle: H, slot: impl Fn(&Self) -> &RefCell<Vec<(H, Value<'js>)>>,
+        create: impl FnOnce(H) -> Result<Value<'js>>,
+    ) -> Result<Value<'js>> {
+        if let Some(existing) = Self::find(ctx, handle, &slot)? {
+            return Ok(existing);
+        }
+        let object = create(handle)?;
+        Self::remember(ctx, handle, object.clone(), slot)?;
+        Ok(object)
+    }
+
+    fn find<H: Copy>(
+        ctx: &Ctx<'js>, handle: H, slot: impl Fn(&Self) -> &RefCell<Vec<(H, Value<'js>)>>,
+    ) -> Result<Option<Value<'js>>> {
+        Self::with(ctx, |wrappers| {
+            Ok(slot(wrappers)
+                .try_borrow()
+                .map_err(|_| Self::busy(ctx))?
+                .iter()
+                .find(|(cached, _)| handles_eq(cached, &handle))
+                .map(|(_, object)| object.clone()))
+        })
+    }
+
+    fn remember<H: Copy>(
+        ctx: &Ctx<'js>, handle: H, object: Value<'js>,
+        slot: impl Fn(&Self) -> &RefCell<Vec<(H, Value<'js>)>>,
+    ) -> Result<()> {
+        Self::with(ctx, |wrappers| {
+            let mut entries = slot(wrappers)
+                .try_borrow_mut()
+                .map_err(|_| Self::busy(ctx))?;
+            if !entries
+                .iter()
+                .any(|(cached, _)| handles_eq(cached, &handle))
+            {
+                entries.push((handle, object));
+            }
+            Ok(())
+        })
+    }
+
+    fn with<R>(ctx: &Ctx<'js>, f: impl FnOnce(&Self) -> Result<R>) -> Result<R> {
+        if ctx.userdata::<Self>().is_none() {
+            ctx.store_userdata(Self::default())
+                .map_err(|_| Self::busy(ctx))?;
+        }
+        let wrappers = ctx.userdata::<Self>().ok_or_else(|| {
+            Exception::throw_internal(
+                ctx,
+                "the WebAssembly wrapper registry is missing from this context",
+            )
+        })?;
+        f(&wrappers)
+    }
+
+    fn busy(ctx: &Ctx<'js>) -> rquickjs::Error {
+        Exception::throw_internal(ctx, "the WebAssembly wrapper registry is already in use")
+    }
+}
+
+fn handles_eq<T: Copy>(left: &T, right: &T) -> bool {
+    let size = core::mem::size_of::<T>();
+    // SAFETY: `Memory` / `Table` / `Global` are `repr(C)` store-index handles;
+    // equal bytes are one object in the store. Nothing dereferences the bytes.
+    unsafe {
+        core::slice::from_raw_parts(core::ptr::from_ref(left).cast::<u8>(), size)
+            == core::slice::from_raw_parts(core::ptr::from_ref(right).cast::<u8>(), size)
+    }
+}
+
 impl<'js> ExportedFunction<'js> {
     /// "Call an Exported Function": pad the arguments with `undefined`, coerce
     /// against the declared types, then adapt the results by arity.
@@ -465,7 +577,7 @@ impl<'js> ExportedFunction<'js> {
     /// The one implementation, shared by every Exported Function den hands out
     /// — a module's export and a `funcref` read out of a table are the same
     /// object, so they cannot be called by two different algorithms.
-    fn call(ctx: &Ctx<'js>, func: backend::Func, arguments: &[Value<'js>]) -> Result<Value<'js>> {
+    fn call(ctx: &Ctx<'js>, func: Func, arguments: &[Value<'js>]) -> Result<Value<'js>> {
         let store = Store::from_ctx(ctx)?;
         // The signature is read under its own short borrow: coercion below can
         // run arbitrary JS, which must not happen while the store is borrowed.
@@ -522,7 +634,7 @@ impl<'js> ExportedFunction<'js> {
     /// A trap that started life as a JS exception thrown by an imported
     /// function has to reach the caller as that same object, so a still-pending
     /// exception wins over the engine's trap description.
-    fn throw_call_failure(ctx: &Ctx<'js>, error: backend::Error) -> rquickjs::Error {
+    fn throw_call_failure(ctx: &Ctx<'js>, error: wasmtime::Error) -> rquickjs::Error {
         // `Ctx::catch` is `JS_GetException`, which hands back `JS_UNINITIALIZED`
         // when nothing is pending — neither `undefined` nor `null`, so the tag
         // cannot be used to decide this.
@@ -547,9 +659,7 @@ mod tests {
         context.with(|ctx| f(&ctx))
     }
 
-    fn ty(name: &str) -> ValType {
-        backend::val_type_from_str(name).expect("known value type")
-    }
+    fn ty(name: &str) -> ValType { backend::val_type_from_str(name).expect("known value type") }
 
     /// The `name` of whatever JS error is currently pending, e.g.
     /// `"TypeError"`.
@@ -633,6 +743,11 @@ mod tests {
             assert!(matches!(from_js(ctx, "'42'", "i64"), Ok(Val::I64(42))));
             assert!(matches!(from_js(ctx, "true", "i64"), Ok(Val::I64(1))));
             assert!(from_js(ctx, "undefined", "i64").is_err());
+            // ToBigInt64 wraps modulo 2^64: 2^63 is i64::MIN, not a conversion failure.
+            assert!(matches!(
+                from_js(ctx, "2n ** 63n", "i64"),
+                Ok(Val::I64(i64::MIN))
+            ));
         })
     }
 
@@ -766,7 +881,7 @@ mod tests {
                 "TypeError"
             );
             assert_eq!(
-                to_js_source(ctx, Val::V128(backend::V128::from(0_u128)))
+                to_js_source(ctx, Val::V128(wasmtime::V128::from(0_u128)))
                     .expect_err("v128 is not representable"),
                 "TypeError"
             );
@@ -775,15 +890,15 @@ mod tests {
 
     /// Two distinct host functions must not share a cache key, or reading one
     /// `funcref` would hand JS the other one's callable. This is the guard on
-    /// [`Reference::identity`], whose wasmi half leans on a derived `Debug`.
+    /// [`Reference::identity`].
     #[test]
     fn func_identity_tells_two_functions_apart() {
         with_wasm_context(|ctx| {
             let store = Store::from_ctx(ctx).expect("store");
             store
                 .with_mut(ctx, |store| {
-                    let first = backend::Func::wrap(&mut *store, || {});
-                    let second = backend::Func::wrap(&mut *store, || {});
+                    let first = Func::wrap(&mut *store, || {});
+                    let second = Func::wrap(&mut *store, || {});
                     assert_eq!(
                         Reference::identity(store, &first),
                         Reference::identity(store, &first),
@@ -826,7 +941,7 @@ mod tests {
         with_wasm_context(|ctx| {
             let store = Store::from_ctx(ctx).expect("store");
             let func = store
-                .with_mut(ctx, |store| Ok(backend::Func::wrap(&mut *store, || {})))
+                .with_mut(ctx, |store| Ok(Func::wrap(&mut *store, || {})))
                 .expect("host function");
             let reference = WasmValue(Reference::function(func));
             let first = reference.to_js(ctx).expect("readable funcref");

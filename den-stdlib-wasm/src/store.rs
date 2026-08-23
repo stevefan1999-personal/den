@@ -9,7 +9,7 @@ use crate::{
     error::{throw_link_error, throw_runtime_error},
 };
 
-/// Handle to the one [`backend::Store`] a JS context owns.
+/// Handle to the one wasmtime [`backend::Store`] a JS context owns.
 ///
 /// Every `Instance`, `Memory`, `Table` and `Global` of a context lives in this
 /// store, which is what makes them interchangeable as imports.
@@ -27,7 +27,7 @@ impl Store {
          re-enter its wasm store, so calling another export — or creating a Memory, Table, Global \
          or Tag — is unsupported until that call returns";
 
-    pub fn new(engine: &backend::Engine, ctx: &Ctx<'_>) -> Self {
+    pub fn new(engine: &wasmtime::Engine, ctx: &Ctx<'_>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(backend::Store::new(
                 engine,
@@ -60,9 +60,7 @@ impl Store {
     /// splitting the store per instance and giving up on imports being
     /// interchangeable between them.
     pub fn with_mut<R>(
-        &self,
-        ctx: &Ctx<'_>,
-        f: impl FnOnce(&mut backend::Store) -> Result<R>,
+        &self, ctx: &Ctx<'_>, f: impl FnOnce(&mut backend::Store) -> Result<R>,
     ) -> Result<R> {
         match self.inner.try_borrow_mut() {
             Ok(mut store) => f(&mut store),
@@ -92,8 +90,8 @@ impl Store {
 pub struct WasiImports {}
 
 impl WasiImports {
-    /// `wasiImports()`: the marker, or a `TypeError` naming the backend that
-    /// has no WASI to give.
+    /// `wasiImports()`: the marker, or a `TypeError` if this build has no
+    /// WASI to give.
     ///
     /// Nothing is built here — the host's stdio and environment are inherited
     /// by [`backend::link_wasi`], at instantiation — so holding the marker
@@ -102,10 +100,7 @@ impl WasiImports {
         if !backend::SUPPORTS_WASI {
             return Err(Exception::throw_type(
                 ctx,
-                &format!(
-                    "WASI is not supported by the {} backend of this build",
-                    backend::NAME
-                ),
+                "WASI is not available in this build",
             ));
         }
         Ok(Class::instance(ctx.clone(), Self {})?.into_value())
@@ -174,34 +169,16 @@ mod tests {
     }
 
     #[test]
-    fn wasi_imports_is_a_marker_on_a_backend_with_wasi_and_a_type_error_without() {
+    fn wasi_imports_hands_out_a_marker_object() {
         with_wasm_context(|ctx| {
-            let handed_out = WasiImports::namespace(ctx);
-            assert_eq!(
-                handed_out.is_ok(),
-                backend::SUPPORTS_WASI,
-                "the {} backend disagrees with its own SUPPORTS_WASI",
-                backend::NAME
-            );
-            match handed_out {
-                Ok(marker) => {
-                    let marker = marker.into_object().expect("wasiImports() is an object");
-                    assert!(WasiImports::is_marker(ctx, &marker));
-                    // The probe must recognise an ordinary import namespace as *not*
-                    // the marker, and leave no `TypeError` pending when it does.
-                    let ordinary = Object::new(ctx.clone()).expect("an object");
-                    assert!(!WasiImports::is_marker(ctx, &ordinary));
-                    assert!(!ctx.has_exception(), "the probe left an exception pending");
-                }
-                Err(_) => {
-                    let (name, message) = pending_error(ctx);
-                    assert_eq!(name, "TypeError");
-                    assert_eq!(
-                        message,
-                        "WASI is not supported by the wasmi backend of this build"
-                    );
-                }
-            }
+            let marker = WasiImports::namespace(ctx).expect("WASI is supported");
+            let marker = marker.into_object().expect("wasiImports() is an object");
+            assert!(WasiImports::is_marker(ctx, &marker));
+            // The probe must recognise an ordinary import namespace as *not*
+            // the marker, and leave no `TypeError` pending when it does.
+            let ordinary = Object::new(ctx.clone()).expect("an object");
+            assert!(!WasiImports::is_marker(ctx, &ordinary));
+            assert!(!ctx.has_exception(), "the probe left an exception pending");
         })
     }
 
@@ -229,7 +206,6 @@ mod tests {
     /// environment count is written into the *caller's* linear memory, which is
     /// why preview1 cannot be a bag of JS functions in the first place. The
     /// return value is the errno, `0` for success.
-    #[cfg(feature = "wasmtime")]
     const CALLS_WASI: &str = r#"
       (module
         (import "wasi_snapshot_preview1" "environ_sizes_get" (func $sizes (param i32 i32) (result i32)))
@@ -237,11 +213,10 @@ mod tests {
         (func (export "run") (result i32) (call $sizes (i32.const 0) (i32.const 8))))
     "#;
 
-    /// End to end through the backend, one layer below the JS path that
+    /// End to end through wasmtime, one layer below the JS path that
     /// `instance.rs` covers. Links twice on purpose: `read_imports` reaches the
     /// namespace once per WASI import, and `add_to_linker_sync` defines the
     /// whole namespace each time.
-    #[cfg(feature = "wasmtime")]
     #[test]
     fn wasi_imports_links_a_preview1_module_that_writes_its_own_memory() {
         let runtime = Runtime::new().expect("runtime");
@@ -264,13 +239,14 @@ mod tests {
             let errno = Store::from_ctx(&ctx)
                 .expect("store")
                 .with_mut(&ctx, |backend_store| {
-                    let instance = backend::linker_instantiate(&linker, backend_store, &module)
+                    let instance = linker
+                        .instantiate(&mut *backend_store, &module)
                         .expect("the module instantiates against WASI");
                     let run = instance
                         .get_export(&mut *backend_store, "run")
-                        .and_then(backend::Extern::into_func)
+                        .and_then(wasmtime::Extern::into_func)
                         .expect("the run export");
-                    let mut results = [backend::Val::I32(-1)];
+                    let mut results = [wasmtime::Val::I32(-1)];
                     run.call(&mut *backend_store, &[], &mut results)
                         .expect("the export calls WASI");
                     Ok(results[0].i32())
@@ -285,7 +261,7 @@ mod tests {
     /// nothing about that is unsound. Flip this test when the store learns to
     /// hand out per-frame borrows.
     const REENTERS_FROM_A_HOST_CALL: &str = r#"
-      const bytes = WebAssembly.wat2wasm(`(module
+      const bytes = denWasm.wat2wasm(`(module
         (import "env" "reenter" (func $reenter))
         (func (export "run") (call $reenter))
         (func (export "other") (result i32) (i32.const 1)))`);
@@ -312,10 +288,13 @@ mod tests {
         let runtime = Runtime::new().expect("runtime");
         let context = Context::full(&runtime).expect("context");
         context.with(|ctx| {
-            let (_, evaluation) =
+            let (module, evaluation) =
                 Module::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")
                     .expect("den:wasm evaluates");
             evaluation.finish::<()>().expect("den:wasm finishes");
+            ctx.globals()
+                .set("denWasm", module.namespace().expect("den:wasm namespace"))
+                .expect("bind den:wasm exports");
 
             let caught: Vec<String> = ctx
                 .eval(REENTERS_FROM_A_HOST_CALL)

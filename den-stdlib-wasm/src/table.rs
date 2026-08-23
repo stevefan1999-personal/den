@@ -5,6 +5,7 @@ use indexmap::indexmap;
 use rquickjs::{
     Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
 };
+use wasmtime::{Ref, Table as WasmTable, Val, ValType};
 
 use crate::{
     backend,
@@ -27,7 +28,7 @@ impl<'js> FromJs<'js> for TableDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the table descriptor")?;
         Ok(Self {
-            initial: object.required::<EnforceRange>(ctx, "initial")?.0,
+            initial: object.initial_or_minimum(ctx)?,
             maximum: object
                 .get::<_, Option<EnforceRange>>("maximum")?
                 .map(|maximum| maximum.0),
@@ -38,7 +39,7 @@ impl<'js> FromJs<'js> for TableDescriptor {
 
 impl TableDescriptor {
     /// `ToValueType(descriptor["element"])`.
-    fn element_type(&self, ctx: &Ctx<'_>) -> Result<backend::ValType> {
+    fn element_type(&self, ctx: &Ctx<'_>) -> Result<ValType> {
         ValueTypeName::resolve(
             ctx,
             &self.element,
@@ -48,71 +49,45 @@ impl TableDescriptor {
     }
 }
 
-/// The element representation the active backend's table API speaks: wasmtime
-/// takes and returns `Ref`, wasmi takes and returns `Val`. Everything else
-/// about the two APIs matches, so this is the whole of the per-backend code in
-/// this file.
-struct TableElement(
-    #[cfg(feature = "wasmtime")] ::wasmtime::Ref,
-    #[cfg(not(feature = "wasmtime"))] backend::Val,
-);
+/// wasmtime's table API takes and returns `Ref`.
+struct TableElement(Ref);
 
-#[cfg(feature = "wasmtime")]
 impl TableElement {
-    fn from_wasm_value(ctx: &Ctx<'_>, value: backend::Val) -> Result<Self> {
+    fn from_wasm_value(ctx: &Ctx<'_>, value: Val) -> Result<Self> {
         value
             .ref_()
             .map(Self)
             .ok_or_else(|| Exception::throw_type(ctx, "a table element must be a reference value"))
     }
 
-    fn into_wasm_value(self) -> backend::Val {
-        self.0.into()
-    }
-}
-
-#[cfg(not(feature = "wasmtime"))]
-impl TableElement {
-    fn from_wasm_value(_ctx: &Ctx<'_>, value: backend::Val) -> Result<Self> {
-        Ok(Self(value))
-    }
-
-    fn into_wasm_value(self) -> backend::Val {
-        self.0
-    }
+    fn into_wasm_value(self) -> Val { self.0.into() }
 }
 
 #[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
 #[rquickjs::class]
 pub struct Table {
     #[qjs(skip_trace)]
-    pub(crate) inner: backend::Table,
+    pub(crate) inner: WasmTable,
 }
 
 impl Table {
-    /// The table's element type as a backend `ValType`: wasmtime's
-    /// `TableType::element` yields a `&RefType`, wasmi's yields a `ValType`.
-    #[cfg(feature = "wasmtime")]
-    fn element_type(&self, store: &backend::Store) -> backend::ValType {
-        backend::ValType::Ref(self.inner.ty(store).element().clone())
-    }
-
-    #[cfg(not(feature = "wasmtime"))]
-    fn element_type(&self, store: &backend::Store) -> backend::ValType {
-        self.inner.ty(store).element()
+    /// The table's element type as a `ValType`: `TableType::element` yields a
+    /// `&RefType`.
+    fn element_type(&self, store: &backend::Store) -> ValType {
+        ValType::Ref(self.inner.ty(store).element().clone())
     }
 
     /// `value` missing means `DefaultValue(elementtype)`, which for both table
     /// element types is a null reference.
     fn element<'js>(
-        ctx: &Ctx<'js>,
-        value: Option<&Value<'js>>,
-        ty: &backend::ValType,
+        ctx: &Ctx<'js>, value: Option<&Value<'js>>, ty: &ValType,
     ) -> Result<TableElement> {
         let value = match value {
             Some(value) => WasmValue::from_js(ctx, value, ty)?,
-            None => WasmValue::default_for(ty)
-                .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?,
+            None => {
+                WasmValue::default_for(ty)
+                    .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?
+            }
         };
         TableElement::from_wasm_value(ctx, value.into_inner())
     }
@@ -122,9 +97,7 @@ impl Table {
 impl Table {
     #[qjs(constructor)]
     pub fn new<'js>(
-        descriptor: TableDescriptor,
-        value: Opt<Value<'js>>,
-        ctx: Ctx<'js>,
+        descriptor: TableDescriptor, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let element = descriptor.element_type(&ctx)?;
         let initial = Self::element(&ctx, value.0.as_ref(), &element)?;
@@ -144,7 +117,7 @@ impl Table {
         })
     }
 
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     pub fn length(&self, ctx: Ctx<'_>) -> Result<u64> {
         Store::from_ctx(&ctx)?.with_mut(&ctx, |store| Ok(self.inner.size(&*store)))
     }
@@ -159,9 +132,18 @@ impl Table {
         })?;
         // The dictionary is built outside the borrow: a `set` walks the prototype
         // chain, so a setter planted on `Object.prototype` would run JS here.
-        let element = backend::val_type_name(&element).ok_or_else(|| {
-            Exception::throw_type(&ctx, "this table's element type has no JS name")
-        })?;
+        // js-types `TableKind` is `"funcref"` / `"externref"`. `"anyfunc"` is
+        // only a constructor alias and must not come back out of `type()`.
+        let element = match backend::val_type_kind(&element) {
+            Some(backend::ValKind::FuncRef) => "funcref",
+            Some(kind) => kind.name(),
+            None => {
+                return Err(Exception::throw_type(
+                    &ctx,
+                    "this table's element type has no JS name",
+                ));
+            }
+        };
         let mut ty = indexmap! {
             "element" => element.into_js(&ctx)?,
             "minimum" => minimum.into_js(&ctx)?,
@@ -190,10 +172,7 @@ impl Table {
     }
 
     pub fn set<'js>(
-        &self,
-        index: EnforceRange,
-        value: Opt<Value<'js>>,
-        ctx: Ctx<'js>,
+        &self, index: EnforceRange, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let store = Store::from_ctx(&ctx)?;
         // The element type is read under its own short borrow. `ToWebAssemblyValue`
@@ -217,10 +196,7 @@ impl Table {
 
     /// Grow by `delta` elements, returning the length *before* the growth.
     pub fn grow<'js>(
-        &self,
-        delta: EnforceRange,
-        value: Opt<Value<'js>>,
-        ctx: Ctx<'js>,
+        &self, delta: EnforceRange, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<u64> {
         let store = Store::from_ctx(&ctx)?;
         // Same order as `set`, and for the same reason: the filler is coerced
@@ -240,6 +216,7 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use rquickjs::Function;
+    use wasmtime::Func;
 
     use super::*;
     use crate::{
@@ -253,7 +230,7 @@ mod tests {
         let store = Store::from_ctx(ctx).expect("store");
         let func = store
             .with_mut(ctx, |store| {
-                Ok(backend::Func::wrap(&mut *store, |value: i32| value + 1))
+                Ok(Func::wrap(&mut *store, |value: i32| value + 1))
             })
             .expect("host function");
         HostReferences::exported_function(ctx, func, None).expect("exported function")
@@ -348,6 +325,18 @@ mod tests {
     fn funcref_is_accepted_as_an_alias_of_anyfunc() {
         with_wasm_context(|ctx| {
             assert!(table(ctx, "({ element: 'funcref', initial: 1 })").is_ok());
+        })
+    }
+
+    #[test]
+    fn minimum_is_accepted_as_an_alias_of_initial_but_not_alongside_it() {
+        with_wasm_context(|ctx| {
+            let wasm_table = table(ctx, "({ element: 'anyfunc', minimum: 3 })").expect("minimum");
+            assert_eq!(wasm_table.length(ctx.clone()).unwrap(), 3);
+            assert_eq!(
+                table(ctx, "({ element: 'anyfunc', initial: 1, minimum: 1 })").unwrap_err(),
+                "TypeError"
+            );
         })
     }
 
@@ -463,7 +452,7 @@ mod tests {
             assert_eq!(
                 ctx.eval::<String, _>("`${type.element}:${type.minimum}:${type.maximum}`")
                     .expect("render"),
-                "anyfunc:2:5"
+                "funcref:2:5"
             );
 
             let unbounded = table(ctx, "({ element: 'externref', initial: 1 })").expect("table");

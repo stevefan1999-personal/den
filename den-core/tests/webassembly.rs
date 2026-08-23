@@ -5,7 +5,7 @@
 //! — module registration, the transpiler in front of the source and the
 //! userdata wiring all included. Every assertion travels back into Rust, so a
 //! JS-side failure cannot pass as green.
-#![cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
+#![cfg(feature = "wasm")]
 
 use color_eyre::eyre;
 use den_core::engine::Engine;
@@ -64,7 +64,8 @@ where
     let engine = Engine::new().await;
     Ok(engine
         .eval(&format!(
-            "const WASM = WebAssembly.wat2wasm(`{wat}`);\n{body}"
+            "const {{ wat2wasm }} = await import('den:wasm');\nconst WASM = \
+             wat2wasm(`{wat}`);\n{body}"
         ))
         .await?)
 }
@@ -276,7 +277,7 @@ async fn each_webassembly_error_class_is_thrown_by_its_own_operation() -> eyre::
             try { await thunk(); return "nothing thrown"; }
             catch (error) { return `${error.name}/${error instanceof Error}`; }
           };
-          const tooSmall = WebAssembly.wat2wasm('(module (import "env" "mem" (memory 2)))');
+          const tooSmall = wat2wasm('(module (import "env" "mem" (memory 2)))');
           let reentrant = "not reached";
           const { instance } = await WebAssembly.instantiate(WASM, {
             env: { reenter: () => { reentrant = "nothing thrown"; try { instance.exports.run(); }

@@ -46,10 +46,12 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # Both WebAssembly backends are exercised: they share the JS-API layer but
-      # differ in capabilities, so a green wasmtime run says nothing about wasmi.
+      # Cranelift (`jit`) vs Pulley: they share the JS-API layer but not the
+      # compiler target, so a green jit run says nothing about no-JIT hosts.
       matrix:
-        backend: [wasm-wasmtime, wasm-wasmi]
+        extra: ["wasm,jit", "wasm"]
     steps:
       - uses: actions/checkout@v4
-      - run: cargo test --workspace --no-default-features --features stdlib,typescript,react,${{ matrix.backend }}
+      # compat excludes official vendor binaries (spec_core / wpt / test262).
+      # Those report official pass/fail in their own workflows.
+      - run: cargo nextest run --profile compat --workspace --no-default-features --features stdlib,typescript,react,${{ matrix.extra }}

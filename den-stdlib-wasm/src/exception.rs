@@ -36,10 +36,7 @@ unsafe impl<'js> JsLifetime<'js> for Exception<'js> {
 impl<'js> Exception<'js> {
     #[qjs(constructor)]
     pub fn new(
-        tag: Class<'js, Tag>,
-        payload: Vec<Value<'js>>,
-        options: Opt<Object<'js>>,
-        ctx: Ctx<'js>,
+        tag: Class<'js, Tag>, payload: Vec<Value<'js>>, options: Opt<Object<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         // `borrow` would abort the process if anything else held the cell; a JS
         // constructor argument is never allowed to reach a panic, however hard the
@@ -95,10 +92,7 @@ impl<'js> Exception<'js> {
     /// them.
     #[qjs(rename = "getArg")]
     pub fn get_arg(
-        &self,
-        tag: Class<'js, Tag>,
-        index: EnforceRange,
-        ctx: Ctx<'js>,
+        &self, tag: Class<'js, Tag>, index: EnforceRange, ctx: Ctx<'js>,
     ) -> Result<Value<'js>> {
         if !self.is(tag) {
             return Err(JsException::throw_type(
@@ -120,16 +114,12 @@ impl<'js> Exception<'js> {
         }
     }
 
-    pub fn is(&self, tag: Class<'js, Tag>) -> bool {
-        self.tag == tag
-    }
+    pub fn is(&self, tag: Class<'js, Tag>) -> bool { self.tag == tag }
 
     /// A string when the exception was created with `traceStack`, `undefined`
     /// otherwise.
     #[qjs(get, enumerable)]
-    pub fn stack(&self) -> Option<String> {
-        self.stack.clone()
-    }
+    pub fn stack(&self) -> Option<String> { self.stack.clone() }
 }
 
 #[cfg(test)]
@@ -138,7 +128,6 @@ mod tests {
 
     use super::*;
     use crate::{
-        backend,
         memory::testing::{js, pending_error_name, with_wasm_context},
         tag::TagType,
     };
@@ -151,10 +140,7 @@ mod tests {
     /// Both the tag and an exception carrying `payload`, or the name of the JS
     /// error that stopped us.
     fn exception<'js>(
-        ctx: &Ctx<'js>,
-        parameters: &str,
-        payload: &str,
-        options: Option<&str>,
+        ctx: &Ctx<'js>, parameters: &str, payload: &str, options: Option<&str>,
     ) -> core::result::Result<(Class<'js, Tag>, Exception<'js>), String> {
         (|| {
             let ty = TagType::from_js(ctx, js(ctx, parameters))?;
@@ -173,10 +159,6 @@ mod tests {
     fn get_arg_returns_the_payload_value_for_the_matching_tag() {
         with_wasm_context(|ctx| {
             let created = exception(ctx, "({ parameters: ['i32', 'i64'] })", "[7, 8n]", None);
-            if !backend::SUPPORTS_TAGS {
-                assert_eq!(error_of(created), "TypeError");
-                return;
-            }
             let (tag, exception) = created.expect("exception");
 
             assert!(exception.is(tag.clone()));
@@ -196,9 +178,6 @@ mod tests {
     fn another_tag_neither_matches_nor_can_read_the_payload() {
         with_wasm_context(|ctx| {
             let created = exception(ctx, "({ parameters: ['i32'] })", "[1]", None);
-            if !backend::SUPPORTS_TAGS {
-                return;
-            }
             let (_, thrown) = created.expect("exception");
             let (other, _) = exception(ctx, "({ parameters: ['i32'] })", "[1]", None)
                 .expect("a second, unrelated tag");
@@ -214,9 +193,6 @@ mod tests {
     #[test]
     fn a_tag_that_is_already_in_use_is_a_type_error_rather_than_a_panic() {
         with_wasm_context(|ctx| {
-            if !backend::SUPPORTS_TAGS {
-                return;
-            }
             let (tag, _) = exception(ctx, "({ parameters: [] })", "[]", None).expect("exception");
             // Stands in for whatever else holds the class cell — a `Tag` method taking
             // `&mut self`, say — which `Class::borrow` would answer with an abort.
@@ -232,9 +208,6 @@ mod tests {
     #[test]
     fn a_payload_of_the_wrong_length_is_a_type_error() {
         with_wasm_context(|ctx| {
-            if !backend::SUPPORTS_TAGS {
-                return;
-            }
             for (parameters, payload) in [
                 ("({ parameters: ['i32'] })", "[]"),
                 ("({ parameters: ['i32'] })", "[1, 2]"),
@@ -253,9 +226,6 @@ mod tests {
     #[test]
     fn the_stack_is_only_captured_when_trace_stack_is_asked_for() {
         with_wasm_context(|ctx| {
-            if !backend::SUPPORTS_TAGS {
-                return;
-            }
             let (_, plain) = exception(ctx, "({ parameters: [] })", "[]", None).expect("exception");
             assert_eq!(plain.stack(), None);
 

@@ -1,6 +1,7 @@
 //! The compilation engine of a JS context.
 
 use rquickjs::{Ctx, Exception, JsLifetime, Result};
+use wasmtime::Engine as WasmtimeEngine;
 
 use crate::backend;
 
@@ -11,16 +12,16 @@ use crate::backend;
 /// currently running and holding the store's borrow.
 #[derive(Clone, JsLifetime)]
 pub struct Engine {
-    inner: backend::Engine,
+    inner: WasmtimeEngine,
 }
 
 impl Engine {
-    pub fn new() -> core::result::Result<Self, backend::Error> {
+    pub fn new() -> core::result::Result<Self, wasmtime::Error> {
         backend::new_engine().map(|inner| Self { inner })
     }
 
     /// The engine `den:wasm` installed in this context.
-    pub fn from_ctx(ctx: &Ctx<'_>) -> Result<backend::Engine> {
+    pub fn from_ctx(ctx: &Ctx<'_>) -> Result<WasmtimeEngine> {
         ctx.userdata::<Self>()
             .map(|engine| engine.inner.clone())
             .ok_or_else(|| {
