@@ -45,11 +45,7 @@ pub struct EasyOxcTranspiler;
 
 impl EasyOxcTranspiler {
     pub fn transpile(
-        &self,
-        source: &str,
-        syntax: Syntax,
-        is_module: IsModule,
-        emit_sourcemap: bool,
+        &self, source: &str, syntax: Syntax, is_module: IsModule, emit_sourcemap: bool,
     ) -> Result<(String, Option<SourceMap>), EasyOxcTranspilerError> {
         // The arena, and everything borrowing from it, lives and dies inside this
         // call, so nothing borrowed can escape into the return value.
@@ -207,9 +203,7 @@ mod tests {
     use super::*;
 
     fn transpile(
-        source: &str,
-        extension: &str,
-        is_module: IsModule,
+        source: &str, extension: &str, is_module: IsModule,
     ) -> (String, Option<SourceMap>) {
         let syntax = infer_transpile_syntax_by_extension(extension)
             .unwrap_or_else(|| panic!("extension {extension} must be inferable in this build"));

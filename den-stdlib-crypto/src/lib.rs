@@ -47,9 +47,7 @@ pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Objec
     Ok(array)
 }
 
-pub fn random_uuid() -> String {
-    Uuid::new_v4().to_string()
-}
+pub fn random_uuid() -> String { Uuid::new_v4().to_string() }
 
 /// The four hash algorithms Web Crypto requires of `SubtleCrypto.digest`.
 ///
@@ -88,10 +86,12 @@ impl DigestAlgorithm {
         let raw_name = Self::raw_name(algorithm)?;
         match raw_name.as_deref().and_then(Self::parse) {
             Some(algorithm) => Ok(algorithm),
-            None => Err(Self::not_supported(
-                ctx,
-                raw_name.as_deref().unwrap_or("undefined"),
-            )),
+            None => {
+                Err(Self::not_supported(
+                    ctx,
+                    raw_name.as_deref().unwrap_or("undefined"),
+                ))
+            }
         }
     }
 
@@ -149,9 +149,7 @@ impl DigestAlgorithm {
 pub struct BufferSource(Vec<u8>);
 
 impl BufferSource {
-    fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
+    fn as_bytes(&self) -> &[u8] { &self.0 }
 
     fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
         ctx.globals()
@@ -182,11 +180,13 @@ impl<'js> FromJs<'js> for BufferSource {
             return Self::view_bytes(ctx, &value).map(Self);
         }
         match ArrayBuffer::from_value(value) {
-            Some(buffer) => buffer
-                .as_bytes()
-                .map(<[u8]>::to_vec)
-                .map(Self)
-                .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached")),
+            Some(buffer) => {
+                buffer
+                    .as_bytes()
+                    .map(<[u8]>::to_vec)
+                    .map(Self)
+                    .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))
+            }
             None => Err(Exception::throw_type(ctx, "data must be a BufferSource")),
         }
     }
@@ -196,9 +196,7 @@ impl<'js> FromJs<'js> for BufferSource {
 /// even though the hash itself is computed inline.
 #[rquickjs::function]
 pub async fn digest<'js>(
-    algorithm: Value<'js>,
-    data: BufferSource,
-    ctx: Ctx<'js>,
+    algorithm: Value<'js>, data: BufferSource, ctx: Ctx<'js>,
 ) -> Result<ArrayBuffer<'js>> {
     let algorithm = DigestAlgorithm::from_algorithm(&ctx, algorithm)?;
     // `new_copy`, never `new`: `new` lends QuickJS the Rust allocation plus a
@@ -220,23 +218,18 @@ pub mod crypto {
 
     #[rquickjs::function]
     #[qjs(rename = "randomUUID")]
-    pub fn random_uuid() -> String {
-        crate::random_uuid()
-    }
+    pub fn random_uuid() -> String { crate::random_uuid() }
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         let subtle = indexmap! {
             "digest" => super::js_digest.into_js(ctx)?,
         };
-        ctx.globals().set(
-            "crypto",
-            indexmap! {
-                "getRandomValues" => js_get_random_values.into_js(ctx)?,
-                "randomUUID" => js_random_uuid.into_js(ctx)?,
-                "subtle" => subtle.into_js(ctx)?,
-            },
-        )?;
+        ctx.globals().set("crypto", indexmap! {
+            "getRandomValues" => js_get_random_values.into_js(ctx)?,
+            "randomUUID" => js_random_uuid.into_js(ctx)?,
+            "subtle" => subtle.into_js(ctx)?,
+        })?;
         Ok(())
     }
 }

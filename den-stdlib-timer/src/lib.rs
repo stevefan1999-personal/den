@@ -9,14 +9,14 @@ use tokio_util::sync::CancellationToken;
 /// Per-realm timer handles. Scripts see a numeric id, never this map.
 #[derive(JsLifetime)]
 struct Timers {
-    next: Cell<u32>,
+    next:    Cell<u32>,
     handles: RefCell<HashMap<u32, CancellationToken>>,
 }
 
 impl Default for Timers {
     fn default() -> Self {
         Self {
-            next: Cell::new(1),
+            next:    Cell::new(1),
             handles: RefCell::default(),
         }
     }
@@ -141,9 +141,7 @@ pub mod timer {
     #[rquickjs::function]
     #[qjs(rename = "setInterval")]
     pub fn set_interval<'js>(
-        callback: Value<'js>,
-        delay: Option<usize>,
-        ctx: Ctx<'js>,
+        callback: Value<'js>, delay: Option<usize>, ctx: Ctx<'js>,
     ) -> Result<u32> {
         let mut interval = time::interval(delay_of(delay));
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -184,9 +182,7 @@ pub mod timer {
     #[rquickjs::function]
     #[qjs(rename = "setTimeout")]
     pub fn set_timeout<'js>(
-        callback: Value<'js>,
-        delay: Option<usize>,
-        ctx: Ctx<'js>,
+        callback: Value<'js>, delay: Option<usize>, ctx: Ctx<'js>,
     ) -> Result<u32> {
         let duration = delay_of(delay);
         let (id, token, stop) = arm(&ctx)?;

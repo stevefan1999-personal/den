@@ -45,10 +45,7 @@ impl Connection {
     }
 
     pub fn execute<'js>(
-        self,
-        sql: String,
-        Opt(params): Opt<Either<Array<'js>, Object<'js>>>,
-        ctx: Ctx<'js>,
+        self, sql: String, Opt(params): Opt<Either<Array<'js>, Object<'js>>>, ctx: Ctx<'js>,
     ) -> Result<usize> {
         if let Some(conn) = self.conn.borrow().deref() {
             let stmt = conn.prepare(&sql);
@@ -72,10 +69,7 @@ impl Connection {
     }
 
     pub fn query_rows<'js>(
-        self,
-        sql: String,
-        Opt(params): Opt<Either<Array<'js>, Object<'js>>>,
-        ctx: Ctx<'js>,
+        self, sql: String, Opt(params): Opt<Either<Array<'js>, Object<'js>>>, ctx: Ctx<'js>,
     ) -> Result<Option<Array<'js>>> {
         if let Some(conn) = self.conn.borrow().deref() {
             let stmt = conn.prepare(&sql);
@@ -108,9 +102,7 @@ impl Connection {
 }
 
 fn bind_parameters_from_rquickjs_object<'js>(
-    stmt: &mut Statement<'_>,
-    params: Object<'js>,
-    ctx: Ctx<'js>,
+    stmt: &mut Statement<'_>, params: Object<'js>, ctx: Ctx<'js>,
 ) -> Result<()> {
     if params.len() > stmt.parameter_count() {
         return Err(Exception::throw_internal(&ctx, "too many parameters"));
@@ -133,9 +125,7 @@ fn bind_parameters_from_rquickjs_object<'js>(
 }
 
 fn bind_parameters_from_rquickjs_array<'js>(
-    stmt: &mut Statement<'_>,
-    params: Array<'js>,
-    ctx: Ctx<'js>,
+    stmt: &mut Statement<'_>, params: Array<'js>, ctx: Ctx<'js>,
 ) -> Result<()> {
     if params.len() > stmt.parameter_count() {
         return Err(Exception::throw_internal(&ctx, "too many parameters"));
@@ -149,10 +139,7 @@ fn bind_parameters_from_rquickjs_array<'js>(
 }
 
 fn bind_rusqlite_statement_index_to_rquickjs_value<'js>(
-    stmt: &mut Statement<'_>,
-    index: usize,
-    value: Value<'js>,
-    ctx: Ctx<'js>,
+    stmt: &mut Statement<'_>, index: usize, value: Value<'js>, ctx: Ctx<'js>,
 ) -> Result<()> {
     match value.type_of() {
         rquickjs::Type::Bool => stmt.raw_bind_parameter(index, value.as_bool().unwrap()),
@@ -177,8 +164,7 @@ fn bind_rusqlite_statement_index_to_rquickjs_value<'js>(
 }
 
 fn execute_stmt_and_collect_rows<'js>(
-    stmt: &mut Statement<'_>,
-    ctx: Ctx<'js>,
+    stmt: &mut Statement<'_>, ctx: Ctx<'js>,
 ) -> Result<Option<Array<'js>>> {
     let row_collection = Array::new(ctx.clone())?;
 
@@ -206,8 +192,7 @@ fn execute_stmt_and_collect_rows<'js>(
 }
 
 fn convert_rusqlite_to_rquickjs_value<'js>(
-    this: rusqlite::types::ValueRef<'_>,
-    ctx: Ctx<'js>,
+    this: rusqlite::types::ValueRef<'_>, ctx: Ctx<'js>,
 ) -> Result<Value<'js>> {
     match this.data_type() {
         rusqlite::types::Type::Null => Ok(Value::new_null(ctx)),

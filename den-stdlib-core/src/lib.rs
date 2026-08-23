@@ -43,9 +43,7 @@ pub mod core {
     }
 
     #[rquickjs::function]
-    pub fn gc(ctx: Ctx<'_>) {
-        ctx.run_gc();
-    }
+    pub fn gc(ctx: Ctx<'_>) { ctx.run_gc(); }
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {

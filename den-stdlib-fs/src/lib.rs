@@ -171,9 +171,7 @@ pub mod fs {
         ))
     }
     #[rquickjs::function(rename = "read")]
-    pub async fn read(path: String) -> Result<Vec<u8>> {
-        Ok(tokio::fs::read(path).await?)
-    }
+    pub async fn read(path: String) -> Result<Vec<u8>> { Ok(tokio::fs::read(path).await?) }
     #[rquickjs::function(rename = "readDir")]
     pub async fn read_dir(path: String) -> Result<Vec<super::DirEntry>> {
         let mut entries = tokio::fs::read_dir(path).await?;

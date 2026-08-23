@@ -14,9 +14,7 @@ struct FormatArgs {
 }
 
 impl FormatArgs {
-    pub fn is_key(&self) -> bool {
-        self.key.unwrap_or(false)
-    }
+    pub fn is_key(&self) -> bool { self.key.unwrap_or(false) }
 
     pub fn with_key(self) -> Self {
         Self {
@@ -37,15 +35,11 @@ pub struct Formatter {
 }
 
 impl Default for Formatter {
-    fn default() -> Self {
-        Self::builder().build()
-    }
+    fn default() -> Self { Self::builder().build() }
 }
 
 impl Formatter {
-    pub fn builder() -> FormatterBuilder {
-        FormatterBuilder::default()
-    }
+    pub fn builder() -> FormatterBuilder { FormatterBuilder::default() }
 
     pub fn format(&self, out: &mut impl Write, value: Value<'_>) -> Result<()> {
         self._format(out, value, FormatArgs::default(), 0)
@@ -54,11 +48,7 @@ impl Formatter {
     /// A poor attempt at mimicking the node format
     /// See https://github.com/nodejs/node/blob/363eca1033458b8c2808207e2e5fc88e0f4df655/lib/internal/util/inspect.js#L842
     fn _format(
-        &self,
-        out: &mut impl Write,
-        value: Value<'_>,
-        args: FormatArgs,
-        depth: usize,
+        &self, out: &mut impl Write, value: Value<'_>, args: FormatArgs, depth: usize,
     ) -> Result<()> {
         match value.type_of() {
             Type::String => {

@@ -9,9 +9,7 @@ pub struct Lookup;
 
 impl Lookup {
     pub async fn host<'js>(
-        ctx: Ctx<'js>,
-        host: String,
-        options: Option<Object<'js>>,
+        ctx: Ctx<'js>, host: String, options: Option<Object<'js>>,
     ) -> Result<Value<'js>> {
         if host.is_empty() {
             return Err(Exception::throw_type(
@@ -34,10 +32,12 @@ impl Lookup {
         let addrs = lookup_host((host.as_str(), 0))
             .await
             .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
-            .filter(|addr| match family {
-                4 => addr.is_ipv4(),
-                6 => addr.is_ipv6(),
-                _ => true,
+            .filter(|addr| {
+                match family {
+                    4 => addr.is_ipv4(),
+                    6 => addr.is_ipv6(),
+                    _ => true,
+                }
             })
             .collect::<Vec<_>>();
 

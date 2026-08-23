@@ -74,9 +74,7 @@ pub fn print_exception<'js>(ctx: &Ctx<'js>, value: &Value<'js>) {
 }
 
 /// This realm's reporter, if it has a sink carrying a callable one.
-fn reporter<'js>(ctx: &Ctx<'js>) -> Option<Function<'js>> {
-    sink_hook(ctx, REPORTER)
-}
+fn reporter<'js>(ctx: &Ctx<'js>) -> Option<Function<'js>> { sink_hook(ctx, REPORTER) }
 
 /// The sink's `name` entry, if this realm has a sink carrying a callable one.
 /// The userdata guard is released before the caller runs any JS, so that the

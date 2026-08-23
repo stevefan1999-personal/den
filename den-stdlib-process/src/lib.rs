@@ -24,17 +24,11 @@ use crate::{
 pub struct Process;
 
 impl Process {
-    pub fn pid() -> u32 {
-        std::process::id()
-    }
+    pub fn pid() -> u32 { std::process::id() }
 
-    pub fn ppid() -> u32 {
-        ParentId::get()
-    }
+    pub fn ppid() -> u32 { ParentId::get() }
 
-    pub fn argv() -> Vec<String> {
-        std::env::args().collect()
-    }
+    pub fn argv() -> Vec<String> { std::env::args().collect() }
 
     pub fn cwd(ctx: &Ctx<'_>) -> Result<String> {
         std::env::current_dir()
@@ -49,9 +43,7 @@ impl Process {
             .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))
     }
 
-    pub fn exit(code: Option<i32>) -> ! {
-        std::process::exit(code.unwrap_or(0))
-    }
+    pub fn exit(code: Option<i32>) -> ! { std::process::exit(code.unwrap_or(0)) }
 
     pub fn install<'js>(ctx: &Ctx<'js>, exports: &rquickjs::module::Exports<'js>) -> Result<()> {
         SignalHub::install(ctx)?;
@@ -153,25 +145,17 @@ impl ParentId {
 }
 
 #[rquickjs::function]
-pub fn cwd(ctx: Ctx<'_>) -> Result<String> {
-    Process::cwd(&ctx)
-}
+pub fn cwd(ctx: Ctx<'_>) -> Result<String> { Process::cwd(&ctx) }
 
 #[rquickjs::function]
-pub fn chdir(dir: String, ctx: Ctx<'_>) -> Result<()> {
-    Process::chdir(dir, &ctx)
-}
+pub fn chdir(dir: String, ctx: Ctx<'_>) -> Result<()> { Process::chdir(dir, &ctx) }
 
 #[rquickjs::function]
-pub fn exit(Opt(code): Opt<i32>) {
-    Process::exit(code)
-}
+pub fn exit(Opt(code): Opt<i32>) { Process::exit(code) }
 
 #[rquickjs::function]
 pub fn spawn<'js>(
-    cmd: Either<String, Vec<String>>,
-    Opt(options): Opt<Object<'js>>,
-    ctx: Ctx<'js>,
+    cmd: Either<String, Vec<String>>, Opt(options): Opt<Object<'js>>, ctx: Ctx<'js>,
 ) -> Result<Class<'js, Child>> {
     Child::spawn(ctx, cmd, options)
 }
@@ -188,18 +172,14 @@ pub fn add_signal_listener<'js>(sig: String, listener: Function<'js>, ctx: Ctx<'
 
 #[rquickjs::function(rename = "removeSignalListener")]
 pub fn remove_signal_listener<'js>(
-    sig: String,
-    listener: Function<'js>,
-    ctx: Ctx<'js>,
+    sig: String, listener: Function<'js>, ctx: Ctx<'js>,
 ) -> Result<()> {
     SignalHub::remove(&ctx, sig, listener)
 }
 
 #[rquickjs::function]
 pub async fn lookup<'js>(
-    host: String,
-    Opt(options): Opt<Object<'js>>,
-    ctx: Ctx<'js>,
+    host: String, Opt(options): Opt<Object<'js>>, ctx: Ctx<'js>,
 ) -> Result<Value<'js>> {
     Lookup::host(ctx, host, options).await
 }

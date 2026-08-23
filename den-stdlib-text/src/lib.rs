@@ -41,24 +41,16 @@ impl TextDecoder {
     }
 
     #[qjs(get, enumerable)]
-    pub fn encoding(&self) -> String {
-        self.encoding.name().to_ascii_lowercase()
-    }
+    pub fn encoding(&self) -> String { self.encoding.name().to_ascii_lowercase() }
 
     #[qjs(get, enumerable)]
-    pub fn fatal(&self) -> bool {
-        self.fatal
-    }
+    pub fn fatal(&self) -> bool { self.fatal }
 
     #[qjs(get, enumerable, rename = "ignoreBOM")]
-    pub fn ignore_bom(&self) -> bool {
-        self.ignore_bom
-    }
+    pub fn ignore_bom(&self) -> bool { self.ignore_bom }
 
     pub fn decode<'js>(
-        &self,
-        buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>,
-        ctx: Ctx<'js>,
+        &self, buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>, ctx: Ctx<'js>,
     ) -> Result<String> {
         match buffer {
             Some(buffer) => {
@@ -109,9 +101,7 @@ impl TextDecoder {
 pub struct TextEncoder {}
 
 impl Default for TextEncoder {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl TextEncoder {
@@ -130,24 +120,17 @@ impl TextEncoder {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl TextEncoder {
     #[qjs(constructor)]
-    pub fn new() -> Self {
-        Self {}
-    }
+    pub fn new() -> Self { Self {} }
 
     #[qjs(get, enumerable)]
-    pub fn encoding(&self) -> &'static str {
-        "utf-8"
-    }
+    pub fn encoding(&self) -> &'static str { "utf-8" }
 
     pub fn encode<'js>(&self, src: String, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
         TypedArray::new_copy(ctx, src)
     }
 
     pub fn encode_into<'js>(
-        &self,
-        src: String,
-        dest: TypedArray<'js, u8>,
-        ctx: Ctx<'js>,
+        &self, src: String, dest: TypedArray<'js, u8>, ctx: Ctx<'js>,
     ) -> Result<IndexMap<&'static str, usize>> {
         // `as_raw` is the only mutable view rquickjs 0.12 offers — `as_bytes` hands
         // back a shared `&[u8]` — and it reports a detached buffer as `None`.

@@ -13,9 +13,7 @@ use rquickjs::{
 pub struct Env;
 
 impl Env {
-    pub fn get(name: &str) -> Option<String> {
-        std::env::var(name).ok()
-    }
+    pub fn get(name: &str) -> Option<String> { std::env::var(name).ok() }
 
     pub fn set(name: &str, value: &str) {
         // SAFETY: `process.env` is a process-wide map, the same contract Node
@@ -29,9 +27,7 @@ impl Env {
         unsafe { std::env::remove_var(name) }
     }
 
-    pub fn keys() -> Vec<String> {
-        std::env::vars().map(|(name, _)| name).collect()
-    }
+    pub fn keys() -> Vec<String> { std::env::vars().map(|(name, _)| name).collect() }
 
     /// A Proxy whose get/set/delete/ownKeys talk to the process environment.
     pub fn proxy<'js>(ctx: Ctx<'js>) -> Result<Proxy<'js>> {

@@ -162,9 +162,7 @@ impl PipeReader {
 
 impl Child {
     pub fn spawn<'js>(
-        ctx: Ctx<'js>,
-        cmd: Either<String, Vec<String>>,
-        options: Option<Object<'js>>,
+        ctx: Ctx<'js>, cmd: Either<String, Vec<String>>, options: Option<Object<'js>>,
     ) -> Result<Class<'js, Self>> {
         let mut command = match cmd {
             Either::Left(program) => {
@@ -217,13 +215,10 @@ impl Child {
             None
         };
 
-        let instance = Class::instance(
-            ctx.clone(),
-            Self {
-                pid,
-                slot: Arc::new(Mutex::new(ChildSlot::Running(child))),
-            },
-        )?;
+        let instance = Class::instance(ctx.clone(), Self {
+            pid,
+            slot: Arc::new(Mutex::new(ChildSlot::Running(child))),
+        })?;
         instance.set("stdout", Self::optional_reader(&ctx, stdout)?)?;
         instance.set("stderr", Self::optional_reader(&ctx, stderr)?)?;
         Ok(instance)
