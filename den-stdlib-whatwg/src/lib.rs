@@ -11,9 +11,10 @@
 /// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
 /// job, and putting them here would duplicate the types fetch already
 /// constructs.
-const API: [&str; 9] = [
+const API: [&str; 10] = [
     "Blob",
     "CloseEvent",
+    "EventSource",
     "File",
     "FileReader",
     "FormData",
@@ -24,7 +25,7 @@ const API: [&str; 9] = [
 ];
 
 /// The prelude, in dependency order. Filenames show up in stack traces.
-const PRELUDE: [(&str, &str); 7] = [
+const PRELUDE: [(&str, &str); 8] = [
     ("den:whatwg/streams.js", include_str!("prelude/streams.js")),
     (
         "den:whatwg/platform.js",
@@ -41,6 +42,10 @@ const PRELUDE: [(&str, &str); 7] = [
         include_str!("prelude/file-reader.js"),
     ),
     ("den:whatwg/xhr.js", include_str!("prelude/xhr.js")),
+    (
+        "den:whatwg/eventsource.js",
+        include_str!("prelude/eventsource.js"),
+    ),
 ];
 
 /// WritableStream is part of the streams polyfill CompressionStream needs, but
@@ -167,9 +172,10 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    const DOCUMENTED: [&str; 9] = [
+    const DOCUMENTED: [&str; 10] = [
         "Blob",
         "CloseEvent",
+        "EventSource",
         "File",
         "FileReader",
         "FormData",
@@ -184,7 +190,7 @@ mod tests {
         assert_eq!(crate::API, DOCUMENTED, "the API list and its tests drifted");
         let report = eval::<Vec<String>>(
             r#"
-        "Blob,CloseEvent,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,XMLHttpRequest"
+        "Blob,CloseEvent,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,XMLHttpRequest"
           .split(",").map((name) => {
             const value = globalThis[name];
             if (typeof value !== "function") return `${name}: missing`;
@@ -373,6 +379,54 @@ mod tests {
             report,
             "200|hello-xhr|yes|true|ping|true|true|true"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn event_source_reads_two_events_from_a_local_listener() {
+        let server = super::local_http::serve(|_| {
+            super::local_http::Outgoing::ok(
+                b"event: custom\ndata: a\n\ndata: b\n\n".to_vec(),
+                "text/event-stream",
+            )
+        })
+        .await;
+        let url = server.url("/");
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            text_async(&format!(
+            r#"
+              (async () => {{
+                try {{
+                  let relativeThrew = false;
+                  try {{ new EventSource("/relative"); }}
+                  catch (error) {{ relativeThrew = error.name === "SyntaxError"; }}
+                  const es = new EventSource("{url}");
+                  const custom = new Promise((resolve) => es.addEventListener("custom", (e) => resolve(e)));
+                  const message = new Promise((resolve) => {{ es.onmessage = (e) => resolve(e); }});
+                  await new Promise((resolve, reject) => {{
+                    es.onopen = () => resolve();
+                    es.onerror = () => reject(new Error("eventsource error " + es.readyState));
+                  }});
+                  const first = await custom;
+                  const second = await message;
+                  es.close();
+                  return [
+                    relativeThrew,
+                    es.readyState === EventSource.CLOSED,
+                    first.data,
+                    first instanceof MessageEvent,
+                    second.data,
+                    second.origin.startsWith("http://127.0.0.1"),
+                  ].join("|");
+                }} catch (error) {{
+                  return "ERR:" + (error && (error.stack || error.message || String(error)));
+                }}
+              }})()
+            "#
+        )))
+        .await
+        .expect("EventSource test timed out");
+        assert_eq!(report, "true|true|a|true|b|true");
     }
 }
 

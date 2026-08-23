@@ -105,8 +105,16 @@ async fn read_request(stream: &mut TcpStream) -> std::io::Result<Incoming> {
     let header_end = buf
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
+        .or_else(|| buf.windows(2).position(|window| window == b"\n\n"))
         .ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "no header terminator")
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "no header terminator, {} bytes: {:?}",
+                    buf.len(),
+                    String::from_utf8_lossy(&buf[..buf.len().min(200)])
+                ),
+            )
         })?;
     let header_text = String::from_utf8_lossy(&buf[..header_end]);
     let mut lines = header_text.split("\r\n");
