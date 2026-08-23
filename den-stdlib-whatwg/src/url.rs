@@ -1790,42 +1790,6 @@ fn recover_percent_input(bytes: &[u8]) -> String {
     primary
 }
 
-fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    fn value(byte: u8) -> Option<u8> {
-        match byte {
-            b'A'..=b'Z' => Some(byte - b'A'),
-            b'a'..=b'z' => Some(byte - b'a' + 26),
-            b'0'..=b'9' => Some(byte - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            b'=' => Some(0),
-            _ => None,
-        }
-    }
-    let bytes: Vec<u8> = input
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect();
-    if bytes.len() % 4 != 0 {
-        return None;
-    }
-    let mut out = Vec::new();
-    for chunk in bytes.chunks(4) {
-        let first = value(chunk[0])?;
-        let second = value(chunk[1])?;
-        let third = value(chunk[2])?;
-        let fourth = value(chunk[3])?;
-        out.push((first << 2) | (second >> 4));
-        if chunk[2] != b'=' {
-            out.push((second << 4) | (third >> 2));
-        }
-        if chunk[3] != b'=' {
-            out.push((third << 6) | fourth);
-        }
-    }
-    Some(out)
-}
-
 fn utf8_url_encode(input: &str, which: &str) -> String {
     let Ok(mut url) = Url::parse("https://doesnotmatter.invalid/") else {
         return String::new();
@@ -1894,7 +1858,7 @@ fn percent_encoding_anchor<'js>(ctx: Ctx<'js>, href: Value<'js>) -> Result<Value
     let Some(value) = query_param(&href, "value") else {
         return Ok(Value::new_undefined(ctx));
     };
-    let Some(bytes) = decode_base64(&value) else {
+    let Ok(bytes) = den_util::base64_forgiving_decode(&value) else {
         return Ok(Value::new_undefined(ctx));
     };
     let input = recover_percent_input(&bytes);
