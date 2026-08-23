@@ -1,0 +1,23 @@
+[profile.default]
+test-threads = "num-cpus"
+# Official vendor binaries need a complete pass/fail/ignore tally.
+fail-fast = false
+
+# Official vendor suites are first-class nextest binaries. Each official file
+# is its own test, so a default workspace run reports real pass/fail/ignore.
+[[profile.default.overrides]]
+filter = 'binary(spec_core) | binary(wpt) | binary(test262)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# den unit tests only — used by lint.yml so official gaps do not hide regressions.
+[profile.compat]
+test-threads = "num-cpus"
+fail-fast = true
+default-filter = 'not (binary(spec_core) | binary(wpt) | binary(test262))'
+
+# Every vendored official file, raw, one nextest test each.
+[profile.official]
+test-threads = "num-cpus"
+fail-fast = false
+default-filter = 'binary(spec_core) | binary(wpt) | binary(test262)'
+slow-timeout = { period = "60s", terminate-after = 3 }
