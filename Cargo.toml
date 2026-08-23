@@ -104,7 +104,6 @@ typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
 
-tracing = ["color-eyre/track-caller", "color-eyre/capture-spantrace"]
 tokio-console = ["console-subscriber"]
 
 stdlib = ["den-core/stdlib"]
