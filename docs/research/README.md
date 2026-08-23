@@ -30,6 +30,10 @@ propagation, and the test plan.
 den: what already exists, the JS-prelude vs Rust-native split (copy txiki's split, not
 its C stack), and the file ownership for the parallel worktrees that implement the gap.
 
+[13](13-rquickjs-macros-shutdown-temporal.md) is the rquickjs 0.12 module-macro /
+`idle()`+interrupt shutdown / IndexMap `IntoJs` note, plus wrapping
+`temporal_rs` and running test262 Temporal.
+
 **These are snapshots, not living documents.** Each was written against a specific set of vendored
 crate versions at a specific moment, and their `file:line` references point at the tree *before*
 the upgrade landed — doc 07 says outright that the workspace did not compile when it was written.
