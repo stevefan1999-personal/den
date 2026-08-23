@@ -626,9 +626,9 @@ async fn an_uncaught_worker_error_reaches_the_parent_with_its_location() -> eyre
 /// HTML §8.1.7.5, through the seam two halves of den meet at: den-core's
 /// rejection tracker builds the event and dispatches it at the realm's global,
 /// while the class and the `onunhandledrejection` slot come from
-/// `den:worker`'s prelude. A worker scope is the only global in den that is an
-/// `EventTarget`, so it is the only realm where the whole chain is observable —
-/// and `preventDefault()` there is what stops the rejection reaching stderr.
+/// `den:worker`. A worker scope is where the whole chain is observable end to
+/// end — and `preventDefault()` there is what stops the rejection reaching
+/// stderr.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unhandled_rejection_in_a_worker_fires_at_its_global() -> eyre::Result<()> {
     const REJECTS: &str = r#"

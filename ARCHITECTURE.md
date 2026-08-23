@@ -616,12 +616,12 @@ keeps the process alive until `close()` or `terminate()`.
   - *`MessagePort`'s `close` event needs a started port.* HTML queues the event
     until the queue is enabled; den fires it from the pump, and a port that was
     never started has no pump.
-  - *den's main global is not an `EventTarget`.* Only a worker scope is, so in
-    the main realm there is no `addEventListener`/`dispatchEvent`, an
-    `unhandledrejection` cannot be heard (the rejection prints as before) and
-    `reportError()` prints instead of firing a cancelable `error` event. Inside
-    a worker both are fully spec-shaped, `onerror` and `onunhandledrejection`
-    included.
+  - *The main global is an `EventTarget`.* `den:worker`'s evaluate binds
+    `addEventListener` / `removeEventListener` / `dispatchEvent` onto
+    `globalThis` and defines `onunhandledrejection` / `onrejectionhandled`, so
+    a script can cancel an unhandled rejection the same way a worker can.
+    `reportError()` still prints on the main realm (it does not fire a
+    cancelable `error` event); inside a worker `onerror` is fully spec-shaped.
 
   The design notes are `docs/research/08`-`11`.
 

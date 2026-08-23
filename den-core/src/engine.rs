@@ -823,11 +823,9 @@ impl Engine {
     /// Fire `kind` — `unhandledrejection` or `rejectionhandled` (HTML §8.1.7.5)
     /// — at the realm's global, and say whether a listener cancelled it.
     ///
-    /// A realm whose global is not an `EventTarget`, or that has no
-    /// `PromiseRejectionEvent` to construct, cancels nothing and the rejection
-    /// goes to stderr as it always did. That is den's main realm today: only a
-    /// worker global is an event target, so this is the seam the JS side plugs
-    /// into rather than a promise that it already works everywhere.
+    /// `den:worker` makes the main global an EventTarget and installs
+    /// `PromiseRejectionEvent`. A realm without those (stdlib-worker off)
+    /// cancels nothing and the rejection goes to stderr as it always did.
     fn fire_rejection_event<'js>(
         ctx: &Ctx<'js>,
         kind: &str,
@@ -838,7 +836,6 @@ impl Engine {
         let globals = ctx.globals();
         let dispatched = (|| -> rquickjs::Result<bool> {
             let constructor = globals.get::<_, Constructor<'js>>("PromiseRejectionEvent")?;
-            let dispatch = globals.get::<_, rquickjs::Function<'js>>("dispatchEvent")?;
             let init = Object::new(ctx.clone())?;
             init.set("promise", promise.clone())?;
             init.set("reason", reason.clone())?;
@@ -854,6 +851,7 @@ impl Engine {
             if let Some(trusted) = den_stdlib_worker::report::sink_hook(ctx, "dispatchTrusted") {
                 return trusted.call((globals.clone(), event));
             }
+            let dispatch = globals.get::<_, rquickjs::Function<'js>>("dispatchEvent")?;
             dispatch.call((This(globals.clone()), event))
         })();
         match dispatched {
@@ -1033,28 +1031,16 @@ mod tests {
     #[cfg(all(feature = "stdlib-worker", feature = "stdlib-timer"))]
     const WORKER_FAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// A realm that wants a say in unhandled rejections needs two things on
-    /// its global: something to construct the event with, and somewhere to
-    /// dispatch it. A worker global has both; den's main realm has neither, so
-    /// the tests that want the event stand them up by hand — which is also the
-    /// shape the JS side has to provide (see `notFixed`).
+    /// `den:worker` already made the main global an EventTarget, so the tests
+    /// that want the event listen — they do not stand up a JS Event class.
     const REJECTION_HARNESS: &str = r#"
         globalThis.seen = [];
-        globalThis.PromiseRejectionEvent = class PromiseRejectionEvent {
-          constructor(type, init) {
-            this.type = type;
-            this.promise = init.promise;
-            this.reason = init.reason;
-            this.cancelable = !!init.cancelable;
-            this.defaultPrevented = false;
-          }
-          preventDefault() { if (this.cancelable) this.defaultPrevented = true }
-        };
-        globalThis.dispatchEvent = (event) => {
+        const record = (event) => {
           globalThis.seen.push(`${event.type}:${event.reason.message}`);
           if (globalThis.claim) event.preventDefault();
-          return !event.defaultPrevented;
         };
+        addEventListener("unhandledrejection", record);
+        addEventListener("rejectionhandled", record);
     "#;
 
     /// An uncaught error in the main script used to print twice: once from

@@ -58,6 +58,7 @@ const API: [&str; 17] = [
 pub mod worker_module {
     use rquickjs::{
         Ctx, Function, Object, Result, Value,
+        function::Opt,
         module::{Declarations, Exports},
         object::Property,
     };
@@ -149,6 +150,19 @@ pub mod worker_module {
             }
             exports.export(name, value)?;
         }
+        EventTarget::bind_on(ctx, &globals)?;
+        crate::events::define_event_handler(
+            ctx.clone(),
+            globals.clone(),
+            "onunhandledrejection".to_owned(),
+            Opt(None),
+        )?;
+        crate::events::define_event_handler(
+            ctx.clone(),
+            globals.clone(),
+            "onrejectionhandled".to_owned(),
+            Opt(None),
+        )?;
         Ok(())
     }
 }
@@ -297,6 +311,29 @@ mod tests {
             .map(|name| format!("{name}: ok"))
             .collect();
         assert_eq!(report, expected);
+    }
+
+    /// The main realm (and every other context that evaluates `den:worker`)
+    /// is an EventTarget: `addEventListener` is on `globalThis`, bound, so a
+    /// script can hear `unhandledrejection` without standing up a JS Event.
+    #[test]
+    fn the_realm_global_is_an_event_target() {
+        assert_eq!(
+            text(
+                r#"(() => {
+                     const seen = [];
+                     addEventListener("ping", (event) => seen.push(event.type));
+                     const dispatched = dispatchEvent(new Event("ping"));
+                     return [
+                       typeof addEventListener,
+                       typeof onunhandledrejection,
+                       dispatched,
+                       seen.join(","),
+                     ].join("|");
+                   })()"#
+            ),
+            "function|object|true|ping"
+        );
     }
 
     /// `DOMException` is quickjs-ng's, not ours (see [`API`]'s doc comment) —

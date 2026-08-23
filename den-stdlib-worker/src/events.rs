@@ -4,9 +4,10 @@
 //! Listener maps live in the [`EventTarget`] Rust struct. Methods take `this`
 //! as a JS value so they still work on objects that merely inherit
 //! `EventTarget.prototype` — JS `class FileReader extends EventTarget`, native
-//! subclasses that reparent their prototype, and the worker global, which
-//! becomes an EventTarget by borrowing these methods rather than being
-//! constructed as one. A hidden slot on such objects holds the struct.
+//! subclasses that reparent their prototype, and both the main realm and a
+//! worker global, which become EventTargets by borrowing these methods rather
+//! than being constructed as one. A hidden slot on such objects holds the
+//! struct.
 
 use std::{
     cell::{Cell, RefCell},
@@ -802,6 +803,24 @@ impl<'js> EventTarget<'js> {
         Self {
             table: RefCell::new(ListenerTable::default()),
         }
+    }
+
+    /// Copy `addEventListener` / `removeEventListener` / `dispatchEvent` onto
+    /// `target`, bound so `this` is that object. The main realm and a worker
+    /// global both become EventTargets this way instead of being constructed
+    /// as one.
+    pub fn bind_on(ctx: &Ctx<'js>, target: &Object<'js>) -> Result<()> {
+        let Some(proto) = Class::<Self>::prototype(ctx)? else {
+            return Ok(());
+        };
+        let this = target.clone().into_value();
+        for method_name in ["addEventListener", "removeEventListener", "dispatchEvent"] {
+            let method: Function<'js> = proto.get(method_name)?;
+            let bind: Function<'js> = method.get("bind")?;
+            let bound: Function<'js> = bind.call((This(method.clone()), this.clone()))?;
+            target.prop(method_name, Property::from(bound).writable().configurable())?;
+        }
+        Ok(())
     }
 
     /// The EventTarget whose listener map `this` should use: the instance

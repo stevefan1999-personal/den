@@ -30,7 +30,7 @@ use rquickjs::{
     atom::PredefinedAtom,
     class::Trace,
     context::EvalOptions,
-    function::{Func, FuncArg, Opt, Rest, This},
+    function::{Func, FuncArg, Opt, Rest},
     object::Property,
 };
 use tokio::{
@@ -298,11 +298,6 @@ fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
             .filter(|value: &Value| !value.is_undefined() && !value.is_null()),
         _ => None,
     }
-}
-
-fn bind<'js>(function: &Function<'js>, this: Value<'js>) -> Result<Function<'js>> {
-    let bind: Function<'js> = function.get("bind")?;
-    bind.call((This(function.clone()), this))
 }
 
 /// HTML §8.1.4.6 step 3: fire a cancelable `error` at `target`. `true` means
@@ -1134,16 +1129,7 @@ fn install_worker_scope<'js>(
         Property::from(import).writable().configurable(),
     )?;
 
-    if let Some(proto) = Class::<EventTarget>::prototype(ctx)? {
-        for method_name in ["addEventListener", "removeEventListener", "dispatchEvent"] {
-            let method: Function<'js> = proto.get(method_name)?;
-            let bound = bind(&method, scope.clone().into_value())?;
-            scope.prop(
-                method_name,
-                Property::from(bound).writable().configurable(),
-            )?;
-        }
-    }
+    EventTarget::bind_on(ctx, &scope)?;
 
     let arm = track_message_listeners(ctx.clone(), scope.clone().into_value(), native)?;
     define_event_handler(
