@@ -91,6 +91,8 @@ rquickjs.workspace = true
 rustyline = { version = "18.0.1", features = ["derive", "with-sqlite-history"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
 vc-ltl = "5.3.1"
 
 [dev-dependencies]
