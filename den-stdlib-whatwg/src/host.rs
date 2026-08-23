@@ -2,9 +2,10 @@
 
 use std::ffi::CString;
 
+use den_util::{BufferSource, Probe as _};
 use rquickjs::{
-    ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol,
-    TypedArray, Value, class::JsClass, function::Constructor, qjs,
+    ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol, Value,
+    class::JsClass, function::Constructor, qjs,
 };
 
 use crate::{
@@ -108,47 +109,24 @@ impl Host {
         }
     }
 
+    /// Lenient `BufferSource` read: `None` for anything that is not a buffer
+    /// source, empty bytes for detached or unusable ones — never throws.
     pub fn buffer_source_bytes<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Option<Vec<u8>>> {
-        if Self::js_pred(ctx, "(v) => v instanceof ArrayBuffer", &value)? {
+        if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
             return Ok(Some(
-                ArrayBuffer::from_js(ctx, value)
-                    .ok()
-                    .and_then(|buffer| buffer.as_bytes().map(|bytes| bytes.to_vec()))
-                    .unwrap_or_default(),
+                buffer.as_bytes().map(<[u8]>::to_vec).unwrap_or_default(),
             ));
         }
-        if Self::js_pred(ctx, "(v) => ArrayBuffer.isView(v)", &value)? {
-            if let Some(obj) = value.as_object() {
-                if let Ok(buffer) = obj.get::<_, ArrayBuffer>("buffer") {
-                    let offset = obj.get::<_, usize>("byteOffset").unwrap_or(0);
-                    let len = obj.get::<_, usize>("byteLength").unwrap_or(0);
-                    return Ok(Some(match buffer.as_bytes() {
-                        Some(bytes) => {
-                            let end = offset.saturating_add(len).min(bytes.len());
-                            let start = offset.min(end);
-                            bytes[start..end].to_vec()
-                        }
-                        None => Vec::new(),
-                    }));
-                }
-            }
-            return Ok(Some(Vec::new()));
+        let is_view = ctx
+            .probe(|| BufferSource::is_array_buffer_view(ctx, &value).ok())
+            .unwrap_or(false);
+        if !is_view {
+            return Ok(None);
         }
-        if let Ok(view) = TypedArray::<u8>::from_js(ctx, value) {
-            return Ok(Some(
-                view.as_bytes()
-                    .map(|bytes| bytes.to_vec())
-                    .unwrap_or_default(),
-            ));
-        }
-        Ok(None)
-    }
-
-    fn js_pred<'js>(ctx: &Ctx<'js>, source: &str, value: &Value<'js>) -> Result<bool> {
-        match ctx.eval::<Function<'js>, _>(source) {
-            Ok(func) => func.call((value.clone(),)),
-            Err(_) => Ok(false),
-        }
+        Ok(Some(
+            ctx.probe(|| BufferSource::view_bytes(ctx, &value).ok())
+                .unwrap_or_default(),
+        ))
     }
 
     pub fn blob_like_bytes<'js>(_ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Vec<u8>> {
