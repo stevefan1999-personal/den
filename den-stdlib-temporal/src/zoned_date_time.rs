@@ -20,10 +20,11 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, i128_to_bigint, js_to_string, options_object, ordering_i32, probe_class,
-        reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
-        to_integer_if_integral, to_integer_if_integral_i64, to_integer_with_truncation, to_number,
-        to_time_zone, to_zoned_date_time, unwrap_temporal,
+        get_defined, i128_to_bigint, js_to_string, optional_integral_i128, optional_integral_i64,
+        optional_truncated_i32, optional_truncated_u16, optional_truncated_u8, options_object,
+        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_big_int_i128,
+        to_calendar, to_duration, to_number, to_time_zone, to_zoned_date_time, truncated_u16,
+        truncated_u8, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -389,21 +390,6 @@ impl ZonedDateTime {
     }
 }
 
-fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
-    i32::try_from(to_integer_with_truncation(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
-fn truncated_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
-    u8::try_from(truncated_i32(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
-fn truncated_u16<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u16> {
-    u16::try_from(truncated_i32(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
 fn time_zone_identifier<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZone> {
     if !value.is_string() {
         return Err(Exception::throw_type(
@@ -631,10 +617,8 @@ fn apply_zoned_month_code<'js>(
 fn apply_year<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, mut fields: ZonedDateTimeFields,
 ) -> Result<ZonedDateTimeFields> {
-    if let Some(value) = get_defined(object, "year")? {
-        fields.calendar_fields = fields
-            .calendar_fields
-            .with_year(truncated_i32(ctx, &value)?);
+    if let Some(year) = optional_truncated_i32(ctx, object, "year")? {
+        fields.calendar_fields = fields.calendar_fields.with_year(year);
     }
     Ok(fields)
 }
@@ -769,24 +753,6 @@ fn duration_like_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempor
     unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
 
-fn optional_integral_i64<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
-    }
-}
-
-fn optional_integral_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral(ctx, &value).map(Some),
-    }
-}
-
 fn difference_settings<'js>(
     ctx: &Ctx<'js>, options: Opt<Value<'js>>,
 ) -> Result<DifferenceSettings> {
@@ -891,24 +857,6 @@ fn plain_time_from_value<'js>(
         ));
     }
     unwrap_temporal(ctx, temporal_rs::PlainTime::from_partial(partial, None))
-}
-
-fn optional_truncated_u8<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<u8>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => truncated_u8(ctx, &value).map(Some),
-    }
-}
-
-fn optional_truncated_u16<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<u16>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => truncated_u16(ctx, &value).map(Some),
-    }
 }
 
 fn to_string_options<'js>(

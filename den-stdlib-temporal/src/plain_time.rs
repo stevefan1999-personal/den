@@ -15,9 +15,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, js_to_string, optional_truncated_u16, optional_truncated_u8, options_object,
-        ordering_i32, probe_class, require_object, throw_value_of, to_integer_if_integral,
-        to_integer_if_integral_i64, to_integer_with_truncation, to_number, unwrap_temporal,
+        get_defined, js_to_string, optional_integral_i128, optional_integral_i64,
+        optional_truncated_i128, options_object, ordering_i32, probe_class, require_object,
+        throw_value_of, to_number, truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
     },
     duration::Duration,
     plain_date::PlainDate,
@@ -51,12 +51,12 @@ impl PlainTime {
         unwrap_temporal(
             &ctx,
             temporal_rs::PlainTime::try_new(
-                optional_truncated_u8(&ctx, hour)?,
-                optional_truncated_u8(&ctx, minute)?,
-                optional_truncated_u8(&ctx, second)?,
-                optional_truncated_u16(&ctx, millisecond)?,
-                optional_truncated_u16(&ctx, microsecond)?,
-                optional_truncated_u16(&ctx, nanosecond)?,
+                truncated_u8_or_zero(&ctx, hour)?,
+                truncated_u8_or_zero(&ctx, minute)?,
+                truncated_u8_or_zero(&ctx, second)?,
+                truncated_u16_or_zero(&ctx, millisecond)?,
+                truncated_u16_or_zero(&ctx, microsecond)?,
+                truncated_u16_or_zero(&ctx, nanosecond)?,
             ),
         )
         .map(Self::wrap)
@@ -264,41 +264,14 @@ fn overflow_from_object<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> R
     }
 }
 
-fn optional_truncated_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    let Some(value) = get_defined(object, key)? else {
-        return Ok(None);
-    };
-    to_integer_with_truncation(ctx, &value).map(Some)
-}
-
-fn optional_integral_i64<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    let Some(value) = get_defined(object, key)? else {
-        return Ok(None);
-    };
-    to_integer_if_integral_i64(ctx, &value).map(Some)
-}
-
-fn optional_integral_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    let Some(value) = get_defined(object, key)? else {
-        return Ok(None);
-    };
-    to_integer_if_integral(ctx, &value).map(Some)
-}
-
 /// `ToTemporalTimeRecord`: Get time units in alphabetical order.
 fn to_time_record<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<TimeRecord> {
-    let hour = optional_truncated_field(ctx, object, "hour")?;
-    let microsecond = optional_truncated_field(ctx, object, "microsecond")?;
-    let millisecond = optional_truncated_field(ctx, object, "millisecond")?;
-    let minute = optional_truncated_field(ctx, object, "minute")?;
-    let nanosecond = optional_truncated_field(ctx, object, "nanosecond")?;
-    let second = optional_truncated_field(ctx, object, "second")?;
+    let hour = optional_truncated_i128(ctx, object, "hour")?;
+    let microsecond = optional_truncated_i128(ctx, object, "microsecond")?;
+    let millisecond = optional_truncated_i128(ctx, object, "millisecond")?;
+    let minute = optional_truncated_i128(ctx, object, "minute")?;
+    let nanosecond = optional_truncated_i128(ctx, object, "nanosecond")?;
+    let second = optional_truncated_i128(ctx, object, "second")?;
     let record = TimeRecord {
         hour,
         minute,

@@ -233,27 +233,105 @@ pub fn required_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>, name: &str) -> R
     u8::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
 }
 
-pub fn optional_truncated_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
+/// `ToIntegerWithTruncation`, then a range check reporting
+/// `"integer is out of range"` for every out-of-range input.
+pub fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
+    let integer = to_integer_with_truncation(ctx, value)?;
+    i32::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+}
+
+pub fn truncated_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
+    u8::try_from(truncated_i32(ctx, value)?)
+        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+}
+
+pub fn truncated_u16<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u16> {
+    u16::try_from(truncated_i32(ctx, value)?)
+        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+}
+
+/// Constructor arguments: an absent argument is `undefined`, which truncation
+/// reads as `NaN` and rejects — required fields of `new PlainDate()` and
+/// friends throw rather than default.
+pub fn ctor_required_i32<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<i32> {
+    let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    truncated_i32(ctx, &value)
+}
+
+pub fn ctor_required_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
+    let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    truncated_u8(ctx, &value)
+}
+
+pub fn truncated_u8_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
     match value.0 {
         None => Ok(0),
         Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => {
-            let integer = to_integer_with_truncation(ctx, &value)?;
-            u8::try_from(integer)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
+        Some(value) => truncated_u8(ctx, &value),
     }
 }
 
-pub fn optional_truncated_u16<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u16> {
+pub fn truncated_u16_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u16> {
     match value.0 {
         None => Ok(0),
         Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => {
-            let integer = to_integer_with_truncation(ctx, &value)?;
-            u16::try_from(integer)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
+        Some(value) => truncated_u16(ctx, &value),
+    }
+}
+
+/// `ToIntegerIfIntegral` on a defined property; absent stays `None`.
+pub fn optional_integral_i64<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i64>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_integral_i128<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i128>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => to_integer_if_integral(ctx, &value).map(Some),
+    }
+}
+
+/// `ToIntegerWithTruncation` on a defined property; absent stays `None`.
+pub fn optional_truncated_i32<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i32>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => truncated_i32(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_truncated_i128<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i128>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => to_integer_with_truncation(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_truncated_u8<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<u8>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => truncated_u8(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_truncated_u16<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<u16>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => truncated_u16(ctx, &value).map(Some),
     }
 }
 

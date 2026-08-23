@@ -18,9 +18,9 @@ use temporal_rs::{
 use crate::{
     convert::{
         ctor_integer_if_integral, ctor_integer_if_integral_i128, get_defined, js_to_string,
-        ordering_i32, probe_class, throw_value_of, to_calendar, to_integer_if_integral,
-        to_integer_if_integral_i64, to_integer_with_truncation, to_number, to_time_zone, to_unit,
-        unwrap_temporal,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i32,
+        optional_truncated_u16, optional_truncated_u8, ordering_i32, probe_class, throw_value_of,
+        to_calendar, to_number, to_time_zone, to_unit, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -114,41 +114,6 @@ fn string_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
         ));
     }
     js_to_string(ctx, &primitive)
-}
-
-fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
-    let integer = to_integer_with_truncation(ctx, value)?;
-    i32::try_from(integer).map_err(|error| out_of_range(ctx, error))
-}
-
-fn optional_integral_i64<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    get_defined(object, key)?
-        .map_or(Ok(None), |value| to_integer_if_integral_i64(ctx, &value).map(Some))
-}
-
-fn optional_integral_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    get_defined(object, key)?
-        .map_or(Ok(None), |value| to_integer_if_integral(ctx, &value).map(Some))
-}
-
-fn optional_truncated_u8<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<u8>> {
-    get_defined(object, key)?.map_or(Ok(None), |value| {
-        u8::try_from(truncated_i32(ctx, &value)?).map(Some).map_err(|error| out_of_range(ctx, error))
-    })
-}
-
-fn optional_truncated_u16<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<u16>> {
-    get_defined(object, key)?.map_or(Ok(None), |value| {
-        u16::try_from(truncated_i32(ctx, &value)?).map(Some).map_err(|error| out_of_range(ctx, error))
-    })
 }
 
 fn partial_duration_from_object<'js>(
@@ -272,8 +237,7 @@ fn relative_to_option<'js>(
     let second = optional_truncated_u8(ctx, bag, "second")?;
     let zone = get_defined(bag, "timeZone")?
         .map_or(Ok(None), |time_zone| to_time_zone(ctx, &time_zone).map(Some))?;
-    let year = get_defined(bag, "year")?
-        .map_or(Ok(None), |value| truncated_i32(ctx, &value).map(Some))?;
+    let year = optional_truncated_i32(ctx, bag, "year")?;
     let date_fields = CalendarFields::new()
         .with_optional_year(year)
         .with_optional_month(month)
