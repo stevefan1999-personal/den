@@ -967,6 +967,7 @@ dependencies = [
  "color-eyre",
  "den-stdlib-core",
  "den-stdlib-wasm",
+ "den-stdlib-worker",
  "den-transpiler-oxc",
  "den-utils",
  "derivative",
@@ -1014,6 +1015,21 @@ dependencies = [
  "wasmtime",
  "wasmtime-wasi",
  "wat",
+]
+
+[[package]]
+name = "den-stdlib-worker"
+version = "0.4.0"
+dependencies = [
+ "den-stdlib-core",
+ "den-transpiler-oxc",
+ "derive_more",
+ "relative-path",
+ "rquickjs",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]

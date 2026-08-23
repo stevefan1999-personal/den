@@ -1,0 +1,32 @@
+[package]
+name = "den-stdlib-worker"
+description = "Web Workers API for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
+den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", optional = true }
+derive_more.workspace = true
+relative-path = "2.0.1"
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-util.workspace = true
+tracing.workspace = true
+url = "2.5.8"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = ["transpile"]
+transpile = ["dep:den-transpiler-oxc"]
+
+[lints]
+workspace = true

@@ -4,6 +4,7 @@ members = [
     "den-core",
     "den-stdlib-core",
     "den-stdlib-wasm",
+    "den-stdlib-worker",
     "den-transpiler-oxc",
     "den-utils",
 ]
@@ -92,7 +93,7 @@ vc-ltl = "5.3.1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
-default = ["typescript", "react", "wasm-wasmtime", "mimalloc"]
+default = ["typescript", "react", "wasm-wasmtime", "stdlib-worker", "mimalloc"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -102,6 +103,7 @@ tokio-console = ["console-subscriber"]
 
 stdlib = ["den-core/stdlib"]
 stdlib-core = ["den-core/stdlib-core"]
+stdlib-worker = ["den-core/stdlib-worker"]
 
 wasm = ["den-core/wasm"]
 wasm-wasmtime = ["den-core/wasm-wasmtime"]

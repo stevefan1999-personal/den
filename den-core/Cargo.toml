@@ -41,6 +41,7 @@ typed-builder.workspace = true
 # Den specific stuff
 den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true, default-features = false }
+den-stdlib-worker = { version = "*", path = "../den-stdlib-worker", optional = true, default-features = false }
 den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-features = false, optional = true }
 den-utils = { version = "*", path = "../den-utils" }
 
@@ -52,7 +53,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 wat = "1.257.1"
 
 [features]
-default = ["typescript", "react", "wasm-wasmtime"]
+default = ["typescript", "react", "wasm-wasmtime", "stdlib-worker"]
 typescript = [
     "transpile",
     "den-transpiler-oxc?/typescript",
@@ -61,12 +62,15 @@ react = ["transpile", "den-transpiler-oxc?/react"]
 transpile = [
     "dep:den-transpiler-oxc",
     "den-transpiler-oxc?/transpile",
+    "den-stdlib-worker?/transpile",
 ]
 
 stdlib = [
     "stdlib-core",
+    "stdlib-worker",
 ]
 stdlib-core = ["dep:den-stdlib-core"]
+stdlib-worker = ["dep:den-stdlib-worker"]
 
 # `wasm` is a plain alias for the default backend: making it `dep:`-only would let
 # `--features wasm-wasmi` drag wasmtime in through den-stdlib-wasm's own defaults.
