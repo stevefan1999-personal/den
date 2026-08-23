@@ -1095,6 +1095,7 @@ version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "base64-simd",
+ "den-util",
  "rquickjs",
 ]
 
@@ -1102,6 +1103,7 @@ dependencies = [
 name = "den-stdlib-crypto"
 version = "0.4.0"
 dependencies = [
+ "den-util",
  "indexmap",
  "rand 0.10.2",
  "rquickjs",
@@ -1163,6 +1165,7 @@ dependencies = [
 name = "den-stdlib-temporal"
 version = "0.4.0"
 dependencies = [
+ "den-util",
  "indexmap",
  "libtest-mimic",
  "rquickjs",
@@ -1195,6 +1198,7 @@ dependencies = [
 name = "den-stdlib-wasm"
 version = "0.4.0"
 dependencies = [
+ "den-util",
  "derive_more",
  "either",
  "indexmap",
@@ -1215,6 +1219,7 @@ dependencies = [
  "den-stdlib-text",
  "den-stdlib-whatwg-fetch",
  "den-stdlib-worker",
+ "den-util",
  "flate2",
  "futures",
  "indexmap",
@@ -1231,6 +1236,7 @@ dependencies = [
  "den-stdlib-text",
  "den-stdlib-whatwg",
  "den-stdlib-worker",
+ "den-util",
  "derive_more",
  "either",
  "futures",
@@ -1250,6 +1256,7 @@ version = "0.4.0"
 dependencies = [
  "den-stdlib-core",
  "den-transpiler-oxc",
+ "den-util",
  "indexmap",
  "libc",
  "rquickjs",
@@ -1272,6 +1279,14 @@ dependencies = [
  "oxc_sourcemap",
  "oxc_span",
  "oxc_transformer",
+]
+
+[[package]]
+name = "den-util"
+version = "0.4.0"
+dependencies = [
+ "base64 0.23.1",
+ "rquickjs",
 ]
 
 [[package]]

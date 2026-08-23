@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 den-stdlib-networking.workspace = true
+den-util.workspace = true
 flate2.workspace = true
 futures.workspace = true
 indexmap.workspace = true

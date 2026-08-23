@@ -13,6 +13,7 @@ keywords.workspace = true
 [dependencies]
 base64 = { workspace = true, optional = true }
 base64-simd = { workspace = true, optional = true }
+den-util.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 
 [features]

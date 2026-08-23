@@ -17,6 +17,7 @@ members = [
     "den-stdlib-whatwg-fetch",
     "den-stdlib-worker",
     "den-transpiler-oxc",
+    "den-util",
 ]
 
 [workspace.package]
@@ -49,6 +50,7 @@ den-stdlib-whatwg = { version = "0.4.0", path = "den-stdlib-whatwg" }
 den-stdlib-whatwg-fetch = { version = "0.4.0", path = "den-stdlib-whatwg-fetch" }
 den-stdlib-worker = { version = "0.4.0", path = "den-stdlib-worker", default-features = false }
 den-transpiler-oxc = { version = "0.4.0", path = "den-transpiler-oxc", default-features = false }
+den-util = { version = "0.4.0", path = "den-util" }
 
 # Shared third-party. Versions stay pinned to what the tree already declared;
 # members name features (and optional / default-features) at the call site.

@@ -11,6 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+den-util.workspace = true
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 rand.workspace = true
