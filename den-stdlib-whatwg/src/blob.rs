@@ -1,5 +1,6 @@
 //! WHATWG File API `Blob` and `File`.
 
+use den_util::coerce_string;
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Ctx, FromJs, JsIterator, JsLifetime, Object, Result, TypedArray,
     Value, atom::PredefinedAtom, class::Trace, function::Opt,
@@ -248,7 +249,7 @@ impl File {
             ));
         };
         let collected = collect_parts(&ctx, file_bits)?;
-        let name = Host::coerce_string(&ctx, file_name)?;
+        let name = coerce_string(&ctx, file_name)?;
         let (bag, last_modified) = parse_file_bag(&ctx, options.0)?;
         Ok(Self {
             inner: BlobInner::from_collected(collected, bag.type_, bag.native),
@@ -412,7 +413,7 @@ fn read_endings<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool> {
     if value.is_undefined() {
         return Ok(false);
     }
-    match Host::coerce_string(ctx, value)?.as_str() {
+    match coerce_string(ctx, value)?.as_str() {
         "transparent" => Ok(false),
         "native" => Ok(true),
         _ => Err(Host::throw_type(
@@ -427,7 +428,7 @@ fn read_type<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<String> {
     if value.is_undefined() {
         return Ok(String::new());
     }
-    Host::coerce_string(ctx, value)
+    coerce_string(ctx, value)
 }
 
 fn read_last_modified<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<f64>> {
@@ -497,7 +498,7 @@ fn optional_type<'js>(ctx: &Ctx<'js>, value: Option<Value<'js>>) -> Result<Strin
     if value.is_undefined() {
         return Ok(String::new());
     }
-    Host::coerce_string(ctx, value)
+    coerce_string(ctx, value)
 }
 
 fn clamp_long_long(number: f64) -> f64 {

@@ -1,5 +1,6 @@
 //! Shared Fetch body extract / consume. Stream errors stay JS exceptions.
 
+use den_util::BufferSource;
 use rquickjs::{
     Array, ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
     TypedArray, Value,
@@ -53,13 +54,7 @@ pub(crate) fn set_content_type_if_missing(
 }
 
 pub(crate) fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-    let Ok(array_buffer) = ctx.globals().get::<_, Object>("ArrayBuffer") else {
-        return Ok(false);
-    };
-    let Ok(is_view) = array_buffer.get::<_, Function>("isView") else {
-        return Ok(false);
-    };
-    is_view.call((value.clone(),))
+    BufferSource::is_array_buffer_view(ctx, value)
 }
 
 pub(crate) fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>> {
@@ -69,20 +64,7 @@ pub(crate) fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>
 }
 
 pub(crate) fn copy_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
-    let Some(object) = value.as_object() else {
-        return Ok(Vec::new());
-    };
-    let buffer: ArrayBuffer = object.get("buffer")?;
-    let offset: usize = object.get("byteOffset").unwrap_or(0);
-    let length: usize = object.get("byteLength").unwrap_or(0);
-    let bytes = buffer
-        .as_bytes()
-        .ok_or_else(|| Exception::throw_type(ctx, "buffer is detached"))?;
-    let end = offset
-        .checked_add(length)
-        .filter(|end| *end <= bytes.len())
-        .ok_or_else(|| Exception::throw_range(ctx, "view is out of bounds"))?;
-    Ok(bytes[offset..end].to_vec())
+    BufferSource::view_bytes(ctx, value)
 }
 
 pub(crate) fn apply_body_types<'js>(
