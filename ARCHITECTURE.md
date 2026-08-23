@@ -23,9 +23,8 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-timer      setTimeout / setInterval
       ├── den-stdlib-whatwg-fetch  fetch() + Response (reqwest)
       ├── den-stdlib-wasm       the WebAssembly JS API (optional, one backend)
-      ├── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
-      │                         BroadcastChannel, EventTarget, structuredClone
-      └── den-utils             serde_json glue
+      └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
+                                BroadcastChannel, EventTarget, structuredClone
 ```
 
 One workspace member is not in that graph: `den-stdlib-io` (async read/write

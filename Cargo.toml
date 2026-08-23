@@ -15,7 +15,6 @@ members = [
     "den-stdlib-whatwg-fetch",
     "den-stdlib-worker",
     "den-transpiler-oxc",
-    "den-utils",
 ]
 
 [workspace.package]
@@ -87,7 +86,6 @@ clap = { version = "4.6.6", features = ["unicode", "derive", "env"] }
 color-eyre = { version = "0.6.5", default-features = false }
 console-subscriber = { version = "0.5.0", optional = true }
 den-core = { version = "*", path = "den-core", default-features = false }
-den-utils = { version = "*", path = "den-utils", default-features = false }
 futures.workspace = true
 mimalloc = { version = "0.1.52", optional = true }
 rquickjs.workspace = true

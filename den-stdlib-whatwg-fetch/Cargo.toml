@@ -10,7 +10,6 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-den-utils = { version = "*", path = "../den-utils", features = ["serde_json"] }
 derive_more.workspace = true
 either.workspace = true
 indexmap.workspace = true

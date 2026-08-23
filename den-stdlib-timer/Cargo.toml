@@ -14,7 +14,6 @@ keywords.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 den-stdlib-core = { version = "*", path = "../den-stdlib-core" }
 tokio = { workspace = true, features = ["time"] }
-den-utils = { version = "*", path = "../den-utils" }
 
 [lints]
 workspace = true

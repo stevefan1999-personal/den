@@ -50,7 +50,6 @@ den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true,
 den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch", optional = true }
 den-stdlib-worker = { version = "*", path = "../den-stdlib-worker", optional = true, default-features = false }
 den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-features = false, optional = true }
-den-utils = { version = "*", path = "../den-utils" }
 
 [dev-dependencies]
 color-eyre = "0.6.5"

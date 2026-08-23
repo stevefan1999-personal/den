@@ -987,7 +987,6 @@ dependencies = [
  "color-eyre",
  "console-subscriber",
  "den-core",
- "den-utils",
  "futures",
  "mimalloc",
  "rquickjs",
@@ -1015,7 +1014,6 @@ dependencies = [
  "den-stdlib-whatwg-fetch",
  "den-stdlib-worker",
  "den-transpiler-oxc",
- "den-utils",
  "derive_more",
  "fmmap",
  "matchit 0.9.2",
@@ -1118,7 +1116,6 @@ name = "den-stdlib-timer"
 version = "0.4.0"
 dependencies = [
  "den-stdlib-core",
- "den-utils",
  "rquickjs",
  "tokio",
 ]
@@ -1142,7 +1139,6 @@ dependencies = [
 name = "den-stdlib-whatwg-fetch"
 version = "0.4.0"
 dependencies = [
- "den-utils",
  "derive_more",
  "either",
  "http",
@@ -1181,16 +1177,6 @@ dependencies = [
  "oxc_sourcemap",
  "oxc_span",
  "oxc_transformer",
-]
-
-[[package]]
-name = "den-utils"
-version = "0.4.0"
-dependencies = [
- "derive_more",
- "rquickjs",
- "serde",
- "serde_json",
 ]
 
 [[package]]
