@@ -11,13 +11,19 @@ use std::{
 use derive_more::derive::{From, Into};
 use futures::{Stream, StreamExt, future::Either};
 use rquickjs::{
-    Array, ArrayBuffer, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
+    Array, ArrayBuffer, Class, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Result, TypedArray, Value as JsValue,
     class::Trace,
-    function::{Constructor, Opt, This},
+    function::{Constructor, This},
 };
 use serde_json::Value;
 use tokio::sync::Notify;
+
+mod headers;
+mod request;
+
+pub use headers::Headers;
+pub use request::Request;
 
 #[derive(From, Into, Clone, Eq, PartialEq, Hash)]
 pub struct SerdeJsonValue(pub serde_json::Value);
@@ -316,26 +322,8 @@ impl Response {
     }
 
     #[qjs(enumerable, get)]
-    pub fn headers<'js>(&self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
-        match ctx.globals().get::<_, Constructor<'js>>("Headers") {
-            Ok(ctor) => {
-                let pairs = Array::new(ctx.clone())?;
-                for (index, (name, value)) in self.headers.iter().enumerate() {
-                    let pair = Array::new(ctx.clone())?;
-                    pair.set(0, name.clone())?;
-                    pair.set(1, value.clone())?;
-                    pairs.set(index, pair)?;
-                }
-                ctor.construct((pairs,))
-            }
-            Err(_) => {
-                let obj = Object::new(ctx.clone())?;
-                for (name, value) in &self.headers {
-                    obj.set(name, value.clone())?;
-                }
-                Ok(obj.into_value())
-            }
-        }
+    pub fn headers<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, Headers>> {
+        Class::instance(ctx, Headers::from_pairs(self.headers.iter().cloned()))
     }
 }
 
@@ -384,12 +372,11 @@ struct FetchInit {
 
 impl FetchInit {
     fn abort_error(ctx: &Ctx<'_>) -> Error {
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException") {
-            if let Ok(exc) =
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
+            && let Ok(exc) =
                 ctor.construct::<_, JsValue>(("The operation was aborted.", "AbortError"))
-            {
-                return ctx.throw(exc);
-            }
+        {
+            return ctx.throw(exc);
         }
         Exception::throw_type(ctx, "The operation was aborted.")
     }
@@ -399,118 +386,11 @@ impl FetchInit {
         CLIENT.get_or_init(reqwest::Client::new)
     }
 
-    fn headers_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Vec<(String, String)>> {
-        if let Some(array) = value.as_array() {
-            let mut headers = Vec::with_capacity(array.len());
-            for entry in array.clone().into_iter() {
-                let pair = entry?
-                    .into_array()
-                    .ok_or_else(|| Exception::throw_type(ctx, "header entry must be a pair"))?;
-                headers.push((pair.get(0)?, pair.get(1)?));
-            }
-            return Ok(headers);
-        }
-        if let Some(obj) = value.as_object() {
-            if let Ok(for_each) = obj.get::<_, Function>("forEach") {
-                let collected = Rc::new(RefCell::new(Vec::new()));
-                let sink = Rc::clone(&collected);
-                let callback = Function::new(ctx.clone(), move |value: String, name: String| {
-                    sink.borrow_mut().push((name, value));
-                })?;
-                for_each.call::<_, ()>((This(obj.clone()), callback))?;
-                return Ok(collected.take());
-            }
-            let mut headers = Vec::new();
-            for entry in obj.clone().into_iter() {
-                let (key, value) = entry?;
-                headers.push((key.to_string()?, String::from_js(ctx, value)?));
-            }
-            return Ok(headers);
-        }
-        Ok(Vec::new())
-    }
-
-    fn body_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Option<Vec<u8>>> {
-        if value.is_null() || value.is_undefined() {
-            return Ok(None);
-        }
-        if let Ok(view) = TypedArray::<u8>::from_js(ctx, value.clone()) {
-            return Ok(view
-                .as_bytes()
-                .map(|bytes| bytes.to_vec())
-                .filter(|bytes| !bytes.is_empty()));
-        }
-        if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
-            return Ok(buffer
-                .as_bytes()
-                .map(|bytes| bytes.to_vec())
-                .filter(|bytes| !bytes.is_empty()));
-        }
-        if let Some(string) = value.as_string() {
-            let text = string.to_string()?;
-            return Ok(if text.is_empty() {
-                None
-            } else {
-                Some(text.into_bytes())
-            });
-        }
-        Ok(None)
-    }
-
-    fn apply_object<'js>(&mut self, ctx: &Ctx<'js>, obj: &Object<'js>) -> Result<()> {
-        if let Ok(method) = obj.get::<_, String>("method") {
-            self.method = method;
-        }
-        if let Ok(headers) = obj.get::<_, JsValue>("headers") {
-            if !headers.is_undefined() && !headers.is_null() {
-                self.headers = Self::headers_from_js(ctx, headers)?;
-            }
-        }
-        if let Ok(body) = obj.get::<_, JsValue>("body") {
-            self.body = Self::body_from_js(ctx, body)?;
-        }
-        if let Ok(signal) = obj.get::<_, JsValue>("signal") {
-            self.signal = AbortWatch::from_js(ctx, signal)?;
-        }
-        Ok(())
-    }
-
-    fn from_js<'js>(
-        ctx: &Ctx<'js>,
-        input: JsValue<'js>,
-        init: Option<Object<'js>>,
-    ) -> Result<Self> {
-        let url = if let Some(string) = input.as_string() {
-            string.to_string()?
-        } else if let Some(obj) = input.as_object() {
-            obj.get::<_, String>("url")?
-        } else {
-            return Err(Exception::throw_type(
-                ctx,
-                "fetch input must be a string or Request",
-            ));
-        };
-        let mut parsed = Self {
-            url,
-            method: "GET".into(),
-            headers: Vec::new(),
-            body: None,
-            signal: None,
-        };
-        if let Some(obj) = input.as_object() {
-            parsed.apply_object(ctx, obj)?;
-        }
-        if let Some(obj) = init.as_ref() {
-            parsed.apply_object(ctx, obj)?;
-        }
-        Ok(parsed)
-    }
-
     async fn send(self, ctx: &Ctx<'_>) -> Result<Response> {
-        if let Some(signal) = &self.signal {
-            if signal.aborted.load(Ordering::SeqCst) {
-                return Err(Self::abort_error(ctx));
-            }
+        if let Some(signal) = &self.signal
+            && signal.aborted.load(Ordering::SeqCst)
+        {
+            return Err(Self::abort_error(ctx));
         }
         let method = reqwest::Method::from_bytes(self.method.as_bytes())
             .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))?;
@@ -709,10 +589,7 @@ impl FormBody {
                     .get("File")
                     .map_err(|_| Exception::throw_type(ctx, "File is not defined"))?;
                 let parts = Array::new(ctx.clone())?;
-                parts.set(
-                    0,
-                    TypedArray::<u8>::new_copy(ctx.clone(), content.to_vec())?,
-                )?;
+                parts.set(0, TypedArray::<u8>::new_copy(ctx.clone(), content)?)?;
                 let opts = Object::new(ctx.clone())?;
                 if let Some(mime) = part_type {
                     opts.set("type", mime)?;
@@ -737,72 +614,68 @@ impl FormBody {
     }
 }
 
-const PRELUDE: [(&str, &str); 3] = [
-    (
-        "den:whatwg-fetch/headers.js",
-        include_str!("prelude/headers.js"),
-    ),
-    (
-        "den:whatwg-fetch/request.js",
-        include_str!("prelude/request.js"),
-    ),
-    (
-        "den:whatwg-fetch/fetch.js",
-        include_str!("prelude/fetch.js"),
-    ),
-];
-
-#[rquickjs::function()]
 pub async fn fetch<'js>(
     ctx: Ctx<'js>,
     input: JsValue<'js>,
-    init: Opt<Object<'js>>,
+    init: Option<Object<'js>>,
 ) -> Result<Response> {
-    FetchInit::from_js(&ctx, input, init.0)?.send(&ctx).await
+    let request = Request::wrap_input(ctx.clone(), input, init)?;
+    let abort = AbortWatch::from_js(&ctx, request.borrow().signal.clone())?;
+    if let Some(signal) = &abort
+        && signal.aborted.load(Ordering::SeqCst)
+    {
+        return Err(FetchInit::abort_error(&ctx));
+    }
+    let (url, method, headers, consume_body) = {
+        let request = request.borrow();
+        let method = request.method.clone();
+        let consume_body = method != "GET" && method != "HEAD";
+        (
+            request.url.clone(),
+            method,
+            request.headers.borrow().pairs(),
+            consume_body,
+        )
+    };
+    let body = if consume_body {
+        let taken = request.borrow_mut().take_body(&ctx)?;
+        let bytes = Request::body_to_bytes(&ctx, taken).await?;
+        if bytes.is_empty() { None } else { Some(bytes) }
+    } else {
+        None
+    };
+    FetchInit {
+        url,
+        method,
+        headers,
+        body,
+        signal: abort,
+    }
+    .send(&ctx)
+    .await
 }
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
-    use rquickjs::{
-        Ctx, Function, Object, Result, Value,
-        class::JsClass,
-        context::EvalOptions,
-        module::{Declarations, Exports},
-    };
+    use rquickjs::{Ctx, Object, Result, Value, function::Opt, module::Exports};
 
-    pub use super::Response;
+    pub use super::{Headers, Request, Response};
 
-    #[qjs(declare)]
-    pub fn declare(declare: &Declarations) -> Result<()> {
-        declare.declare("fetch")?;
-        declare.declare("Headers")?;
-        declare.declare("Request")?;
-        declare.declare("Response")?;
-        Ok(())
+    #[rquickjs::function]
+    pub async fn fetch<'js>(
+        ctx: Ctx<'js>,
+        input: Value<'js>,
+        init: Opt<Object<'js>>,
+    ) -> Result<Response> {
+        super::fetch(ctx, input, init.0).await
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, e: &Exports<'js>) -> Result<()> {
-        let natives = Object::new(ctx.clone())?;
-        natives.set("fetch", super::js_fetch)?;
-        let mut api = Object::new(ctx.clone())?;
-        for (filename, source) in crate::PRELUDE {
-            let mut options = EvalOptions::default();
-            options.filename = Some(filename.to_owned());
-            let factory: Function<'js> = ctx.eval_with_options(source, options)?;
-            api = factory.call((natives.clone(), api))?;
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
+        let globals = ctx.globals();
+        for name in ["fetch", "Headers", "Request", "Response"] {
+            globals.set(name, exports.module().get::<_, Value>(name)?)?;
         }
-        let fetch: Value<'js> = api.get("fetch")?;
-        let headers: Value<'js> = api.get("Headers")?;
-        let request: Value<'js> = api.get("Request")?;
-        e.export("fetch", fetch.clone())?;
-        e.export("Headers", headers.clone())?;
-        e.export("Request", request.clone())?;
-        e.export("Response", Response::constructor(ctx)?)?;
-        ctx.globals().set("fetch", fetch)?;
-        ctx.globals().set("Headers", headers)?;
-        ctx.globals().set("Request", request)?;
-        ctx.globals().set("Response", Response::constructor(ctx)?)?;
         Ok(())
     }
 }
