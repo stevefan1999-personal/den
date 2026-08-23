@@ -17,9 +17,11 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of,
-        to_integer_if_integral, to_integer_if_integral_i64, to_integer_with_truncation, to_number,
-        to_time_zone, unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, options_object,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i128,
+        optional_truncated_i32, optional_truncated_u16, optional_truncated_u8, ordering_i32,
+        probe_class, reject_illformed_month_code, throw_value_of, to_number, to_time_zone,
+        unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -39,27 +41,6 @@ pub struct PlainDate {
 impl PlainDate {
     pub(crate) fn wrap(inner: temporal_rs::PlainDate) -> Self {
         Self { inner }
-    }
-}
-
-fn get_prop<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
-    let value: Value<'js> = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
-fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Object<'js>>> {
-    match options.0 {
-        None => Ok(None),
-        Some(value) if value.is_undefined() => Ok(None),
-        Some(value) => {
-            Ok(Some(value.as_object().cloned().ok_or_else(|| {
-                Exception::throw_type(ctx, "options must be an object")
-            })?))
-        }
     }
 }
 
@@ -111,7 +92,7 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    match get_prop(&object, "overflow")? {
+    match get_defined(&object, "overflow")? {
         None => Ok(None),
         Some(value) => option_enum(ctx, &value, "overflow option").map(Some),
     }
@@ -123,22 +104,22 @@ fn difference_settings<'js>(
     let Some(object) = options_object(ctx, options)? else {
         return Ok(DifferenceSettings::default());
     };
-    let largest_unit = match get_prop(&object, "largestUnit")? {
+    let largest_unit = match get_defined(&object, "largestUnit")? {
         None => None,
         Some(value) => Some(option_enum::<Unit>(ctx, &value, "Temporal unit")?),
     };
-    let increment = match get_prop(&object, "roundingIncrement")? {
+    let increment = match get_defined(&object, "roundingIncrement")? {
         None => None,
         Some(value) => {
             let number = to_number(ctx, &value)?;
             Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
         }
     };
-    let rounding_mode = match get_prop(&object, "roundingMode")? {
+    let rounding_mode = match get_defined(&object, "roundingMode")? {
         None => None,
         Some(value) => Some(option_enum::<RoundingMode>(ctx, &value, "roundingMode")?),
     };
-    let smallest_unit = match get_prop(&object, "smallestUnit")? {
+    let smallest_unit = match get_defined(&object, "smallestUnit")? {
         None => None,
         Some(value) => Some(option_enum::<Unit>(ctx, &value, "Temporal unit")?),
     };
@@ -211,20 +192,8 @@ fn parse_calendar_id<'js>(ctx: &Ctx<'js>, identifier: &str) -> Result<Calendar> 
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Ok(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Ok(month_day.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Ok(year_month.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.calendar().clone());
+    if let Some(calendar) = calendar_slot(ctx, value) {
+        return Ok(calendar);
     }
     if value.is_string() {
         let identifier: String = value.get()?;
@@ -234,27 +203,6 @@ fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
         ctx,
         "calendar must be a calendar identifier string",
     ))
-}
-
-fn ctor_truncated_i32<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<i32> {
-    let undefined = Value::new_undefined(ctx.clone());
-    let value = value.0.as_ref().unwrap_or(&undefined);
-    let integer = to_integer_with_truncation(ctx, value)?;
-    i32::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
-fn ctor_truncated_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
-    u8::try_from(ctor_truncated_i32(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
-fn optional_truncated_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    match get_prop(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_with_truncation(ctx, &value).map(Some),
-    }
 }
 
 fn optional_positive_date_unit<'js>(
@@ -312,7 +260,7 @@ fn month_code_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> 
 }
 
 fn optional_month_code<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<String>> {
-    match get_prop(object, "monthCode")? {
+    match get_defined(object, "monthCode")? {
         None => Ok(None),
         Some(value) => month_code_string(ctx, &value).map(Some),
     }
@@ -373,7 +321,7 @@ impl DateBag {
 fn read_date_bag<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, reject_calendar_or_time_zone: bool,
 ) -> Result<DateBag> {
-    let calendar_value = get_prop(object, "calendar")?;
+    let calendar_value = get_defined(object, "calendar")?;
     if reject_calendar_or_time_zone {
         if calendar_value.is_some() {
             return Err(Exception::throw_type(
@@ -381,7 +329,7 @@ fn read_date_bag<'js>(
                 "calendar is not allowed on a partial date",
             ));
         }
-        if get_prop(object, "timeZone")?.is_some() {
+        if get_defined(object, "timeZone")?.is_some() {
             return Err(Exception::throw_type(
                 ctx,
                 "timeZone is not allowed on a partial date",
@@ -395,16 +343,7 @@ fn read_date_bag<'js>(
     let day = optional_positive_date_unit(ctx, object, "day")?;
     let month = optional_positive_date_unit(ctx, object, "month")?;
     let month_code = optional_month_code(ctx, object)?;
-    let year = match get_prop(object, "year")? {
-        None => None,
-        Some(value) => {
-            let integer = to_integer_with_truncation(ctx, &value)?;
-            Some(
-                i32::try_from(integer)
-                    .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))?,
-            )
-        }
-    };
+    let year = optional_truncated_i32(ctx, object, "year")?;
     Ok(DateBag {
         calendar,
         year,
@@ -415,12 +354,7 @@ fn read_date_bag<'js>(
 }
 
 fn is_temporal_date_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
-    probe_class::<PlainDate>(ctx, value).is_some()
-        || probe_class::<PlainDateTime>(ctx, value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, value).is_some()
-        || probe_class::<PlainTime>(ctx, value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, value).is_some()
+    calendar_slot(ctx, value).is_some() || probe_class::<PlainTime>(ctx, value).is_some()
 }
 
 fn date_from_partial<'js>(
@@ -455,24 +389,6 @@ fn to_temporal_date<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
         .ok_or_else(|| Exception::throw_type(ctx, "cannot convert value to Temporal.PlainDate"))?;
     let bag = read_date_bag(ctx, object, false)?;
     date_from_partial(ctx, bag, Overflow::Constrain)
-}
-
-fn optional_integral_i64<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    match get_prop(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
-    }
-}
-
-fn optional_integral_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    match get_prop(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral(ctx, &value).map(Some),
-    }
 }
 
 fn to_temporal_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
@@ -513,24 +429,6 @@ fn to_temporal_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempo
     )
 }
 
-fn optional_time_u8<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<u8>> {
-    match optional_truncated_i128(ctx, object, key)? {
-        None => Ok(None),
-        Some(integer) => u8::try_from(integer)
-            .map(Some)
-            .map_err(|_| Exception::throw_range(ctx, "integer is out of range")),
-    }
-}
-
-fn optional_time_u16<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<u16>> {
-    match optional_truncated_i128(ctx, object, key)? {
-        None => Ok(None),
-        Some(integer) => u16::try_from(integer)
-            .map(Some)
-            .map_err(|_| Exception::throw_range(ctx, "integer is out of range")),
-    }
-}
-
 fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
     if let Some(time) = probe_class::<PlainTime>(ctx, value) {
         return Ok(time.inner);
@@ -548,12 +446,12 @@ fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
     let object = value
         .as_object()
         .ok_or_else(|| Exception::throw_type(ctx, "cannot convert value to Temporal.PlainTime"))?;
-    let hour = optional_time_u8(ctx, object, "hour")?;
-    let microsecond = optional_time_u16(ctx, object, "microsecond")?;
-    let millisecond = optional_time_u16(ctx, object, "millisecond")?;
-    let minute = optional_time_u8(ctx, object, "minute")?;
-    let nanosecond = optional_time_u16(ctx, object, "nanosecond")?;
-    let second = optional_time_u8(ctx, object, "second")?;
+    let hour = optional_truncated_u8(ctx, object, "hour")?;
+    let microsecond = optional_truncated_u16(ctx, object, "microsecond")?;
+    let millisecond = optional_truncated_u16(ctx, object, "millisecond")?;
+    let minute = optional_truncated_u8(ctx, object, "minute")?;
+    let nanosecond = optional_truncated_u16(ctx, object, "nanosecond")?;
+    let second = optional_truncated_u8(ctx, object, "second")?;
     unwrap_temporal(
         ctx,
         temporal_rs::PlainTime::from_partial(
@@ -577,9 +475,9 @@ impl PlainDate {
         iso_year: Opt<Value<'js>>, iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>,
         calendar: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let year = ctor_truncated_i32(&ctx, iso_year)?;
-        let month = ctor_truncated_u8(&ctx, iso_month)?;
-        let day = ctor_truncated_u8(&ctx, iso_day)?;
+        let year = ctor_required_i32(&ctx, iso_year)?;
+        let month = ctor_required_u8(&ctx, iso_month)?;
+        let day = ctor_required_u8(&ctx, iso_day)?;
         let calendar = match calendar.0 {
             None => Calendar::ISO,
             Some(value) if value.is_undefined() => Calendar::ISO,
@@ -815,13 +713,13 @@ impl PlainDate {
         let (time_zone, plain_time) = if item.is_string() {
             (to_time_zone(&ctx, &item)?, None)
         } else if let Some(object) = item.as_object() {
-            let zone = match get_prop(object, "timeZone")? {
+            let zone = match get_defined(object, "timeZone")? {
                 Some(value) => to_time_zone(&ctx, &value)?,
                 None => {
                     return Err(Exception::throw_type(&ctx, "timeZone is required"));
                 }
             };
-            let time = match get_prop(object, "plainTime")? {
+            let time = match get_defined(object, "plainTime")? {
                 Some(value) => Some(to_temporal_time(&ctx, &value)?),
                 None => None,
             };
@@ -836,7 +734,7 @@ impl PlainDate {
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => match get_prop(&object, "calendarName")? {
+            Some(object) => match get_defined(&object, "calendarName")? {
                 None => DisplayCalendar::Auto,
                 Some(value) => option_enum(&ctx, &value, "calendarName option")?,
             },

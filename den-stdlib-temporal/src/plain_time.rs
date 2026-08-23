@@ -15,15 +15,13 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        js_to_string, optional_truncated_u16, optional_truncated_u8, ordering_i32, probe_class,
-        throw_value_of, to_integer_if_integral, to_integer_if_integral_i64,
-        to_integer_with_truncation, to_number, unwrap_temporal,
+        calendar_slot, fractional_second_digits, get_defined, js_to_string,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i128, options_object,
+        ordering_i32, probe_class, require_object, throw_value_of, to_number,
+        truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
     },
     duration::Duration,
-    plain_date::PlainDate,
     plain_date_time::PlainDateTime,
-    plain_month_day::PlainMonthDay,
-    plain_year_month::PlainYearMonth,
     zoned_date_time::ZonedDateTime,
 };
 
@@ -51,12 +49,12 @@ impl PlainTime {
         unwrap_temporal(
             &ctx,
             temporal_rs::PlainTime::try_new(
-                optional_truncated_u8(&ctx, hour)?,
-                optional_truncated_u8(&ctx, minute)?,
-                optional_truncated_u8(&ctx, second)?,
-                optional_truncated_u16(&ctx, millisecond)?,
-                optional_truncated_u16(&ctx, microsecond)?,
-                optional_truncated_u16(&ctx, nanosecond)?,
+                truncated_u8_or_zero(&ctx, hour)?,
+                truncated_u8_or_zero(&ctx, minute)?,
+                truncated_u8_or_zero(&ctx, second)?,
+                truncated_u16_or_zero(&ctx, millisecond)?,
+                truncated_u16_or_zero(&ctx, microsecond)?,
+                truncated_u16_or_zero(&ctx, nanosecond)?,
             ),
         )
         .map(Self::wrap)
@@ -250,21 +248,6 @@ fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
     time_from_record(ctx, record, Overflow::Constrain)
 }
 
-fn require_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<Object<'js>> {
-    match value.as_object() {
-        Some(object) => Ok(object.clone()),
-        None => Err(Exception::throw_type(ctx, message)),
-    }
-}
-
-fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Object<'js>>> {
-    match options.0 {
-        None => Ok(None),
-        Some(value) if value.is_undefined() => Ok(None),
-        Some(value) => require_object(ctx, &value, "options must be an object").map(Some),
-    }
-}
-
 fn overflow_from_options<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Overflow> {
     overflow_from_object(ctx, options_object(ctx, options)?.as_ref())
 }
@@ -273,59 +256,20 @@ fn overflow_from_object<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> R
     let Some(options) = options else {
         return Ok(Overflow::Constrain);
     };
-    let value = get_prop(options, "overflow")?;
-    if value.is_undefined() {
-        Ok(Overflow::Constrain)
-    } else {
-        option_overflow(ctx, &value)
-    }
-}
-
-fn get_prop<'js>(object: &Object<'js>, key: &str) -> Result<Value<'js>> {
-    object.get(key)
-}
-
-fn optional_truncated_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    let value = get_prop(object, key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        to_integer_with_truncation(ctx, &value).map(Some)
-    }
-}
-
-fn optional_integral_i64<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    let value = get_prop(object, key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        to_integer_if_integral_i64(ctx, &value).map(Some)
-    }
-}
-
-fn optional_integral_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    let value = get_prop(object, key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        to_integer_if_integral(ctx, &value).map(Some)
+    match get_defined(options, "overflow")? {
+        None => Ok(Overflow::Constrain),
+        Some(value) => option_overflow(ctx, &value),
     }
 }
 
 /// `ToTemporalTimeRecord`: Get time units in alphabetical order.
 fn to_time_record<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<TimeRecord> {
-    let hour = optional_truncated_field(ctx, object, "hour")?;
-    let microsecond = optional_truncated_field(ctx, object, "microsecond")?;
-    let millisecond = optional_truncated_field(ctx, object, "millisecond")?;
-    let minute = optional_truncated_field(ctx, object, "minute")?;
-    let nanosecond = optional_truncated_field(ctx, object, "nanosecond")?;
-    let second = optional_truncated_field(ctx, object, "second")?;
+    let hour = optional_truncated_i128(ctx, object, "hour")?;
+    let microsecond = optional_truncated_i128(ctx, object, "microsecond")?;
+    let millisecond = optional_truncated_i128(ctx, object, "millisecond")?;
+    let minute = optional_truncated_i128(ctx, object, "minute")?;
+    let nanosecond = optional_truncated_i128(ctx, object, "nanosecond")?;
+    let second = optional_truncated_i128(ctx, object, "second")?;
     let record = TimeRecord {
         hour,
         minute,
@@ -345,27 +289,19 @@ fn to_time_record<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<TimeRecor
 
 fn reject_calendar_or_time_zone<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
     let value = Value::from_object(object.clone());
-    if probe_class::<PlainTime>(ctx, &value).is_some()
-        || probe_class::<PlainDate>(ctx, &value).is_some()
-        || probe_class::<PlainDateTime>(ctx, &value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, &value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, &value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, &value).is_some()
-    {
+    if probe_class::<PlainTime>(ctx, &value).is_some() || calendar_slot(ctx, &value).is_some() {
         return Err(Exception::throw_type(
             ctx,
             "calendar or time zone objects are not valid for Temporal.PlainTime.with",
         ));
     }
-    let calendar = get_prop(object, "calendar")?;
-    if !calendar.is_undefined() {
+    if get_defined(object, "calendar")?.is_some() {
         return Err(Exception::throw_type(
             ctx,
             "calendar is not allowed on Temporal.PlainTime.with",
         ));
     }
-    let time_zone = get_prop(object, "timeZone")?;
-    if !time_zone.is_undefined() {
+    if get_defined(object, "timeZone")?.is_some() {
         return Err(Exception::throw_type(
             ctx,
             "timeZone is not allowed on Temporal.PlainTime.with",
@@ -470,45 +406,37 @@ fn difference_settings<'js>(
     let Some(object) = object.as_ref() else {
         return Ok(settings);
     };
-    let largest_unit = get_prop(object, "largestUnit")?;
-    if !largest_unit.is_undefined() {
-        settings.largest_unit = Some(option_unit(ctx, &largest_unit)?);
+    if let Some(value) = get_defined(object, "largestUnit")? {
+        settings.largest_unit = Some(option_unit(ctx, &value)?);
     }
-    let increment = get_prop(object, "roundingIncrement")?;
-    if !increment.is_undefined() {
-        let number = to_number(ctx, &increment)?;
+    if let Some(value) = get_defined(object, "roundingIncrement")? {
+        let number = to_number(ctx, &value)?;
         settings.increment = Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?);
     }
-    let rounding_mode = get_prop(object, "roundingMode")?;
-    if !rounding_mode.is_undefined() {
-        settings.rounding_mode = Some(option_rounding_mode(ctx, &rounding_mode)?);
+    if let Some(value) = get_defined(object, "roundingMode")? {
+        settings.rounding_mode = Some(option_rounding_mode(ctx, &value)?);
     }
-    let smallest_unit = get_prop(object, "smallestUnit")?;
-    if !smallest_unit.is_undefined() {
-        settings.smallest_unit = Some(option_unit(ctx, &smallest_unit)?);
+    if let Some(value) = get_defined(object, "smallestUnit")? {
+        settings.smallest_unit = Some(option_unit(ctx, &value)?);
     }
     Ok(settings)
 }
 
 fn time_rounding_options<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RoundingOptions> {
-    let increment = get_prop(object, "roundingIncrement")?;
-    let increment = if increment.is_undefined() {
-        None
-    } else {
-        let number = to_number(ctx, &increment)?;
-        Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
+    let increment = match get_defined(object, "roundingIncrement")? {
+        None => None,
+        Some(value) => {
+            let number = to_number(ctx, &value)?;
+            Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
+        }
     };
-    let rounding_mode = get_prop(object, "roundingMode")?;
-    let rounding_mode = if rounding_mode.is_undefined() {
-        None
-    } else {
-        Some(option_rounding_mode(ctx, &rounding_mode)?)
+    let rounding_mode = match get_defined(object, "roundingMode")? {
+        None => None,
+        Some(value) => Some(option_rounding_mode(ctx, &value)?),
     };
-    let smallest_unit = get_prop(object, "smallestUnit")?;
-    let smallest_unit = if smallest_unit.is_undefined() {
-        None
-    } else {
-        Some(option_unit(ctx, &smallest_unit)?)
+    let smallest_unit = match get_defined(object, "smallestUnit")? {
+        None => None,
+        Some(value) => Some(option_unit(ctx, &value)?),
     };
     let mut rounding = RoundingOptions::default();
     rounding.smallest_unit = smallest_unit;
@@ -524,58 +452,28 @@ fn string_rounding_options<'js>(
     let Some(object) = object.as_ref() else {
         return Ok(ToStringRoundingOptions::default());
     };
-    let fractional = get_prop(object, "fractionalSecondDigits")?;
-    let precision = if fractional.is_undefined() {
-        Precision::Auto
-    } else {
-        fractional_second_digits(ctx, &fractional)?
+    let precision = match get_defined(object, "fractionalSecondDigits")? {
+        None => Precision::Auto,
+        Some(value) => fractional_second_digits(
+            ctx,
+            &value,
+            "fractionalSecondDigits must be finite",
+            to_option_string,
+        )?,
     };
-    let rounding_mode = get_prop(object, "roundingMode")?;
-    let rounding_mode = if rounding_mode.is_undefined() {
-        None
-    } else {
-        Some(option_rounding_mode(ctx, &rounding_mode)?)
+    let rounding_mode = match get_defined(object, "roundingMode")? {
+        None => None,
+        Some(value) => Some(option_rounding_mode(ctx, &value)?),
     };
-    let smallest_unit = get_prop(object, "smallestUnit")?;
-    let smallest_unit = if smallest_unit.is_undefined() {
-        None
-    } else {
-        Some(option_unit(ctx, &smallest_unit)?)
+    let smallest_unit = match get_defined(object, "smallestUnit")? {
+        None => None,
+        Some(value) => Some(option_unit(ctx, &value)?),
     };
     Ok(ToStringRoundingOptions {
         precision,
         smallest_unit,
         rounding_mode,
     })
-}
-
-fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
-    if value.is_number() {
-        let number = to_number(ctx, value)?;
-        if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be finite",
-            ));
-        }
-        let digits = number.floor() as i128;
-        if !(0..=9).contains(&digits) {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
-        }
-        return Ok(Precision::Digit(digits as u8));
-    }
-    let name = to_option_string(ctx, value)?;
-    if name == "auto" {
-        Ok(Precision::Auto)
-    } else {
-        Err(Exception::throw_range(
-            ctx,
-            "fractionalSecondDigits must be \"auto\" or 0-9",
-        ))
-    }
 }
 
 fn option_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
