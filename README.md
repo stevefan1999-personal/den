@@ -10,7 +10,12 @@ Made during the Easter holiday of 2023.
 - TypeScript and JSX transpiled by [oxc](https://github.com/oxc-project/oxc) — parse → semantic →
   transform → codegen, wired into the file and HTTP module loaders
 - A standard library exposed both as `den:*` modules and as globals: `console`, `atob`/`btoa`/`gc`,
-  `TextEncoder`/`TextDecoder`, timers, `fetch`, `crypto`, `den:fs`, `den:networking`, `den:sqlite`
+  `TextEncoder`/`TextDecoder`, timers, `fetch` (`Headers`/`Request`/`Response`), `crypto.subtle.digest`,
+  `den:fs`, `den:networking` (TCP/UDP/Unix/TLS), `den:sqlite`, `den:process`
+- WinterTC / WHATWG web platform APIs: `AbortController`, `Blob`/`File`/`FileReader`/`FormData`,
+  `XMLHttpRequest`, `EventSource`, `URLPattern`, `CompressionStream`, `WebSocket`,
+  `performance.now`, `navigator.userAgentData`
+- Import maps and import attributes (`json` / `text` / `bytes`)
 - The WebAssembly JS API on a choice of two backends, wasmtime or wasmi, selected at compile time
 - Web Workers: `Worker` (classic and module), `MessageChannel`/`MessagePort`, `BroadcastChannel`,
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS

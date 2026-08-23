@@ -632,16 +632,11 @@ cargo test --workspace --all-targets --no-default-features \
   --features stdlib,typescript,react,wasm-wasmi
 ```
 
-Both invocations must be green: 299 tests on wasmtime, 297 on wasmi (two are
-`#[cfg(feature = "wasmtime")]`, both about WASI). Two crates carry the bulk.
-`den-stdlib-worker` has 132 unit tests, proving the worker semantics against
-bare `AsyncContext`s; `den-stdlib-wasm` has 93 driving the JS API through a real
-QuickJS context and branching on the capability constants, so the same test
-asserts the right thing on either backend. The rest is `den-transpiler-oxc`
-(13: pipeline and arena behaviour), `den-core`'s integration tests in
-`den-core/tests/` (47 across `webassembly.rs`, `workers.rs`, `stdlib.rs`,
-`transpile.rs` and `lifetime.rs`), and 17 unit tests spread over `den-core`,
-`den-stdlib-networking`, `den-stdlib-text` and `den-stdlib-whatwg-fetch`.
+Both invocations must be green: 363 tests on wasmtime, 361 on wasmi (two are
+`#[cfg(feature = "wasmtime")]`, both about WASI). The bulk is still
+`den-stdlib-worker` (132) and `den-stdlib-wasm` (93); the WinterTC crates add
+process, whatwg, fetch, fs, crypto, networking, and den-core import-map/attribute
+suites on top.
 
 `den-core/tests/workers.rs` is the layer that proves a *user* gets the worker
 semantics: it writes its fixtures under `std::env::temp_dir()` at test time and
