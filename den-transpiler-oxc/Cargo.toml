@@ -1,0 +1,33 @@
+[package]
+name = "den-transpiler-oxc"
+description = "Oxc-backed TypeScript/JSX transpiler for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+derive_more = { workspace = true, features = ["display", "debug", "error"] }
+
+oxc_allocator = "0.146.0"
+oxc_codegen = "0.146.0"
+oxc_diagnostics = "0.146.0"
+oxc_parser = "0.146.0"
+oxc_semantic = { version = "0.146.0", optional = true }
+oxc_sourcemap = "8.1.2"
+oxc_span = "0.146.0"
+oxc_transformer = { version = "0.146.0", optional = true }
+
+[features]
+default = ["transpile"]
+
+typescript = ["transpile", "dep:oxc_transformer", "dep:oxc_semantic"]
+react = ["transpile", "dep:oxc_transformer", "dep:oxc_semantic"]
+transpile = []
+
+[lints]
+workspace = true
