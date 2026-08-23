@@ -14,6 +14,8 @@ use {
     std::sync::Arc,
 };
 
+use crate::loader::typed::{declare_import_kind, import_kind};
+
 #[derive(Debug, TypedBuilder)]
 pub struct HttpLoader {
     #[builder(default)]
@@ -29,9 +31,9 @@ const DEFAULT_SCRIPT_EXTENSION: &str = "js";
 impl Default for HttpLoader {
     fn default() -> Self {
         Self {
-            check_mime: true,
+            check_mime:                               true,
             #[cfg(feature = "transpile")]
-            transpiler: Arc::default(),
+            transpiler:                               Arc::default(),
         }
     }
 }
@@ -85,18 +87,32 @@ impl Loader for HttpLoader {
         &mut self,
         ctx: &Ctx<'js>,
         name: &str,
-        _attributes: Option<ImportAttributes<'js>>,
+        attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js, Declared>> {
+        let kind = import_kind(name, attributes.as_ref())?;
         let task = async move {
-            let body = reqwest::get(name)
+            let response = reqwest::get(name)
                 .await
                 .map_err(|e| Error::new_loading_message(name, e.to_string()))?;
+
+            // The MIME sniff is a script gate. A `type` attribute is the
+            // caller's declaration of what the body is, including
+            // `application/json` / `application/octet-stream` that would
+            // otherwise be refused.
+            if let Some(kind) = kind {
+                let body = response
+                    .bytes()
+                    .await
+                    .map_err(|e| Error::new_loading_message(name, e.to_string()))?;
+                return declare_import_kind(ctx, name, &body, kind);
+            }
+
             // Without the transpiler the sniffed extension is unused, but the sniffing
             // itself still rejects responses that are not script.
             #[allow(unused_variables)]
-            let extension = self.sniff_extension(name, &body)?;
+            let extension = self.sniff_extension(name, &response)?;
 
-            if let Ok(body) = body.text().await {
+            if let Ok(body) = response.text().await {
                 #[cfg(feature = "transpile")]
                 {
                     let (src, _) = self

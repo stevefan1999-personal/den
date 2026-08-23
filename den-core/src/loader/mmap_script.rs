@@ -14,6 +14,8 @@ use {
     std::sync::Arc,
 };
 
+use crate::loader::typed::{declare_import_kind, import_kind};
+
 #[derive(Debug, Default, TypedBuilder)]
 pub struct MmapScriptLoader {
     #[builder(default)]
@@ -47,19 +49,26 @@ impl Loader for MmapScriptLoader {
         &mut self,
         ctx: &Ctx<'js>,
         path: &str,
-        _attributes: Option<ImportAttributes<'js>>,
+        attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js, Declared>> {
+        let kind = import_kind(path, attributes.as_ref())?;
         let task = async move {
-            let extension = RelativePath::new(path)
-                .extension()
-                .ok_or(Error::new_loading(path))?;
-
-            #[allow(unused_variables)]
-            let extension = self
-                .extensions
-                .iter()
-                .find(|&e| extension == e)
-                .ok_or(Error::new_loading(path))?;
+            // Typed imports skip the script-extension gate: `./data.json` with
+            // `{ type: "json" }` is the point, and `{}.json` is not a script
+            // pattern on purpose.
+            let extension = if kind.is_some() {
+                None
+            } else {
+                let extension = RelativePath::new(path)
+                    .extension()
+                    .ok_or(Error::new_loading(path))?;
+                let extension = self
+                    .extensions
+                    .iter()
+                    .find(|&candidate| extension == candidate)
+                    .ok_or(Error::new_loading(path))?;
+                Some(extension.clone())
+            };
 
             // SAFETY: fmmap 0.5 marks every file-backed constructor unsafe because an
             // external writer truncating the file while the mapping is live is
@@ -70,13 +79,18 @@ impl Loader for MmapScriptLoader {
                 .await
                 .map_err(|_| Error::new_loading(path))?;
 
+            if let Some(kind) = kind {
+                return declare_import_kind(ctx, path, src.as_slice(), kind);
+            }
+
             #[cfg(feature = "transpile")]
             {
+                let extension = extension.ok_or_else(|| Error::new_loading(path))?;
                 let (src, _) = self
                     .transpiler
                     .transpile(
                         std::str::from_utf8(src.as_slice())?,
-                        infer_transpile_syntax_by_extension(extension).unwrap_or_default(),
+                        infer_transpile_syntax_by_extension(&extension).unwrap_or_default(),
                         IsModule::Bool(true),
                         false,
                     )
@@ -87,6 +101,7 @@ impl Loader for MmapScriptLoader {
             }
             #[cfg(not(feature = "transpile"))]
             {
+                let _ = extension;
                 Module::declare(ctx.clone(), path, src.as_slice())
             }
         };
