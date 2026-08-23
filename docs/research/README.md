@@ -26,6 +26,10 @@ sidestep; and [11](11-workers-den-integration-and-tests.md) places it all in den
 seam that keeps `den-stdlib-worker` from depending on `den-core`, shutdown and joining, error
 propagation, and the test plan.
 
+[12](12-wintertc-txiki-gap.md) maps the WinterTC / txiki.js web-platform surface onto
+den: what already exists, the JS-prelude vs Rust-native split (copy txiki's split, not
+its C stack), and the file ownership for the parallel worktrees that implement the gap.
+
 **These are snapshots, not living documents.** Each was written against a specific set of vendored
 crate versions at a specific moment, and their `file:line` references point at the tree *before*
 the upgrade landed — doc 07 says outright that the workspace did not compile when it was written.
