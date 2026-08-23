@@ -2,10 +2,9 @@
 //! `BroadcastChannel`, the `EventTarget` family, `AbortController`,
 //! `performance`, `navigator` and `structuredClone`.
 //!
-//! Event types, ports and `Worker` are `#[rquickjs::class]` natives. Remaining
-//! JS-visible wrappers that still `extend EventTarget` live in
-//! `src/prelude/*.js` until they are ported; they are evaluated in dependency
-//! order against a shared `natives` bag.
+//! Every JS-visible type is a `#[rquickjs::class]` / `#[rquickjs::function]`.
+//! `evaluate` registers classes, reparents EventTarget subclasses, and copies
+//! the exports onto `globalThis`.
 
 pub mod abort;
 pub mod broadcast;
@@ -52,12 +51,6 @@ const API: [&str; 17] = [
     "structuredClone",
 ];
 
-/// Remaining JS preludes, in dependency order.
-const PRELUDE: [(&str, &str); 1] = [(
-    "den:worker/broadcast.js",
-    include_str!("prelude/broadcast.js"),
-)];
-
 /// The module definition itself. It is named for what it declares rather than
 /// `worker`, which belongs to the file that spawns worker threads; the alias
 /// below is the name embedders use.
@@ -65,12 +58,12 @@ const PRELUDE: [(&str, &str); 1] = [(
 pub mod worker_module {
     use rquickjs::{
         Ctx, Function, Object, Result, Value,
-        context::EvalOptions,
         module::{Declarations, Exports},
         object::Property,
     };
 
     pub use super::abort::{AbortController, AbortSignal};
+    pub use super::broadcast::BroadcastChannel;
     pub use super::events::{
         CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
     };
@@ -99,8 +92,6 @@ pub mod worker_module {
         // Instances, not constructors: the module macro cannot see them.
         declare.declare("navigator")?;
         declare.declare("performance")?;
-        // Still a JS prelude wrapper.
-        declare.declare("BroadcastChannel")?;
         Ok(())
     }
 
@@ -118,6 +109,7 @@ pub mod worker_module {
         crate::abort::finish(ctx)?;
         crate::port::finish(ctx)?;
         crate::worker::finish(ctx)?;
+        crate::broadcast::finish(ctx)?;
         // Native functions have no `.prototype`; HTML `reportError` is an
         // ordinary function, and the surface test distinguishes those from
         // arrows by `typeof prototype === "object"`.
@@ -132,9 +124,9 @@ pub mod worker_module {
             report_error.set("prototype", Object::new(ctx.clone())?)?;
         }
 
-        let mut api = Object::new(ctx.clone())?;
+        let api = Object::new(ctx.clone())?;
         for name in crate::API {
-            if name == "navigator" || name == "performance" || name == "BroadcastChannel" {
+            if name == "navigator" || name == "performance" {
                 continue;
             }
             api.set(name, namespace.get::<_, Value>(name)?)?;
@@ -144,17 +136,6 @@ pub mod worker_module {
             crate::performance::Performance::instance(ctx)?,
         )?;
         crate::navigator::install_navigator(ctx, &api)?;
-        api.set(
-            "__defineEventHandler",
-            Function::new(ctx.clone(), crate::events::define_event_handler)?,
-        )?;
-
-        for (filename, source) in crate::PRELUDE {
-            let mut options = EvalOptions::default();
-            options.filename = Some(filename.to_owned());
-            let factory: Function<'js> = ctx.eval_with_options(source, options)?;
-            api = factory.call((natives.clone(), api))?;
-        }
 
         let globals = ctx.globals();
         for name in crate::API {
@@ -177,7 +158,7 @@ mod tests {
     use rquickjs::{CatchResultExt, Context, FromJs, Module, Runtime};
 
     /// A realm with the **real** `den:worker` module evaluated, exactly as an
-    /// embedder gets it: the natives, the whole prelude chain, the globals and
+    /// embedder gets it: the natives, the globals and
     /// the module exports. Nothing here re-implements [`worker_module`].
     ///
     /// One runtime per test: the module keeps its clone hooks in the context
@@ -191,7 +172,7 @@ mod tests {
                     Module::evaluate_def::<crate::js_worker, _>(ctx.clone(), "den:worker")?;
                 evaluated.finish::<()>()?;
                 // The module object itself is what the export assertions read,
-                // so it is parked on the global under a name no prelude uses.
+                // so it is parked on the global under a name the module does not export.
                 ctx.globals().set("moduleExports", module.namespace()?)
             };
             install()
@@ -319,7 +300,7 @@ mod tests {
     }
 
     /// `DOMException` is quickjs-ng's, not ours (see [`API`]'s doc comment) —
-    /// but the preludes throw it, so a build where it is missing has to fail
+    /// but the APIs throw it, so a build where it is missing has to fail
     /// loudly here rather than at the first failed clone.
     #[test]
     fn dom_exception_comes_from_the_engine_and_is_an_error() {
