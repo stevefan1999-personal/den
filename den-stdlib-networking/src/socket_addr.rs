@@ -37,9 +37,7 @@ impl SocketAddrWrapper {
     pub fn ip(&self) -> IpAddrWrapper {}
 
     #[qjs(set, rename = "ip", enumerable)]
-    pub fn set_ip(mut self, ip: IpAddrWrapper) {
-        self.addr.set_ip(ip.into())
-    }
+    pub fn set_ip(mut self, ip: IpAddrWrapper) { self.addr.set_ip(ip.into()) }
 
     #[qjs(rename = "toString")]
     #[delegate(self.addr)]

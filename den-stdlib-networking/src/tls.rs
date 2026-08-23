@@ -18,9 +18,7 @@ use crate::{
 struct NativeTls;
 
 impl NativeTls {
-    fn error(err: native_tls::Error) -> rquickjs::Error {
-        std::io::Error::other(err).into()
-    }
+    fn error(err: native_tls::Error) -> rquickjs::Error { std::io::Error::other(err).into() }
 
     fn connector(ca_pem: Option<&str>) -> Result<TlsConnector> {
         let mut builder = native_tls::TlsConnector::builder();
@@ -97,13 +95,9 @@ impl TlsStreamWrapper {
         AsyncWriteWrapper(self.stream).write_all(buf).await
     }
 
-    pub async fn flush(self) -> Result<()> {
-        AsyncWriteWrapper(self.stream).flush().await
-    }
+    pub async fn flush(self) -> Result<()> { AsyncWriteWrapper(self.stream).flush().await }
 
-    pub async fn shutdown(self) -> Result<()> {
-        AsyncWriteWrapper(self.stream).shutdown().await
-    }
+    pub async fn shutdown(self) -> Result<()> { AsyncWriteWrapper(self.stream).shutdown().await }
 }
 
 #[derive(Trace, JsLifetime, Clone, Debug)]
@@ -128,9 +122,7 @@ impl TlsListenerWrapper {
     pub fn new() {}
 
     #[qjs(get, enumerable)]
-    pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
-        Ok(self.listener.local_addr()?.into())
-    }
+    pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.listener.local_addr()?.into()) }
 
     pub async fn accept(self) -> Result<List<(TlsStreamWrapper, SocketAddrWrapper)>> {
         let (tcp, addr) = self.listener.accept().await?;

@@ -58,19 +58,14 @@ impl TcpStreamWrapper {
     }
 
     pub async fn write_all<'js>(
-        self,
-        buf: Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>,
+        self, buf: Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>,
     ) -> Result<()> {
         AsyncWriteWrapper(self.stream).write_all(buf).await
     }
 
-    pub async fn flush(self) -> Result<()> {
-        AsyncWriteWrapper(self.stream).flush().await
-    }
+    pub async fn flush(self) -> Result<()> { AsyncWriteWrapper(self.stream).flush().await }
 
-    pub async fn shutdown(self) -> Result<()> {
-        AsyncWriteWrapper(self.stream).shutdown().await
-    }
+    pub async fn shutdown(self) -> Result<()> { AsyncWriteWrapper(self.stream).shutdown().await }
 }
 
 #[derive(Trace, JsLifetime, Clone, Debug, From, Into, Deref, DerefMut)]
@@ -93,9 +88,7 @@ impl TcpListenerWrapper {
     pub fn new() {}
 
     #[qjs(get, enumerable)]
-    pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
-        Ok(self.deref().local_addr()?.into())
-    }
+    pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.deref().local_addr()?.into()) }
 
     pub async fn accept(self) -> Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
         let (stream, addr) = self.deref().accept().await?;

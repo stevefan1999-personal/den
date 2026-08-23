@@ -19,9 +19,11 @@ impl JsBytes {
         match buf {
             Either::Left(text) => Ok(text.as_bytes()),
             Either::Right(Either::Left(bytes)) => Ok(bytes.as_slice()),
-            Either::Right(Either::Right(array)) => array
-                .as_bytes()
-                .ok_or_else(|| Error::new_from_js_message("typed array", "bytes", "detached")),
+            Either::Right(Either::Right(array)) => {
+                array
+                    .as_bytes()
+                    .ok_or_else(|| Error::new_from_js_message("typed array", "bytes", "detached"))
+            }
         }
     }
 }

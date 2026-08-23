@@ -1,5 +1,4 @@
-#[cfg(unix)]
-use std::sync::Arc;
+#[cfg(unix)] use std::sync::Arc;
 
 use rquickjs::{Ctx, Error, JsLifetime, Result, TypedArray, class::Trace, convert::List};
 #[cfg(unix)]
@@ -297,8 +296,6 @@ mod tests {
 
     #[cfg(unix)]
     impl Drop for UnlinkOnDrop {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
     }
 }

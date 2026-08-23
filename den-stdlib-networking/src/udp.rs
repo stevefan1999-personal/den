@@ -29,9 +29,7 @@ impl UdpSocketWrapper {
     pub fn new() {}
 
     #[qjs(get, enumerable, rename = "localAddr")]
-    pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
-        Ok(self.socket.local_addr()?.into())
-    }
+    pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.socket.local_addr()?.into()) }
 
     #[qjs(static)]
     pub async fn bind(addr: String) -> Result<Self> {
@@ -59,9 +57,7 @@ impl UdpSocketWrapper {
 
     #[qjs(rename = "recvFrom")]
     pub async fn recv_from<'js>(
-        self,
-        max: usize,
-        ctx: Ctx<'js>,
+        self, max: usize, ctx: Ctx<'js>,
     ) -> Result<List<(TypedArray<'js, u8>, SocketAddrWrapper)>> {
         let (payload, addr) = self.recv_from_bytes(max).await?;
         Ok(List((TypedArray::new_copy(ctx, payload)?, addr.into())))

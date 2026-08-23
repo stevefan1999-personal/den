@@ -5,6 +5,7 @@ pub mod socket_addr;
 pub mod tls;
 pub mod udp;
 pub mod unix;
+pub mod websocket;
 
 #[rquickjs::module(
     rename = "camelCase",
@@ -12,10 +13,13 @@ pub mod unix;
     rename_types = "PascalCase"
 )]
 pub mod networking {
-    pub use crate::socket::{TcpListenerWrapper as TcpListener, TcpStreamWrapper as TcpStream};
-    pub use crate::tls::{TlsListenerWrapper as TlsListener, TlsStreamWrapper as TlsStream};
-    pub use crate::udp::UdpSocketWrapper as UdpSocket;
-    pub use crate::unix::{UnixListenerWrapper as UnixListener, UnixStreamWrapper as UnixStream};
+    pub use crate::{
+        socket::{TcpListenerWrapper as TcpListener, TcpStreamWrapper as TcpStream},
+        tls::{TlsListenerWrapper as TlsListener, TlsStreamWrapper as TlsStream},
+        udp::UdpSocketWrapper as UdpSocket,
+        unix::{UnixListenerWrapper as UnixListener, UnixStreamWrapper as UnixStream},
+        websocket::WebSocketWrapper as WebSocket,
+    };
 }
 
 #[cfg(test)]
@@ -44,7 +48,8 @@ mod tests {
             .expect("den:networking evaluates");
         assert_eq!(
             names,
-            "TcpListener,TcpStream,TlsListener,TlsStream,UdpSocket,UnixListener,UnixStream"
+            "TcpListener,TcpStream,TlsListener,TlsStream,UdpSocket,UnixListener,UnixStream,\
+             WebSocket"
         );
     }
 }
