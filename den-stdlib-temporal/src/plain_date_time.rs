@@ -17,17 +17,15 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ctor_required_i32, ctor_required_u8, get_defined, js_to_string, optional_integral_i128,
-        optional_integral_i64, optional_truncated_i32, optional_truncated_u16,
-        optional_truncated_u8, options_object, ordering_i32, probe_class,
+        calendar_slot, ctor_required_i32, ctor_required_u8, fractional_second_digits, get_defined,
+        js_to_string, optional_integral_i128, optional_integral_i64, optional_truncated_i32,
+        optional_truncated_u16, optional_truncated_u8, options_object, ordering_i32, probe_class,
         reject_calendar_or_time_zone, reject_illformed_month_code, require_object, throw_value_of,
         to_number, to_time_zone, truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
     },
     duration::Duration,
     plain_date::PlainDate,
-    plain_month_day::PlainMonthDay,
     plain_time::PlainTime,
-    plain_year_month::PlainYearMonth,
     zoned_date_time::ZonedDateTime,
 };
 
@@ -160,32 +158,7 @@ fn get_fractional_second_digits<'js>(
     let Some(value) = get_defined(object, "fractionalSecondDigits")? else {
         return Ok(Precision::Auto);
     };
-    if value.is_number() {
-        let number = to_number(ctx, &value)?;
-        if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be finite",
-            ));
-        }
-        let digits = number.floor() as i128;
-        if !(0..=9).contains(&digits) {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
-        }
-        return Ok(Precision::Digit(digits as u8));
-    }
-    let name = temporal_to_string(ctx, &value)?;
-    if name == "auto" {
-        Ok(Precision::Auto)
-    } else {
-        Err(Exception::throw_range(
-            ctx,
-            "fractionalSecondDigits must be \"auto\" or 0-9",
-        ))
-    }
+    fractional_second_digits(ctx, &value, "fractionalSecondDigits must be finite", temporal_to_string)
 }
 
 fn difference_settings<'js>(
@@ -207,37 +180,13 @@ fn difference_settings<'js>(
     Ok(settings)
 }
 
-fn calendar_from_slots<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Calendar> {
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Some(date_time.inner.calendar().clone());
-    }
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Some(date.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Some(year_month.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Some(month_day.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Some(zoned.inner.calendar().clone());
-    }
-    None
-}
-
 fn has_calendar_or_time_zone_slot<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
-    probe_class::<PlainDateTime>(ctx, value).is_some()
-        || probe_class::<PlainDate>(ctx, value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, value).is_some()
-        || probe_class::<PlainTime>(ctx, value).is_some()
+    calendar_slot(ctx, value).is_some() || probe_class::<PlainTime>(ctx, value).is_some()
 }
 
 /// `ParseTemporalCalendarString` + canonicalize (bags, `withCalendar`).
 fn to_calendar_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(calendar) = calendar_from_slots(ctx, value) {
+    if let Some(calendar) = calendar_slot(ctx, value) {
         return Ok(calendar);
     }
     if !value.is_string() {
@@ -252,7 +201,7 @@ fn to_calendar_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar>
 
 /// Constructor calendar argument: identifier only, not an ISO date/time string.
 fn to_constructor_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(calendar) = calendar_from_slots(ctx, value) {
+    if let Some(calendar) = calendar_slot(ctx, value) {
         return Ok(calendar);
     }
     if !value.is_string() {

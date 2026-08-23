@@ -20,19 +20,18 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, i128_to_bigint, js_to_string, optional_integral_i128, optional_integral_i64,
-        optional_truncated_i32, optional_truncated_u16, optional_truncated_u8, options_object,
-        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_big_int_i128,
-        to_calendar, to_duration, to_number, to_time_zone, to_zoned_date_time, truncated_u16,
-        truncated_u8, unwrap_temporal,
+        calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i32,
+        optional_truncated_u16, optional_truncated_u8, options_object, ordering_i32, probe_class,
+        reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
+        to_number, to_time_zone, to_zoned_date_time, truncated_u16, truncated_u8,
+        unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
-    plain_month_day::PlainMonthDay,
     plain_time::PlainTime,
-    plain_year_month::PlainYearMonth,
 };
 
 #[derive(Trace, JsLifetime, Clone)]
@@ -413,22 +412,10 @@ fn calendar_identifier<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.calendar().clone());
+    match calendar_slot(ctx, value) {
+        Some(calendar) => Ok(calendar),
+        None => to_calendar(ctx, value),
     }
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Ok(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Ok(year_month.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Ok(month_day.inner.calendar().clone());
-    }
-    to_calendar(ctx, value)
 }
 
 fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -475,35 +462,6 @@ fn display_calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Resul
         .map_err(|_| Exception::throw_range(ctx, "invalid calendarName option"))
 }
 
-fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
-    if value.is_number() || value.as_int().is_some() || value.as_float().is_some() {
-        let number = to_number(ctx, value)?;
-        if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits is not finite",
-            ));
-        }
-        let digits = number.floor() as i128;
-        if !(0..=9).contains(&digits) {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
-        }
-        return Ok(Precision::Digit(digits as u8));
-    }
-    let name = to_option_string(ctx, value)?;
-    if name == "auto" {
-        Ok(Precision::Auto)
-    } else {
-        Err(Exception::throw_range(
-            ctx,
-            "fractionalSecondDigits must be \"auto\" or 0-9",
-        ))
-    }
-}
-
 fn require_string_field<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
     if let Some(string) = value.as_string() {
         return string.to_string();
@@ -540,13 +498,7 @@ fn time_zone_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZ
 fn reject_calendar_or_time_zone<'js>(
     ctx: &Ctx<'js>, value: &Value<'js>, object: &Object<'js>,
 ) -> Result<()> {
-    if probe_class::<ZonedDateTime>(ctx, value).is_some()
-        || probe_class::<PlainDate>(ctx, value).is_some()
-        || probe_class::<PlainDateTime>(ctx, value).is_some()
-        || probe_class::<PlainTime>(ctx, value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, value).is_some()
-    {
+    if probe_class::<PlainTime>(ctx, value).is_some() || calendar_slot(ctx, value).is_some() {
         return Err(Exception::throw_type(
             ctx,
             "calendar and timeZone are not allowed in with()",
@@ -881,7 +833,12 @@ fn to_string_options<'js>(
     };
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(ctx, &value)?,
+        Some(value) => fractional_second_digits(
+            ctx,
+            &value,
+            "fractionalSecondDigits is not finite",
+            to_option_string,
+        )?,
     };
     let display_offset = match get_defined(&object, "offset")? {
         None => DisplayOffset::Auto,

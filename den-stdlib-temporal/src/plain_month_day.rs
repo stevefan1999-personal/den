@@ -8,7 +8,7 @@ use rquickjs::{
     },
     function::Constructor,
     object::Property,
-    prelude::{Opt, This},
+    prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
@@ -19,15 +19,13 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ctor_required_u8, get_defined, js_to_string, options_object, probe_class,
+        calendar_slot, ctor_required_u8, get_defined, options_object, probe_class,
         reject_illformed_month_code, require_object, throw_temporal, throw_value_of,
-        to_integer_with_truncation, to_plain_month_day, truncated_i32, unwrap_temporal,
+        to_integer_with_truncation, to_js_string, to_plain_month_day, truncated_i32,
+        unwrap_temporal,
     },
     plain_date::PlainDate,
-    plain_date_time::PlainDateTime,
     plain_time::PlainTime,
-    plain_year_month::PlainYearMonth,
-    zoned_date_time::ZonedDateTime,
 };
 
 #[derive(Trace, JsLifetime, Clone)]
@@ -365,7 +363,7 @@ fn calendar_from_item<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calen
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(calendar) = calendar_from_temporal(ctx, value) {
+    if let Some(calendar) = calendar_slot(ctx, value) {
         return Ok(calendar);
     }
     if value.is_undefined() {
@@ -379,25 +377,6 @@ fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
     }
     let identifier: String = value.get()?;
     Calendar::from_str(&identifier).map_err(|error| throw_temporal(ctx, error))
-}
-
-fn calendar_from_temporal<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Calendar> {
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Some(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Some(date_time.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Some(month_day.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Some(year_month.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Some(zoned.inner.calendar().clone());
-    }
-    None
 }
 
 fn ctor_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Result<Calendar> {
@@ -439,29 +418,6 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
     }
 }
 
-/// GetOption string path: prefer `toString` so observers do not see valueOf first.
-fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if let Some(object) = value.as_object() {
-        if let Ok(func) = object.get::<_, Function>("toString") {
-            let result: Value = func.call((This(object.clone()),))?;
-            if let Some(string) = result.as_string() {
-                return string.to_string();
-            }
-            return js_to_string(ctx, &result);
-        }
-    }
-    js_to_string(ctx, value)
-}
-
 fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
     let name = to_js_string(ctx, value)?;
     Overflow::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid overflow option"))
@@ -477,13 +433,7 @@ fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
     let Some(object) = value.as_object() else {
         return Ok(false);
     };
-    if probe_class::<PlainDate>(ctx, value).is_some()
-        || probe_class::<PlainDateTime>(ctx, value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, value).is_some()
-        || probe_class::<PlainTime>(ctx, value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, value).is_some()
-    {
+    if calendar_slot(ctx, value).is_some() || probe_class::<PlainTime>(ctx, value).is_some() {
         return Ok(false);
     }
     if get_defined(object, "calendar")?.is_some() || get_defined(object, "timeZone")?.is_some() {

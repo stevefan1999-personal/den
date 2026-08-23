@@ -17,10 +17,11 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ctor_required_i32, ctor_required_u8, get_defined, options_object, optional_integral_i128,
-        optional_integral_i64, optional_truncated_i128, optional_truncated_i32,
-        optional_truncated_u16, optional_truncated_u8, ordering_i32, probe_class,
-        reject_illformed_month_code, throw_value_of, to_number, to_time_zone, unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, options_object,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i128,
+        optional_truncated_i32, optional_truncated_u16, optional_truncated_u8, ordering_i32,
+        probe_class, reject_illformed_month_code, throw_value_of, to_number, to_time_zone,
+        unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -191,20 +192,8 @@ fn parse_calendar_id<'js>(ctx: &Ctx<'js>, identifier: &str) -> Result<Calendar> 
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Ok(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Ok(month_day.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Ok(year_month.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.calendar().clone());
+    if let Some(calendar) = calendar_slot(ctx, value) {
+        return Ok(calendar);
     }
     if value.is_string() {
         let identifier: String = value.get()?;
@@ -365,12 +354,7 @@ fn read_date_bag<'js>(
 }
 
 fn is_temporal_date_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
-    probe_class::<PlainDate>(ctx, value).is_some()
-        || probe_class::<PlainDateTime>(ctx, value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, value).is_some()
-        || probe_class::<PlainTime>(ctx, value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, value).is_some()
+    calendar_slot(ctx, value).is_some() || probe_class::<PlainTime>(ctx, value).is_some()
 }
 
 fn date_from_partial<'js>(
