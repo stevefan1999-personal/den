@@ -2,7 +2,7 @@
 //! the per-realm sink it goes to.
 
 use rquickjs::{
-    Coerced, Ctx, Error, FromJs, Function, JsLifetime, Object, Persistent, Result, Value,
+    Coerced, Ctx, Error, FromJs as _, Function, JsLifetime, Object, Persistent, Result, Value,
 };
 
 /// The property [`ExceptionSink`] looks the reporter up under, read afresh on
@@ -23,7 +23,7 @@ struct ExceptionSink(Persistent<Object<'static>>);
 // SAFETY: `ExceptionSink` borrows no `'js` lifetime — a `Persistent` owns its
 // value outright and is tied to the runtime, not to a scope — so the type is
 // the same type for every choice of `'to`.
-unsafe impl<'js> JsLifetime<'js> for ExceptionSink {
+unsafe impl JsLifetime<'_> for ExceptionSink {
     type Changed<'to> = ExceptionSink;
 }
 
@@ -34,7 +34,7 @@ unsafe impl<'js> JsLifetime<'js> for ExceptionSink {
 pub fn set_exception_sink<'js>(ctx: &Ctx<'js>, sink: &Object<'js>) -> rquickjs::Result<()> {
     ctx.store_userdata(ExceptionSink(Persistent::save(ctx, sink.clone())))
         .map(|_| ())
-        .map_err(|_| rquickjs::Error::UserData(rquickjs::runtime::UserDataError(())))
+        .map_err(|_error| rquickjs::Error::UserData(rquickjs::runtime::UserDataError(())))
 }
 
 /// Report `value` — a caught exception, or anything else that was thrown —
@@ -44,7 +44,7 @@ pub fn set_exception_sink<'js>(ctx: &Ctx<'js>, sink: &Object<'js>) -> rquickjs::
 /// `onmessage`) have no caller left to propagate to, so this is deliberately
 /// infallible: reporting must never itself throw.
 pub fn report_exception<'js>(ctx: &Ctx<'js>, value: &Value<'js>) {
-    let Some(reporter) = reporter(ctx) else {
+    let Some(reporter) = sink_hook(ctx, REPORTER) else {
         return print_exception(ctx, value);
     };
     // A sink that throws is a broken sink, not a second exception to report:
@@ -93,9 +93,6 @@ pub fn print_exception<'js>(ctx: &Ctx<'js>, value: &Value<'js>) {
         eprintln!("unknown error")
     }
 }
-
-/// This realm's reporter, if it has a sink carrying a callable one.
-fn reporter<'js>(ctx: &Ctx<'js>) -> Option<Function<'js>> { sink_hook(ctx, REPORTER) }
 
 /// The sink's `name` entry, if this realm has a sink carrying a callable one.
 /// The userdata guard is released before the caller runs any JS, so that the

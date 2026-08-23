@@ -7,4 +7,4 @@
 //! the preludes publish — `dispatchTrusted` — is by definition a `den:worker`
 //! user and should not have to name `den-stdlib-core` to say so.
 
-pub use den_stdlib_core::report::{report_exception, report_uncaught, sink_hook};
+pub use den_stdlib_core::exceptions::{report_exception, report_uncaught, sink_hook};

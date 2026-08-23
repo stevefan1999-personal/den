@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-use den_stdlib_core::report::print_exception;
+use den_stdlib_core::exceptions::print_exception;
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{EasyOxcTranspiler, IsModule, infer_transpile_syntax_by_extension};
 use den_util::inherit;

@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
 };
 
-use rquickjs::{Ctx, JsLifetime, Result};
+use rquickjs::{Ctx, JsLifetime};
 use tokio_util::sync::CancellationToken;
 
 /// Per-realm timer handles. Scripts see a numeric id, never this map.
@@ -23,34 +23,6 @@ impl Default for Timers {
 }
 
 impl Timers {
-    fn install(ctx: &Ctx<'_>) -> Result<()> {
-        if ctx.userdata::<Self>().is_some() {
-            return Ok(());
-        }
-        ctx.store_userdata(Self::default())
-            .map(|_| ())
-            .map_err(|_| rquickjs::Exception::throw_internal(ctx, "timers are already installed"))
-    }
-
-    fn missing(ctx: &Ctx<'_>) -> rquickjs::Error {
-        rquickjs::Exception::throw_internal(ctx, "timers are not installed")
-    }
-
-    /// Browsers start at 1 and never reuse an id that is still live.
-    fn allocate(ctx: &Ctx<'_>, token: CancellationToken) -> Result<u32> {
-        let timers = ctx.userdata::<Self>().ok_or_else(|| Self::missing(ctx))?;
-        let mut handles = timers.handles.borrow_mut();
-        loop {
-            let id = timers.next.get().max(1);
-            timers.next.set(id.wrapping_add(1));
-            if handles.contains_key(&id) {
-                continue;
-            }
-            handles.insert(id, token);
-            return Ok(id);
-        }
-    }
-
     fn cancel(ctx: &Ctx<'_>, id: u32) {
         if let Some(timers) = ctx.userdata::<Self>()
             && let Some(token) = timers.handles.borrow_mut().remove(&id)
@@ -72,14 +44,6 @@ impl Timers {
 #[derive(Clone, JsLifetime)]
 pub struct StopToken(pub CancellationToken);
 
-impl StopToken {
-    fn of(ctx: &Ctx<'_>) -> CancellationToken {
-        ctx.userdata::<Self>()
-            .map(|stop| stop.0.clone())
-            .unwrap_or_default()
-    }
-}
-
 #[rquickjs::module(
     rename = "camelCase",
     rename_vars = "camelCase",
@@ -88,8 +52,8 @@ impl StopToken {
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::report::report_uncaught;
-    use rquickjs::{Coerced, Ctx, FromJs, Result, Value, module::Exports, prelude::Opt};
+    use den_stdlib_core::exceptions::report_uncaught;
+    use rquickjs::{Coerced, Ctx, FromJs as _, Result, Value, module::Exports, prelude::Opt};
     use tokio::time;
     use tokio_util::sync::CancellationToken;
 
@@ -119,11 +83,33 @@ pub mod timer {
     }
 
     fn arm(ctx: &Ctx<'_>) -> Result<(u32, CancellationToken, CancellationToken)> {
+        let timers = ctx
+            .userdata::<Timers>()
+            .ok_or_else(|| rquickjs::Exception::throw_internal(ctx, "timers are not installed"))?;
+        // Browsers start at 1 and never reuse an id that is still live.
         let token = CancellationToken::new();
-        let id = Timers::allocate(ctx, token.clone())?;
-        Ok((id, token, StopToken::of(ctx)))
+        let mut handles = timers.handles.borrow_mut();
+        let id = loop {
+            let id = timers.next.get().max(1);
+            timers.next.set(id.wrapping_add(1));
+            if !handles.contains_key(&id) {
+                break id;
+            }
+        };
+        handles.insert(id, token.clone());
+        let stop = ctx
+            .userdata::<StopToken>()
+            .map(|stop| stop.0.clone())
+            .unwrap_or_default();
+        Ok((id, token, stop))
     }
 
+    // The macro injects `Ctx` by value, and the body only borrows it; a
+    // reference parameter is not an option at this boundary.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
     #[rquickjs::function]
     #[qjs(rename = "setInterval")]
     pub fn set_interval<'js>(
@@ -157,14 +143,22 @@ pub mod timer {
         Ok(id)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
     #[rquickjs::function]
     #[qjs(rename = "clearInterval")]
-    pub fn clear_interval(id: Opt<u32>, ctx: Ctx<'_>) {
-        if let Some(id) = id.0 {
+    pub fn clear_interval(Opt(id): Opt<u32>, ctx: Ctx<'_>) {
+        if let Some(id) = id {
             Timers::cancel(&ctx, id);
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
     #[rquickjs::function]
     #[qjs(rename = "setTimeout")]
     pub fn set_timeout<'js>(
@@ -190,17 +184,27 @@ pub mod timer {
         Ok(id)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
     #[rquickjs::function]
     #[qjs(rename = "clearTimeout")]
-    pub fn clear_timeout(id: Opt<u32>, ctx: Ctx<'_>) {
-        if let Some(id) = id.0 {
+    pub fn clear_timeout(Opt(id): Opt<u32>, ctx: Ctx<'_>) {
+        if let Some(id) = id {
             Timers::cancel(&ctx, id);
         }
     }
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
-        Timers::install(ctx)?;
+        if ctx.userdata::<Timers>().is_none() {
+            ctx.store_userdata(Timers::default())
+                .map(|_| ())
+                .map_err(|_error| {
+                    rquickjs::Exception::throw_internal(ctx, "timers are already installed")
+                })?;
+        }
         let globals = ctx.globals();
         globals.set("setTimeout", js_set_timeout)?;
         globals.set("setInterval", js_set_interval)?;
@@ -213,7 +217,7 @@ pub mod timer {
 #[cfg(test)]
 mod tests {
     use rquickjs::{
-        AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Object, Promise,
+        AsyncContext, AsyncRuntime, CatchResultExt as _, FromJs, Module, Object, Promise,
         context::EvalOptions,
     };
 

@@ -16,7 +16,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use den_stdlib_core::report::{
+use den_stdlib_core::exceptions::{
     print_exception, report_exception, report_uncaught, set_exception_sink,
 };
 use den_util::{coerce_string, inherit, throw_dom_exception};
@@ -1668,7 +1668,7 @@ mod tests {
                        };"#,
                 )?;
                 let thrown = ctx.eval::<Value<'_>, _>("new Error('from rust')")?;
-                den_stdlib_core::report::report_exception(&ctx, &thrown);
+                den_stdlib_core::exceptions::report_exception(&ctx, &thrown);
                 ctx.globals().get::<_, String>("seen")
             };
             report()
