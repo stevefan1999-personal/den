@@ -2,6 +2,7 @@ pub mod io;
 pub mod ip_addr;
 pub mod socket;
 pub mod socket_addr;
+pub mod tls;
 pub mod udp;
 pub mod unix;
 
@@ -12,6 +13,7 @@ pub mod unix;
 )]
 pub mod networking {
     pub use crate::socket::{TcpListenerWrapper as TcpListener, TcpStreamWrapper as TcpStream};
+    pub use crate::tls::{TlsListenerWrapper as TlsListener, TlsStreamWrapper as TlsStream};
     pub use crate::udp::UdpSocketWrapper as UdpSocket;
     pub use crate::unix::{UnixListenerWrapper as UnixListener, UnixStreamWrapper as UnixStream};
 }
@@ -42,7 +44,7 @@ mod tests {
             .expect("den:networking evaluates");
         assert_eq!(
             names,
-            "TcpListener,TcpStream,UdpSocket,UnixListener,UnixStream"
+            "TcpListener,TcpStream,TlsListener,TlsStream,UdpSocket,UnixListener,UnixStream"
         );
     }
 }

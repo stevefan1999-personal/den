@@ -14,10 +14,13 @@ keywords.workspace = true
 delegate-attr.workspace = true
 derive_more.workspace = true
 either.workspace = true
+native-tls = "0.2"
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = ["net", "io-util", "sync"] }
+tokio-native-tls = "0.3"
 
 [dev-dependencies]
+rcgen = "0.14"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
