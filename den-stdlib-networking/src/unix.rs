@@ -7,9 +7,9 @@ use tokio::{
     sync::RwLock,
 };
 
-use crate::io::JsByteBuf;
 #[cfg(unix)]
 use crate::io::{AsyncReadWrapper, AsyncWriteWrapper};
+use crate::io::{JsByteBuf, impl_stream_wrapper};
 
 struct Unix;
 
@@ -39,18 +39,9 @@ pub struct UnixStreamWrapper {
     stream: Arc<RwLock<UnixStream>>,
 }
 
-#[rquickjs::methods]
-impl UnixStreamWrapper {
-    // rquickjs only attaches `#[qjs(static)]` members to a class that
-    // declares a constructor, and a `()` return makes `new UnixStream()`
-    // throw: instances only ever come from `UnixStream.connect` or
-    // `UnixListener.accept`.
-    #[allow(
-        clippy::new_ret_no_self,
-        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-    )]
-    #[qjs(constructor)]
-    pub fn new() {}
+impl_stream_wrapper! {
+    UnixStreamWrapper,
+    unsupported: Unix::unsupported,
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<String> {
@@ -78,78 +69,6 @@ impl UnixStreamWrapper {
         #[cfg(not(unix))]
         {
             let _ = path;
-            Err(Unix::unsupported())
-        }
-    }
-
-    pub async fn read_to_string(self) -> Result<String> {
-        #[cfg(unix)]
-        {
-            AsyncReadWrapper(self.stream).read_to_string().await
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self;
-            Err(Unix::unsupported())
-        }
-    }
-
-    pub async fn read_to_end(self) -> Result<Vec<u8>> {
-        #[cfg(unix)]
-        {
-            AsyncReadWrapper(self.stream).read_to_end().await
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self;
-            Err(Unix::unsupported())
-        }
-    }
-
-    pub async fn read<'js>(self, bytes: usize, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        #[cfg(unix)]
-        {
-            AsyncReadWrapper(self.stream).read(bytes, ctx).await
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (self, bytes, ctx);
-            Err(Unix::unsupported())
-        }
-    }
-
-    pub async fn write_all<'js>(self, buf: JsByteBuf<'js>) -> Result<()> {
-        #[cfg(unix)]
-        {
-            AsyncWriteWrapper(self.stream).write_all(buf).await
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (self, buf);
-            Err(Unix::unsupported())
-        }
-    }
-
-    pub async fn flush(self) -> Result<()> {
-        #[cfg(unix)]
-        {
-            AsyncWriteWrapper(self.stream).flush().await
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self;
-            Err(Unix::unsupported())
-        }
-    }
-
-    pub async fn shutdown(self) -> Result<()> {
-        #[cfg(unix)]
-        {
-            AsyncWriteWrapper(self.stream).shutdown().await
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self;
             Err(Unix::unsupported())
         }
     }
