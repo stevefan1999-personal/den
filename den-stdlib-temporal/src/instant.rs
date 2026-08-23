@@ -18,9 +18,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, i128_to_bigint, js_to_string, ordering_i32, probe_class, require_object,
-        throw_value_of, to_big_int_i128, to_instant, to_integer_if_integral,
-        to_integer_if_integral_i64, to_number, to_time_zone, unwrap_temporal,
+        get_defined, i128_to_bigint, js_to_string, optional_integral_i128,
+        optional_integral_i64, ordering_i32, probe_class, require_object, throw_value_of,
+        to_big_int_i128, to_instant, to_integer_if_integral, to_number, to_time_zone,
+        unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -71,24 +72,6 @@ fn instant_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::
 fn instant_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
     let name = to_js_string(ctx, value)?;
     RoundingMode::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid roundingMode"))
-}
-
-fn optional_integral_i64<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
-    }
-}
-
-fn optional_integral_i128<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral(ctx, &value).map(Some),
-    }
 }
 
 fn optional_unit<'js>(

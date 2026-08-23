@@ -19,9 +19,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, js_to_string, options_object, probe_class, reject_illformed_month_code,
-        require_object, throw_temporal, throw_value_of, to_integer_with_truncation,
-        to_plain_month_day, unwrap_temporal,
+        ctor_required_u8, get_defined, js_to_string, options_object, probe_class,
+        reject_illformed_month_code, require_object, throw_temporal, throw_value_of,
+        to_integer_with_truncation, to_plain_month_day, truncated_i32, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -46,19 +46,12 @@ impl PlainMonthDay {
         iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
         reference_iso_year: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let month = ctor_truncated_u8(&ctx, iso_month)?;
-        let day = ctor_truncated_u8(&ctx, iso_day)?;
+        let month = ctor_required_u8(&ctx, iso_month)?;
+        let day = ctor_required_u8(&ctx, iso_day)?;
         let calendar = ctor_calendar(&ctx, calendar)?;
-        let reference_year = match reference_iso_year.0 {
+        let reference_year = match reference_iso_year.0.filter(|value| !value.is_undefined()) {
             None => None,
-            Some(value) if value.is_undefined() => None,
-            Some(value) => {
-                let integer = to_integer_with_truncation(&ctx, &value)?;
-                Some(
-                    i32::try_from(integer)
-                        .map_err(|_| Exception::throw_range(&ctx, "integer is out of range"))?,
-                )
-            }
+            Some(value) => Some(truncated_i32(&ctx, &value)?),
         };
         unwrap_temporal(
             &ctx,
@@ -230,7 +223,7 @@ impl PlainMonthDay {
         let Some(year) = get_defined(&object, "year")? else {
             return Err(Exception::throw_type(&ctx, "year is required"));
         };
-        let fields = CalendarFields::new().with_year(field_to_i32(&ctx, &year)?);
+        let fields = CalendarFields::new().with_year(truncated_i32(&ctx, &year)?);
         unwrap_temporal(&ctx, self.inner.to_plain_date(Some(fields))).map(PlainDate::wrap)
     }
 
@@ -354,7 +347,7 @@ fn month_day_bag<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<MonthDayBa
     };
     let year = match get_defined(object, "year")? {
         None => None,
-        Some(value) => Some(field_to_i32(ctx, &value)?),
+        Some(value) => Some(truncated_i32(ctx, &value)?),
     };
     Ok(MonthDayBag {
         day,
@@ -425,15 +418,6 @@ fn ctor_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Result<Calen
     }
 }
 
-fn ctor_truncated_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
-    let value = match value.0 {
-        None => Value::new_undefined(ctx.clone()),
-        Some(value) => value,
-    };
-    let integer = to_integer_with_truncation(ctx, &value)?;
-    u8::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
 fn field_to_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
     let integer = to_integer_with_truncation(ctx, value)?;
     if integer <= 0 {
@@ -443,11 +427,6 @@ fn field_to_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
         return Ok(u8::MAX);
     }
     Ok(integer as u8)
-}
-
-fn field_to_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
-    let integer = to_integer_with_truncation(ctx, value)?;
-    i32::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {

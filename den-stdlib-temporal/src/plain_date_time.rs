@@ -17,10 +17,11 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, js_to_string, options_object, ordering_i32, probe_class,
+        ctor_required_i32, ctor_required_u8, get_defined, js_to_string, optional_integral_i128,
+        optional_integral_i64, optional_truncated_i32, optional_truncated_u16,
+        optional_truncated_u8, options_object, ordering_i32, probe_class,
         reject_calendar_or_time_zone, reject_illformed_month_code, require_object, throw_value_of,
-        to_integer_if_integral, to_integer_if_integral_i64, to_integer_with_truncation, to_number,
-        to_time_zone, unwrap_temporal,
+        to_number, to_time_zone, truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
     },
     duration::Duration,
     plain_date::PlainDate,
@@ -39,45 +40,6 @@ pub struct PlainDateTime {
 
 impl PlainDateTime {
     pub(crate) fn wrap(inner: temporal_rs::PlainDateTime) -> Self { Self { inner } }
-}
-
-fn range_int(ctx: &Ctx<'_>) -> rquickjs::Error {
-    Exception::throw_range(ctx, "integer is out of range")
-}
-
-fn i32_from_trunc<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
-    i32::try_from(to_integer_with_truncation(ctx, value)?).map_err(|_| range_int(ctx))
-}
-
-fn u8_from_trunc<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
-    u8::try_from(i32_from_trunc(ctx, value)?).map_err(|_| range_int(ctx))
-}
-
-fn u16_from_trunc<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u16> {
-    u16::try_from(i32_from_trunc(ctx, value)?).map_err(|_| range_int(ctx))
-}
-
-fn ctor_required_i32<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<i32> {
-    let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-    i32_from_trunc(ctx, &value)
-}
-
-fn ctor_required_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
-    u8::try_from(ctor_required_i32(ctx, value)?).map_err(|_| range_int(ctx))
-}
-
-fn ctor_optional_u8<'js>(ctx: &Ctx<'js>, value: Option<Value<'js>>) -> Result<u8> {
-    match value {
-        Some(value) if !value.is_undefined() => u8_from_trunc(ctx, &value),
-        _ => Ok(0),
-    }
-}
-
-fn ctor_optional_u16<'js>(ctx: &Ctx<'js>, value: Option<Value<'js>>) -> Result<u16> {
-    match value {
-        Some(value) if !value.is_undefined() => u16_from_trunc(ctx, &value),
-        _ => Ok(0),
-    }
 }
 
 /// `ToPrimitive` with hint string. `String(object)` in this engine prefers
@@ -312,74 +274,24 @@ fn get_calendar_with_iso_default<'js>(
     }
 }
 
-fn truncated_i32_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i32>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    i32_from_trunc(ctx, &value).map(Some)
-}
-
-fn truncated_u8_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<u8>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    u8_from_trunc(ctx, &value).map(Some)
-}
-
-fn truncated_u16_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<u16>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    u16_from_trunc(ctx, &value).map(Some)
-}
-
-fn integral_i64_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i64>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    to_integer_if_integral_i64(ctx, &value).map(Some)
-}
-
-fn integral_i128_field<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<i128>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    to_integer_if_integral(ctx, &value).map(Some)
-}
-
 /// PrepareTemporalFields Get order: day, hour, micro, milli, minute, month,
 /// monthCode, nano, second, year.
 fn datetime_fields_from_object<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<(DateTimeFields, Option<String>)> {
-    let day = truncated_u8_field(ctx, object, "day")?;
-    let hour = truncated_u8_field(ctx, object, "hour")?;
-    let microsecond = truncated_u16_field(ctx, object, "microsecond")?;
-    let millisecond = truncated_u16_field(ctx, object, "millisecond")?;
-    let minute = truncated_u8_field(ctx, object, "minute")?;
-    let month = truncated_u8_field(ctx, object, "month")?;
+    let day = optional_truncated_u8(ctx, object, "day")?;
+    let hour = optional_truncated_u8(ctx, object, "hour")?;
+    let microsecond = optional_truncated_u16(ctx, object, "microsecond")?;
+    let millisecond = optional_truncated_u16(ctx, object, "millisecond")?;
+    let minute = optional_truncated_u8(ctx, object, "minute")?;
+    let month = optional_truncated_u8(ctx, object, "month")?;
     let month_code_text = match get_defined(object, "monthCode")? {
         None => None,
         Some(value) => Some(to_month_code_string(ctx, &value)?),
     };
-    let nanosecond = truncated_u16_field(ctx, object, "nanosecond")?;
-    let second = truncated_u8_field(ctx, object, "second")?;
-    let year = truncated_i32_field(ctx, object, "year")?;
+    let nanosecond = optional_truncated_u16(ctx, object, "nanosecond")?;
+    let second = optional_truncated_u8(ctx, object, "second")?;
+    let year = optional_truncated_i32(ctx, object, "year")?;
     let mut calendar_fields = CalendarFields::new();
     if let Some(year) = year {
         calendar_fields = calendar_fields.with_year(year);
@@ -464,16 +376,16 @@ fn to_duration_like<'js>(
         return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
     }
     let object = require_object(ctx, value, "cannot convert value to Temporal.Duration")?;
-    let days = integral_i64_field(ctx, &object, "days")?;
-    let hours = integral_i64_field(ctx, &object, "hours")?;
-    let microseconds = integral_i128_field(ctx, &object, "microseconds")?;
-    let milliseconds = integral_i64_field(ctx, &object, "milliseconds")?;
-    let minutes = integral_i64_field(ctx, &object, "minutes")?;
-    let months = integral_i64_field(ctx, &object, "months")?;
-    let nanoseconds = integral_i128_field(ctx, &object, "nanoseconds")?;
-    let seconds = integral_i64_field(ctx, &object, "seconds")?;
-    let weeks = integral_i64_field(ctx, &object, "weeks")?;
-    let years = integral_i64_field(ctx, &object, "years")?;
+    let days = optional_integral_i64(ctx, &object, "days")?;
+    let hours = optional_integral_i64(ctx, &object, "hours")?;
+    let microseconds = optional_integral_i128(ctx, &object, "microseconds")?;
+    let milliseconds = optional_integral_i64(ctx, &object, "milliseconds")?;
+    let minutes = optional_integral_i64(ctx, &object, "minutes")?;
+    let months = optional_integral_i64(ctx, &object, "months")?;
+    let nanoseconds = optional_integral_i128(ctx, &object, "nanoseconds")?;
+    let seconds = optional_integral_i64(ctx, &object, "seconds")?;
+    let weeks = optional_integral_i64(ctx, &object, "weeks")?;
+    let years = optional_integral_i64(ctx, &object, "years")?;
     unwrap_temporal(
         ctx,
         temporal_rs::Duration::from_partial_duration(PartialDuration {
@@ -508,12 +420,12 @@ fn to_plain_time_like<'js>(
         return unwrap_temporal(ctx, temporal_rs::PlainTime::from_utf8(string.as_bytes()));
     }
     let object = require_object(ctx, value, "cannot convert value to Temporal.PlainTime")?;
-    let hour = truncated_u8_field(ctx, &object, "hour")?;
-    let microsecond = truncated_u16_field(ctx, &object, "microsecond")?;
-    let millisecond = truncated_u16_field(ctx, &object, "millisecond")?;
-    let minute = truncated_u8_field(ctx, &object, "minute")?;
-    let nanosecond = truncated_u16_field(ctx, &object, "nanosecond")?;
-    let second = truncated_u8_field(ctx, &object, "second")?;
+    let hour = optional_truncated_u8(ctx, &object, "hour")?;
+    let microsecond = optional_truncated_u16(ctx, &object, "microsecond")?;
+    let millisecond = optional_truncated_u16(ctx, &object, "millisecond")?;
+    let minute = optional_truncated_u8(ctx, &object, "minute")?;
+    let nanosecond = optional_truncated_u16(ctx, &object, "nanosecond")?;
+    let second = optional_truncated_u8(ctx, &object, "second")?;
     let partial = PartialTime {
         hour,
         minute,
@@ -579,12 +491,12 @@ impl PlainDateTime {
         let month = ctor_required_u8(&ctx, iso_month)?;
         let day = ctor_required_u8(&ctx, iso_day)?;
         let mut rest = rest.0.into_iter();
-        let hour = ctor_optional_u8(&ctx, rest.next())?;
-        let minute = ctor_optional_u8(&ctx, rest.next())?;
-        let second = ctor_optional_u8(&ctx, rest.next())?;
-        let millisecond = ctor_optional_u16(&ctx, rest.next())?;
-        let microsecond = ctor_optional_u16(&ctx, rest.next())?;
-        let nanosecond = ctor_optional_u16(&ctx, rest.next())?;
+        let hour = truncated_u8_or_zero(&ctx, Opt(rest.next()))?;
+        let minute = truncated_u8_or_zero(&ctx, Opt(rest.next()))?;
+        let second = truncated_u8_or_zero(&ctx, Opt(rest.next()))?;
+        let millisecond = truncated_u16_or_zero(&ctx, Opt(rest.next()))?;
+        let microsecond = truncated_u16_or_zero(&ctx, Opt(rest.next()))?;
+        let nanosecond = truncated_u16_or_zero(&ctx, Opt(rest.next()))?;
         let calendar = match rest.next() {
             Some(value) if !value.is_undefined() => to_constructor_calendar(&ctx, &value)?,
             _ => Calendar::ISO,

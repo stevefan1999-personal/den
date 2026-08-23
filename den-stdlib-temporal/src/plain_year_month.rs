@@ -15,9 +15,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, options_object, ordering_i32, probe_class, reject_calendar_or_time_zone,
-        reject_illformed_month_code, throw_value_of, to_integer_if_integral,
-        to_integer_if_integral_i64, to_integer_with_truncation, to_number, unwrap_temporal,
+        ctor_required_i32, ctor_required_u8, get_defined, options_object, optional_integral_i128,
+        optional_integral_i64, optional_truncated_i32, optional_truncated_i128, ordering_i32,
+        probe_class, reject_calendar_or_time_zone, reject_illformed_month_code, throw_value_of,
+        to_integer_with_truncation, to_number, truncated_u8, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -48,8 +49,8 @@ impl PlainYearMonth {
         iso_year: Opt<Value<'js>>, iso_month: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
         reference_iso_day: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let year = truncated_i32(&ctx, &opt_value(&ctx, iso_year))?;
-        let month = truncated_u8(&ctx, &opt_value(&ctx, iso_month))?;
+        let year = ctor_required_i32(&ctx, iso_year)?;
+        let month = ctor_required_u8(&ctx, iso_month)?;
         let calendar = canonicalize_calendar(&ctx, calendar)?;
         let reference_day = match reference_iso_day.0 {
             None => None,
@@ -362,12 +363,12 @@ fn canonicalize_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Resu
 }
 
 fn year_month_fields<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RawYearMonthFields> {
-    let month = optional_truncated_i128(ctx, &object.get("month")?)?;
+    let month = optional_truncated_i128(ctx, object, "month")?;
     if matches!(month, Some(value) if value < 1) {
         return Err(Exception::throw_range(ctx, "integer is out of range"));
     }
     let month_code = optional_month_code(ctx, &object.get("monthCode")?)?;
-    let year = optional_truncated_i32(ctx, &object.get("year")?)?;
+    let year = optional_truncated_i32(ctx, object, "year")?;
     Ok(RawYearMonthFields {
         month,
         month_code,
@@ -447,34 +448,18 @@ fn to_duration_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
         ));
     };
     let partial = PartialDuration {
-        days: optional_integral_i64(ctx, &object.get("days")?)?,
-        hours: optional_integral_i64(ctx, &object.get("hours")?)?,
-        microseconds: optional_integral_i128(ctx, &object.get("microseconds")?)?,
-        milliseconds: optional_integral_i64(ctx, &object.get("milliseconds")?)?,
-        minutes: optional_integral_i64(ctx, &object.get("minutes")?)?,
-        months: optional_integral_i64(ctx, &object.get("months")?)?,
-        nanoseconds: optional_integral_i128(ctx, &object.get("nanoseconds")?)?,
-        seconds: optional_integral_i64(ctx, &object.get("seconds")?)?,
-        weeks: optional_integral_i64(ctx, &object.get("weeks")?)?,
-        years: optional_integral_i64(ctx, &object.get("years")?)?,
+        days: optional_integral_i64(ctx, object, "days")?,
+        hours: optional_integral_i64(ctx, object, "hours")?,
+        microseconds: optional_integral_i128(ctx, object, "microseconds")?,
+        milliseconds: optional_integral_i64(ctx, object, "milliseconds")?,
+        minutes: optional_integral_i64(ctx, object, "minutes")?,
+        months: optional_integral_i64(ctx, object, "months")?,
+        nanoseconds: optional_integral_i128(ctx, object, "nanoseconds")?,
+        seconds: optional_integral_i64(ctx, object, "seconds")?,
+        weeks: optional_integral_i64(ctx, object, "weeks")?,
+        years: optional_integral_i64(ctx, object, "years")?,
     };
     unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
-}
-
-fn optional_integral_i64<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<i64>> {
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        to_integer_if_integral_i64(ctx, value).map(Some)
-    }
-}
-
-fn optional_integral_i128<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<i128>> {
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        to_integer_if_integral(ctx, value).map(Some)
-    }
 }
 
 fn parse_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<T> {
@@ -539,21 +524,6 @@ fn optional_rounding_increment<'js>(
     }
 }
 
-fn optional_truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<i32>> {
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    truncated_i32(ctx, value).map(Some)
-}
-
-fn optional_truncated_i128<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<i128>> {
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        to_integer_with_truncation(ctx, value).map(Some)
-    }
-}
-
 fn optional_month_code<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<String>> {
     if value.is_undefined() {
         return Ok(None);
@@ -577,20 +547,6 @@ fn require_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
         }
     }
     Err(Exception::throw_type(ctx, "monthCode must be a string"))
-}
-
-fn opt_value<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Value<'js> {
-    value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()))
-}
-
-fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
-    i32::try_from(to_integer_with_truncation(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
-fn truncated_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
-    u8::try_from(to_integer_with_truncation(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 fn month_u8(ctx: &Ctx<'_>, month: Option<i128>, overflow: Overflow) -> Result<Option<u8>> {
