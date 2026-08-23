@@ -1,8 +1,5 @@
-use std::ffi::CString;
-
-use rquickjs::{
-    ArrayBuffer, Ctx, Error, Exception, FromJs, Function, Object, Result, TypedArray, Value, qjs,
-};
+use den_util::BufferSource;
+use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use uuid::Uuid;
@@ -84,12 +81,14 @@ impl DigestAlgorithm {
     /// runs inside the async `digest` body.
     fn from_algorithm(ctx: &Ctx<'_>, algorithm: Value<'_>) -> Result<Self> {
         let raw_name = Self::raw_name(algorithm)?;
+        let name = raw_name.as_deref().unwrap_or("undefined");
         match raw_name.as_deref().and_then(Self::parse) {
             Some(algorithm) => Ok(algorithm),
             None => {
-                Err(Self::not_supported(
+                Err(den_util::throw_dom_exception(
                     ctx,
-                    raw_name.as_deref().unwrap_or("undefined"),
+                    "NotSupportedError",
+                    &format!("Unrecognized algorithm name: {name}"),
                 ))
             }
         }
@@ -112,82 +111,12 @@ impl DigestAlgorithm {
         }
     }
 
-    fn not_supported(ctx: &Ctx<'_>, name: &str) -> Error {
-        let message =
-            CString::new(format!("Unrecognized algorithm name: {name}")).unwrap_or_default();
-        // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack
-        // buffer, so the caller's text is passed as an *argument* to a
-        // constant `%s` format, never as the format itself. Both C strings
-        // outlive the call.
-        unsafe {
-            qjs::JS_ThrowDOMException(
-                ctx.as_raw().as_ptr(),
-                c"NotSupportedError".as_ptr(),
-                c"%s".as_ptr(),
-                message.as_ptr(),
-            );
-        }
-        Error::Exception
-    }
-
     fn hash(self, data: &[u8]) -> Vec<u8> {
         match self {
             Self::Sha1 => Sha1::digest(data).to_vec(),
             Self::Sha256 => Sha256::digest(data).to_vec(),
             Self::Sha384 => Sha384::digest(data).to_vec(),
             Self::Sha512 => Sha512::digest(data).to_vec(),
-        }
-    }
-}
-
-/// A copy of the bytes held by an `ArrayBuffer` or `ArrayBufferView`.
-///
-/// Copied up front because the spec's "stable bytes" step is there so a
-/// `SharedArrayBuffer` mutated by another agent cannot be observed
-/// half-hashed — and so a script that mutates `data` after calling `digest`
-/// cannot change what gets hashed.
-pub struct BufferSource(Vec<u8>);
-
-impl BufferSource {
-    fn as_bytes(&self) -> &[u8] { &self.0 }
-
-    fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-        ctx.globals()
-            .get::<_, Object<'js>>("ArrayBuffer")?
-            .get::<_, Function<'js>>("isView")?
-            .call((value.clone(),))
-    }
-
-    fn view_bytes<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
-        let type_error = || Exception::throw_type(ctx, "data must be a BufferSource");
-        let view = value.as_object().ok_or_else(type_error)?;
-        let buffer: ArrayBuffer<'js> = view.get("buffer").map_err(|_| type_error())?;
-        let offset: usize = view.get("byteOffset").map_err(|_| type_error())?;
-        let length: usize = view.get("byteLength").map_err(|_| type_error())?;
-        let bytes = buffer
-            .as_bytes()
-            .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))?;
-        bytes
-            .get(offset..offset.saturating_add(length))
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| Exception::throw_type(ctx, "the view is out of bounds of its buffer"))
-    }
-}
-
-impl<'js> FromJs<'js> for BufferSource {
-    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        if Self::is_array_buffer_view(ctx, &value)? {
-            return Self::view_bytes(ctx, &value).map(Self);
-        }
-        match ArrayBuffer::from_value(value) {
-            Some(buffer) => {
-                buffer
-                    .as_bytes()
-                    .map(<[u8]>::to_vec)
-                    .map(Self)
-                    .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))
-            }
-            None => Err(Exception::throw_type(ctx, "data must be a BufferSource")),
         }
     }
 }
@@ -202,7 +131,7 @@ pub async fn digest<'js>(
     // `new_copy`, never `new`: `new` lends QuickJS the Rust allocation plus a
     // free hook it runs twice on detach, so `(await digest(...)).transfer()`
     // would abort the process.
-    ArrayBuffer::new_copy(ctx, algorithm.hash(data.as_bytes()))
+    ArrayBuffer::new_copy(ctx, algorithm.hash(data.bytes()))
 }
 
 #[rquickjs::module]

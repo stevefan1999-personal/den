@@ -2,10 +2,11 @@
 
 use std::{cell::RefCell, rc::Rc};
 
+use den_util::Probe;
 use rquickjs::{Class, Ctx, Exception, JsLifetime, Object, Result, Value, class::Trace};
 
 use crate::{
-    Probe, backend,
+    backend,
     error::{throw_link_error, throw_runtime_error},
 };
 
