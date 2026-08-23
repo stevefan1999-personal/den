@@ -17,8 +17,8 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ctor_integer_if_integral, ctor_integer_if_integral_i128, js_to_string, ordering_i32,
-        probe_class, throw_value_of, to_calendar, to_integer_if_integral,
+        ctor_integer_if_integral, ctor_integer_if_integral_i128, get_defined, js_to_string,
+        ordering_i32, probe_class, throw_value_of, to_calendar, to_integer_if_integral,
         to_integer_if_integral_i64, to_integer_with_truncation, to_number, to_time_zone, to_unit,
         unwrap_temporal,
     },
@@ -60,23 +60,12 @@ const fn snap_i64(value: i64) -> i64 { value as f64 as i64 }
 
 const fn snap_i128(value: i128) -> i128 { value as f64 as i128 }
 
-fn defined_property<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
-    let value = object.get::<_, Value>(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
+/// `compare` and `toString` read options from an always-present object, so a
+/// missing argument becomes an empty bag rather than no options at all.
 fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Object<'js>> {
-    match options.0 {
+    match crate::convert::options_object(ctx, options)? {
         None => Object::new(ctx.clone()),
-        Some(value) if value.is_undefined() => Object::new(ctx.clone()),
-        Some(value) => value
-            .as_object()
-            .cloned()
-            .ok_or_else(|| Exception::throw_type(ctx, "options must be an object")),
+        Some(object) => Ok(object),
     }
 }
 
@@ -135,21 +124,21 @@ fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
 fn optional_integral_i64<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i64>> {
-    defined_property(object, key)?
+    get_defined(object, key)?
         .map_or(Ok(None), |value| to_integer_if_integral_i64(ctx, &value).map(Some))
 }
 
 fn optional_integral_i128<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i128>> {
-    defined_property(object, key)?
+    get_defined(object, key)?
         .map_or(Ok(None), |value| to_integer_if_integral(ctx, &value).map(Some))
 }
 
 fn optional_truncated_u8<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<u8>> {
-    defined_property(object, key)?.map_or(Ok(None), |value| {
+    get_defined(object, key)?.map_or(Ok(None), |value| {
         u8::try_from(truncated_i32(ctx, &value)?).map(Some).map_err(|error| out_of_range(ctx, error))
     })
 }
@@ -157,7 +146,7 @@ fn optional_truncated_u8<'js>(
 fn optional_truncated_u16<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<u16>> {
-    defined_property(object, key)?.map_or(Ok(None), |value| {
+    get_defined(object, key)?.map_or(Ok(None), |value| {
         u16::try_from(truncated_i32(ctx, &value)?).map(Some).map_err(|error| out_of_range(ctx, error))
     })
 }
@@ -219,7 +208,7 @@ fn to_temporal_duration<'js>(
 fn relative_to_option<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<Option<RelativeTo>> {
-    let Some(value) = defined_property(object, "relativeTo")? else {
+    let Some(value) = get_defined(object, "relativeTo")? else {
         return Ok(None);
     };
     if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, &value) {
@@ -241,7 +230,7 @@ fn relative_to_option<'js>(
             "relativeTo must be a Temporal date",
         ));
     };
-    let calendar = defined_property(bag, "calendar")?.map_or(Ok(Calendar::ISO), |calendar| {
+    let calendar = get_defined(bag, "calendar")?.map_or(Ok(Calendar::ISO), |calendar| {
         if let Some(date) = probe_class::<PlainDate>(ctx, &calendar) {
             return Ok(date.inner.calendar().clone());
         }
@@ -265,12 +254,12 @@ fn relative_to_option<'js>(
     let millisecond = optional_truncated_u16(ctx, bag, "millisecond")?;
     let minute = optional_truncated_u8(ctx, bag, "minute")?;
     let month = optional_truncated_u8(ctx, bag, "month")?;
-    let month_code = defined_property(bag, "monthCode")?.map_or(Ok(None), |code| {
+    let month_code = get_defined(bag, "monthCode")?.map_or(Ok(None), |code| {
         let text = js_to_string(ctx, &code)?;
         unwrap_temporal(ctx, MonthCode::try_from_utf8(text.as_bytes())).map(Some)
     })?;
     let nanosecond = optional_truncated_u16(ctx, bag, "nanosecond")?;
-    let utc_offset = defined_property(bag, "offset")?.map_or(Ok(None), |offset| {
+    let utc_offset = get_defined(bag, "offset")?.map_or(Ok(None), |offset| {
         let text = if offset.is_string() {
             offset.get::<String>()?
         } else if offset.is_object() {
@@ -281,9 +270,9 @@ fn relative_to_option<'js>(
         UtcOffset::from_str(&text).map(Some).map_err(|error| out_of_range(ctx, error))
     })?;
     let second = optional_truncated_u8(ctx, bag, "second")?;
-    let zone = defined_property(bag, "timeZone")?
+    let zone = get_defined(bag, "timeZone")?
         .map_or(Ok(None), |time_zone| to_time_zone(ctx, &time_zone).map(Some))?;
-    let year = defined_property(bag, "year")?
+    let year = get_defined(bag, "year")?
         .map_or(Ok(None), |value| truncated_i32(ctx, &value).map(Some))?;
     let date_fields = CalendarFields::new()
         .with_optional_year(year)
@@ -329,7 +318,7 @@ fn relative_to_option<'js>(
 }
 
 fn optional_unit<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
-    defined_property(object, key)?.map_or(Ok(None), |value| {
+    get_defined(object, key)?.map_or(Ok(None), |value| {
         let name = string_option(ctx, &value)?;
         Unit::from_str(&name).map(Some).map_err(|error| out_of_range(ctx, error))
     })
@@ -338,7 +327,7 @@ fn optional_unit<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
 fn rounding_mode_option<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<Option<RoundingMode>> {
-    defined_property(object, "roundingMode")?.map_or(Ok(None), |value| {
+    get_defined(object, "roundingMode")?.map_or(Ok(None), |value| {
         let name = string_option(ctx, &value)?;
         unwrap_temporal(ctx, RoundingMode::from_str(&name)).map(Some)
     })
@@ -471,7 +460,7 @@ impl Duration {
             let object = required_options_object(&ctx, &options)?;
             let largest_unit = optional_unit(&ctx, &object, "largestUnit")?;
             let relative_to = relative_to_option(&ctx, &object)?;
-            let increment = defined_property(&object, "roundingIncrement")?.map_or(
+            let increment = get_defined(&object, "roundingIncrement")?.map_or(
                 Ok(None),
                 |value| unwrap_temporal(&ctx, RoundingIncrement::try_from(to_number(&ctx, &value)?)).map(Some),
             )?;
@@ -509,7 +498,7 @@ impl Duration {
 
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let object = options_object(&ctx, options)?;
-        let precision = match defined_property(&object, "fractionalSecondDigits")? {
+        let precision = match get_defined(&object, "fractionalSecondDigits")? {
             None => Precision::Auto,
             Some(value) if value.is_number() => {
                 let number = to_number(&ctx, &value)?;

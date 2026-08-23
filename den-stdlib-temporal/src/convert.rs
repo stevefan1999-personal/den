@@ -9,8 +9,8 @@ use std::{cmp::Ordering, str::FromStr};
 use den_util::Probe as _;
 use indexmap::IndexMap;
 use rquickjs::{
-    BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Result, Value, atom::PredefinedAtom,
-    class::JsClass, prelude::Opt,
+    BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Value,
+    atom::PredefinedAtom, class::JsClass, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, TimeZone, UtcOffset,
@@ -69,6 +69,52 @@ where
     let object = value.as_object()?;
     let class = ctx.probe(|| Class::<C>::from_object(object))?;
     class.try_borrow().ok().map(|borrowed| (*borrowed).clone())
+}
+
+/// Read a property, mapping `undefined` to `None` — the shared shape of the
+/// dictionary getters used on option bags and property bags.
+pub fn get_defined<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
+    let value: Value<'js> = object.get(key)?;
+    if value.is_undefined() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+/// GetOptionsObject: a missing or `undefined` argument means no options at
+/// all; anything else must be an object.
+pub fn options_object<'js>(
+    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
+) -> Result<Option<Object<'js>>> {
+    match options.0 {
+        None => Ok(None),
+        Some(value) if value.is_undefined() => Ok(None),
+        Some(value) => require_object(ctx, &value, "options must be an object").map(Some),
+    }
+}
+
+pub fn require_object<'js>(
+    ctx: &Ctx<'js>, value: &Value<'js>, message: &str,
+) -> Result<Object<'js>> {
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| Exception::throw_type(ctx, message))
+}
+
+/// Reject `calendar` / `timeZone` properties on the partial bags `with()`
+/// takes. Callers supply the messages their interface reports.
+pub fn reject_calendar_or_time_zone<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, calendar_message: &str, time_zone_message: &str,
+) -> Result<()> {
+    if get_defined(object, "calendar")?.is_some() {
+        return Err(Exception::throw_type(ctx, calendar_message));
+    }
+    if get_defined(object, "timeZone")?.is_some() {
+        return Err(Exception::throw_type(ctx, time_zone_message));
+    }
+    Ok(())
 }
 
 pub fn options_bag<'js>(

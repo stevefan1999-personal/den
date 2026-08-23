@@ -19,8 +19,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        js_to_string, probe_class, reject_illformed_month_code, throw_temporal, throw_value_of,
-        to_integer_with_truncation, to_plain_month_day, unwrap_temporal,
+        get_defined, js_to_string, options_object, probe_class, reject_illformed_month_code,
+        require_object, throw_temporal, throw_value_of, to_integer_with_truncation,
+        to_plain_month_day, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -225,7 +226,7 @@ impl PlainMonthDay {
     pub fn to_plain_date<'js>(
         &self, item: Value<'js>, _options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<PlainDate> {
-        let object = required_object(&ctx, &item, "toPlainDate() requires an object")?;
+        let object = require_object(&ctx, &item, "toPlainDate() requires an object")?;
         let Some(year) = get_defined(&object, "year")? else {
             return Err(Exception::throw_type(&ctx, "year is required"));
         };
@@ -236,13 +237,9 @@ impl PlainMonthDay {
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => {
-                let value: Value = object.get("calendarName")?;
-                if value.is_undefined() {
-                    DisplayCalendar::Auto
-                } else {
-                    option_display_calendar(&ctx, &value)?
-                }
+            Some(object) => match get_defined(&object, "calendarName")? {
+                None => DisplayCalendar::Auto,
+                Some(value) => option_display_calendar(&ctx, &value)?,
             }
         };
         Ok(self.inner.to_ixdtf_string(display))
@@ -457,11 +454,10 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    let value: Value = object.get("overflow")?;
-    if value.is_undefined() {
-        return Ok(None);
+    match get_defined(&object, "overflow")? {
+        None => Ok(None),
+        Some(value) => option_overflow(ctx, &value).map(Some),
     }
-    option_overflow(ctx, &value).map(Some)
 }
 
 /// GetOption string path: prefer `toString` so observers do not see valueOf first.
@@ -517,32 +513,4 @@ fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
     Ok(true)
 }
 
-fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Object<'js>>> {
-    let Some(value) = options.0 else {
-        return Ok(None);
-    };
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    value
-        .as_object()
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| Exception::throw_type(ctx, "options must be an object"))
-}
 
-fn required_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<Object<'js>> {
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, message))
-}
-
-fn get_defined<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}

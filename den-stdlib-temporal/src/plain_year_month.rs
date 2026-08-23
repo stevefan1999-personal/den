@@ -15,9 +15,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of,
-        to_integer_if_integral, to_integer_if_integral_i64, to_integer_with_truncation, to_number,
-        unwrap_temporal,
+        get_defined, options_object, ordering_i32, probe_class, reject_calendar_or_time_zone,
+        reject_illformed_month_code, throw_value_of, to_integer_if_integral,
+        to_integer_if_integral_i64, to_integer_with_truncation, to_number, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -172,7 +172,7 @@ impl PlainYearMonth {
                 "Temporal.PlainYearMonth.prototype.with requires a property bag",
             ));
         };
-        reject_calendar_or_time_zone(&ctx, object)?;
+        reject_calendar_or_time_zone(&ctx, object, "calendar is not allowed in Temporal.PlainYearMonth.prototype.with", "timeZone is not allowed in Temporal.PlainYearMonth.prototype.with")?;
         let raw = year_month_fields(&ctx, object)?;
         if raw.is_empty() {
             return Err(Exception::throw_type(
@@ -382,49 +382,23 @@ fn is_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
         || probe_class::<Duration>(ctx, value).is_some()
 }
 
-fn reject_calendar_or_time_zone<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
-    let calendar = object.get::<_, Value>("calendar")?;
-    if !calendar.is_undefined() {
-        return Err(Exception::throw_type(
-            ctx,
-            "calendar is not allowed in Temporal.PlainYearMonth.prototype.with",
-        ));
-    }
-    let time_zone = object.get::<_, Value>("timeZone")?;
-    if !time_zone.is_undefined() {
-        return Err(Exception::throw_type(
-            ctx,
-            "timeZone is not allowed in Temporal.PlainYearMonth.prototype.with",
-        ));
-    }
-    Ok(())
-}
-
 fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
     match options_object(ctx, options)? {
         None => Ok(None),
-        Some(object) => {
-            let value = object.get::<_, Value>("overflow")?;
-            if value.is_undefined() {
-                Ok(None)
-            } else {
-                parse_enum(ctx, &value, "invalid overflow option").map(Some)
-            }
-        }
+        Some(object) => match get_defined(&object, "overflow")? {
+            None => Ok(None),
+            Some(value) => parse_enum(ctx, &value, "invalid overflow option").map(Some),
+        },
     }
 }
 
 fn display_calendar<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<DisplayCalendar> {
     match options_object(ctx, options)? {
         None => Ok(DisplayCalendar::Auto),
-        Some(object) => {
-            let value = object.get::<_, Value>("calendarName")?;
-            if value.is_undefined() {
-                Ok(DisplayCalendar::Auto)
-            } else {
-                parse_enum(ctx, &value, "invalid calendarName option")
-            }
-        }
+        Some(object) => match get_defined(&object, "calendarName")? {
+            None => Ok(DisplayCalendar::Auto),
+            Some(value) => parse_enum(ctx, &value, "invalid calendarName option"),
+        },
     }
 }
 
@@ -440,20 +414,6 @@ fn difference_settings<'js>(
     settings.rounding_mode = optional_rounding_mode(ctx, &object.get("roundingMode")?)?;
     settings.smallest_unit = optional_unit(ctx, &object.get("smallestUnit")?)?;
     Ok(settings)
-}
-
-fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Object<'js>>> {
-    let Some(value) = options.0 else {
-        return Ok(None);
-    };
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    value
-        .as_object()
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| Exception::throw_type(ctx, "options must be an object"))
 }
 
 fn optional_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<Unit>> {
