@@ -1,7 +1,9 @@
 //! Reporting an error nobody caught — DOM §2.11 "report an exception" — and
 //! the per-realm sink it goes to.
 
-use rquickjs::{Coerced, Ctx, Error, FromJs, Function, JsLifetime, Object, Persistent, Value};
+use rquickjs::{
+    Coerced, Ctx, Error, FromJs, Function, JsLifetime, Object, Persistent, Result, Value,
+};
 
 /// The property [`ExceptionSink`] looks the reporter up under, read afresh on
 /// every report: a realm may *replace* its reporter long after installing the
@@ -53,6 +55,25 @@ pub fn report_exception<'js>(ctx: &Ctx<'js>, value: &Value<'js>) {
             error => eprintln!("{error}"),
         }
         print_exception(ctx, value);
+    }
+}
+
+/// Report the outcome of a host → JS call whose caller is gone — a timer
+/// callback, an event listener, a port handler. `Ok` reports nothing.
+///
+/// Swallowing such an outcome (`let _ = func.call(..)`) would make a throwing
+/// callback a silent no-op, so an `Error::Exception` is caught out of the
+/// context — it must not resurface at the next unrelated entry — and reported
+/// through [`report_exception`]; in a worker that is the worker's `error`
+/// event and then its parent's. Every other error kind only prints.
+///
+/// Deliberately infallible, like [`report_exception`]: reporting must never
+/// itself throw.
+pub fn report_uncaught(ctx: &Ctx<'_>, outcome: Result<()>) {
+    match outcome {
+        Ok(()) => {}
+        Err(Error::Exception) => report_exception(ctx, &ctx.catch()),
+        Err(error) => eprintln!("{error}"),
     }
 }
 
