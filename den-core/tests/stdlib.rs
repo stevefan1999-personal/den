@@ -162,3 +162,41 @@ async fn crypto_subtle_digest_sha256_of_abc_matches_the_well_known_hex() -> eyre
     );
     Ok(())
 }
+
+/// `den:fs` is import-only (no globals), so this also proves the builtin
+/// resolver/loader still serve the specifier after the remaining stubs grew
+/// implementations.
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "stdlib-fs")]
+async fn den_fs_metadata_reports_a_regular_file() -> eyre::Result<()> {
+    let dir = std::env::temp_dir().join(format!(
+        "den-fs-smoke-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("hello.txt");
+    std::fs::write(&file, b"abc")?;
+    let engine = Engine::new().await;
+    let failures: String = engine
+        .eval(&format!(
+            r#"
+              const {{ metadata }} = await import("den:fs");
+              const meta = await metadata({path:?});
+              Object.entries({{
+                len: meta.len === 3,
+                isFile: meta.isFile === true,
+                isDir: meta.isDir === false,
+                isSymlink: meta.isSymlink === false,
+              }}).filter(([, held]) => !held).map(([name]) => name).join(",")
+            "#,
+            path = file
+        ))
+        .await?;
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(failures, "");
+    Ok(())
+}
