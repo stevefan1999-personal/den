@@ -1,4 +1,3 @@
-use rand::RngCore;
 use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray};
 use uuid::Uuid;
 
@@ -27,9 +26,18 @@ pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Objec
             Err(Exception::throw_type(&ctx, "not a typed array"))
         }?;
 
-        let dest = array.as_bytes().unwrap();
-        let dest = unsafe { core::slice::from_raw_parts_mut(dest.as_ptr() as *mut u8, dest.len()) };
-        rand::thread_rng().fill_bytes(dest);
+        // `as_raw` is the only mutable view rquickjs 0.12 offers: `as_bytes` hands back
+        // a shared `&[u8]`, so writing through it would mean casting away its
+        // immutability. It returns `None` for a detached buffer, which JS can
+        // trigger at will.
+        let Some(raw) = array.as_raw() else {
+            return Err(Exception::throw_type(&ctx, "array buffer is detached"));
+        };
+        // SAFETY: `raw` is QuickJS's own live allocation for this buffer. Nothing else
+        // aliases it here — no JS runs between `as_raw` and the end of the
+        // fill, so the buffer cannot be detached or resized underneath us.
+        let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
+        rand::fill(dest);
     }
     Ok(array)
 }
@@ -42,7 +50,7 @@ pub fn random_uuid() -> String {
 #[rquickjs::module]
 pub mod crypto {
     use indexmap::indexmap;
-    use rquickjs::{module::Exports, Ctx, IntoJs, Result};
+    use rquickjs::{Ctx, IntoJs, Result, module::Exports};
 
     #[qjs(declare)]
     pub fn declare(declare: &rquickjs::module::Declarations) -> Result<()> {
@@ -52,17 +60,14 @@ pub mod crypto {
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, e: &Exports<'js>) -> Result<()> {
-        e.export(
-            "getRandomValues",
-            super::js_get_random_values.into_js(&ctx)?,
-        )?
-        .export("randomUUID", super::js_random_uuid.into_js(&ctx)?)?;
+        e.export("getRandomValues", super::js_get_random_values.into_js(ctx)?)?
+            .export("randomUUID", super::js_random_uuid.into_js(ctx)?)?;
 
         ctx.globals().set(
             "crypto",
             indexmap! {
-                "getRandomValues" => super::js_get_random_values.into_js(&ctx)?,
-                "randomUUID" => super::js_random_uuid.into_js(&ctx)?,
+                "getRandomValues" => super::js_get_random_values.into_js(ctx)?,
+                "randomUUID" => super::js_random_uuid.into_js(ctx)?,
             },
         )?;
 

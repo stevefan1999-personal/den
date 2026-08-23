@@ -2,9 +2,9 @@ use derivative::Derivative;
 use derive_more::{From, Into};
 use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
-use indexmap::{indexmap, IndexMap};
+use indexmap::{IndexMap, indexmap};
 use rquickjs::{
-    class::Trace, prelude::*, ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray,
+    ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
 };
 
 #[derive(Trace, JsLifetime, Derivative, From, Into)]
@@ -70,11 +70,13 @@ impl TextDecoder {
                     self.encoding.new_decoder()
                 };
 
+                // `as_bytes` yields `None` once the buffer is detached, which JS can do at
+                // any point before the call lands here.
                 let buffer = match buffer {
                     Either::Left(ref buf) => buf.as_bytes(),
                     Either::Right(ref buf) => buf.as_bytes(),
                 }
-                .unwrap();
+                .ok_or_else(|| Exception::throw_type(&ctx, "buffer is detached"))?;
 
                 let len = if self.fatal {
                     decoder.max_utf8_buffer_length_without_replacement(buffer.len())
@@ -115,6 +117,19 @@ impl Default for TextEncoder {
     }
 }
 
+impl TextEncoder {
+    /// Length in bytes of the longest UTF-8 prefix of `src` that fits in
+    /// `capacity`, never splitting a code point. https://encoding.spec.whatwg.org/#dom-textencoder-encodeinto
+    /// requires `encodeInto` to truncate rather than overrun the destination.
+    fn utf8_prefix_fitting(src: &str, capacity: usize) -> usize {
+        src.char_indices()
+            .map(|(offset, character)| offset + character.len_utf8())
+            .take_while(|end| *end <= capacity)
+            .last()
+            .unwrap_or(0)
+    }
+}
+
 #[rquickjs::methods(rename_all = "camelCase")]
 impl TextEncoder {
     #[qjs(constructor)]
@@ -135,15 +150,27 @@ impl TextEncoder {
         &self,
         src: String,
         dest: TypedArray<'js, u8>,
-    ) -> IndexMap<&str, usize> {
-        let dest = dest.as_bytes().unwrap();
-        let dest = unsafe { core::slice::from_raw_parts_mut(dest.as_ptr() as *mut u8, dest.len()) };
-        let (result, _, _) = encoding_rs::UTF_8.encode(&src);
-        dest[..result.len()].copy_from_slice(&result);
-        indexmap! {
-            "read" => result.len(),
-            "written" => result.len()
-        }
+        ctx: Ctx<'js>,
+    ) -> Result<IndexMap<&'static str, usize>> {
+        // `as_raw` is the only mutable view rquickjs 0.12 offers — `as_bytes` hands
+        // back a shared `&[u8]` — and it reports a detached buffer as `None`.
+        let raw = dest
+            .as_raw()
+            .ok_or_else(|| Exception::throw_type(&ctx, "destination is detached"))?;
+
+        let written = Self::utf8_prefix_fitting(&src, raw.len);
+
+        // SAFETY: `raw` is QuickJS's own live allocation for this view. Nothing else
+        // aliases it here — no JS runs between `as_raw` and the end of the
+        // copy, so the buffer cannot be detached or resized underneath us.
+        let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
+        dest[..written].copy_from_slice(&src.as_bytes()[..written]);
+
+        // `read` is counted in UTF-16 code units, `written` in bytes.
+        Ok(indexmap! {
+            "read" => src[..written].chars().map(char::len_utf16).sum(),
+            "written" => written
+        })
     }
 }
 
@@ -153,7 +180,7 @@ impl TextEncoder {
     rename_types = "PascalCase"
 )]
 pub mod text {
-    use rquickjs::{class::JsClass, module::Exports, Ctx, Result};
+    use rquickjs::{Ctx, Result, class::JsClass, module::Exports};
 
     pub use super::{TextDecoder, TextEncoder};
 
@@ -165,5 +192,23 @@ pub mod text {
             .set("TextEncoder", TextEncoder::constructor(ctx))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TextEncoder;
+
+    #[test]
+    fn utf8_prefix_never_overruns_or_splits_a_code_point() {
+        // "é" is two bytes, "€" is three: a capacity landing mid-character must not be
+        // used.
+        assert_eq!(TextEncoder::utf8_prefix_fitting("hello", 2), 2);
+        assert_eq!(TextEncoder::utf8_prefix_fitting("hello", 99), 5);
+        assert_eq!(TextEncoder::utf8_prefix_fitting("é", 1), 0);
+        assert_eq!(TextEncoder::utf8_prefix_fitting("é", 2), 2);
+        assert_eq!(TextEncoder::utf8_prefix_fitting("a€", 3), 1);
+        assert_eq!(TextEncoder::utf8_prefix_fitting("a€", 4), 4);
+        assert_eq!(TextEncoder::utf8_prefix_fitting("", 8), 0);
     }
 }

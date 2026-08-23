@@ -39,8 +39,16 @@ url = "2.5.8"
 typed-builder.workspace = true
 
 # Den specific stuff
+den-stdlib-console = { version = "*", path = "../den-stdlib-console", optional = true }
 den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
+den-stdlib-crypto = { version = "*", path = "../den-stdlib-crypto", optional = true }
+den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
+den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
+den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = true }
+den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
+den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true, default-features = false }
+den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch", optional = true }
 den-stdlib-worker = { version = "*", path = "../den-stdlib-worker", optional = true, default-features = false }
 den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-features = false, optional = true }
 den-utils = { version = "*", path = "../den-utils" }
@@ -53,7 +61,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
 wat = "1.257.1"
 
 [features]
-default = ["typescript", "react", "wasm-wasmtime", "stdlib-worker"]
+default = ["stdlib", "typescript", "react", "wasm-wasmtime"]
 typescript = [
     "transpile",
     "den-transpiler-oxc?/typescript",
@@ -66,10 +74,26 @@ transpile = [
 ]
 
 stdlib = [
+    "stdlib-console",
     "stdlib-core",
+    "stdlib-crypto",
+    "stdlib-fs",
+    "stdlib-networking",
+    "stdlib-sqlite",
+    "stdlib-text",
+    "stdlib-timer",
+    "stdlib-whatwg-fetch",
     "stdlib-worker",
 ]
+stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
+stdlib-crypto = ["dep:den-stdlib-crypto"]
+stdlib-fs = ["dep:den-stdlib-fs"]
+stdlib-networking = ["dep:den-stdlib-networking"]
+stdlib-sqlite = ["dep:den-stdlib-sqlite"]
+stdlib-text = ["dep:den-stdlib-text"]
+stdlib-timer = ["dep:den-stdlib-timer"]
+stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
 stdlib-worker = ["dep:den-stdlib-worker"]
 
 # `wasm` is a plain alias for the default backend: making it `dep:`-only would let

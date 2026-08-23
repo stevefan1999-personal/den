@@ -3,6 +3,7 @@ name = "den-stdlib-console"
 description = "Console API for den"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
@@ -11,7 +12,10 @@ keywords.workspace = true
 
 
 [dependencies]
-colored = "2.1.0"
+colored = "3.1.1"
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 tracing.workspace = true
+
+[lints]
+workspace = true

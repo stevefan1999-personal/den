@@ -2,8 +2,18 @@
 
 members = [
     "den-core",
+    "den-stdlib-console",
     "den-stdlib-core",
+    "den-stdlib-crypto",
+    "den-stdlib-fs",
+    "den-stdlib-io",
+    "den-stdlib-networking",
+    "den-stdlib-regex",
+    "den-stdlib-sqlite",
+    "den-stdlib-text",
+    "den-stdlib-timer",
     "den-stdlib-wasm",
+    "den-stdlib-whatwg-fetch",
     "den-stdlib-worker",
     "den-transpiler-oxc",
     "den-utils",
@@ -93,7 +103,7 @@ vc-ltl = "5.3.1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
-default = ["typescript", "react", "wasm-wasmtime", "stdlib-worker", "mimalloc"]
+default = ["stdlib", "typescript", "react", "wasm-wasmtime", "mimalloc"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -102,7 +112,15 @@ tracing = ["color-eyre/track-caller", "color-eyre/capture-spantrace"]
 tokio-console = ["console-subscriber"]
 
 stdlib = ["den-core/stdlib"]
+stdlib-console = ["den-core/stdlib-console"]
 stdlib-core = ["den-core/stdlib-core"]
+stdlib-crypto = ["den-core/stdlib-crypto"]
+stdlib-fs = ["den-core/stdlib-fs"]
+stdlib-networking = ["den-core/stdlib-networking"]
+stdlib-sqlite = ["den-core/stdlib-sqlite"]
+stdlib-text = ["den-core/stdlib-text"]
+stdlib-timer = ["den-core/stdlib-timer"]
+stdlib-whatwg-fetch = ["den-core/stdlib-whatwg-fetch"]
 stdlib-worker = ["den-core/stdlib-worker"]
 
 wasm = ["den-core/wasm"]

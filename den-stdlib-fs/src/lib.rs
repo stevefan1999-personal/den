@@ -4,7 +4,7 @@
     rename_types = "camelCase"
 )]
 pub mod fs {
-    use rquickjs::{module::Declarations, Ctx, Exception, Result};
+    use rquickjs::{Ctx, Exception, Result, module::Declarations};
 
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> rquickjs::Result<()> {

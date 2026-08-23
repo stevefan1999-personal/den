@@ -3,6 +3,7 @@ name = "den-stdlib-fs"
 description = "Filesystem API for den"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
@@ -12,3 +13,6 @@ keywords.workspace = true
 [dependencies]
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = ["fs", "io-util", "sync"] }
+
+[lints]
+workspace = true

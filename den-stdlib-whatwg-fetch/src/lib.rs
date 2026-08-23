@@ -1,20 +1,27 @@
-use std::{cell::RefCell, sync::Arc};
+use std::{cell::RefCell, rc::Rc};
 
 use den_utils::serde_json::SerdeJsonValue;
 use derivative::Derivative;
 use derive_more::derive::{From, Into};
-use rquickjs::{class::Trace, ArrayBuffer, Ctx, Exception, IntoJs, JsLifetime, Result, TypedArray};
+use rquickjs::{ArrayBuffer, Ctx, Exception, IntoJs, JsLifetime, Result, TypedArray, class::Trace};
 
 #[derive(Trace, JsLifetime, Derivative, From, Into)]
 #[derivative(Clone, Debug)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response {
     #[qjs(skip_trace)]
-    inner: Arc<RefCell<Option<reqwest::Response>>>,
+    inner: Rc<RefCell<Option<reqwest::Response>>>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Response {
+    // `Response::constructor` is what gets bound as the `Response` global,
+    // and it only exists when the class declares a constructor. Returning
+    // `()` makes `new Response()` throw, as only `fetch` produces one.
+    #[allow(
+        clippy::new_ret_no_self,
+        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
+    )]
     #[qjs(constructor)]
     pub fn new() {}
 
@@ -25,7 +32,13 @@ impl Response {
                 .await
                 .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))?;
 
-            ArrayBuffer::new(ctx, bytes)
+            // `new_copy`, never `new`: `new` lends QuickJS the Rust allocation
+            // plus a free hook it runs twice on detach (quickjs.c:58037 and
+            // :57935), and `transfer` reallocs a pointer its allocator never
+            // produced, so `(await r.arrayBuffer()).transfer()` aborted the
+            // process. The cost is one extra copy of the body — paid to make it
+            // an ordinary JS buffer that can be detached and transferred.
+            ArrayBuffer::new_copy(ctx, bytes)
         } else {
             Err(Exception::throw_type(&ctx, "Already distributed"))
         }
@@ -42,7 +55,9 @@ impl Response {
                 .await
                 .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))?;
 
-            TypedArray::new(ctx, bytes)
+            // Same as `array_buffer` above: an owned QuickJS allocation, so
+            // detach and transfer are legitimate. One extra copy of the body.
+            TypedArray::new_copy(ctx, bytes)
         } else {
             Err(Exception::throw_type(&ctx, "Already distributed"))
         }
@@ -66,11 +81,10 @@ impl Response {
 
     pub async fn text<'js>(&self, ctx: Ctx<'js>) -> Result<String> {
         if let Some(inner) = self.inner.take() {
-            Ok(inner
+            inner
                 .text()
                 .await
-                .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))?
-                .into())
+                .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))
         } else {
             Err(Exception::throw_type(&ctx, "Already distributed"))
         }
@@ -152,16 +166,16 @@ pub async fn fetch<'js>(ctx: Ctx<'js>, url: String) -> Result<Response> {
         .map_err(|e| Exception::throw_internal(&ctx, &format!("{e:?}")))?;
 
     Ok(Response {
-        inner: Arc::new(RefCell::new(Some(response))),
+        inner: Rc::new(RefCell::new(Some(response))),
     })
 }
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
     use rquickjs::{
+        Ctx, Result,
         class::JsClass,
         module::{Declarations, Exports},
-        Ctx, Result,
     };
 
     pub use super::Response;
@@ -178,5 +192,56 @@ pub mod whatwg {
         ctx.globals().set("fetch", super::js_fetch)?;
         ctx.globals().set("Response", Response::constructor(ctx))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt};
+
+    use super::Response;
+
+    /// A body handed to script has to be a buffer QuickJS itself allocated.
+    /// Lending it a Rust allocation registers a free hook that quickjs-ng runs
+    /// twice on detach (quickjs.c:58037 and :57935), and `transfer` reallocs
+    /// that foreign pointer, so `(await response.arrayBuffer()).transfer(2)`
+    /// aborted the process — an abort that takes this test binary with it, so
+    /// the snippet returning at all is the assertion.
+    #[tokio::test]
+    async fn a_response_body_survives_transfer_and_detach() {
+        let runtime = AsyncRuntime::new().expect("runtime");
+        let context = AsyncContext::full(&runtime).await.expect("context");
+        let outcome: String = context
+            .async_with(async |ctx| {
+                // Built from an `http::Response`, so the body is real but no
+                // socket is involved. `Response` holds an `Rc`, so it cannot be
+                // captured by the `Send` closure and is made here.
+                let respond = || {
+                    Response {
+                        inner: Rc::new(RefCell::new(Some(http::Response::new("body").into()))),
+                    }
+                };
+                let run = async {
+                    let buffer = respond().array_buffer(ctx.clone()).await?;
+                    let view = respond().bytes(ctx.clone()).await?;
+                    ctx.globals().set("body", buffer)?;
+                    ctx.globals().set("view", view)?;
+                    ctx.eval::<String, _>(
+                        r#"
+                          const moved = body.transfer(2);
+                          const movedView = view.buffer.transfer();
+                          [new Uint8Array(moved).join("-"),
+                           String.fromCharCode(...new Uint8Array(movedView)),
+                           body.detached, view.byteLength].join(",")
+                        "#,
+                    )
+                };
+                run.await.catch(&ctx).map_err(|err| err.to_string())
+            })
+            .await
+            .expect("the snippet evaluates");
+        assert_eq!(outcome, "98-111,body,true,0");
     }
 }

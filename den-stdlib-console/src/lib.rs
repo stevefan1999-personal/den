@@ -1,5 +1,6 @@
 use std::fmt::Write;
-use rquickjs::{class::Trace, function::Rest, Error, JsLifetime, Result, Type, Value};
+
+use rquickjs::{Error, JsLifetime, Result, Type, Value, class::Trace, function::Rest};
 
 // Notice: this code is directly copied from here
 // https://github.com/rquickjs/rquickjs-extra/blob/main/modules/console/src/lib.rs
@@ -29,7 +30,7 @@ impl FormatArgs {
 ///
 /// This formatter is used to format values to be printed by the console object.
 ///
-/// [`Console`]: crate::console::Console
+/// [`Console`]: crate::Console
 #[derive(Clone, Debug, Trace, JsLifetime)]
 pub struct Formatter {
     max_depth: usize,
@@ -132,7 +133,9 @@ impl Formatter {
                     write!(out, " ]").map_err(|_| Error::Unknown)?;
                 }
             }
-            Type::Object => {
+            // rquickjs 0.12 split `Type::Proxy` out of `Type::Object`; a proxy is still a
+            // JS_TAG_OBJECT, so `into_object`/`props` work on it and its traps get to answer.
+            Type::Object | Type::Proxy => {
                 if depth > self.max_depth {
                     write!(out, "[Object]").map_err(|_| Error::Unknown)?;
                 } else if args.is_key() {
@@ -167,13 +170,10 @@ impl Formatter {
                     .ok_or(Error::new_from_js("value", "function"))?
                     .as_object()
                     .ok_or(Error::new_from_js("function", "object"))?;
-                let name: Option<String> = function.get("name").ok().and_then(|n| {
-                    if n == "[object Object]" {
-                        None
-                    } else {
-                        Some(n)
-                    }
-                });
+                let name: Option<String> = function
+                    .get("name")
+                    .ok()
+                    .filter(|name| name != "[object Object]");
                 match name {
                     Some(name) => {
                         write!(out, "[Function: {}]", name).map_err(|_| Error::Unknown)?
@@ -295,7 +295,7 @@ impl Console {
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod console {
-    use rquickjs::{module::Exports, Ctx, Result};
+    use rquickjs::{Ctx, Result, module::Exports};
 
     use crate::{Console, Formatter, TARGET};
 

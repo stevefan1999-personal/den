@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use either::Either;
-use rquickjs::{class::Trace, convert::List, Ctx, Error, JsLifetime, Result, TypedArray};
+use rquickjs::{Ctx, Error, JsLifetime, Result, TypedArray, class::Trace, convert::List};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::RwLock,
@@ -22,6 +22,13 @@ pub struct TcpStreamWrapper {
 
 #[rquickjs::methods]
 impl TcpStreamWrapper {
+    // rquickjs only attaches `#[qjs(static)]` members to a class that
+    // declares a constructor, and a `()` return makes `new TcpStream()`
+    // throw: instances only ever come from `TcpStream.connect`.
+    #[allow(
+        clippy::new_ret_no_self,
+        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
+    )]
     #[qjs(constructor)]
     pub fn new() {}
 
@@ -76,6 +83,13 @@ pub struct TcpListenerWrapper {
 
 #[rquickjs::methods]
 impl TcpListenerWrapper {
+    // rquickjs only attaches `#[qjs(static)]` members to a class that
+    // declares a constructor, and a `()` return makes `new TcpListener()`
+    // throw: instances only ever come from `TcpListener.listen`.
+    #[allow(
+        clippy::new_ret_no_self,
+        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
+    )]
     #[qjs(constructor)]
     pub fn new() {}
 

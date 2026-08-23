@@ -3,6 +3,7 @@ name = "den-stdlib-text"
 description = "Text API for den"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
@@ -16,3 +17,6 @@ either.workspace = true
 encoding_rs = "0.8.35"
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
+
+[lints]
+workspace = true

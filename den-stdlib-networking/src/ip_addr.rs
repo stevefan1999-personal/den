@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use delegate_attr::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
-use rquickjs::{class::Trace, JsLifetime};
+use rquickjs::{JsLifetime, class::Trace};
 
 #[derive(Trace, JsLifetime, Derivative, From, Into, Deref, DerefMut)]
 #[derivative(Clone, Debug)]

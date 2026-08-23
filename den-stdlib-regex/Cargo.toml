@@ -2,6 +2,7 @@
 name = "den-stdlib-regex"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
@@ -9,6 +10,9 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-colored = "2.1.0"
-pcre2 = "0.2.9"
+colored = "3.1.1"
+pcre2 = "0.2.11"
 rquickjs = { workspace = true, features = ["macro"] }
+
+[lints]
+workspace = true

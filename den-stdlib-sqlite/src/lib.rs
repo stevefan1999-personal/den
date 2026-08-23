@@ -1,13 +1,10 @@
-use std::{cell::RefCell, sync::Arc};
+use std::{cell::RefCell, ops::Deref, rc::Rc};
 
 use derivative::Derivative;
-use derive_more::{
-    derive::{Debug, Display, Error},
-    Deref, DerefMut, From, Into,
-};
+use derive_more::{Deref, DerefMut, From, Into};
 use either::Either;
 use rquickjs::{
-    class::Trace, prelude::*, Array, BigInt, Ctx, Exception, JsLifetime, Object, Result, Value,
+    Array, BigInt, Ctx, Exception, JsLifetime, Object, Result, Value, class::Trace, prelude::*,
 };
 use rusqlite::Statement;
 
@@ -16,11 +13,18 @@ use rusqlite::Statement;
 #[rquickjs::class(rename = "Connection")]
 pub struct Connection {
     #[qjs(skip_trace)]
-    conn: Arc<RefCell<Option<rusqlite::Connection>>>,
+    conn: Rc<RefCell<Option<rusqlite::Connection>>>,
 }
 
 #[rquickjs::methods]
 impl Connection {
+    // rquickjs only attaches `#[qjs(static)]` members to a class that
+    // declares a constructor, and a `()` return makes `new Connection()`
+    // throw: instances only come from `open`/`openInMemory`.
+    #[allow(
+        clippy::new_ret_no_self,
+        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
+    )]
     #[qjs(constructor)]
     pub fn new() {}
 
@@ -29,7 +33,7 @@ impl Connection {
         let conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
         Ok(Connection {
-            conn: Arc::new(RefCell::new(Some(conn))),
+            conn: Rc::new(RefCell::new(Some(conn))),
         })
     }
 
@@ -38,7 +42,7 @@ impl Connection {
         let conn = rusqlite::Connection::open(path)
             .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
         Ok(Connection {
-            conn: Arc::new(RefCell::new(Some(conn))),
+            conn: Rc::new(RefCell::new(Some(conn))),
         })
     }
 
@@ -139,10 +143,9 @@ fn bind_parameters_from_rquickjs_array<'js>(
         return Err(Exception::throw_internal(&ctx, "too many parameters"));
     }
 
-    let mut i = 1;
-    for param in params.iter() {
-        bind_rusqlite_statement_index_to_rquickjs_value(stmt, i, param?, ctx.clone())?;
-        i += 1;
+    // sqlite positional parameters are 1-based
+    for (index, param) in (1..).zip(params.iter()) {
+        bind_rusqlite_statement_index_to_rquickjs_value(stmt, index, param?, ctx.clone())?;
     }
     Ok(())
 }
@@ -239,13 +242,6 @@ fn convert_rusqlite_to_rquickjs_value<'js>(
             as_blob.into_js(&ctx)
         }
     }
-}
-
-#[derive(Error, Display, From, Debug)]
-enum QueryRowError {
-    Sql(rusqlite::Error),
-    FromSql(rusqlite::types::FromSqlError),
-    Rquickjs(rquickjs::Error),
 }
 
 #[rquickjs::module(

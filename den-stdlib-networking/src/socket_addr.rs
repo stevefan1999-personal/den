@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use delegate_attr::delegate;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
-use rquickjs::{class::Trace, JsLifetime};
+use rquickjs::{JsLifetime, class::Trace};
 
 use crate::ip_addr::IpAddrWrapper;
 
