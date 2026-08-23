@@ -1,12 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use den_utils::serde_json::SerdeJsonValue;
-use derivative::Derivative;
 use derive_more::derive::{From, Into};
 use rquickjs::{ArrayBuffer, Ctx, Exception, IntoJs, JsLifetime, Result, TypedArray, class::Trace};
 
-#[derive(Trace, JsLifetime, Derivative, From, Into)]
-#[derivative(Clone, Debug)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response {
     #[qjs(skip_trace)]

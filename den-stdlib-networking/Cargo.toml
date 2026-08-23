@@ -13,7 +13,6 @@ keywords.workspace = true
 [dependencies]
 delegate-attr.workspace = true
 den-stdlib-io = { version = "*", path = "../den-stdlib-io" }
-derivative.workspace = true
 derive_more.workspace = true
 either.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }

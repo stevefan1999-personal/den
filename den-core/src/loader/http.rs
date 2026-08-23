@@ -1,4 +1,4 @@
-use derivative::Derivative;
+use derive_more::Debug;
 use mime::Mime;
 use reqwest::header::CONTENT_TYPE;
 use rquickjs::{
@@ -14,13 +14,11 @@ use {
     std::sync::Arc,
 };
 
-#[derive(Derivative, TypedBuilder)]
-#[derivative(Default(new = "true"))]
+#[derive(Debug, TypedBuilder)]
 pub struct HttpLoader {
-    #[derivative(Default(value = "true"))]
     #[builder(default)]
     check_mime: bool,
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     #[cfg(feature = "transpile")]
     transpiler: Arc<EasyOxcTranspiler>,
 }
@@ -28,7 +26,21 @@ pub struct HttpLoader {
 /// What a response is treated as when its flavour cannot be narrowed further.
 const DEFAULT_SCRIPT_EXTENSION: &str = "js";
 
+impl Default for HttpLoader {
+    fn default() -> Self {
+        Self {
+            check_mime: true,
+            #[cfg(feature = "transpile")]
+            transpiler: Arc::default(),
+        }
+    }
+}
+
 impl HttpLoader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Derive the script extension from the response's `Content-Type`.
     ///
     /// This is a gate, not a hint: a remote import is only ever executed as

@@ -1,14 +1,12 @@
 use std::net::SocketAddr;
 
 use delegate_attr::delegate;
-use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::{JsLifetime, class::Trace};
 
 use crate::ip_addr::IpAddrWrapper;
 
-#[derive(Trace, JsLifetime, Derivative, From, Into, Deref, DerefMut)]
-#[derivative(Clone, Debug)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Into, Deref, DerefMut)]
 #[rquickjs::class(rename = "SocketAddr")]
 pub struct SocketAddrWrapper {
     #[qjs(skip_trace)]

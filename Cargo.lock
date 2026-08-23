@@ -1016,7 +1016,6 @@ dependencies = [
  "den-stdlib-worker",
  "den-transpiler-oxc",
  "den-utils",
- "derivative",
  "derive_more",
  "fmmap",
  "matchit 0.9.2",
@@ -1048,7 +1047,6 @@ dependencies = [
  "base64 0.23.1",
  "base64-simd",
  "delegate-attr",
- "derivative",
  "derive_more",
  "rquickjs",
  "tokio-util",
@@ -1088,7 +1086,6 @@ version = "0.4.0"
 dependencies = [
  "delegate-attr",
  "den-stdlib-io",
- "derivative",
  "derive_more",
  "either",
  "rquickjs",
@@ -1099,7 +1096,6 @@ dependencies = [
 name = "den-stdlib-sqlite"
 version = "0.4.0"
 dependencies = [
- "derivative",
  "derive_more",
  "either",
  "rquickjs",
@@ -1110,7 +1106,6 @@ dependencies = [
 name = "den-stdlib-text"
 version = "0.4.0"
 dependencies = [
- "derivative",
  "derive_more",
  "either",
  "encoding_rs",
@@ -1148,7 +1143,6 @@ name = "den-stdlib-whatwg-fetch"
 version = "0.4.0"
 dependencies = [
  "den-utils",
- "derivative",
  "derive_more",
  "either",
  "http",
@@ -1204,17 +1198,6 @@ name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
-
-[[package]]
-name = "derivative"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcc3dd5e9e9c0b295d6e1e4d811fb6f157d5ffd784b8d202fc62eac8035a770b"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
 
 [[package]]
 name = "derive_more"
@@ -4014,17 +3997,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
 
 [[package]]
 name = "syn"

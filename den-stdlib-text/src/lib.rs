@@ -1,5 +1,4 @@
-use derivative::Derivative;
-use derive_more::{From, Into};
+use derive_more::{Debug, From, Into};
 use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
 use indexmap::{IndexMap, indexmap};
@@ -7,12 +6,11 @@ use rquickjs::{
     ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
 };
 
-#[derive(Trace, JsLifetime, Derivative, From, Into)]
-#[derivative(Clone, Debug)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
 #[rquickjs::class]
 pub struct TextDecoder {
     #[qjs(skip_trace)]
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     encoding: &'static Encoding,
 
     fatal:      bool,
@@ -106,8 +104,7 @@ impl TextDecoder {
     }
 }
 
-#[derive(Trace, JsLifetime, Derivative, From, Into)]
-#[derivative(Clone, Debug)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
 #[rquickjs::class]
 pub struct TextEncoder {}
 

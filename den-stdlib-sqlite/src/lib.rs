@@ -1,6 +1,5 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc};
 
-use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use either::Either;
 use rquickjs::{
@@ -8,8 +7,7 @@ use rquickjs::{
 };
 use rusqlite::Statement;
 
-#[derive(Trace, JsLifetime, Derivative, From, Into, Deref, DerefMut)]
-#[derivative(Debug, Clone)]
+#[derive(Trace, JsLifetime, Debug, Clone, From, Into, Deref, DerefMut)]
 #[rquickjs::class(rename = "Connection")]
 pub struct Connection {
     #[qjs(skip_trace)]

@@ -1,4 +1,4 @@
-use derivative::Derivative;
+use derive_more::Debug;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
 use rquickjs::{
@@ -14,18 +14,20 @@ use {
     std::sync::Arc,
 };
 
-#[derive(Derivative, TypedBuilder)]
-#[derivative(Debug)]
-#[derivative(Default(new = "true"))]
+#[derive(Debug, Default, TypedBuilder)]
 pub struct MmapScriptLoader {
     #[builder(default)]
     extensions: Vec<String>,
-    #[derivative(Debug = "ignore")]
+    #[debug(ignore)]
     #[cfg(feature = "transpile")]
     transpiler: Arc<EasyOxcTranspiler>,
 }
 
 impl MmapScriptLoader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Add script file extension
     pub fn add_extension<X: Into<String>>(&mut self, extension: X) -> &mut Self {
         self.extensions.push(extension.into());

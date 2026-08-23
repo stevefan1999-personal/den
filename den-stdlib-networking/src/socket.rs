@@ -1,7 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
 use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
-use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use either::Either;
 use rquickjs::{Ctx, Error, JsLifetime, Result, TypedArray, class::Trace, convert::List};
@@ -12,8 +11,7 @@ use tokio::{
 
 use crate::socket_addr::SocketAddrWrapper;
 
-#[derive(Trace, JsLifetime, Derivative, From, Into, Deref, DerefMut)]
-#[derivative(Clone, Debug)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Into, Deref, DerefMut)]
 #[rquickjs::class(rename = "TcpStream")]
 pub struct TcpStreamWrapper {
     #[qjs(skip_trace)]
@@ -73,8 +71,7 @@ impl TcpStreamWrapper {
     }
 }
 
-#[derive(Trace, JsLifetime, Derivative, From, Into, Deref, DerefMut)]
-#[derivative(Clone, Debug)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Into, Deref, DerefMut)]
 #[rquickjs::class(rename = "TcpListener")]
 pub struct TcpListenerWrapper {
     #[qjs(skip_trace)]

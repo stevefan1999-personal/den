@@ -32,7 +32,6 @@ keywords = ["javascript", "quickjs", "tokio", "typescript", "oxc"]
 
 [workspace.dependencies]
 delegate-attr = "0.3.1"
-derivative = "2.2.0"
 derive_more = { version = "2.1.1", features = [
     "deref_mut",
     "deref",
