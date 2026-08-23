@@ -25,7 +25,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-wasm       the WebAssembly JS API (optional, one backend)
       └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
                                 BroadcastChannel, EventTarget, AbortController,
-                                performance, structuredClone
+                                performance, navigator, structuredClone
 ```
 
 `den-core` owns everything about *how* JavaScript gets in: the `Engine`
@@ -328,7 +328,7 @@ nothing.
 
 Web Workers, `MessageChannel`/`MessagePort`, `BroadcastChannel`, the
 `EventTarget` family, `AbortController`/`AbortSignal`, `performance`,
-`structuredClone` and `reportError`. The design notes are
+`navigator`, `structuredClone` and `reportError`. The design notes are
 [`docs/research/08`-`11`](docs/research/); this is the shape they settled into.
 
 ### 6.1 Why half of it is JavaScript
@@ -340,10 +340,11 @@ stylistic one:
 - **Rust owns** transport (channels, threads), (de)serialisation, and the two
   or three things JS cannot do — reading a thrown value's location out of its
   stack, reaching another thread, cancelling a runtime.
-- **JS owns** the API surface: `src/prelude/*.js`, seven files evaluated in
-  dependency order (`events`, `abort`, `performance`, `clone`, `port`,
-  `worker`, `broadcast`). The `performance` clock is a native `Instant`
-  captured when natives install; the prelude is the object a script sees.
+- **JS owns** the API surface: `src/prelude/*.js`, eight files evaluated in
+  dependency order (`events`, `abort`, `performance`, `navigator`, `clone`,
+  `port`, `worker`, `broadcast`). The `performance` clock is a native
+  `Instant` captured when natives install; `navigator` is installed as a
+  non-writable global. The preludes are the objects a script sees.
 
 Each prelude file is one `(function (natives, api) { …; return { …api, X } })`.
 They are chained — each receives the previous one's return value — and the last
@@ -602,7 +603,7 @@ cargo test --workspace --all-targets --no-default-features \
 
 Both invocations must be green: 299 tests on wasmtime, 297 on wasmi (two are
 `#[cfg(feature = "wasmtime")]`, both about WASI). Two crates carry the bulk.
-`den-stdlib-worker` has 129 unit tests, proving the worker semantics against
+`den-stdlib-worker` has 132 unit tests, proving the worker semantics against
 bare `AsyncContext`s; `den-stdlib-wasm` has 93 driving the JS API through a real
 QuickJS context and branching on the capability constants, so the same test
 asserts the right thing on either backend. The rest is `den-transpiler-oxc`

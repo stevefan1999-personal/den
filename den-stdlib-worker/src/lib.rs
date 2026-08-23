@@ -1,6 +1,6 @@
 //! Web Workers API for den: `Worker`, `MessageChannel`/`MessagePort`,
 //! `BroadcastChannel`, the `EventTarget` family, `AbortController`,
-//! `performance` and `structuredClone`.
+//! `performance`, `navigator` and `structuredClone`.
 //!
 //! The split follows quickjs-libc and txiki.js: **Rust owns transport,
 //! (de)serialisation and threads**, exposed as a small bag of natives; the
@@ -19,6 +19,7 @@ pub mod broadcast;
 pub mod events;
 pub mod host;
 pub mod message;
+pub mod navigator;
 pub mod performance;
 pub mod port;
 pub mod report;
@@ -38,7 +39,7 @@ pub use crate::js_worker_module as js_worker;
 ///
 /// `DOMException` is deliberately absent: quickjs-ng registers it natively in
 /// every context (`JS_AddIntrinsicAToB`), so there is nothing to install.
-const API: [&str; 15] = [
+const API: [&str; 17] = [
     "AbortController",
     "AbortSignal",
     "BroadcastChannel",
@@ -49,8 +50,10 @@ const API: [&str; 15] = [
     "MessageChannel",
     "MessageEvent",
     "MessagePort",
+    "NavigatorUAData",
     "PromiseRejectionEvent",
     "Worker",
+    "navigator",
     "performance",
     "reportError",
     "structuredClone",
@@ -58,12 +61,16 @@ const API: [&str; 15] = [
 
 /// The prelude, in dependency order. The filenames are what shows up in a stack
 /// trace, so they are the module-qualified paths rather than bare basenames.
-const PRELUDE: [(&str, &str); 7] = [
+const PRELUDE: [(&str, &str); 8] = [
     ("den:worker/events.js", include_str!("prelude/events.js")),
     ("den:worker/abort.js", include_str!("prelude/abort.js")),
     (
         "den:worker/performance.js",
         include_str!("prelude/performance.js"),
+    ),
+    (
+        "den:worker/navigator.js",
+        include_str!("prelude/navigator.js"),
     ),
     ("den:worker/clone.js", include_str!("prelude/clone.js")),
     ("den:worker/port.js", include_str!("prelude/port.js")),
@@ -83,6 +90,7 @@ pub mod worker_module {
         Ctx, Function, Object, Result, Value,
         context::EvalOptions,
         module::{Declarations, Exports},
+        object::Property,
     };
 
     #[qjs(declare)]
@@ -102,6 +110,7 @@ pub mod worker_module {
         crate::worker::install(ctx, &natives)?;
         crate::broadcast::install(ctx, &natives)?;
         crate::performance::PerformanceClock::install(ctx, &natives)?;
+        crate::navigator::HostInfo::install(ctx, &natives)?;
 
         let mut api = Object::new(ctx.clone())?;
         for (filename, source) in crate::PRELUDE {
@@ -118,7 +127,13 @@ pub mod worker_module {
             // shadowing the global with `undefined` would be worse than leaving
             // it alone.
             if !value.is_undefined() {
-                globals.set(name, value.clone())?;
+                // HTML's `navigator` is a non-writable, non-configurable data
+                // property; everything else is a normal writable global.
+                if name == "navigator" {
+                    globals.prop(name, Property::from(value.clone()).enumerable())?;
+                } else {
+                    globals.set(name, value.clone())?;
+                }
             }
             exports.export(name, value)?;
         }
@@ -174,10 +189,34 @@ mod tests {
         eval::<String>(source)
     }
 
+    /// Like [`text`], then drain microtasks so a script that parks its result
+    /// on `globalThis.__result` from a `Promise.then` can still be read
+    /// synchronously. Caps the drain so a runaway job queue cannot hang the
+    /// test.
+    fn text_jobs(source: &str) -> String {
+        let (_runtime, context) = realm();
+        context
+            .with(|ctx| {
+                ctx.eval::<(), _>(source)
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())?;
+                for _ in 0..32 {
+                    if !ctx.execute_pending_job() {
+                        break;
+                    }
+                }
+                ctx.globals()
+                    .get::<_, String>("__result")
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
     /// The whole of `den:worker`'s documented surface, spelled out here rather
     /// than read from [`API`]: a test that iterates the very list it is
     /// checking stops checking whatever that list loses.
-    const DOCUMENTED: [&str; 15] = [
+    const DOCUMENTED: [&str; 17] = [
         "AbortController",
         "AbortSignal",
         "BroadcastChannel",
@@ -188,8 +227,10 @@ mod tests {
         "MessageChannel",
         "MessageEvent",
         "MessagePort",
+        "NavigatorUAData",
         "PromiseRejectionEvent",
         "Worker",
+        "navigator",
         "performance",
         "reportError",
         "structuredClone",
@@ -537,6 +578,95 @@ mod tests {
         );
     }
 
+    /// WinterTC `navigator.userAgentData`, translated from txiki's
+    /// `test-navigator-useragentdata.js`. High-entropy values resolve through
+    /// a Promise, so this test drains microtasks and reads `__result`.
+    #[test]
+    fn navigator_user_agent_data_reports_den() {
+        assert_eq!(
+            text_jobs(
+                r#"
+                globalThis.__result = "jobsDidNotRun";
+                const failed = [];
+                const check = (name, held) => { if (!held) failed.push(name); };
+                const uad = navigator.userAgentData;
+                check("userAgentDataExists", !!uad);
+                check("isNavigatorUAData", uad instanceof NavigatorUAData);
+                check(
+                  "toStringTag",
+                  Object.prototype.toString.call(uad) === "[object NavigatorUAData]",
+                );
+                check("brandsIsArray", Array.isArray(uad.brands) && uad.brands.length > 0);
+                const brand = uad.brands[0];
+                check("brandIsString", typeof brand.brand === "string");
+                check("brandVersionIsString", typeof brand.version === "string");
+                check("brandIsDen", brand.brand === "den");
+                check("brandsFrozen", Object.isFrozen(uad.brands));
+                check("brandEntryFrozen", Object.isFrozen(brand));
+                check("mobileIsFalse", uad.mobile === false);
+                check(
+                  "platformIsKnown",
+                  ["Linux", "macOS", "Windows", "FreeBSD", "OpenBSD"].includes(uad.platform)
+                    || (typeof uad.platform === "string" && uad.platform.length > 0),
+                );
+                const json = uad.toJSON();
+                check("toJSONBrands", Array.isArray(json.brands));
+                check("toJSONMobile", json.mobile === uad.mobile);
+                check("toJSONPlatform", json.platform === uad.platform);
+                check("userAgentShape", /^den\/\d+\.\d+\.\d+/.test(navigator.userAgent));
+                const major = navigator.userAgent.slice("den/".length).split(".")[0];
+                check("brandVersionIsMajor", brand.version === major);
+                check(
+                  "hardwareConcurrency",
+                  Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency >= 1,
+                );
+                const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+                check("navigatorEnumerable", descriptor.enumerable === true);
+                check("navigatorNonWritable", descriptor.writable === false);
+                check("navigatorNonConfigurable", descriptor.configurable === false);
+                const before = navigator;
+                try { navigator = {}; } catch { /* strict assignment throws */ }
+                check("navigatorAssignmentIsIgnored", navigator === before);
+                check(
+                  "navigatorToStringTag",
+                  Object.prototype.toString.call(navigator) === "[object Navigator]",
+                );
+
+                const highEntropy = uad.getHighEntropyValues([
+                  "architecture", "bitness", "fullVersionList", "model",
+                  "platformVersion", "wow64", "formFactors",
+                ]);
+                const empty = uad.getHighEntropyValues([]);
+                const invalid = uad.getHighEntropyValues("not an array").then(
+                  () => { check("invalidHintsShouldReject", false); },
+                  (error) => { check("invalidHintsTypeError", error instanceof TypeError); },
+                );
+                Promise.all([highEntropy, empty, invalid]).then(([hev, none]) => {
+                  check("hevHasBrands", Array.isArray(hev.brands));
+                  check("hevHasMobile", typeof hev.mobile === "boolean");
+                  check("hevHasPlatform", typeof hev.platform === "string");
+                  check("hevArchitecture", typeof hev.architecture === "string");
+                  check("hevBitness", typeof hev.bitness === "string");
+                  check("hevFullVersionList", Array.isArray(hev.fullVersionList));
+                  check("fullVersionListBrand", hev.fullVersionList[0].brand === "den");
+                  check("fullVersionListHasDots", hev.fullVersionList[0].version.includes("."));
+                  check("hevModel", typeof hev.model === "string");
+                  check("hevPlatformVersion", typeof hev.platformVersion === "string");
+                  check("platformVersionParts", hev.platformVersion.split(".").length >= 3);
+                  check("hevWow64", typeof hev.wow64 === "boolean");
+                  check("hevFormFactors", Array.isArray(hev.formFactors));
+                  check("emptyStillHasBrands", Array.isArray(none.brands));
+                  check("emptyHasNoArchitecture", none.architecture === undefined);
+                  globalThis.__result = failed.join(",");
+                }, (error) => {
+                  globalThis.__result = `hevFailed:${error}`;
+                });
+                "#
+            ),
+            ""
+        );
+    }
+
     /// WebIDL: an interface object without a `Symbol.toStringTag` of its own
     /// makes `Object.prototype.toString.call(instance)` read `[object Object]`,
     /// which is what most of these used to say. The tag is read off each
@@ -544,7 +674,7 @@ mod tests {
     /// need a runtime, and the tag lives on the prototype either way.
     #[test]
     fn every_platform_class_brands_itself_with_a_to_string_tag() {
-        const BRANDED: [&str; 12] = [
+        const BRANDED: [&str; 13] = [
             "AbortController",
             "AbortSignal",
             "Event",
@@ -557,6 +687,7 @@ mod tests {
             "MessageChannel",
             "Worker",
             "BroadcastChannel",
+            "NavigatorUAData",
         ];
         let names = BRANDED.join(",");
         let report = eval::<Vec<String>>(&format!(

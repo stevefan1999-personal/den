@@ -19,6 +19,9 @@ tokio-util.workspace = true
 tracing.workspace = true
 url = "2.5.8"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

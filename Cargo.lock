@@ -1139,6 +1139,7 @@ version = "0.4.0"
 dependencies = [
  "den-stdlib-core",
  "den-transpiler-oxc",
+ "libc",
  "rquickjs",
  "tokio",
  "tokio-util",
