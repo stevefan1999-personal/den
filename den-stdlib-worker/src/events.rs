@@ -17,7 +17,7 @@ use std::{
 };
 
 use den_stdlib_core::report::{print_exception, report_exception, set_exception_sink};
-use den_util::{inherit, throw_dom_exception};
+use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Result, Value,
@@ -69,10 +69,6 @@ fn time_stamp(ctx: &Ctx<'_>) -> f64 {
         origin
     };
     unix_ms() - origin
-}
-
-fn coerce_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-    Ok(Coerced::<String>::from_js(ctx, value)?.0)
 }
 
 fn to_bool<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<bool> {
