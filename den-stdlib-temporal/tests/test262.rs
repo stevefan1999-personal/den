@@ -227,18 +227,20 @@ fn run_one(
                     ctx.eval_with_options::<(), _>(script, options)?;
                     Ok::<_, rquickjs::Error>(())
                 };
-                run.await.catch(&ctx).map_err(|error| match error {
-                    CaughtError::Value(value) => {
-                        let object = value.as_object();
-                        let name = object
-                            .and_then(|object| object.get::<_, String>("name").ok())
-                            .unwrap_or_else(|| "Error".to_string());
-                        let message = object
-                            .and_then(|object| object.get::<_, String>("message").ok())
-                            .unwrap_or_else(|| format!("{value:?}"));
-                        format!("{name}: {message}")
+                run.await.catch(&ctx).map_err(|error| {
+                    match error {
+                        CaughtError::Value(value) => {
+                            let object = value.as_object();
+                            let name = object
+                                .and_then(|object| object.get::<_, String>("name").ok())
+                                .unwrap_or_else(|| "Error".to_string());
+                            let message = object
+                                .and_then(|object| object.get::<_, String>("message").ok())
+                                .unwrap_or_else(|| format!("{value:?}"));
+                            format!("{name}: {message}")
+                        }
+                        other => other.to_string(),
                     }
-                    other => other.to_string(),
                 })
             })
             .await

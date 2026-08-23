@@ -1,11 +1,13 @@
 use rquickjs::{Ctx, Result, Value, prelude::Opt};
 
-use crate::convert::{optional_time_zone, unwrap_temporal};
-use crate::instant::Instant;
-use crate::plain_date::PlainDate;
-use crate::plain_date_time::PlainDateTime;
-use crate::plain_time::PlainTime;
-use crate::zoned_date_time::ZonedDateTime;
+use crate::{
+    convert::{optional_time_zone, unwrap_temporal},
+    instant::Instant,
+    plain_date::PlainDate,
+    plain_date_time::PlainDateTime,
+    plain_time::PlainTime,
+    zoned_date_time::ZonedDateTime,
+};
 
 /// Host clock for `Temporal.Now`. Not a JS constructor — the spec object is a
 /// bag of functions with `@@toStringTag` `"Temporal.Now"`.
@@ -22,8 +24,7 @@ impl Now {
     }
 
     pub fn plain_date_iso(
-        ctx: &Ctx<'_>,
-        time_zone: Option<temporal_rs::TimeZone>,
+        ctx: &Ctx<'_>, time_zone: Option<temporal_rs::TimeZone>,
     ) -> Result<PlainDate> {
         unwrap_temporal(
             ctx,
@@ -33,8 +34,7 @@ impl Now {
     }
 
     pub fn plain_time_iso(
-        ctx: &Ctx<'_>,
-        time_zone: Option<temporal_rs::TimeZone>,
+        ctx: &Ctx<'_>, time_zone: Option<temporal_rs::TimeZone>,
     ) -> Result<PlainTime> {
         unwrap_temporal(
             ctx,
@@ -44,8 +44,7 @@ impl Now {
     }
 
     pub fn plain_date_time_iso(
-        ctx: &Ctx<'_>,
-        time_zone: Option<temporal_rs::TimeZone>,
+        ctx: &Ctx<'_>, time_zone: Option<temporal_rs::TimeZone>,
     ) -> Result<PlainDateTime> {
         unwrap_temporal(
             ctx,
@@ -55,8 +54,7 @@ impl Now {
     }
 
     pub fn zoned_date_time_iso(
-        ctx: &Ctx<'_>,
-        time_zone: Option<temporal_rs::TimeZone>,
+        ctx: &Ctx<'_>, time_zone: Option<temporal_rs::TimeZone>,
     ) -> Result<ZonedDateTime> {
         unwrap_temporal(
             ctx,
@@ -67,14 +65,10 @@ impl Now {
 }
 
 #[rquickjs::function]
-pub fn instant(ctx: Ctx<'_>) -> Result<Instant> {
-    Now::instant(&ctx)
-}
+pub fn instant(ctx: Ctx<'_>) -> Result<Instant> { Now::instant(&ctx) }
 
 #[rquickjs::function(rename = "timeZoneId")]
-pub fn time_zone_id(ctx: Ctx<'_>) -> Result<String> {
-    Now::time_zone_id(&ctx)
-}
+pub fn time_zone_id(ctx: Ctx<'_>) -> Result<String> { Now::time_zone_id(&ctx) }
 
 #[rquickjs::function(rename = "plainDateISO")]
 pub fn plain_date_iso<'js>(time_zone: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<PlainDate> {
@@ -88,16 +82,14 @@ pub fn plain_time_iso<'js>(time_zone: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<
 
 #[rquickjs::function(rename = "plainDateTimeISO")]
 pub fn plain_date_time_iso<'js>(
-    time_zone: Opt<Value<'js>>,
-    ctx: Ctx<'js>,
+    time_zone: Opt<Value<'js>>, ctx: Ctx<'js>,
 ) -> Result<PlainDateTime> {
     Now::plain_date_time_iso(&ctx, optional_time_zone(&ctx, time_zone)?)
 }
 
 #[rquickjs::function(rename = "zonedDateTimeISO")]
 pub fn zoned_date_time_iso<'js>(
-    time_zone: Opt<Value<'js>>,
-    ctx: Ctx<'js>,
+    time_zone: Opt<Value<'js>>, ctx: Ctx<'js>,
 ) -> Result<ZonedDateTime> {
     Now::zoned_date_time_iso(&ctx, optional_time_zone(&ctx, time_zone)?)
 }

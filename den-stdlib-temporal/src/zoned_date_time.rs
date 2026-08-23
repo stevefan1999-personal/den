@@ -21,11 +21,10 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
-        optional_integral_i128, optional_integral_i64, optional_truncated_i32,
-        optional_truncated_u16, optional_truncated_u8, options_object, ordering_i32, probe_class,
+        optional_integral_i64, optional_integral_i128, optional_truncated_i32,
+        optional_truncated_u8, optional_truncated_u16, options_object, ordering_i32, probe_class,
         reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
-        to_number, to_time_zone, to_zoned_date_time, truncated_u16, truncated_u8,
-        unwrap_temporal,
+        to_number, to_time_zone, to_zoned_date_time, truncated_u8, truncated_u16, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -42,9 +41,7 @@ pub struct ZonedDateTime {
 }
 
 impl ZonedDateTime {
-    pub(crate) fn wrap(inner: temporal_rs::ZonedDateTime) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::ZonedDateTime) -> Self { Self { inner } }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -81,9 +78,7 @@ impl ZonedDateTime {
     }
 
     #[qjs(get)]
-    pub fn calendar_id(&self) -> &'static str {
-        self.inner.calendar().identifier()
-    }
+    pub fn calendar_id(&self) -> &'static str { self.inner.calendar().identifier() }
 
     #[qjs(get)]
     pub fn time_zone_id(&self, ctx: Ctx<'_>) -> Result<String> {
@@ -96,124 +91,76 @@ impl ZonedDateTime {
     }
 
     #[qjs(get)]
-    pub fn epoch_milliseconds(&self) -> i64 {
-        self.inner.epoch_milliseconds()
-    }
+    pub fn epoch_milliseconds(&self) -> i64 { self.inner.epoch_milliseconds() }
 
     #[qjs(get)]
-    pub fn year(&self) -> i32 {
-        self.inner.year()
-    }
+    pub fn year(&self) -> i32 { self.inner.year() }
 
     #[qjs(get)]
-    pub fn month(&self) -> u8 {
-        self.inner.month()
-    }
+    pub fn month(&self) -> u8 { self.inner.month() }
 
     #[qjs(get)]
-    pub fn month_code(&self) -> String {
-        self.inner.month_code().as_str().to_string()
-    }
+    pub fn month_code(&self) -> String { self.inner.month_code().as_str().to_string() }
 
     #[qjs(get)]
-    pub fn day(&self) -> u8 {
-        self.inner.day()
-    }
+    pub fn day(&self) -> u8 { self.inner.day() }
 
     #[qjs(get)]
-    pub fn hour(&self) -> u8 {
-        self.inner.hour()
-    }
+    pub fn hour(&self) -> u8 { self.inner.hour() }
 
     #[qjs(get)]
-    pub fn minute(&self) -> u8 {
-        self.inner.minute()
-    }
+    pub fn minute(&self) -> u8 { self.inner.minute() }
 
     #[qjs(get)]
-    pub fn second(&self) -> u8 {
-        self.inner.second()
-    }
+    pub fn second(&self) -> u8 { self.inner.second() }
 
     #[qjs(get)]
-    pub fn millisecond(&self) -> u16 {
-        self.inner.millisecond()
-    }
+    pub fn millisecond(&self) -> u16 { self.inner.millisecond() }
 
     #[qjs(get)]
-    pub fn microsecond(&self) -> u16 {
-        self.inner.microsecond()
-    }
+    pub fn microsecond(&self) -> u16 { self.inner.microsecond() }
 
     #[qjs(get)]
-    pub fn nanosecond(&self) -> u16 {
-        self.inner.nanosecond()
-    }
+    pub fn nanosecond(&self) -> u16 { self.inner.nanosecond() }
 
     #[qjs(get)]
-    pub fn era(&self) -> Option<String> {
-        self.inner.era().map(|era| era.to_string())
-    }
+    pub fn era(&self) -> Option<String> { self.inner.era().map(|era| era.to_string()) }
 
     #[qjs(get)]
-    pub fn era_year(&self) -> Option<i32> {
-        self.inner.era_year()
-    }
+    pub fn era_year(&self) -> Option<i32> { self.inner.era_year() }
 
     #[qjs(get)]
-    pub fn day_of_week(&self) -> u16 {
-        self.inner.day_of_week()
-    }
+    pub fn day_of_week(&self) -> u16 { self.inner.day_of_week() }
 
     #[qjs(get)]
-    pub fn day_of_year(&self) -> u16 {
-        self.inner.day_of_year()
-    }
+    pub fn day_of_year(&self) -> u16 { self.inner.day_of_year() }
 
     #[qjs(get)]
-    pub fn week_of_year(&self) -> Option<u8> {
-        self.inner.week_of_year()
-    }
+    pub fn week_of_year(&self) -> Option<u8> { self.inner.week_of_year() }
 
     #[qjs(get)]
-    pub fn year_of_week(&self) -> Option<i32> {
-        self.inner.year_of_week()
-    }
+    pub fn year_of_week(&self) -> Option<i32> { self.inner.year_of_week() }
 
     #[qjs(get)]
-    pub fn days_in_week(&self) -> u16 {
-        self.inner.days_in_week()
-    }
+    pub fn days_in_week(&self) -> u16 { self.inner.days_in_week() }
 
     #[qjs(get)]
-    pub fn days_in_month(&self) -> u16 {
-        self.inner.days_in_month()
-    }
+    pub fn days_in_month(&self) -> u16 { self.inner.days_in_month() }
 
     #[qjs(get)]
-    pub fn days_in_year(&self) -> u16 {
-        self.inner.days_in_year()
-    }
+    pub fn days_in_year(&self) -> u16 { self.inner.days_in_year() }
 
     #[qjs(get)]
-    pub fn months_in_year(&self) -> u16 {
-        self.inner.months_in_year()
-    }
+    pub fn months_in_year(&self) -> u16 { self.inner.months_in_year() }
 
     #[qjs(get)]
-    pub fn in_leap_year(&self) -> bool {
-        self.inner.in_leap_year()
-    }
+    pub fn in_leap_year(&self) -> bool { self.inner.in_leap_year() }
 
     #[qjs(get)]
-    pub fn offset(&self) -> String {
-        self.inner.offset()
-    }
+    pub fn offset(&self) -> String { self.inner.offset() }
 
     #[qjs(get)]
-    pub fn offset_nanoseconds(&self) -> i64 {
-        self.inner.offset_nanoseconds()
-    }
+    pub fn offset_nanoseconds(&self) -> i64 { self.inner.offset_nanoseconds() }
 
     #[qjs(get)]
     pub fn hours_in_day(&self, ctx: Ctx<'_>) -> Result<f64> {
@@ -301,17 +248,11 @@ impl ZonedDateTime {
         unwrap_temporal(&ctx, self.inner.with_plain_time(time)).map(Self::wrap)
     }
 
-    pub fn to_instant(&self) -> Instant {
-        Instant::wrap(self.inner.to_instant())
-    }
+    pub fn to_instant(&self) -> Instant { Instant::wrap(self.inner.to_instant()) }
 
-    pub fn to_plain_date(&self) -> PlainDate {
-        PlainDate::wrap(self.inner.to_plain_date())
-    }
+    pub fn to_plain_date(&self) -> PlainDate { PlainDate::wrap(self.inner.to_plain_date()) }
 
-    pub fn to_plain_time(&self) -> PlainTime {
-        PlainTime::wrap(self.inner.to_plain_time())
-    }
+    pub fn to_plain_time(&self) -> PlainTime { PlainTime::wrap(self.inner.to_plain_time()) }
 
     pub fn to_plain_date_time(&self) -> PlainDateTime {
         PlainDateTime::wrap(self.inner.to_plain_date_time())
@@ -375,18 +316,14 @@ impl ZonedDateTime {
         )
     }
 
-    pub fn to_locale_string(&self, ctx: Ctx<'_>) -> Result<String> {
-        self.to_json(ctx)
-    }
+    pub fn to_locale_string(&self, ctx: Ctx<'_>) -> Result<String> { self.to_json(ctx) }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.ZonedDateTime"))
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.ZonedDateTime"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.ZonedDateTime" }
 }
 
 fn time_zone_identifier<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZone> {
@@ -691,16 +628,16 @@ fn duration_like_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempor
         return to_duration(ctx, value);
     };
     let partial = PartialDuration {
-        days: optional_integral_i64(ctx, object, "days")?,
-        hours: optional_integral_i64(ctx, object, "hours")?,
+        days:         optional_integral_i64(ctx, object, "days")?,
+        hours:        optional_integral_i64(ctx, object, "hours")?,
         microseconds: optional_integral_i128(ctx, object, "microseconds")?,
         milliseconds: optional_integral_i64(ctx, object, "milliseconds")?,
-        minutes: optional_integral_i64(ctx, object, "minutes")?,
-        months: optional_integral_i64(ctx, object, "months")?,
-        nanoseconds: optional_integral_i128(ctx, object, "nanoseconds")?,
-        seconds: optional_integral_i64(ctx, object, "seconds")?,
-        weeks: optional_integral_i64(ctx, object, "weeks")?,
-        years: optional_integral_i64(ctx, object, "years")?,
+        minutes:      optional_integral_i64(ctx, object, "minutes")?,
+        months:       optional_integral_i64(ctx, object, "months")?,
+        nanoseconds:  optional_integral_i128(ctx, object, "nanoseconds")?,
+        seconds:      optional_integral_i64(ctx, object, "seconds")?,
+        weeks:        optional_integral_i64(ctx, object, "weeks")?,
+        years:        optional_integral_i64(ctx, object, "years")?,
     };
     unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
@@ -795,12 +732,12 @@ fn plain_time_from_value<'js>(
         ));
     };
     let partial = PartialTime {
-        hour: optional_truncated_u8(ctx, object, "hour")?,
+        hour:        optional_truncated_u8(ctx, object, "hour")?,
         microsecond: optional_truncated_u16(ctx, object, "microsecond")?,
         millisecond: optional_truncated_u16(ctx, object, "millisecond")?,
-        minute: optional_truncated_u8(ctx, object, "minute")?,
-        nanosecond: optional_truncated_u16(ctx, object, "nanosecond")?,
-        second: optional_truncated_u8(ctx, object, "second")?,
+        minute:      optional_truncated_u8(ctx, object, "minute")?,
+        nanosecond:  optional_truncated_u16(ctx, object, "nanosecond")?,
+        second:      optional_truncated_u8(ctx, object, "second")?,
     };
     if partial.is_empty() {
         return Err(Exception::throw_type(
@@ -833,12 +770,14 @@ fn to_string_options<'js>(
     };
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(
-            ctx,
-            &value,
-            "fractionalSecondDigits is not finite",
-            to_option_string,
-        )?,
+        Some(value) => {
+            fractional_second_digits(
+                ctx,
+                &value,
+                "fractionalSecondDigits is not finite",
+                to_option_string,
+            )?
+        }
     };
     let display_offset = match get_defined(&object, "offset")? {
         None => DisplayOffset::Auto,

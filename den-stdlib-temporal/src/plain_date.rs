@@ -17,11 +17,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, options_object,
-        optional_integral_i128, optional_integral_i64, optional_truncated_i128,
-        optional_truncated_i32, optional_truncated_u16, optional_truncated_u8, ordering_i32,
-        probe_class, reject_illformed_month_code, throw_value_of, to_number, to_time_zone,
-        unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_integral_i64,
+        optional_integral_i128, optional_truncated_i32, optional_truncated_i128,
+        optional_truncated_u8, optional_truncated_u16, options_object, ordering_i32, probe_class,
+        reject_illformed_month_code, throw_value_of, to_number, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -39,9 +38,7 @@ pub struct PlainDate {
 }
 
 impl PlainDate {
-    pub(crate) fn wrap(inner: temporal_rs::PlainDate) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::PlainDate) -> Self { Self { inner } }
 }
 
 fn option_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -210,10 +207,12 @@ fn optional_positive_date_unit<'js>(
 ) -> Result<Option<i128>> {
     match optional_truncated_i128(ctx, object, key)? {
         None => Ok(None),
-        Some(value) if value < 1 => Err(Exception::throw_range(
-            ctx,
-            "month and day must be positive",
-        )),
+        Some(value) if value < 1 => {
+            Err(Exception::throw_range(
+                ctx,
+                "month and day must be positive",
+            ))
+        }
         Some(value) => Ok(Some(value)),
     }
 }
@@ -275,19 +274,21 @@ fn u8_date_unit<'js>(ctx: &Ctx<'js>, value: i128, overflow: Overflow) -> Result<
     }
     match u8::try_from(value) {
         Ok(value) => Ok(value),
-        Err(_) => match overflow {
-            Overflow::Constrain => Ok(u8::MAX),
-            Overflow::Reject => Err(Exception::throw_range(ctx, "date unit is out of range")),
-        },
+        Err(_) => {
+            match overflow {
+                Overflow::Constrain => Ok(u8::MAX),
+                Overflow::Reject => Err(Exception::throw_range(ctx, "date unit is out of range")),
+            }
+        }
     }
 }
 
 struct DateBag {
-    calendar: Calendar,
-    year: Option<i32>,
-    month: Option<i128>,
+    calendar:   Calendar,
+    year:       Option<i32>,
+    month:      Option<i128>,
     month_code: Option<String>,
-    day: Option<i128>,
+    day:        Option<i128>,
 }
 
 impl DateBag {
@@ -310,8 +311,7 @@ impl DateBag {
             fields = fields.with_day(u8_date_unit(ctx, day, overflow)?);
         }
         if let Some(month_code) = &self.month_code {
-            let month_code =
-                unwrap_temporal(ctx, MonthCode::try_from_utf8(month_code.as_bytes()))?;
+            let month_code = unwrap_temporal(ctx, MonthCode::try_from_utf8(month_code.as_bytes()))?;
             fields = fields.with_month_code(month_code);
         }
         Ok(fields)
@@ -362,7 +362,7 @@ fn date_from_partial<'js>(
 ) -> Result<temporal_rs::PlainDate> {
     let partial = PartialDate {
         calendar_fields: bag.calendar_fields(ctx, overflow)?,
-        calendar: bag.calendar,
+        calendar:        bag.calendar,
     };
     unwrap_temporal(
         ctx,
@@ -533,84 +533,52 @@ impl PlainDate {
     }
 
     #[qjs(get, configurable)]
-    pub fn calendar_id(&self) -> &'static str {
-        self.inner.calendar().identifier()
-    }
+    pub fn calendar_id(&self) -> &'static str { self.inner.calendar().identifier() }
 
     #[qjs(get, configurable)]
-    pub fn year(&self) -> i32 {
-        self.inner.year()
-    }
+    pub fn year(&self) -> i32 { self.inner.year() }
 
     #[qjs(get, configurable)]
-    pub fn month(&self) -> u8 {
-        self.inner.month()
-    }
+    pub fn month(&self) -> u8 { self.inner.month() }
 
     #[qjs(get, configurable)]
-    pub fn month_code(&self) -> String {
-        self.inner.month_code().as_str().to_string()
-    }
+    pub fn month_code(&self) -> String { self.inner.month_code().as_str().to_string() }
 
     #[qjs(get, configurable)]
-    pub fn day(&self) -> u8 {
-        self.inner.day()
-    }
+    pub fn day(&self) -> u8 { self.inner.day() }
 
     #[qjs(get, configurable)]
-    pub fn day_of_week(&self) -> u16 {
-        self.inner.day_of_week()
-    }
+    pub fn day_of_week(&self) -> u16 { self.inner.day_of_week() }
 
     #[qjs(get, configurable)]
-    pub fn day_of_year(&self) -> u16 {
-        self.inner.day_of_year()
-    }
+    pub fn day_of_year(&self) -> u16 { self.inner.day_of_year() }
 
     #[qjs(get, configurable)]
-    pub fn week_of_year(&self) -> Option<u8> {
-        self.inner.week_of_year()
-    }
+    pub fn week_of_year(&self) -> Option<u8> { self.inner.week_of_year() }
 
     #[qjs(get, configurable)]
-    pub fn year_of_week(&self) -> Option<i32> {
-        self.inner.year_of_week()
-    }
+    pub fn year_of_week(&self) -> Option<i32> { self.inner.year_of_week() }
 
     #[qjs(get, configurable)]
-    pub fn days_in_week(&self) -> u16 {
-        self.inner.days_in_week()
-    }
+    pub fn days_in_week(&self) -> u16 { self.inner.days_in_week() }
 
     #[qjs(get, configurable)]
-    pub fn days_in_month(&self) -> u16 {
-        self.inner.days_in_month()
-    }
+    pub fn days_in_month(&self) -> u16 { self.inner.days_in_month() }
 
     #[qjs(get, configurable)]
-    pub fn days_in_year(&self) -> u16 {
-        self.inner.days_in_year()
-    }
+    pub fn days_in_year(&self) -> u16 { self.inner.days_in_year() }
 
     #[qjs(get, configurable)]
-    pub fn months_in_year(&self) -> u16 {
-        self.inner.months_in_year()
-    }
+    pub fn months_in_year(&self) -> u16 { self.inner.months_in_year() }
 
     #[qjs(get, configurable)]
-    pub fn in_leap_year(&self) -> bool {
-        self.inner.in_leap_year()
-    }
+    pub fn in_leap_year(&self) -> bool { self.inner.in_leap_year() }
 
     #[qjs(get, configurable)]
-    pub fn era(&self) -> Option<String> {
-        self.inner.era().map(|era| era.to_string())
-    }
+    pub fn era(&self) -> Option<String> { self.inner.era().map(|era| era.to_string()) }
 
     #[qjs(get, configurable)]
-    pub fn era_year(&self) -> Option<i32> {
-        self.inner.era_year()
-    }
+    pub fn era_year(&self) -> Option<i32> { self.inner.era_year() }
 
     pub fn add<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
@@ -734,29 +702,25 @@ impl PlainDate {
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => match get_defined(&object, "calendarName")? {
-                None => DisplayCalendar::Auto,
-                Some(value) => option_enum(&ctx, &value, "calendarName option")?,
-            },
+            Some(object) => {
+                match get_defined(&object, "calendarName")? {
+                    None => DisplayCalendar::Auto,
+                    Some(value) => option_enum(&ctx, &value, "calendarName option")?,
+                }
+            }
         };
         Ok(self.inner.to_ixdtf_string(display))
     }
 
-    pub fn to_locale_string(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_locale_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     #[qjs(rename = "toJSON")]
-    pub fn to_json(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_json(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainDate"))
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.PlainDate"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.PlainDate" }
 }

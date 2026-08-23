@@ -1,10 +1,14 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    atom::PredefinedAtom, class::Trace, function::This, prelude::Opt, prelude::Rest, Ctx, Exception,
-    JsLifetime, Object, Result, Value,
+    Ctx, Exception, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom,
+    class::Trace,
+    function::This,
+    prelude::{Opt, Rest},
 };
 use temporal_rs::{
+    Calendar, MonthCode,
     fields::{CalendarFields, DateTimeFields},
     options::{
         DifferenceSettings, Disambiguation, DisplayCalendar, Overflow, RoundingIncrement,
@@ -12,16 +16,15 @@ use temporal_rs::{
     },
     parsers::Precision,
     partial::{PartialDateTime, PartialDuration, PartialTime},
-    Calendar, MonthCode,
 };
 
 use crate::{
     convert::{
         calendar_slot, ctor_required_i32, ctor_required_u8, fractional_second_digits, get_defined,
-        js_to_string, optional_integral_i128, optional_integral_i64, optional_truncated_i32,
-        optional_truncated_u16, optional_truncated_u8, options_object, ordering_i32, probe_class,
+        js_to_string, optional_integral_i64, optional_integral_i128, optional_truncated_i32,
+        optional_truncated_u8, optional_truncated_u16, options_object, ordering_i32, probe_class,
         reject_calendar_or_time_zone, reject_illformed_month_code, require_object, throw_value_of,
-        to_number, to_time_zone, truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
+        to_number, to_time_zone, truncated_u8_or_zero, truncated_u16_or_zero, unwrap_temporal,
     },
     duration::Duration,
     plain_date::PlainDate,
@@ -118,9 +121,7 @@ fn get_overflow<'js>(ctx: &Ctx<'js>, options: &Option<Object<'js>>) -> Result<Op
         .map_err(|_| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
-fn get_unit_option<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<Unit>> {
+fn get_unit_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
     let Some(value) = get_defined(object, key)? else {
         return Ok(None);
     };
@@ -152,13 +153,16 @@ fn get_rounding_increment<'js>(
     unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
 }
 
-fn get_fractional_second_digits<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Precision> {
+fn get_fractional_second_digits<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Precision> {
     let Some(value) = get_defined(object, "fractionalSecondDigits")? else {
         return Ok(Precision::Auto);
     };
-    fractional_second_digits(ctx, &value, "fractionalSecondDigits must be finite", temporal_to_string)
+    fractional_second_digits(
+        ctx,
+        &value,
+        "fractionalSecondDigits must be finite",
+        temporal_to_string,
+    )
 }
 
 fn difference_settings<'js>(
@@ -214,9 +218,7 @@ fn to_constructor_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Ca
     unwrap_temporal(ctx, Calendar::try_from_utf8(identifier.as_bytes()))
 }
 
-fn get_calendar_with_iso_default<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Calendar> {
+fn get_calendar_with_iso_default<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calendar> {
     match get_defined(object, "calendar")? {
         None => Ok(Calendar::ISO),
         Some(value) => to_calendar_like(ctx, &value),
@@ -297,7 +299,10 @@ fn to_pdt<'js>(
     }
     if value.is_string() {
         let string = value.get::<String>()?;
-        let parsed = unwrap_temporal(ctx, temporal_rs::PlainDateTime::from_utf8(string.as_bytes()))?;
+        let parsed = unwrap_temporal(
+            ctx,
+            temporal_rs::PlainDateTime::from_utf8(string.as_bytes()),
+        )?;
         let options = options_object(ctx, options)?;
         let _overflow = get_overflow(ctx, &options)?;
         return Ok(parsed);
@@ -314,9 +319,7 @@ fn to_pdt<'js>(
     )
 }
 
-fn to_duration_like<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<temporal_rs::Duration> {
+fn to_duration_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
     if let Some(duration) = probe_class::<Duration>(ctx, value) {
         return Ok(duration.inner);
     }
@@ -352,9 +355,7 @@ fn to_duration_like<'js>(
     )
 }
 
-fn to_plain_time_like<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<temporal_rs::PlainTime> {
+fn to_plain_time_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
     if let Some(time) = probe_class::<PlainTime>(ctx, value) {
         return Ok(time.inner);
     }
@@ -592,7 +593,12 @@ impl PlainDateTime {
             ));
         }
         let object = require_object(&ctx, &item, "argument must be an object")?;
-        reject_calendar_or_time_zone(&ctx, &object, "calendar is not allowed in with()", "timeZone is not allowed in with()")?;
+        reject_calendar_or_time_zone(
+            &ctx,
+            &object,
+            "calendar is not allowed in with()",
+            "timeZone is not allowed in with()",
+        )?;
         let (fields, month_code) = datetime_fields_from_object(&ctx, &object)?;
         let overflow = get_overflow(&ctx, &options_object(&ctx, options)?)?;
         let fields = apply_month_code(&ctx, fields, month_code)?;
