@@ -3,6 +3,7 @@ pub mod ip_addr;
 pub mod socket;
 pub mod socket_addr;
 pub mod udp;
+pub mod unix;
 
 #[rquickjs::module(
     rename = "camelCase",
@@ -12,6 +13,7 @@ pub mod udp;
 pub mod networking {
     pub use crate::socket::{TcpListenerWrapper as TcpListener, TcpStreamWrapper as TcpStream};
     pub use crate::udp::UdpSocketWrapper as UdpSocket;
+    pub use crate::unix::{UnixListenerWrapper as UnixListener, UnixStreamWrapper as UnixStream};
 }
 
 #[cfg(test)]
@@ -38,6 +40,9 @@ mod tests {
             })
             .await
             .expect("den:networking evaluates");
-        assert_eq!(names, "TcpListener,TcpStream,UdpSocket");
+        assert_eq!(
+            names,
+            "TcpListener,TcpStream,UdpSocket,UnixListener,UnixStream"
+        );
     }
 }
