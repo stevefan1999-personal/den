@@ -1,5 +1,6 @@
 //! Web Workers API for den: `Worker`, `MessageChannel`/`MessagePort`,
-//! `BroadcastChannel`, the `EventTarget` family and `structuredClone`.
+//! `BroadcastChannel`, the `EventTarget` family, `AbortController`,
+//! `performance` and `structuredClone`.
 //!
 //! The split follows quickjs-libc and txiki.js: **Rust owns transport,
 //! (de)serialisation and threads**, exposed as a small bag of natives; the
@@ -18,6 +19,7 @@ pub mod broadcast;
 pub mod events;
 pub mod host;
 pub mod message;
+pub mod performance;
 pub mod port;
 pub mod report;
 pub mod transport;
@@ -36,7 +38,7 @@ pub use crate::js_worker_module as js_worker;
 ///
 /// `DOMException` is deliberately absent: quickjs-ng registers it natively in
 /// every context (`JS_AddIntrinsicAToB`), so there is nothing to install.
-const API: [&str; 14] = [
+const API: [&str; 15] = [
     "AbortController",
     "AbortSignal",
     "BroadcastChannel",
@@ -49,15 +51,20 @@ const API: [&str; 14] = [
     "MessagePort",
     "PromiseRejectionEvent",
     "Worker",
+    "performance",
     "reportError",
     "structuredClone",
 ];
 
 /// The prelude, in dependency order. The filenames are what shows up in a stack
 /// trace, so they are the module-qualified paths rather than bare basenames.
-const PRELUDE: [(&str, &str); 6] = [
+const PRELUDE: [(&str, &str); 7] = [
     ("den:worker/events.js", include_str!("prelude/events.js")),
     ("den:worker/abort.js", include_str!("prelude/abort.js")),
+    (
+        "den:worker/performance.js",
+        include_str!("prelude/performance.js"),
+    ),
     ("den:worker/clone.js", include_str!("prelude/clone.js")),
     ("den:worker/port.js", include_str!("prelude/port.js")),
     ("den:worker/worker.js", include_str!("prelude/worker.js")),
@@ -94,6 +101,7 @@ pub mod worker_module {
         crate::port::install(ctx, &natives)?;
         crate::worker::install(ctx, &natives)?;
         crate::broadcast::install(ctx, &natives)?;
+        crate::performance::PerformanceClock::install(ctx, &natives)?;
 
         let mut api = Object::new(ctx.clone())?;
         for (filename, source) in crate::PRELUDE {
@@ -169,7 +177,7 @@ mod tests {
     /// The whole of `den:worker`'s documented surface, spelled out here rather
     /// than read from [`API`]: a test that iterates the very list it is
     /// checking stops checking whatever that list loses.
-    const DOCUMENTED: [&str; 14] = [
+    const DOCUMENTED: [&str; 15] = [
         "AbortController",
         "AbortSignal",
         "BroadcastChannel",
@@ -182,6 +190,7 @@ mod tests {
         "MessagePort",
         "PromiseRejectionEvent",
         "Worker",
+        "performance",
         "reportError",
         "structuredClone",
     ];
@@ -204,8 +213,17 @@ mod tests {
                     "{names}".split(",").map((name) => {{
                       const exported = moduleExports[name];
                       const global = globalThis[name];
-                      if (typeof exported !== "function") return `${{name}}: not exported`;
+                      if (exported === undefined) return `${{name}}: not exported`;
                       if (exported !== global) return `${{name}}: global is not the export`;
+                      // Instances (`performance`, `navigator`), not constructors.
+                      const isObject = name === "performance" || name === "navigator";
+                      if (isObject) {{
+                        if (typeof exported !== "object" || exported === null) {{
+                          return `${{name}}: not an object`;
+                        }}
+                        return `${{name}}: ok`;
+                      }}
+                      if (typeof exported !== "function") return `${{name}}: not a function`;
                       // Every class is constructible and carries a prototype
                       // object; `structuredClone` is the one plain function,
                       // and an arrow has no prototype at all.
@@ -475,6 +493,43 @@ mod tests {
                        Object.prototype.toString.call(new AbortController().signal) === "[object AbortSignal]",
                      );
 
+                     return failed.join(",");
+                   })()"#
+            ),
+            ""
+        );
+    }
+
+    /// High Resolution Time: `now()` is milliseconds since this realm's
+    /// origin (monotonic), `timeOrigin` is that origin as Unix-epoch ms —
+    /// not QuickJS-ng's monotonic reading. A busy-wait distinguishes an
+    /// advancing clock from a frozen stub without needing `setTimeout`.
+    #[test]
+    fn performance_now_is_monotonic() {
+        assert_eq!(
+            text(
+                r#"(() => {
+                     const failed = [];
+                     const check = (name, held) => { if (!held) failed.push(name); };
+                     const start = performance.now();
+                     check("nowIsNumber", typeof start === "number");
+                     check("nowIsFinite", Number.isFinite(start));
+                     check("nowIsNearOrigin", start >= 0 && start < 60000);
+                     let later = start;
+                     const deadline = Date.now() + 50;
+                     while (later === start && Date.now() < deadline) later = performance.now();
+                     check("nowAdvances", later > start);
+                     check("nowIsMonotonic", performance.now() >= later);
+                     check("timeOriginIsNumber", typeof performance.timeOrigin === "number");
+                     check("timeOriginIsUnixEpoch", performance.timeOrigin > 1e12);
+                     check(
+                       "timeOriginNearWallClock",
+                       Math.abs(Date.now() - performance.timeOrigin) < 60000,
+                     );
+                     check(
+                       "toStringTag",
+                       Object.prototype.toString.call(performance) === "[object Performance]",
+                     );
                      return failed.join(",");
                    })()"#
             ),

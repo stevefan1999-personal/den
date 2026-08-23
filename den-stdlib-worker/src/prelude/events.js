@@ -18,8 +18,9 @@
   const HANDLERS = new WeakMap(); // target -> Map(name -> event handler)
   const EVENT_STATE = new WeakMap(); // event -> its attributes and flags
 
-  // `timeStamp` is relative to a time origin; the moment this realm loaded is
-  // the only origin den has (there is no `performance.timeOrigin`).
+  // `timeStamp` is relative to a time origin. The performance prelude owns
+  // the high-res clock and is evaluated after this file, so Event uses
+  // wall-clock from the moment this realm loaded.
   const TIME_ORIGIN = Date.now();
 
   // DOM §2.2. Dispatch here is always AT_TARGET — nothing den exposes lives in
