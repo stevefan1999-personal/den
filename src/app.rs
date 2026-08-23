@@ -7,13 +7,13 @@ use crate::repl;
 
 pub struct App {
     pub(crate) engine: Engine,
-    repl_rx: Option<mpsc::UnboundedReceiver<String>>,
+    repl_rx:           Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl App {
     pub async fn new() -> Self {
         Self {
-            engine: Engine::new().await,
+            engine:  Engine::new().await,
             repl_rx: None,
         }
     }
@@ -57,9 +57,7 @@ impl App {
     /// `idle()` can poll it while holding the runtime lock; `engine.eval`
     /// would deadlock on that lock.
     async fn repl_pump(
-        ctx: rquickjs::Ctx<'_>,
-        engine: Engine,
-        mut repl_rx: mpsc::UnboundedReceiver<String>,
+        ctx: rquickjs::Ctx<'_>, engine: Engine, mut repl_rx: mpsc::UnboundedReceiver<String>,
     ) {
         let stop = engine.stop_token.clone();
         loop {
@@ -89,8 +87,10 @@ impl App {
     pub fn hook_ctrlc_handler(&mut self) {
         let stop_token = self.engine.stop_token.clone();
 
-        tokio::spawn(signal::ctrl_c().then(|_| async move {
-            stop_token.cancel();
+        tokio::spawn(signal::ctrl_c().then(|_| {
+            async move {
+                stop_token.cancel();
+            }
         }));
     }
 }

@@ -19,8 +19,7 @@ pub(crate) enum ImportKind {
 /// An unknown `type` is a loading error rather than a fall-through: the
 /// attribute is an explicit request, and guessing script would hide it.
 pub(crate) fn import_kind<'js>(
-    name: &str,
-    attributes: Option<&ImportAttributes<'js>>,
+    name: &str, attributes: Option<&ImportAttributes<'js>>,
 ) -> Result<Option<ImportKind>> {
     let Some(attributes) = attributes else {
         return Ok(None);
@@ -43,10 +42,7 @@ pub(crate) fn import_kind<'js>(
 
 /// Declare a module whose default export is `bytes` interpreted as `kind`.
 pub(crate) fn declare_import_kind<'js>(
-    ctx: &Ctx<'js>,
-    name: &str,
-    bytes: &[u8],
-    kind: ImportKind,
+    ctx: &Ctx<'js>, name: &str, bytes: &[u8], kind: ImportKind,
 ) -> Result<Module<'js, Declared>> {
     let source = match kind {
         ImportKind::Json => json_module_source(name, bytes)?,

@@ -39,9 +39,7 @@ impl Default for HttpLoader {
 }
 
 impl HttpLoader {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     /// Derive the script extension from the response's `Content-Type`.
     ///
@@ -84,10 +82,7 @@ impl HttpLoader {
 
 impl Loader for HttpLoader {
     fn load<'js>(
-        &mut self,
-        ctx: &Ctx<'js>,
-        name: &str,
-        attributes: Option<ImportAttributes<'js>>,
+        &mut self, ctx: &Ctx<'js>, name: &str, attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js, Declared>> {
         let kind = import_kind(name, attributes.as_ref())?;
         let task = async move {

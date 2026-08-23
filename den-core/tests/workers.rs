@@ -46,8 +46,8 @@ struct Fixture {
 
 impl Fixture {
     /// Write `files` into a directory of this test's own — the process id keeps
-    /// two concurrent `cargo test` runs apart, the test name keeps the tests
-    /// within one run apart.
+    /// two concurrent `cargo nextest run` runs apart, the test name keeps the
+    /// tests within one run apart.
     fn new(test: &str, files: &[(&str, &str)]) -> eyre::Result<Self> {
         let directory = temp_dir()
             .join(format!("den-workers-{}", process::id()))
@@ -146,9 +146,7 @@ fn live_worker_threads(name: &str) -> usize {
 /// Elsewhere there is no `/proc`, so the leak assertions degrade to nothing
 /// rather than to a lie. `shutdown`'s own join is still exercised.
 #[cfg(not(target_os = "linux"))]
-fn live_worker_threads(_name: &str) -> usize {
-    0
-}
+fn live_worker_threads(_name: &str) -> usize { 0 }
 
 /// Await every worker thread named `name` going away, bounded by [`DEADLINE`].
 ///
@@ -207,19 +205,16 @@ async fn a_classic_worker_echoes_a_message_through_the_engines_loaders() -> eyre
 /// file has to resolve against the *worker's* directory.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_module_worker_resolves_a_static_import_of_a_sibling() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "module-import",
-        &[
-            ("lib.js", "export const double = (value) => value * 2;\n"),
-            (
-                "worker.js",
-                r#"
+    let fixture = Fixture::new("module-import", &[
+        ("lib.js", "export const double = (value) => value * 2;\n"),
+        (
+            "worker.js",
+            r#"
                 import { double } from "./lib.js";
                 self.onmessage = (event) => postMessage(double(event.data));
                 "#,
-            ),
-        ],
-    )?;
+        ),
+    ])?;
     let doubled: i32 = fixture
         .result(
             r#"
@@ -252,17 +247,14 @@ async fn a_typescript_worker_is_transpiled_on_both_paths() -> eyre::Result<()> {
           postMessage(`${Kind.Module}:${label(event.data.value)}`);
         };
     "#;
-    let fixture = Fixture::new(
-        "typescript",
-        &[
-            ("classic.ts", CLASSIC),
-            ("module.ts", MODULE),
-            (
-                "lib.ts",
-                "export const label = (value: number): string => `${value}`;\n",
-            ),
-        ],
-    )?;
+    let fixture = Fixture::new("typescript", &[
+        ("classic.ts", CLASSIC),
+        ("module.ts", MODULE),
+        (
+            "lib.ts",
+            "export const label = (value: number): string => `${value}`;\n",
+        ),
+    ])?;
     let both: String = fixture
         .result(
             r#"
@@ -369,18 +361,15 @@ async fn every_structured_clone_type_survives_the_thread_boundary() -> eyre::Res
 /// sees the bytes, and the bytes still arrive.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transferred_array_buffer_is_detached_here_and_intact_there() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "transfer-buffer",
-        &[(
-            "worker.js",
-            r#"
+    let fixture = Fixture::new("transfer-buffer", &[(
+        "worker.js",
+        r#"
             self.onmessage = (event) => {
               const bytes = new Uint8Array(event.data);
               postMessage(`${event.data.byteLength}:${bytes.join("-")}`);
             };
             "#,
-        )],
-    )?;
+    )])?;
     let report: String = fixture
         .result(
             r#"
@@ -405,7 +394,7 @@ async fn a_transferred_array_buffer_is_detached_here_and_intact_there() -> eyre:
 /// detach keys — and the instance would go on running against freed pages.
 /// The refusal has to be a `DataCloneError` *and* leave the memory untouched,
 /// which is asserted by using it afterwards.
-#[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
+#[cfg(feature = "wasm")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_webassembly_memory_buffer_refuses_to_be_transferred() -> eyre::Result<()> {
     let fixture = Fixture::new("wasm-detach-key", &[("worker.js", ECHO)])?;
@@ -452,11 +441,9 @@ async fn a_webassembly_memory_buffer_refuses_to_be_transferred() -> eyre::Result
 /// worker's own port taking part.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transferred_message_port_carries_traffic_both_ways() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "transfer-port",
-        &[(
-            "worker.js",
-            r#"
+    let fixture = Fixture::new("transfer-port", &[(
+        "worker.js",
+        r#"
             self.onmessage = (event) => {
               const port = event.data.port;
               const same = port === event.ports[0];
@@ -464,8 +451,7 @@ async fn a_transferred_message_port_carries_traffic_both_ways() -> eyre::Result<
               port.postMessage("hello from the worker");
             };
             "#,
-        )],
-    )?;
+    )])?;
     let report: String = fixture
         .result(
             r#"
@@ -563,10 +549,10 @@ async fn terminate_stops_a_worker_that_never_yields() -> eyre::Result<()> {
 /// the thread ends without anyone terminating it.
 #[tokio::test(flavor = "multi_thread")]
 async fn close_from_inside_delivers_the_last_message_and_ends_the_thread() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "close-inside",
-        &[("worker.js", "postMessage(\"bye\");\nclose();\n")],
-    )?;
+    let fixture = Fixture::new("close-inside", &[(
+        "worker.js",
+        "postMessage(\"bye\");\nclose();\n",
+    )])?;
     let engine = fixture
         .start(
             r#"
@@ -667,11 +653,9 @@ async fn an_unhandled_rejection_in_a_worker_fires_at_its_global() -> eyre::Resul
 /// event, so the parent never hears about it — and the worker carries on.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_onerror_returning_true_keeps_the_error_at_home() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "onerror-suppresses",
-        &[(
-            "worker.js",
-            r#"
+    let fixture = Fixture::new("onerror-suppresses", &[(
+        "worker.js",
+        r#"
             self.onerror = (message, filename, lineno, colno, error) => {
               postMessage(`caught:${message}:${lineno > 0}:${error === undefined}`);
               return true;
@@ -679,8 +663,7 @@ async fn a_worker_onerror_returning_true_keeps_the_error_at_home() -> eyre::Resu
             self.onmessage = () => { throw new RangeError("mine"); };
             postMessage("ready");
             "#,
-        )],
-    )?;
+    )])?;
     let report: String = fixture
         .result(
             r#"
@@ -709,16 +692,13 @@ async fn a_worker_onerror_returning_true_keeps_the_error_at_home() -> eyre::Resu
 /// exception, and not a silently lost message.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_payload_the_worker_cannot_rebuild_becomes_messageerror() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "messageerror",
-        &[(
-            "worker.js",
-            r#"
+    let fixture = Fixture::new("messageerror", &[(
+        "worker.js",
+        r#"
             self.onmessageerror = (event) => postMessage(`${event.type}:${event.data}`);
             self.onmessage = () => postMessage("message");
             "#,
-        )],
-    )?;
+    )])?;
     let report: String = fixture
         .result(
             r#"
@@ -743,16 +723,14 @@ async fn a_payload_the_worker_cannot_rebuild_becomes_messageerror() -> eyre::Res
 /// directory.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_can_spawn_a_worker_relative_to_itself() -> eyre::Result<()> {
-    let fixture = Fixture::new(
-        "nested",
-        &[
-            (
-                "nested/inner.js",
-                "postMessage(\"from the inner worker\");\n",
-            ),
-            (
-                "nested/outer.js",
-                r#"
+    let fixture = Fixture::new("nested", &[
+        (
+            "nested/inner.js",
+            "postMessage(\"from the inner worker\");\n",
+        ),
+        (
+            "nested/outer.js",
+            r#"
                 const inner = new Worker("./inner.js");
                 inner.onmessage = (event) => {
                   postMessage(`outer saw: ${event.data}`);
@@ -760,9 +738,8 @@ async fn a_worker_can_spawn_a_worker_relative_to_itself() -> eyre::Result<()> {
                 };
                 inner.onerror = (event) => postMessage(`outer failed: ${event.message}`);
                 "#,
-            ),
-        ],
-    )?;
+        ),
+    ])?;
     let relayed: String = fixture
         .result(
             r#"
@@ -919,9 +896,7 @@ mod stderr {
         Ok(stderr)
     }
 
-    fn is_child() -> bool {
-        std::env::var_os(CHILD).is_some()
-    }
+    fn is_child() -> bool { std::env::var_os(CHILD).is_some() }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_unclaimed_worker_error_is_reported_and_leaves_the_parent_running()
@@ -935,18 +910,15 @@ mod stderr {
             return Ok(());
         }
 
-        let fixture = Fixture::new(
-            "unclaimed-error",
-            &[(
-                "worker.js",
-                r#"
+        let fixture = Fixture::new("unclaimed-error", &[(
+            "worker.js",
+            r#"
                 self.onmessage = (event) => {
                   if (event.data === "throw") throw new Error("unclaimed worker failure");
                   postMessage("alive");
                 };
                 "#,
-            )],
-        )?;
+        )])?;
         // No `onerror` on either side, and deliberately not `firstMessage`
         // either: its `error` listener would claim the event and there would be
         // nothing left to report. The default action is what has to run.

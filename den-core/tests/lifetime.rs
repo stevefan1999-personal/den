@@ -2,7 +2,7 @@
 //!
 //! `den-stdlib-wasm` parks an `OwnedCtx` — a refcounted `Ctx<'static>` — inside
 //! the `Store`, and the `Store` inside the userdata of that very context
-//! (den-stdlib-wasm/src/backend/mod.rs:44, src/store.rs:22). That is a cycle
+//! (den-stdlib-wasm/src/backend.rs, src/store.rs). That is a cycle
 //! context → userdata → Store → OwnedCtx → context, so if the runtime did not
 //! drop its userdata before freeing itself, the `JSContext` refcount would
 //! never reach zero and every engine would leak or abort at teardown.
@@ -10,7 +10,7 @@
 //! These tests churn engines in a loop so that a leak grows and an abort is not
 //! a one-in-a-hundred flake. They assert on a value each time round so the
 //! engine is genuinely used and not optimised into nothing.
-#![cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
+#![cfg(feature = "wasm")]
 
 use color_eyre::eyre;
 use den_core::engine::Engine;
@@ -45,7 +45,8 @@ async fn engines_that_instantiate_and_touch_memory_survive_repeated_teardown() -
         let echoed: usize = engine
             .eval(
                 r#"
-                  const WASM = WebAssembly.wat2wasm(`
+                  const { wat2wasm } = await import('den:wasm');
+                  const WASM = wat2wasm(`
                     (module
                       (memory (export "mem") 1)
                       (func (export "peek") (param i32) (result i32) local.get 0 i32.load8_u))
@@ -73,7 +74,8 @@ async fn engines_holding_an_imported_js_closure_survive_repeated_teardown() -> e
         let doubled: usize = engine
             .eval(
                 r#"
-                  const WASM = WebAssembly.wat2wasm(`
+                  const { wat2wasm } = await import('den:wasm');
+                  const WASM = wat2wasm(`
                     (module
                       (import "env" "twice" (func $twice (param i32) (result i32)))
                       (func (export "run") (param i32) (result i32) local.get 0 call $twice))

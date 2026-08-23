@@ -106,9 +106,7 @@ impl ImportMap {
 
 impl SpecifierMap {
     fn parse(
-        value: &serde_json::Value,
-        base: &Url,
-        field: &str,
+        value: &serde_json::Value, base: &Url, field: &str,
     ) -> std::result::Result<Self, ImportMapError> {
         let object = value
             .as_object()
@@ -157,10 +155,7 @@ pub struct ImportMapResolver;
 
 impl Resolver for ImportMapResolver {
     fn resolve<'js>(
-        &mut self,
-        ctx: &Ctx<'js>,
-        base: &str,
-        name: &str,
+        &mut self, ctx: &Ctx<'js>, base: &str, name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> Result<String> {
         let Some(map) = ctx.userdata::<ImportMap>() else {
@@ -245,9 +240,7 @@ mod tests {
 
     const BASE: &str = "/tmp/den-import-map";
 
-    fn map(json: &str) -> ImportMap {
-        ImportMap::parse(json, Path::new(BASE)).unwrap()
-    }
+    fn map(json: &str) -> ImportMap { ImportMap::parse(json, Path::new(BASE)).unwrap() }
 
     #[test]
     fn exact_match_joins_a_relative_target() {

@@ -73,10 +73,7 @@ impl AbsolutePathResolver {
 
 impl Resolver for AbsolutePathResolver {
     fn resolve<'js>(
-        &mut self,
-        _ctx: &Ctx<'js>,
-        base: &str,
-        name: &str,
+        &mut self, _ctx: &Ctx<'js>, base: &str, name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> Result<String> {
         self.file_for(base, name)

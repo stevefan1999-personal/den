@@ -13,10 +13,7 @@ pub struct HttpResolver {
 
 impl Resolver for HttpResolver {
     fn resolve<'js>(
-        &mut self,
-        _ctx: &Ctx<'js>,
-        base_path: &str,
-        path: &str,
+        &mut self, _ctx: &Ctx<'js>, base_path: &str, path: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> Result<String> {
         let base_path_url = Url::parse(base_path);

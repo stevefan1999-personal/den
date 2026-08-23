@@ -26,9 +26,7 @@ pub struct MmapScriptLoader {
 }
 
 impl MmapScriptLoader {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     /// Add script file extension
     pub fn add_extension<X: Into<String>>(&mut self, extension: X) -> &mut Self {
@@ -46,10 +44,7 @@ impl MmapScriptLoader {
 
 impl Loader for MmapScriptLoader {
     fn load<'js>(
-        &mut self,
-        ctx: &Ctx<'js>,
-        path: &str,
-        attributes: Option<ImportAttributes<'js>>,
+        &mut self, ctx: &Ctx<'js>, path: &str, attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js, Declared>> {
         let kind = import_kind(path, attributes.as_ref())?;
         let task = async move {

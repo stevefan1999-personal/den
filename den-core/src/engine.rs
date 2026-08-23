@@ -53,7 +53,7 @@ type Rejection = (Persistent<Value<'static>>, Persistent<Value<'static>>);
 /// p.catch(…)` would be a false positive.
 #[derive(Default)]
 struct PendingRejections {
-    unhandled: RefCell<Vec<Rejection>>,
+    unhandled:   RefCell<Vec<Rejection>>,
     /// The reasons of the rejections retracted during the current turn.
     ///
     /// A module body is called as an async function
@@ -65,14 +65,14 @@ struct PendingRejections {
     /// later. Suppressing a reason that something claimed in the same turn is
     /// what keeps `den main.js`, for a `main.js` that throws, from printing the
     /// failure twice.
-    claimed: RefCell<Vec<Persistent<Value<'static>>>>,
+    claimed:     RefCell<Vec<Persistent<Value<'static>>>>,
     /// Rejections already reported, so that a handler attached to one *later*
     /// can still fire `rejectionhandled` (HTML §8.1.7.5).
     outstanding: RefCell<VecDeque<Rejection>>,
     /// How many rejections have been printed so far. Printing goes to stderr,
     /// which a test inside this process cannot read; this counter is its only
     /// seam on the decision the tracker actually makes.
-    reported: Cell<usize>,
+    reported:    Cell<usize>,
 }
 
 // SAFETY: `PendingRejections` borrows no `'js` lifetime — a `Persistent` owns
@@ -92,9 +92,7 @@ struct DenWorkerHost;
 #[cfg(feature = "stdlib-worker")]
 impl WorkerHost for DenWorkerHost {
     fn build_engine(
-        &self,
-        stop: CancellationToken,
-        base: BaseUrl,
+        &self, stop: CancellationToken, base: BaseUrl,
     ) -> Result<WorkerEngine, WorkerHostError> {
         // Called on the worker's own OS thread, inside that thread's
         // multi-threaded runtime: `block_in_place` + `block_on` is what lets a
@@ -119,8 +117,8 @@ impl WorkerHost for DenWorkerHost {
 pub struct Engine {
     #[cfg(feature = "transpile")]
     pub transpiler: Arc<EasyOxcTranspiler>,
-    pub runtime: AsyncRuntime,
-    pub context: AsyncContext,
+    pub runtime:    AsyncRuntime,
+    pub context:    AsyncContext,
     pub stop_token: CancellationToken,
 }
 
@@ -152,9 +150,7 @@ impl Engine {
         "{}.tsx",
     ];
 
-    pub async fn new() -> Engine {
-        Self::new_with_stop_token(CancellationToken::new()).await
-    }
+    pub async fn new() -> Engine { Self::new_with_stop_token(CancellationToken::new()).await }
 
     /// Build an engine whose interrupt handler observes `stop_token`.
     ///
@@ -220,7 +216,7 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:temporal");
                     }
-                    #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
+                    #[cfg(feature = "wasm")]
                     {
                         resolver = resolver.with_module("den:wasm");
                     }
@@ -303,7 +299,7 @@ impl Engine {
                         loader =
                             loader.with_module("den:temporal", den_stdlib_temporal::js_temporal);
                     }
-                    #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
+                    #[cfg(feature = "wasm")]
                     {
                         loader = loader.with_module("den:wasm", den_stdlib_wasm::js_wasm)
                     }
@@ -452,7 +448,7 @@ impl Engine {
                     )?;
                 }
 
-                #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
+                #[cfg(feature = "wasm")]
                 {
                     let _ = Module::evaluate_def::<den_stdlib_wasm::js_wasm, _>(
                         ctx.clone(),
@@ -509,8 +505,7 @@ impl Engine {
     }
 
     pub async fn run_file<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
-        &self,
-        filename: PathBuf,
+        &self, filename: PathBuf,
     ) -> Result<U, EngineError> {
         // `den file:///home/me/app.js` is the same request as
         // `den /home/me/app.js`, and the URL shape is what a worker's module
@@ -574,10 +569,7 @@ impl Engine {
 
     #[cfg(feature = "transpile")]
     pub fn transpile(
-        &self,
-        src: &str,
-        syntax: Syntax,
-        module: IsModule,
+        &self, src: &str, syntax: Syntax, module: IsModule,
     ) -> Result<(String, Option<SourceMap>), EasyOxcTranspilerError> {
         self.transpiler.transpile(src, syntax, module, false)
     }
@@ -606,8 +598,7 @@ impl Engine {
     /// `async_with` during `idle()` would park on the mutex until idle
     /// returned.
     pub async fn eval_prepared<'js, U: FromJs<'js>>(
-        ctx: Ctx<'js>,
-        src: &str,
+        ctx: Ctx<'js>, src: &str,
     ) -> rquickjs::Result<U> {
         ctx.eval_with_options::<Promise, _>(src, {
             let mut options = EvalOptions::default();
@@ -626,8 +617,7 @@ impl Engine {
     }
 
     pub async fn eval<U: for<'js> FromJs<'js> + Send + Sync + 'static>(
-        &self,
-        src: &str,
+        &self, src: &str,
     ) -> Result<U, EngineError> {
         let src = self.prepare_eval_source(src)?;
         Ok(self
@@ -646,15 +636,35 @@ impl Engine {
         self.stop_token.cancel();
         #[cfg(feature = "stdlib-worker")]
         den_stdlib_worker::worker::shutdown(&self.context).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), self.runtime.idle())
+            .await;
+        let _ = self
+            .context
+            .with(|ctx| {
+                if let Some(pending) = ctx.userdata::<PendingRejections>() {
+                    if let Ok(mut unhandled) = pending.unhandled.try_borrow_mut() {
+                        unhandled.clear();
+                    }
+                    if let Ok(mut claimed) = pending.claimed.try_borrow_mut() {
+                        claimed.clear();
+                    }
+                    if let Ok(mut outstanding) = pending.outstanding.try_borrow_mut() {
+                        outstanding.clear();
+                    }
+                }
+                ctx.run_gc();
+                ctx.run_gc();
+                ctx.run_gc();
+                Ok::<(), rquickjs::Error>(())
+            })
+            .await;
     }
 
     /// Install an [import map](https://wicg.github.io/import-maps/) on this
     /// realm. Relative `./` / `../` targets join against `base_dir`. Calling
     /// again replaces the previous map.
     pub async fn set_import_map(
-        &self,
-        json: &str,
-        base_dir: impl AsRef<Path> + Send,
+        &self, json: &str, base_dir: impl AsRef<Path> + Send,
     ) -> Result<(), EngineError> {
         let map = ImportMap::parse(json, base_dir.as_ref())?;
         self.context
@@ -827,11 +837,7 @@ impl Engine {
     /// `PromiseRejectionEvent`. A realm without those (stdlib-worker off)
     /// cancels nothing and the rejection goes to stderr as it always did.
     fn fire_rejection_event<'js>(
-        ctx: &Ctx<'js>,
-        kind: &str,
-        promise: &Value<'js>,
-        reason: &Value<'js>,
-        cancelable: bool,
+        ctx: &Ctx<'js>, kind: &str, promise: &Value<'js>, reason: &Value<'js>, cancelable: bool,
     ) -> bool {
         let globals = ctx.globals();
         let dispatched = (|| -> rquickjs::Result<bool> {
@@ -887,13 +893,9 @@ impl Engine {
     /// Interrupt this realm, and with it every worker it spawned: a worker's
     /// token is a child of the one this realm publishes as `RealmStop`, all the
     /// way down the tree. Reaping the threads afterwards is [`Self::shutdown`].
-    pub fn stop(&self) {
-        self.stop_token.cancel()
-    }
+    pub fn stop(&self) { self.stop_token.cancel() }
 
-    pub fn stop_token(&self) -> CancellationToken {
-        self.stop_token.clone()
-    }
+    pub fn stop_token(&self) -> CancellationToken { self.stop_token.clone() }
 }
 
 #[derive(Display, From, Error, Debug)]
