@@ -1,11 +1,23 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::RefCell,
+    pin::Pin,
+    rc::Rc,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use derive_more::derive::{From, Into};
+use futures::{Stream, StreamExt, future::Either};
 use rquickjs::{
-    Array, ArrayBuffer, Ctx, Error, Exception, FromJs, IntoJs, JsLifetime, Object, Result,
-    TypedArray, Value as JsValue, class::Trace,
+    Array, ArrayBuffer, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
+    Result, TypedArray, Value as JsValue,
+    class::Trace,
+    function::{Constructor, Opt, This},
 };
 use serde_json::Value;
+use tokio::sync::Notify;
 
 #[derive(From, Into, Clone, Eq, PartialEq, Hash)]
 pub struct SerdeJsonValue(pub serde_json::Value);
@@ -90,11 +102,101 @@ impl<'js> IntoJs<'js> for SerdeJsonValue {
     }
 }
 
-#[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
+type BodyStream = Pin<Box<dyn Stream<Item = std::result::Result<Vec<u8>, String>> + Send>>;
+
+enum ResponseBody {
+    Live(reqwest::Response),
+    Stream(BodyStream),
+    Taken,
+}
+
+#[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response {
+    status: u16,
+    redirected: bool,
     #[qjs(skip_trace)]
-    inner: Rc<RefCell<Option<reqwest::Response>>>,
+    status_text: String,
+    #[qjs(skip_trace)]
+    url: String,
+    #[qjs(skip_trace)]
+    headers: Vec<(String, String)>,
+    #[qjs(skip_trace)]
+    inner: Rc<RefCell<ResponseBody>>,
+}
+
+impl Response {
+    fn from_reqwest(response: reqwest::Response) -> Self {
+        let status = response.status();
+        let headers = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                Some((name.as_str().to_string(), value.to_str().ok()?.to_string()))
+            })
+            .collect();
+        Self {
+            status: status.as_u16(),
+            redirected: false,
+            status_text: status.canonical_reason().unwrap_or("").to_string(),
+            url: response.url().to_string(),
+            headers,
+            inner: Rc::new(RefCell::new(ResponseBody::Live(response))),
+        }
+    }
+
+    fn content_type(&self) -> String {
+        self.headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    }
+
+    async fn take_bytes(&self, ctx: &Ctx<'_>) -> Result<Vec<u8>> {
+        let taken = {
+            let mut inner = self.inner.borrow_mut();
+            core::mem::replace(&mut *inner, ResponseBody::Taken)
+        };
+        match taken {
+            ResponseBody::Live(response) => response
+                .bytes()
+                .await
+                .map(|bytes| bytes.to_vec())
+                .map_err(|err| Exception::throw_syntax(ctx, &format!("{err:?}"))),
+            ResponseBody::Stream(mut stream) => {
+                let mut out = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    out.extend(chunk.map_err(|err| Exception::throw_syntax(ctx, &err))?);
+                }
+                Ok(out)
+            }
+            ResponseBody::Taken => Err(Exception::throw_type(ctx, "Already distributed")),
+        }
+    }
+
+    async fn next_chunk(&self, ctx: &Ctx<'_>) -> Result<Option<Vec<u8>>> {
+        let taken = {
+            let mut inner = self.inner.borrow_mut();
+            core::mem::replace(&mut *inner, ResponseBody::Taken)
+        };
+        let mut stream = match taken {
+            ResponseBody::Live(response) => Box::pin(response.bytes_stream().map(|item| {
+                item.map(|bytes| bytes.to_vec())
+                    .map_err(|err| err.to_string())
+            })) as BodyStream,
+            ResponseBody::Stream(stream) => stream,
+            ResponseBody::Taken => return Ok(None),
+        };
+        match stream.next().await {
+            Some(Ok(chunk)) => {
+                *self.inner.borrow_mut() = ResponseBody::Stream(stream);
+                Ok(Some(chunk))
+            }
+            Some(Err(err)) => Err(Exception::throw_syntax(ctx, &err)),
+            None => Ok(None),
+        }
+    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -110,155 +212,561 @@ impl Response {
     pub fn new() {}
 
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        if let Some(inner) = self.inner.take() {
-            let bytes = inner
-                .bytes()
-                .await
-                .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))?;
-
-            // `new_copy`, never `new`: `new` lends QuickJS the Rust allocation
-            // plus a free hook it runs twice on detach (quickjs.c:58037 and
-            // :57935), and `transfer` reallocs a pointer its allocator never
-            // produced, so `(await r.arrayBuffer()).transfer()` aborted the
-            // process. The cost is one extra copy of the body — paid to make it
-            // an ordinary JS buffer that can be detached and transferred.
-            ArrayBuffer::new_copy(ctx, bytes)
-        } else {
-            Err(Exception::throw_type(&ctx, "Already distributed"))
-        }
+        let bytes = self.take_bytes(&ctx).await?;
+        // `new_copy`, never `new`: `new` lends QuickJS the Rust allocation
+        // plus a free hook it runs twice on detach (quickjs.c:58037 and
+        // :57935), and `transfer` reallocs a pointer its allocator never
+        // produced, so `(await r.arrayBuffer()).transfer()` aborted the
+        // process. The cost is one extra copy of the body — paid to make it
+        // an ordinary JS buffer that can be detached and transferred.
+        ArrayBuffer::new_copy(ctx, bytes)
     }
 
-    pub async fn blob<'js>(&self, ctx: Ctx<'js>) -> Result<()> {
-        Err(ctx.throw("TODO".into_js(&ctx)?))
+    pub async fn blob<'js>(&self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
+        let bytes = self.take_bytes(&ctx).await?;
+        let mime = self.content_type();
+        let ctor: Constructor<'js> = ctx
+            .globals()
+            .get("Blob")
+            .map_err(|_| Exception::throw_type(&ctx, "Blob is not defined"))?;
+        let parts = Array::new(ctx.clone())?;
+        parts.set(0, TypedArray::<u8>::new_copy(ctx.clone(), bytes)?)?;
+        let opts = Object::new(ctx.clone())?;
+        opts.set("type", mime)?;
+        ctor.construct((parts, opts))
     }
 
     pub async fn bytes<'js>(&self, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        if let Some(inner) = self.inner.take() {
-            let bytes = inner
-                .bytes()
-                .await
-                .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))?;
-
-            // Same as `array_buffer` above: an owned QuickJS allocation, so
-            // detach and transfer are legitimate. One extra copy of the body.
-            TypedArray::new_copy(ctx, bytes)
-        } else {
-            Err(Exception::throw_type(&ctx, "Already distributed"))
-        }
+        let bytes = self.take_bytes(&ctx).await?;
+        TypedArray::new_copy(ctx, bytes)
     }
 
-    pub async fn form_data<'js>(ctx: Ctx<'js>) -> Result<()> {
-        Err(ctx.throw("TODO".into_js(&ctx)?))
+    pub async fn form_data<'js>(&self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
+        let bytes = self.take_bytes(&ctx).await?;
+        let ctor: Constructor<'js> = ctx
+            .globals()
+            .get("FormData")
+            .map_err(|_| Exception::throw_type(&ctx, "FormData is not defined"))?;
+        let form: Object<'js> = ctor.construct(())?;
+        FormBody.parse_into(&ctx, &form, &bytes, &self.content_type())?;
+        Ok(form.into_value())
     }
 
     pub async fn json<'js>(&self, ctx: Ctx<'js>) -> Result<SerdeJsonValue> {
-        if let Some(inner) = self.inner.take() {
-            Ok(inner
-                .json::<serde_json::Value>()
-                .await
-                .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))?
-                .into())
-        } else {
-            Err(Exception::throw_type(&ctx, "Already distributed"))
-        }
+        let bytes = self.take_bytes(&ctx).await?;
+        serde_json::from_slice::<serde_json::Value>(&bytes)
+            .map(Into::into)
+            .map_err(|err| Exception::throw_syntax(&ctx, &format!("{err:?}")))
     }
 
     pub async fn text<'js>(&self, ctx: Ctx<'js>) -> Result<String> {
-        if let Some(inner) = self.inner.take() {
-            inner
-                .text()
-                .await
-                .map_err(|e| Exception::throw_syntax(&ctx, &format!("{e:?}")))
-        } else {
-            Err(Exception::throw_type(&ctx, "Already distributed"))
+        let bytes = self.take_bytes(&ctx).await?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Pull the next body chunk. EventSource uses this in place of
+    /// `response.body.getReader()` because ReadableStream is installed later
+    /// by `den:whatwg`.
+    #[qjs(rename = "_readChunk")]
+    pub async fn read_chunk<'js>(&self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
+        match self.next_chunk(&ctx).await? {
+            Some(bytes) => TypedArray::<u8>::new_copy(ctx, bytes).map(|view| view.into_value()),
+            None => Ok(JsValue::new_null(ctx)),
         }
+    }
+
+    #[qjs(rename = "_cancelBody")]
+    pub fn cancel_body(&self) {
+        *self.inner.borrow_mut() = ResponseBody::Taken;
     }
 
     #[qjs(enumerable, get)]
     pub fn body_used(&self) -> bool {
-        self.inner.borrow().is_none()
+        !matches!(*self.inner.borrow(), ResponseBody::Live(_))
     }
 
     #[qjs(enumerable, get)]
     pub fn ok(&self) -> bool {
-        self.inner
-            .borrow()
-            .as_ref()
-            .map(|inner| inner.status().is_success())
-            .unwrap_or(false)
+        (200..300).contains(&self.status)
     }
 
     #[qjs(enumerable, get)]
     pub fn redirected(&self) -> bool {
-        self.inner
-            .borrow()
-            .as_ref()
-            .map(|inner| inner.status().is_redirection())
-            .unwrap_or(false)
+        self.redirected
     }
 
     #[qjs(enumerable, get)]
-    pub fn status<'js>(&self, ctx: Ctx<'js>) -> Result<u16> {
-        match self
-            .inner
-            .borrow()
-            .as_ref()
-            .map(|inner| inner.status().into())
-        {
-            Some(x) => Ok(x),
-            None => Err(Exception::throw_internal(&ctx, "Already consumed")),
-        }
+    pub fn status(&self) -> u16 {
+        self.status
     }
 
     #[qjs(enumerable, get)]
-    pub fn status_text<'js>(&self, ctx: Ctx<'js>) -> Result<&str> {
-        match self
-            .inner
-            .borrow()
-            .as_ref()
-            .map(|inner| inner.status().canonical_reason())
-        {
-            Some(Some(x)) => Ok(x),
-            Some(None) => Ok(""),
-            None => Err(Exception::throw_internal(&ctx, "Already consumed")),
-        }
+    pub fn status_text(&self) -> String {
+        self.status_text.clone()
     }
 
     #[qjs(enumerable, get)]
-    pub fn url<'js>(&self, ctx: Ctx<'js>) -> Result<String> {
-        match self
-            .inner
-            .borrow()
-            .as_ref()
-            .map(|inner| inner.url().to_string())
-        {
-            Some(x) => Ok(x),
-            None => Err(Exception::throw_internal(&ctx, "Already consumed")),
-        }
+    pub fn url(&self) -> String {
+        self.url.clone()
     }
 
     #[qjs(enumerable, get, rename = "type")]
-    pub fn type_<'js>(&self, ctx: Ctx<'js>) -> Result<&str> {
-        Err(ctx.throw("TODO".into_js(&ctx)?))
+    pub fn type_(&self) -> &'static str {
+        "basic"
+    }
+
+    #[qjs(enumerable, get)]
+    pub fn headers<'js>(&self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
+        match ctx.globals().get::<_, Constructor<'js>>("Headers") {
+            Ok(ctor) => {
+                let pairs = Array::new(ctx.clone())?;
+                for (index, (name, value)) in self.headers.iter().enumerate() {
+                    let pair = Array::new(ctx.clone())?;
+                    pair.set(0, name.clone())?;
+                    pair.set(1, value.clone())?;
+                    pairs.set(index, pair)?;
+                }
+                ctor.construct((pairs,))
+            }
+            Err(_) => {
+                let obj = Object::new(ctx.clone())?;
+                for (name, value) in &self.headers {
+                    obj.set(name, value.clone())?;
+                }
+                Ok(obj.into_value())
+            }
+        }
     }
 }
 
-#[rquickjs::function()]
-pub async fn fetch<'js>(ctx: Ctx<'js>, url: String) -> Result<Response> {
-    let response = reqwest::get(url)
-        .await
-        .map_err(|e| Exception::throw_internal(&ctx, &format!("{e:?}")))?;
+struct AbortWatch {
+    aborted: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
 
-    Ok(Response {
-        inner: Rc::new(RefCell::new(Some(response))),
-    })
+impl AbortWatch {
+    fn from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Option<Self>> {
+        if value.is_null() || value.is_undefined() {
+            return Ok(None);
+        }
+        let Some(obj) = value.as_object() else {
+            return Ok(None);
+        };
+        let already = obj.get::<_, JsValue>("aborted")?.as_bool().unwrap_or(false);
+        let watch = Self {
+            aborted: Arc::new(AtomicBool::new(already)),
+            notify: Arc::new(Notify::new()),
+        };
+        if already {
+            watch.notify.notify_one();
+            return Ok(Some(watch));
+        }
+        if let Ok(add) = obj.get::<_, Function>("addEventListener") {
+            let aborted = Arc::clone(&watch.aborted);
+            let notify = Arc::clone(&watch.notify);
+            let callback = Function::new(ctx.clone(), move || {
+                aborted.store(true, Ordering::SeqCst);
+                notify.notify_one();
+            })?;
+            add.call::<_, ()>((This(obj.clone()), "abort", callback))?;
+        }
+        Ok(Some(watch))
+    }
+}
+
+struct FetchInit {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+    signal: Option<AbortWatch>,
+}
+
+impl FetchInit {
+    fn abort_error(ctx: &Ctx<'_>) -> Error {
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException") {
+            if let Ok(exc) =
+                ctor.construct::<_, JsValue>(("The operation was aborted.", "AbortError"))
+            {
+                return ctx.throw(exc);
+            }
+        }
+        Exception::throw_type(ctx, "The operation was aborted.")
+    }
+
+    fn client() -> &'static reqwest::Client {
+        static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        CLIENT.get_or_init(reqwest::Client::new)
+    }
+
+    fn headers_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Vec<(String, String)>> {
+        if let Some(array) = value.as_array() {
+            let mut headers = Vec::with_capacity(array.len());
+            for entry in array.clone().into_iter() {
+                let pair = entry?
+                    .into_array()
+                    .ok_or_else(|| Exception::throw_type(ctx, "header entry must be a pair"))?;
+                headers.push((pair.get(0)?, pair.get(1)?));
+            }
+            return Ok(headers);
+        }
+        if let Some(obj) = value.as_object() {
+            if let Ok(for_each) = obj.get::<_, Function>("forEach") {
+                let collected = Rc::new(RefCell::new(Vec::new()));
+                let sink = Rc::clone(&collected);
+                let callback = Function::new(ctx.clone(), move |value: String, name: String| {
+                    sink.borrow_mut().push((name, value));
+                })?;
+                for_each.call::<_, ()>((This(obj.clone()), callback))?;
+                return Ok(collected.take());
+            }
+            let mut headers = Vec::new();
+            for entry in obj.clone().into_iter() {
+                let (key, value) = entry?;
+                headers.push((key.to_string()?, String::from_js(ctx, value)?));
+            }
+            return Ok(headers);
+        }
+        Ok(Vec::new())
+    }
+
+    fn body_from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Option<Vec<u8>>> {
+        if value.is_null() || value.is_undefined() {
+            return Ok(None);
+        }
+        if let Ok(view) = TypedArray::<u8>::from_js(ctx, value.clone()) {
+            return Ok(view
+                .as_bytes()
+                .map(|bytes| bytes.to_vec())
+                .filter(|bytes| !bytes.is_empty()));
+        }
+        if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
+            return Ok(buffer
+                .as_bytes()
+                .map(|bytes| bytes.to_vec())
+                .filter(|bytes| !bytes.is_empty()));
+        }
+        if let Some(string) = value.as_string() {
+            let text = string.to_string()?;
+            return Ok(if text.is_empty() {
+                None
+            } else {
+                Some(text.into_bytes())
+            });
+        }
+        Ok(None)
+    }
+
+    fn apply_object<'js>(&mut self, ctx: &Ctx<'js>, obj: &Object<'js>) -> Result<()> {
+        if let Ok(method) = obj.get::<_, String>("method") {
+            self.method = method;
+        }
+        if let Ok(headers) = obj.get::<_, JsValue>("headers") {
+            if !headers.is_undefined() && !headers.is_null() {
+                self.headers = Self::headers_from_js(ctx, headers)?;
+            }
+        }
+        if let Ok(body) = obj.get::<_, JsValue>("body") {
+            self.body = Self::body_from_js(ctx, body)?;
+        }
+        if let Ok(signal) = obj.get::<_, JsValue>("signal") {
+            self.signal = AbortWatch::from_js(ctx, signal)?;
+        }
+        Ok(())
+    }
+
+    fn from_js<'js>(
+        ctx: &Ctx<'js>,
+        input: JsValue<'js>,
+        init: Option<Object<'js>>,
+    ) -> Result<Self> {
+        let url = if let Some(string) = input.as_string() {
+            string.to_string()?
+        } else if let Some(obj) = input.as_object() {
+            obj.get::<_, String>("url")?
+        } else {
+            return Err(Exception::throw_type(
+                ctx,
+                "fetch input must be a string or Request",
+            ));
+        };
+        let mut parsed = Self {
+            url,
+            method: "GET".into(),
+            headers: Vec::new(),
+            body: None,
+            signal: None,
+        };
+        if let Some(obj) = input.as_object() {
+            parsed.apply_object(ctx, obj)?;
+        }
+        if let Some(obj) = init.as_ref() {
+            parsed.apply_object(ctx, obj)?;
+        }
+        Ok(parsed)
+    }
+
+    async fn send(self, ctx: &Ctx<'_>) -> Result<Response> {
+        if let Some(signal) = &self.signal {
+            if signal.aborted.load(Ordering::SeqCst) {
+                return Err(Self::abort_error(ctx));
+            }
+        }
+        let method = reqwest::Method::from_bytes(self.method.as_bytes())
+            .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))?;
+        let mut builder = Self::client().request(method, &self.url);
+        for (name, value) in &self.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        if let Some(body) = self.body {
+            builder = builder.body(body);
+        }
+        let request = builder.send();
+        let original_url = self.url.clone();
+        let response = if let Some(signal) = self.signal {
+            let abort = signal.notify.notified();
+            futures::pin_mut!(request);
+            futures::pin_mut!(abort);
+            match futures::future::select(request, abort).await {
+                Either::Left((result, _)) => {
+                    result.map_err(|err| Exception::throw_internal(ctx, &format!("{err:?}")))?
+                }
+                Either::Right(_) => return Err(Self::abort_error(ctx)),
+            }
+        } else {
+            request
+                .await
+                .map_err(|err| Exception::throw_internal(ctx, &format!("{err:?}")))?
+        };
+        let redirected = response.url().as_str() != original_url;
+        let mut produced = Response::from_reqwest(response);
+        produced.redirected = redirected;
+        Ok(produced)
+    }
+}
+
+struct FormBody;
+
+impl FormBody {
+    fn parse_into<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        form: &Object<'js>,
+        bytes: &[u8],
+        content_type: &str,
+    ) -> Result<()> {
+        if content_type
+            .get(..19)
+            .is_some_and(|head| head.eq_ignore_ascii_case("multipart/form-data"))
+        {
+            let Some(boundary) = self.boundary(content_type) else {
+                return Err(Exception::throw_type(
+                    ctx,
+                    "Failed to parse body as FormData: missing multipart boundary",
+                ));
+            };
+            return self.parse_multipart(ctx, form, bytes, &boundary);
+        }
+        self.parse_urlencoded(ctx, form, &String::from_utf8_lossy(bytes))
+    }
+
+    fn boundary(&self, content_type: &str) -> Option<String> {
+        let lower = content_type.to_ascii_lowercase();
+        let marker = "boundary=";
+        let pos = lower.find(marker)?;
+        let rest = content_type[pos + marker.len()..].trim();
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            Some(stripped[..end].to_string())
+        } else {
+            Some(rest.split(';').next()?.trim().to_string())
+        }
+    }
+
+    fn parse_urlencoded<'js>(&self, _ctx: &Ctx<'js>, form: &Object<'js>, text: &str) -> Result<()> {
+        let append: Function = form.get("append")?;
+        for pair in text.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            append.call::<_, ()>((This(form.clone()), self.decode(name), self.decode(value)))?;
+        }
+        Ok(())
+    }
+
+    fn decode(&self, input: &str) -> String {
+        let bytes = input.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut offset = 0;
+        while offset < bytes.len() {
+            match bytes[offset] {
+                b'+' => {
+                    out.push(b' ');
+                    offset += 1;
+                }
+                b'%' if offset + 2 < bytes.len() => {
+                    if let Ok(byte) = u8::from_str_radix(&input[offset + 1..offset + 3], 16) {
+                        out.push(byte);
+                        offset += 3;
+                    } else {
+                        out.push(b'%');
+                        offset += 1;
+                    }
+                }
+                byte => {
+                    out.push(byte);
+                    offset += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn index_of(&self, haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+        if needle.is_empty() || from > haystack.len() {
+            return None;
+        }
+        haystack[from..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|pos| pos + from)
+    }
+
+    fn parse_multipart<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        form: &Object<'js>,
+        bytes: &[u8],
+        boundary: &str,
+    ) -> Result<()> {
+        let append: Function = form.get("append")?;
+        let delimiter = format!("--{boundary}").into_bytes();
+        let Some(mut pos) = self.index_of(bytes, &delimiter, 0) else {
+            return Ok(());
+        };
+        pos += delimiter.len();
+        loop {
+            if bytes.get(pos) == Some(&b'-') && bytes.get(pos + 1) == Some(&b'-') {
+                break;
+            }
+            if bytes.get(pos) == Some(&0x0d) && bytes.get(pos + 1) == Some(&0x0a) {
+                pos += 2;
+            }
+            let Some(next) = self.index_of(bytes, &delimiter, pos) else {
+                break;
+            };
+            let mut end = next;
+            if end >= 2 && bytes[end - 2] == 0x0d && bytes[end - 1] == 0x0a {
+                end -= 2;
+            }
+            let part = &bytes[pos..end];
+            if let Some(header_end) = self.index_of(part, b"\r\n\r\n", 0) {
+                let header_text = String::from_utf8_lossy(&part[..header_end]);
+                let content = &part[header_end + 4..];
+                self.append_part(ctx, form, &append, &header_text, content)?;
+            }
+            pos = next + delimiter.len();
+        }
+        Ok(())
+    }
+
+    fn append_part<'js>(
+        &self,
+        ctx: &Ctx<'js>,
+        form: &Object<'js>,
+        append: &Function<'js>,
+        header_text: &str,
+        content: &[u8],
+    ) -> Result<()> {
+        let mut name = None;
+        let mut filename = None;
+        let mut part_type = None;
+        for line in header_text.split("\r\n") {
+            let Some((header_name, header_value)) = line.split_once(':') else {
+                continue;
+            };
+            let header_name = header_name.trim().to_ascii_lowercase();
+            let header_value = header_value.trim();
+            if header_name == "content-disposition" {
+                name = Self::quoted_param(header_value, "name");
+                filename = Self::quoted_param(header_value, "filename");
+            } else if header_name == "content-type" {
+                part_type = Some(header_value.to_string());
+            }
+        }
+        let Some(name) = name else {
+            return Ok(());
+        };
+        match filename {
+            None => {
+                let text = String::from_utf8_lossy(content).into_owned();
+                append.call::<_, ()>((This(form.clone()), name, text))?;
+            }
+            Some(filename) => {
+                let file_ctor: Constructor<'js> = ctx
+                    .globals()
+                    .get("File")
+                    .map_err(|_| Exception::throw_type(ctx, "File is not defined"))?;
+                let parts = Array::new(ctx.clone())?;
+                parts.set(
+                    0,
+                    TypedArray::<u8>::new_copy(ctx.clone(), content.to_vec())?,
+                )?;
+                let opts = Object::new(ctx.clone())?;
+                if let Some(mime) = part_type {
+                    opts.set("type", mime)?;
+                }
+                let file: JsValue = file_ctor.construct((parts, filename.clone(), opts))?;
+                append.call::<_, ()>((This(form.clone()), name, file, filename))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn quoted_param(header_value: &str, key: &str) -> Option<String> {
+        let needle = format!("{key}=\"");
+        let start = header_value.find(&needle)? + needle.len();
+        let end = header_value[start..].find('"')?;
+        Some(
+            header_value[start..start + end]
+                .replace("%0A", "\n")
+                .replace("%0D", "\r")
+                .replace("%22", "\""),
+        )
+    }
+}
+
+const PRELUDE: [(&str, &str); 3] = [
+    (
+        "den:whatwg-fetch/headers.js",
+        include_str!("prelude/headers.js"),
+    ),
+    (
+        "den:whatwg-fetch/request.js",
+        include_str!("prelude/request.js"),
+    ),
+    (
+        "den:whatwg-fetch/fetch.js",
+        include_str!("prelude/fetch.js"),
+    ),
+];
+
+#[rquickjs::function()]
+pub async fn fetch<'js>(
+    ctx: Ctx<'js>,
+    input: JsValue<'js>,
+    init: Opt<Object<'js>>,
+) -> Result<Response> {
+    FetchInit::from_js(&ctx, input, init.0)?.send(&ctx).await
 }
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
     use rquickjs::{
-        Ctx, Result,
+        Ctx, Function, Object, Result, Value,
         class::JsClass,
+        context::EvalOptions,
         module::{Declarations, Exports},
     };
 
@@ -267,25 +775,90 @@ pub mod whatwg {
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
         declare.declare("fetch")?;
+        declare.declare("Headers")?;
+        declare.declare("Request")?;
+        declare.declare("Response")?;
         Ok(())
     }
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, e: &Exports<'js>) -> Result<()> {
-        e.export("fetch", super::js_fetch)?;
-        ctx.globals().set("fetch", super::js_fetch)?;
-        ctx.globals().set("Response", Response::constructor(ctx))?;
+        let natives = Object::new(ctx.clone())?;
+        natives.set("fetch", super::js_fetch)?;
+        let mut api = Object::new(ctx.clone())?;
+        for (filename, source) in crate::PRELUDE {
+            let mut options = EvalOptions::default();
+            options.filename = Some(filename.to_owned());
+            let factory: Function<'js> = ctx.eval_with_options(source, options)?;
+            api = factory.call((natives.clone(), api))?;
+        }
+        let fetch: Value<'js> = api.get("fetch")?;
+        let headers: Value<'js> = api.get("Headers")?;
+        let request: Value<'js> = api.get("Request")?;
+        e.export("fetch", fetch.clone())?;
+        e.export("Headers", headers.clone())?;
+        e.export("Request", request.clone())?;
+        e.export("Response", Response::constructor(ctx)?)?;
+        ctx.globals().set("fetch", fetch)?;
+        ctx.globals().set("Headers", headers)?;
+        ctx.globals().set("Request", request)?;
+        ctx.globals().set("Response", Response::constructor(ctx)?)?;
         Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{cell::RefCell, rc::Rc};
+mod local_http;
 
-    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt};
+#[cfg(test)]
+mod tests {
+    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Promise};
 
     use super::Response;
+
+    async fn realm() -> (AsyncRuntime, AsyncContext) {
+        let runtime = AsyncRuntime::new().expect("runtime");
+        let context = AsyncContext::full(&runtime).await.expect("context");
+        context
+            .with(|ctx| {
+                Module::evaluate_def::<crate::js_whatwg, _>(ctx.clone(), "den:whatwg-fetch")
+                    .and_then(|(_, evaluated)| evaluated.finish::<()>())
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())
+                    .expect("den:whatwg-fetch evaluates");
+            })
+            .await;
+        (runtime, context)
+    }
+
+    async fn eval<T>(source: &str) -> T
+    where
+        T: for<'js> FromJs<'js> + Send + 'static,
+    {
+        let (_runtime, context) = realm().await;
+        context
+            .with(|ctx| {
+                ctx.eval::<T, _>(source)
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    async fn text_async(source: &str) -> String {
+        let (_runtime, context) = realm().await;
+        context
+            .async_with(async |ctx| {
+                let run = async {
+                    let promise: Promise<'_> = ctx.eval(source)?;
+                    promise.into_future::<String>().await
+                };
+                run.await.catch(&ctx).map_err(|error| error.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
 
     /// A body handed to script has to be a buffer QuickJS itself allocated.
     /// Lending it a Rust allocation registers a free hook that quickjs-ng runs
@@ -302,11 +875,7 @@ mod tests {
                 // Built from an `http::Response`, so the body is real but no
                 // socket is involved. `Response` holds an `Rc`, so it cannot be
                 // captured by the `Send` closure and is made here.
-                let respond = || {
-                    Response {
-                        inner: Rc::new(RefCell::new(Some(http::Response::new("body").into()))),
-                    }
-                };
+                let respond = || Response::from_reqwest(http::Response::new("body").into());
                 let run = async {
                     let buffer = respond().array_buffer(ctx.clone()).await?;
                     let view = respond().bytes(ctx.clone()).await?;
@@ -327,5 +896,216 @@ mod tests {
             .await
             .expect("the snippet evaluates");
         assert_eq!(outcome, "98-111,body,true,0");
+    }
+
+    #[tokio::test]
+    async fn headers_and_request_are_globals() {
+        let report: Vec<String> = eval(
+            r#"
+              ["Headers","Request","fetch","Response"].map((name) => {
+                const value = globalThis[name];
+                if (typeof value !== "function") return `${name}: missing`;
+                return `${name}: ok`;
+              })
+            "#,
+        )
+        .await;
+        assert_eq!(
+            report,
+            vec![
+                "Headers: ok".to_string(),
+                "Request: ok".to_string(),
+                "fetch: ok".to_string(),
+                "Response: ok".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn request_normalizes_method_and_headers() {
+        assert_eq!(
+            eval::<String>(
+                r#"
+                  (() => {
+                    const request = new Request("http://127.0.0.1/post", {
+                      method: "post",
+                      headers: { "X-A": "b", "Content-Type": "text/plain" },
+                      body: "hello",
+                    });
+                    return [request.method, request.headers.get("x-a"), request.url].join("|");
+                  })()
+                "#,
+            )
+            .await,
+            "POST|b|http://127.0.0.1/post"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_get_and_post_against_a_local_listener() {
+        let server = super::local_http::serve(|incoming| {
+            if incoming.method == "POST" {
+                super::local_http::Outgoing::ok(incoming.body, "text/plain")
+            } else {
+                super::local_http::Outgoing::ok(b"{\"ok\":true}".to_vec(), "application/json")
+            }
+        })
+        .await;
+        let get_url = server.url("/get");
+        let post_url = server.url("/post");
+        let report = text_async(&format!(
+            r#"
+              (async () => {{
+                const get = await fetch("{get_url}");
+                const json = await get.json();
+                const posted = await fetch("{post_url}", {{
+                  method: "POST",
+                  headers: {{ "Content-Type": "text/plain" }},
+                  body: "ping",
+                }});
+                const echoed = await posted.text();
+                const typed = get.type;
+                return [
+                  get.status,
+                  json.ok === true,
+                  posted.status,
+                  echoed,
+                  typed,
+                  posted.headers.get("content-type"),
+                ].join("|");
+              }})()
+            "#
+        ))
+        .await;
+        assert_eq!(report, "200|true|200|ping|basic|text/plain");
+    }
+
+    #[tokio::test]
+    async fn fetch_aborts_when_the_signal_is_already_aborted() {
+        assert_eq!(
+            text_async(
+                r#"
+                  (async () => {
+                    const signal = {
+                      aborted: true,
+                      addEventListener() {},
+                    };
+                    try {
+                      await fetch("http://127.0.0.1:1/", { signal });
+                      return "not-aborted";
+                    } catch (error) {
+                      return error.name;
+                    }
+                  })()
+                "#,
+            )
+            .await,
+            "AbortError"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_aborts_an_in_flight_request() {
+        let server = super::local_http::serve(|_| super::local_http::Outgoing {
+            status: 200,
+            headers: vec![],
+            body: Vec::new(),
+            hang: false,
+            silent: true,
+        })
+        .await;
+        let url = server.url("/hang");
+        let report = text_async(&format!(
+            r#"
+              (async () => {{
+                const listeners = [];
+                const signal = {{
+                  aborted: false,
+                  addEventListener(type, fn) {{ if (type === "abort") listeners.push(fn); }},
+                  abort() {{
+                    this.aborted = true;
+                    for (const fn of listeners) fn();
+                  }},
+                }};
+                const pending = fetch("{url}", {{ signal }});
+                await Promise.resolve();
+                signal.abort();
+                try {{
+                  await pending;
+                  return "not-aborted";
+                }} catch (error) {{
+                  return error.name;
+                }}
+              }})()
+            "#
+        ))
+        .await;
+        assert_eq!(report, "AbortError");
+    }
+
+    #[tokio::test]
+    async fn response_blob_wraps_the_body_when_blob_exists() {
+        let runtime = AsyncRuntime::new().expect("runtime");
+        let context = AsyncContext::full(&runtime).await.expect("context");
+        context
+            .with(|ctx| {
+                let install = || -> rquickjs::Result<()> {
+                    Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?
+                        .1
+                        .finish::<()>()?;
+                    Module::evaluate_def::<den_stdlib_worker::js_worker, _>(
+                        ctx.clone(),
+                        "den:worker",
+                    )?
+                    .1
+                    .finish::<()>()?;
+                    Module::evaluate_def::<crate::js_whatwg, _>(ctx.clone(), "den:whatwg-fetch")?
+                        .1
+                        .finish::<()>()?;
+                    Module::evaluate_def::<den_stdlib_whatwg::js_whatwg, _>(
+                        ctx.clone(),
+                        "den:whatwg",
+                    )?
+                    .1
+                    .finish::<()>()?;
+                    Ok(())
+                };
+                install()
+                    .catch(&ctx)
+                    .map_err(|error| error.to_string())
+                    .expect("modules evaluate");
+            })
+            .await;
+        let outcome: String = context
+            .async_with(async |ctx| {
+                let run = async {
+                    let response = Response::from_reqwest(
+                        http::Response::builder()
+                            .header("content-type", "text/plain")
+                            .body("hello")
+                            .expect("response")
+                            .into(),
+                    );
+                    let blob = response.blob(ctx.clone()).await?;
+                    ctx.globals().set("blob", blob)?;
+                    ctx.eval::<Promise, _>(
+                        r#"
+                          (async () => {
+                            return [
+                              blob instanceof Blob,
+                              blob.type,
+                              await blob.text(),
+                            ].join("|");
+                          })()
+                        "#,
+                    )?
+                    .into_future::<String>()
+                    .await
+                };
+                run.await.catch(&ctx).map_err(|err| err.to_string())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(outcome, "true|text/plain|hello");
     }
 }

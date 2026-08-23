@@ -1132,8 +1132,12 @@ dependencies = [
 name = "den-stdlib-whatwg-fetch"
 version = "0.4.0"
 dependencies = [
+ "den-stdlib-text",
+ "den-stdlib-whatwg",
+ "den-stdlib-worker",
  "derive_more",
  "either",
+ "futures",
  "http",
  "indexmap",
  "reqwest",

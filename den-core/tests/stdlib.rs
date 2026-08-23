@@ -173,3 +173,30 @@ async fn blob_file_form_data_and_file_reader_are_globals() -> eyre::Result<()> {
     assert_eq!(failures, "");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "stdlib-whatwg-fetch")]
+async fn headers_and_request_are_globals_and_constructible() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let failures: String = engine
+        .eval(
+            r#"
+              const headers = new Headers({ "X-A": "b" });
+              headers.append("X-A", "c");
+              const request = new Request("http://127.0.0.1/post", {
+                method: "post",
+                headers,
+                body: "hi",
+              });
+              Object.entries({
+                headersGet: headers.get("x-a") === "b, c",
+                requestMethod: request.method === "POST",
+                requestUrl: request.url === "http://127.0.0.1/post",
+                fetchIsFn: typeof fetch === "function",
+              }).filter(([, held]) => !held).map(([name]) => name).join(",")
+            "#,
+        )
+        .await?;
+    assert_eq!(failures, "");
+    Ok(())
+}
