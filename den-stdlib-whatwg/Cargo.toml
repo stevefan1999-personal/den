@@ -11,6 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+flate2 = "1"
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 url = "2.5.8"
 urlpattern = "0.6"

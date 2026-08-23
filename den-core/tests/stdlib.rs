@@ -165,7 +165,7 @@ async fn blob_file_form_data_and_file_reader_are_globals() -> eyre::Result<()> {
                 formGet: form.get("a") === "1",
                 readerIsTarget: reader instanceof EventTarget,
                 readerText: read === "from-reader",
-                globals: [Blob, File, FileReader, FormData, XMLHttpRequest, EventSource, URLPattern].every((value) => typeof value === "function"),
+                globals: [Blob, File, FileReader, FormData, XMLHttpRequest, EventSource, URLPattern, CompressionStream, DecompressionStream].every((value) => typeof value === "function"),
               }).filter(([, held]) => !held).map(([name]) => name).join(",")
             "#,
         )

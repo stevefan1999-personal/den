@@ -1125,6 +1125,7 @@ dependencies = [
  "den-stdlib-text",
  "den-stdlib-whatwg-fetch",
  "den-stdlib-worker",
+ "flate2",
  "rquickjs",
  "tokio",
  "url",

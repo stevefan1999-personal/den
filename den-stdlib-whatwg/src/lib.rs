@@ -6,6 +6,7 @@
 //! in `src/prelude/*.js`. FileReader, XHR, EventSource and WebSocket all need
 //! `EventTarget`, so `den:whatwg` is evaluated **after** `den:worker`.
 
+pub mod compression;
 pub mod urlpattern;
 
 /// Everything `den:whatwg` exports and installs as a global.
@@ -13,9 +14,11 @@ pub mod urlpattern;
 /// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
 /// job, and putting them here would duplicate the types fetch already
 /// constructs.
-const API: [&str; 11] = [
+const API: [&str; 13] = [
     "Blob",
     "CloseEvent",
+    "CompressionStream",
+    "DecompressionStream",
     "EventSource",
     "File",
     "FileReader",
@@ -28,7 +31,7 @@ const API: [&str; 11] = [
 ];
 
 /// The prelude, in dependency order. Filenames show up in stack traces.
-const PRELUDE: [(&str, &str); 8] = [
+const PRELUDE: [(&str, &str); 9] = [
     ("den:whatwg/streams.js", include_str!("prelude/streams.js")),
     (
         "den:whatwg/platform.js",
@@ -49,6 +52,10 @@ const PRELUDE: [(&str, &str); 8] = [
         "den:whatwg/eventsource.js",
         include_str!("prelude/eventsource.js"),
     ),
+    (
+        "den:whatwg/compression.js",
+        include_str!("prelude/compression.js"),
+    ),
 ];
 
 /// WritableStream is part of the streams polyfill CompressionStream needs, but
@@ -65,7 +72,10 @@ pub mod whatwg {
         module::{Declarations, Exports},
     };
 
-    use crate::urlpattern::URLPattern;
+    use crate::{
+        compression::{Compressor, Decompressor},
+        urlpattern::URLPattern,
+    };
 
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
@@ -78,6 +88,18 @@ pub mod whatwg {
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
         let natives = Object::new(ctx.clone())?;
+        natives.set(
+            "Compressor",
+            Compressor::constructor(ctx)?.ok_or_else(|| {
+                rquickjs::Exception::throw_internal(ctx, "Compressor constructor missing")
+            })?,
+        )?;
+        natives.set(
+            "Decompressor",
+            Decompressor::constructor(ctx)?.ok_or_else(|| {
+                rquickjs::Exception::throw_internal(ctx, "Decompressor constructor missing")
+            })?,
+        )?;
         let mut api = Object::new(ctx.clone())?;
         for (filename, source) in crate::PRELUDE {
             let mut options = EvalOptions::default();
@@ -186,9 +208,11 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    const DOCUMENTED: [&str; 11] = [
+    const DOCUMENTED: [&str; 13] = [
         "Blob",
         "CloseEvent",
+        "CompressionStream",
+        "DecompressionStream",
         "EventSource",
         "File",
         "FileReader",
@@ -205,7 +229,7 @@ mod tests {
         assert_eq!(crate::API, DOCUMENTED, "the API list and its tests drifted");
         let report = eval::<Vec<String>>(
             r#"
-        "Blob,CloseEvent,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,URLPattern,XMLHttpRequest"
+        "Blob,CloseEvent,CompressionStream,DecompressionStream,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,URLPattern,XMLHttpRequest"
           .split(",").map((name) => {
             const value = globalThis[name];
             if (typeof value !== "function") return `${name}: missing`;
@@ -457,6 +481,79 @@ mod tests {
             )
             .await,
             "true|false|1"
+        );
+    }
+
+    #[tokio::test]
+    async fn compression_stream_round_trips_gzip_deflate_and_raw() {
+        assert_eq!(
+            text_async(
+                r#"
+                  (async () => {
+                    const encoder = new TextEncoder();
+                    const decoder = new TextDecoder();
+                    const input = encoder.encode("Hello, WinterTC compression streams.");
+                    const roundTrip = async (format) => {
+                      const cs = new CompressionStream(format);
+                      const writer = cs.writable.getWriter();
+                      const reader = cs.readable.getReader();
+                      writer.write(input);
+                      writer.close();
+                      const chunks = [];
+                      for (;;) {
+                        const { value, done } = await reader.read();
+                        if (done) break;
+                        chunks.push(value);
+                      }
+                      const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                      const compressed = new Uint8Array(total);
+                      let offset = 0;
+                      for (const chunk of chunks) {
+                        compressed.set(chunk, offset);
+                        offset += chunk.length;
+                      }
+                      const ds = new DecompressionStream(format);
+                      const dwriter = ds.writable.getWriter();
+                      const dreader = ds.readable.getReader();
+                      dwriter.write(compressed);
+                      dwriter.close();
+                      const out = [];
+                      for (;;) {
+                        const { value, done } = await dreader.read();
+                        if (done) break;
+                        out.push(value);
+                      }
+                      const outTotal = out.reduce((sum, chunk) => sum + chunk.length, 0);
+                      const plain = new Uint8Array(outTotal);
+                      offset = 0;
+                      for (const chunk of out) {
+                        plain.set(chunk, offset);
+                        offset += chunk.length;
+                      }
+                      return {
+                        empty: compressed.length === 0,
+                        gzipMagic: format !== "gzip" || (compressed[0] === 0x1f && compressed[1] === 0x8b),
+                        text: decoder.decode(plain),
+                      };
+                    };
+                    const gzip = await roundTrip("gzip");
+                    const deflate = await roundTrip("deflate");
+                    const raw = await roundTrip("deflate-raw");
+                    let invalid = false;
+                    try { new CompressionStream("nope"); } catch (error) { invalid = error instanceof TypeError; }
+                    return [
+                      gzip.text,
+                      deflate.text,
+                      raw.text,
+                      gzip.gzipMagic,
+                      !gzip.empty,
+                      invalid,
+                    ].join("|");
+                  })()
+                "#,
+            )
+            .await,
+            "Hello, WinterTC compression streams.|Hello, WinterTC compression streams.|Hello, WinterTC compression streams.|true|true|true"
         );
     }
 }
