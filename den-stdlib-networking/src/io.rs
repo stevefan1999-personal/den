@@ -88,6 +88,160 @@ impl AsyncWriteWrapper {
     }
 }
 
+/// The six byte-stream methods every socket class in this crate exposes to JS
+/// (`read_to_string`, `read_to_end`, `read`, `write_all`, `flush`,
+/// `shutdown`), delegating over `self.stream` to [`AsyncReadWrapper`] and
+/// [`AsyncWriteWrapper`]. TCP, TLS and Unix sockets all mean the same thing
+/// by them, so they are written once here.
+///
+/// `#[rquickjs::methods]` rebuilds the impl it is given from bare `fn` items
+/// only — a macro invocation inside it would be dropped — so the macro
+/// generates the whole impl, taking the class's other methods in as
+/// `$extra`. The delegation bodies name `AsyncReadWrapper`,
+/// `AsyncWriteWrapper`, `JsByteBuf`, `Ctx`, `Result` and `TypedArray` bare,
+/// so every call site must have those in scope.
+macro_rules! impl_stream_wrapper {
+    // Unix domain sockets: the very same signatures, but on platforms
+    // without them every call fails instead of delegating.
+    ($wrapper:ident, unsupported: $unsupported:path, $($extra:item)*) => {
+        #[rquickjs::methods]
+        impl $wrapper {
+            // rquickjs only attaches `#[qjs(static)]` members to a class
+            // that declares a constructor, and a `()` return makes `new`
+            // throw: instances only ever come from the class's own
+            // constructors.
+            #[allow(
+                clippy::new_ret_no_self,
+                reason = "`#[qjs(constructor)]` marker; not constructible from JS"
+            )]
+            #[qjs(constructor)]
+            pub fn new() {}
+
+            $($extra)*
+
+            pub async fn read_to_string(self) -> Result<String> {
+                #[cfg(unix)]
+                {
+                    AsyncReadWrapper(self.stream).read_to_string().await
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = self;
+                    Err($unsupported())
+                }
+            }
+
+            pub async fn read_to_end(self) -> Result<Vec<u8>> {
+                #[cfg(unix)]
+                {
+                    AsyncReadWrapper(self.stream).read_to_end().await
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = self;
+                    Err($unsupported())
+                }
+            }
+
+            pub async fn read<'js>(
+                self, bytes: usize, ctx: Ctx<'js>,
+            ) -> Result<TypedArray<'js, u8>> {
+                #[cfg(unix)]
+                {
+                    AsyncReadWrapper(self.stream).read(bytes, ctx).await
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (self, bytes, ctx);
+                    Err($unsupported())
+                }
+            }
+
+            pub async fn write_all<'js>(self, buf: JsByteBuf<'js>) -> Result<()> {
+                #[cfg(unix)]
+                {
+                    AsyncWriteWrapper(self.stream).write_all(buf).await
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (self, buf);
+                    Err($unsupported())
+                }
+            }
+
+            pub async fn flush(self) -> Result<()> {
+                #[cfg(unix)]
+                {
+                    AsyncWriteWrapper(self.stream).flush().await
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = self;
+                    Err($unsupported())
+                }
+            }
+
+            pub async fn shutdown(self) -> Result<()> {
+                #[cfg(unix)]
+                {
+                    AsyncWriteWrapper(self.stream).shutdown().await
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = self;
+                    Err($unsupported())
+                }
+            }
+        }
+    };
+
+    // Direct delegation: TCP and TLS.
+    ($wrapper:ident, $($extra:item)*) => {
+        #[rquickjs::methods]
+        impl $wrapper {
+            // rquickjs only attaches `#[qjs(static)]` members to a class
+            // that declares a constructor, and a `()` return makes `new`
+            // throw: instances only ever come from the class's own
+            // constructors.
+            #[allow(
+                clippy::new_ret_no_self,
+                reason = "`#[qjs(constructor)]` marker; not constructible from JS"
+            )]
+            #[qjs(constructor)]
+            pub fn new() {}
+
+            $($extra)*
+
+            pub async fn read_to_string(self) -> Result<String> {
+                AsyncReadWrapper(self.stream).read_to_string().await
+            }
+
+            pub async fn read_to_end(self) -> Result<Vec<u8>> {
+                AsyncReadWrapper(self.stream).read_to_end().await
+            }
+
+            pub async fn read<'js>(
+                self, bytes: usize, ctx: Ctx<'js>,
+            ) -> Result<TypedArray<'js, u8>> {
+                AsyncReadWrapper(self.stream).read(bytes, ctx).await
+            }
+
+            pub async fn write_all<'js>(self, buf: JsByteBuf<'js>) -> Result<()> {
+                AsyncWriteWrapper(self.stream).write_all(buf).await
+            }
+
+            pub async fn flush(self) -> Result<()> {
+                AsyncWriteWrapper(self.stream).flush().await
+            }
+
+            pub async fn shutdown(self) -> Result<()> {
+                AsyncWriteWrapper(self.stream).shutdown().await
+            }
+        }
+    };
+}
+pub(crate) use impl_stream_wrapper;
+
 #[cfg(test)]
 mod tests {
     use std::{io::Cursor, sync::Arc};
