@@ -9,6 +9,7 @@ members = [
     "den-stdlib-networking",
     "den-stdlib-process",
     "den-stdlib-sqlite",
+    "den-stdlib-temporal",
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
@@ -116,6 +117,7 @@ stdlib-fs = ["den-core/stdlib-fs"]
 stdlib-networking = ["den-core/stdlib-networking"]
 stdlib-process = ["den-core/stdlib-process"]
 stdlib-sqlite = ["den-core/stdlib-sqlite"]
+stdlib-temporal = ["den-core/stdlib-temporal"]
 stdlib-text = ["den-core/stdlib-text"]
 stdlib-timer = ["den-core/stdlib-timer"]
 stdlib-whatwg = ["den-core/stdlib-whatwg"]
