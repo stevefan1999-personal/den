@@ -95,6 +95,17 @@ async fn clear_timeout_cancels_a_pending_callback() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "stdlib-temporal")]
+async fn temporal_is_installed_as_a_global() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let year: i32 = engine
+        .eval(r#"Temporal.PlainDate.from("2025-03-03").year"#)
+        .await?;
+    assert_eq!(year, 2025);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[cfg(feature = "stdlib-crypto")]
 async fn crypto_random_uuid_has_the_version_4_shape() -> eyre::Result<()> {
     let engine = Engine::new().await;

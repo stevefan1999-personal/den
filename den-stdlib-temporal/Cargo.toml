@@ -1,0 +1,22 @@
+[package]
+name = "den-stdlib-temporal"
+description = "ECMAScript Temporal API for den, backed by temporal_rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+indexmap.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+temporal_rs = { version = "0.2.6", features = ["sys", "compiled_data", "sys-local"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

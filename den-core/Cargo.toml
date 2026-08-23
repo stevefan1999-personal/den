@@ -46,6 +46,7 @@ den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
 den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
 den-stdlib-process = { version = "*", path = "../den-stdlib-process", optional = true }
 den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = true }
+den-stdlib-temporal = { version = "*", path = "../den-stdlib-temporal", optional = true }
 den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
 den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true, default-features = false }
@@ -82,6 +83,7 @@ stdlib = [
     "stdlib-networking",
     "stdlib-process",
     "stdlib-sqlite",
+    "stdlib-temporal",
     "stdlib-text",
     "stdlib-timer",
     "stdlib-whatwg-fetch",
@@ -95,6 +97,7 @@ stdlib-fs = ["dep:den-stdlib-fs"]
 stdlib-networking = ["dep:den-stdlib-networking"]
 stdlib-process = ["dep:den-stdlib-process"]
 stdlib-sqlite = ["dep:den-stdlib-sqlite"]
+stdlib-temporal = ["dep:den-stdlib-temporal"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
 stdlib-whatwg = ["dep:den-stdlib-whatwg"]

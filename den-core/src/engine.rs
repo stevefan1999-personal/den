@@ -216,6 +216,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:process");
                     }
+                    #[cfg(feature = "stdlib-temporal")]
+                    {
+                        resolver = resolver.with_module("den:temporal");
+                    }
                     #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
                     {
                         resolver = resolver.with_module("den:wasm");
@@ -293,6 +297,11 @@ impl Engine {
                     #[cfg(feature = "stdlib-process")]
                     {
                         loader = loader.with_module("den:process", den_stdlib_process::js_process);
+                    }
+                    #[cfg(feature = "stdlib-temporal")]
+                    {
+                        loader =
+                            loader.with_module("den:temporal", den_stdlib_temporal::js_temporal);
                     }
                     #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
                     {
@@ -432,6 +441,14 @@ impl Engine {
                     let _ = Module::evaluate_def::<den_stdlib_process::js_process, _>(
                         ctx.clone(),
                         "den:process",
+                    )?;
+                }
+
+                #[cfg(feature = "stdlib-temporal")]
+                {
+                    let _ = Module::evaluate_def::<den_stdlib_temporal::js_temporal, _>(
+                        ctx.clone(),
+                        "den:temporal",
                     )?;
                 }
 
