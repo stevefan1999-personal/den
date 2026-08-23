@@ -88,8 +88,8 @@ impl StopToken {
 pub mod timer {
     use std::time::Duration;
 
-    use den_stdlib_core::report::report_exception;
-    use rquickjs::{Coerced, Ctx, Error, FromJs, Result, Value, module::Exports, prelude::Opt};
+    use den_stdlib_core::report::report_uncaught;
+    use rquickjs::{Coerced, Ctx, FromJs, Result, Value, module::Exports, prelude::Opt};
     use tokio::time;
     use tokio_util::sync::CancellationToken;
 
@@ -100,20 +100,6 @@ pub mod timer {
     /// floor is the same), and tokio's `interval` refuses a zero period with a
     /// panic — which, on the main thread, takes the process down with it.
     const MINIMUM_DELAY: Duration = Duration::from_millis(1);
-
-    /// A timer callback has nobody to propagate to: the caller returned long
-    /// ago and the spawned task's result is dropped. Swallowing the exception
-    /// here (`let _ = func.call(..)`) made a throwing `setTimeout` body a
-    /// silent no-op, so it is reported like any other uncaught error instead —
-    /// through the realm's sink, which in a worker is that worker's `error`
-    /// event and then its parent's.
-    fn report_uncaught(ctx: &Ctx<'_>, outcome: Result<()>) {
-        match outcome {
-            Ok(()) => {}
-            Err(Error::Exception) => report_exception(ctx, &ctx.catch()),
-            Err(error) => eprintln!("{error}"),
-        }
-    }
 
     fn delay_of(delay: Option<usize>) -> Duration {
         Duration::from_millis(delay.unwrap_or(0) as u64).max(MINIMUM_DELAY)
