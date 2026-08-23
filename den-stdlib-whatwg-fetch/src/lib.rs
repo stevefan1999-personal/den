@@ -1326,7 +1326,7 @@ pub mod whatwg {
 #[cfg(test)]
 mod tests {
     use rquickjs::{
-        AsyncContext, AsyncRuntime, CatchResultExt, Class, FromJs, Module, Promise,
+        AsyncContext, AsyncRuntime, CatchResultExt, Class, FromJs, Module, Promise, Value,
         prelude::This,
     };
 
@@ -1400,13 +1400,13 @@ mod tests {
                         This(Class::instance(ctx.clone(), respond())?),
                         ctx.clone(),
                     )?
-                    .into_future()
+                    .into_future::<Value>()
                     .await?;
                     let view = Response::bytes(
                         This(Class::instance(ctx.clone(), respond())?),
                         ctx.clone(),
                     )?
-                    .into_future()
+                    .into_future::<Value>()
                     .await?;
                     ctx.globals().set("body", buffer)?;
                     ctx.globals().set("view", view)?;
@@ -1621,7 +1621,7 @@ mod tests {
                         This(Class::instance(ctx.clone(), response)?),
                         ctx.clone(),
                     )?
-                    .into_future()
+                    .into_future::<Value>()
                     .await?;
                     ctx.globals().set("blob", blob)?;
                     ctx.eval::<Promise, _>(
