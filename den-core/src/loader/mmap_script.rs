@@ -1,12 +1,16 @@
 use derivative::Derivative;
 use fmmap::tokio::{AsyncMmapFile, AsyncMmapFileExt};
 use relative_path::RelativePath;
-use rquickjs::{loader::Loader, module::Declared, Ctx, Error, Module, Result};
+use rquickjs::{
+    Ctx, Error, Module, Result,
+    loader::{ImportAttributes, Loader},
+    module::Declared,
+};
 use tokio::runtime::Handle;
 use typed_builder::TypedBuilder;
 #[cfg(feature = "transpile")]
 use {
-    den_transpiler_swc::{infer_transpile_syntax_by_extension, EasySwcTranspiler, IsModule},
+    den_transpiler_oxc::{EasyOxcTranspiler, IsModule, infer_transpile_syntax_by_extension},
     std::sync::Arc,
 };
 
@@ -18,7 +22,7 @@ pub struct MmapScriptLoader {
     extensions: Vec<String>,
     #[derivative(Debug = "ignore")]
     #[cfg(feature = "transpile")]
-    transpiler: Arc<EasySwcTranspiler>,
+    transpiler: Arc<EasyOxcTranspiler>,
 }
 
 impl MmapScriptLoader {
@@ -37,7 +41,12 @@ impl MmapScriptLoader {
 }
 
 impl Loader for MmapScriptLoader {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, path: &str) -> Result<Module<'js, Declared>> {
+    fn load<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        path: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> Result<Module<'js, Declared>> {
         let task = async move {
             let extension = RelativePath::new(path)
                 .extension()
@@ -50,7 +59,12 @@ impl Loader for MmapScriptLoader {
                 .find(|&e| extension == e)
                 .ok_or(Error::new_loading(path))?;
 
-            let src = AsyncMmapFile::open(path)
+            // SAFETY: fmmap 0.5 marks every file-backed constructor unsafe because an
+            // external writer truncating the file while the mapping is live is
+            // UB (SIGBUS on read). den maps the script read-only for the
+            // duration of this load and fmmap takes a shared advisory flock;
+            // same exposure as before the bump, now spelled out.
+            let src = unsafe { AsyncMmapFile::open(path) }
                 .await
                 .map_err(|_| Error::new_loading(path))?;
 
@@ -71,8 +85,7 @@ impl Loader for MmapScriptLoader {
             }
             #[cfg(not(feature = "transpile"))]
             {
-                let module = Module::declare(ctx.clone(), path, src.as_slice());
-                Ok(module)
+                Module::declare(ctx.clone(), path, src.as_slice())
             }
         };
 

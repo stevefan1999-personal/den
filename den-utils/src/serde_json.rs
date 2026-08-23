@@ -1,13 +1,13 @@
 use ::serde_json::Value;
 use derive_more::{From, Into};
-use rquickjs::{Array, Ctx, FromJs, IntoJs, Object, Result, Value as JsValue};
+use rquickjs::{Array, Ctx, Error, FromJs, IntoJs, Object, Result, Value as JsValue};
 
 #[derive(From, Into, Clone, Eq, PartialEq, Hash)]
 pub struct SerdeJsonValue(pub serde_json::Value);
 
 impl<'js> FromJs<'js> for SerdeJsonValue {
     fn from_js(ctx: &Ctx<'js>, v: JsValue<'js>) -> Result<Self> {
-        Ok(SerdeJsonValue(match v.type_of() {
+        let value = match v.type_of() {
             rquickjs::Type::Null | rquickjs::Type::Uninitialized | rquickjs::Type::Undefined => {
                 serde_json::Value::Null
             }
@@ -15,11 +15,12 @@ impl<'js> FromJs<'js> for SerdeJsonValue {
             rquickjs::Type::Int => serde_json::json!(v.as_int().unwrap_or_default()),
             rquickjs::Type::Float => serde_json::json!(v.as_float().unwrap_or_default()),
             rquickjs::Type::String => {
-                serde_json::json!(v
-                    .as_string()
-                    .unwrap_or(&rquickjs::String::from_str(ctx.clone(), "")?)
-                    .to_string()
-                    .unwrap_or(String::from("")))
+                serde_json::json!(
+                    v.as_string()
+                        .unwrap_or(&rquickjs::String::from_str(ctx.clone(), "")?)
+                        .to_string()
+                        .unwrap_or(String::from(""))
+                )
             }
             rquickjs::Type::Array => {
                 if let Some(arr) = v.as_array() {
@@ -32,7 +33,9 @@ impl<'js> FromJs<'js> for SerdeJsonValue {
                     serde_json::Value::Array(vec![])
                 }
             }
-            rquickjs::Type::Object => {
+            // rquickjs 0.12 reports a JS `Proxy` as its own type; it is still an object and
+            // walking it lets its traps answer, which is what 0.8 did.
+            rquickjs::Type::Object | rquickjs::Type::Proxy => {
                 let mut map = serde_json::Map::<String, Value>::new();
                 if let Some(obj) = v.as_object() {
                     for entry in obj.clone().into_iter() {
@@ -45,8 +48,11 @@ impl<'js> FromJs<'js> for SerdeJsonValue {
                 }
                 serde_json::Value::Object(map)
             }
-            _ => todo!(),
-        }))
+            // Functions, symbols and bigints have no JSON representation — the same values
+            // `JSON.stringify` refuses. Report the conversion failure instead of panicking.
+            other => return Err(Error::new_from_js(other.as_str(), "json value")),
+        };
+        Ok(SerdeJsonValue(value))
     }
 }
 
@@ -62,10 +68,8 @@ impl<'js> IntoJs<'js> for SerdeJsonValue {
             Value::String(x) => x.into_js(&ctx),
             Value::Array(x) => {
                 let arr = Array::new(ctx.clone())?;
-                let mut i = 0;
-                for value in x.into_iter() {
-                    arr.set(i, SerdeJsonValue(value).into_js(&ctx)?)?;
-                    i += 1;
+                for (index, value) in x.into_iter().enumerate() {
+                    arr.set(index, SerdeJsonValue(value).into_js(&ctx)?)?;
                 }
                 Ok(arr.into_value())
             }

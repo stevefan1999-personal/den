@@ -2,26 +2,15 @@
 
 members = [
     "den-core",
-    "den-stdlib-console",
-    "den-stdlib-core", 
-    "den-stdlib-crypto",
-    "den-stdlib-fs",
-    "den-stdlib-io",
-    "den-stdlib-networking",
-    "den-stdlib-regex", 
-    "den-stdlib-sqlite",
-    "den-stdlib-text",
-    "den-stdlib-timer",
-    "den-stdlib-wasm", 
-    "den-stdlib-whatwg-fetch",
+    "den-stdlib-core",
+    "den-stdlib-wasm",
     "den-transpiler-oxc",
-    "den-transpiler-swc",
     "den-utils",
 ]
 
 [workspace.package]
 version = "0.4.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.97"
 repository = "https://github.com/stevefan1999-personal/den"
 readme = "README.md"
@@ -32,9 +21,9 @@ license = "MIT"
 keywords = ["javascript", "quickjs", "tokio", "typescript", "oxc"]
 
 [workspace.dependencies]
-delegate-attr = "0.3.0"
+delegate-attr = "0.3.1"
 derivative = "2.2.0"
-derive_more = { version = "1.0.0", features = [
+derive_more = { version = "2.1.1", features = [
     "deref_mut",
     "deref",
     "from",
@@ -44,27 +33,25 @@ derive_more = { version = "1.0.0", features = [
     "error",
     "debug",
 ] }
-either = "1.13.0"
-futures = "0.3.31"
-indexmap = "2.7.0"
-phf = "0.11.2"
-rquickjs = { version = "0.8.1", features = [
+either = "1.18.0"
+futures = "0.3.34"
+indexmap = "2.14.0"
+rquickjs = { version = "0.12.2", features = [
     "full-async",
     "rust-alloc",
     "parallel",
     "indexmap",
     "either",
 ] }
-tokio = "1.42.0"
-tokio-util = "0.7.13"
-tracing = "0.1.41"
-thiserror = "2.0.6"
-typed-builder = "0.20.0"
-reqwest = "0.12.9"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
-serde = "1.0.216"
-serde_json = "1.0.133"
-log = "0.4.22"
+tokio = "1.53.1"
+tokio-util = "0.7.19"
+tracing = "0.1.44"
+thiserror = "2.0.20"
+typed-builder = "0.23.2"
+reqwest = "0.13.4"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+serde = "1.0.229"
+serde_json = "1.0.151"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
@@ -88,21 +75,24 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-clap = { version = "4.5.23", features = ["unicode", "derive", "env"] }
-color-eyre = { version = "0.6.3", default-features = false }
-console-subscriber = { version = "0.4.1", optional = true }
+clap = { version = "4.6.6", features = ["unicode", "derive", "env"] }
+color-eyre = { version = "0.6.5", default-features = false }
+console-subscriber = { version = "0.5.0", optional = true }
 den-core = { version = "*", path = "den-core", default-features = false }
 den-utils = { version = "*", path = "den-utils", default-features = false }
 futures.workspace = true
-mimalloc = { version = "0.1.43", optional = true }
+mimalloc = { version = "0.1.52", optional = true }
 rquickjs.workspace = true
-rustyline = { version = "15.0.0", features = ["derive", "with-sqlite-history"] }
+rustyline = { version = "18.0.1", features = ["derive", "with-sqlite-history"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
-tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
-vc-ltl = "5.1.1"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+vc-ltl = "5.3.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm-wasmtime", "mimalloc"]
+default = ["typescript", "react", "wasm-wasmtime", "mimalloc"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -111,15 +101,7 @@ tracing = ["color-eyre/track-caller", "color-eyre/capture-spantrace"]
 tokio-console = ["console-subscriber"]
 
 stdlib = ["den-core/stdlib"]
-stdlib-console = ["den-core/stdlib-console"]
 stdlib-core = ["den-core/stdlib-core"]
-stdlib-crypto = ["den-core/stdlib-crypto"]
-stdlib-fs = ["den-core/stdlib-fs"]
-stdlib-networking = ["den-core/stdlib-networking"]
-stdlib-sqlite = ["den-core/stdlib-sqlite"]
-stdlib-text = ["den-core/stdlib-text"]
-stdlib-timer = ["den-core/stdlib-timer"]
-stdlib-whatwg-fetch = ["den-core/stdlib-whatwg-fetch"]
 
 wasm = ["den-core/wasm"]
 wasm-wasmtime = ["den-core/wasm-wasmtime"]

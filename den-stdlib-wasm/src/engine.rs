@@ -1,29 +1,33 @@
-use derive_more::derive::{Deref, DerefMut, From};
-use rquickjs::{class::Trace, JsLifetime};
+//! The compilation engine of a JS context.
 
-#[derive(Trace, JsLifetime, Clone, Deref, DerefMut, From)]
-#[rquickjs::class]
+use rquickjs::{Ctx, Exception, JsLifetime, Result};
+
+use crate::backend;
+
+/// Kept in the context userdata, separately from [`crate::store::Store`].
+///
+/// Compiling and validating need an engine but no store, so keeping the two
+/// apart means `WebAssembly.compile` cannot be refused just because wasm is
+/// currently running and holding the store's borrow.
+#[derive(Clone, JsLifetime)]
 pub struct Engine {
-    #[qjs(skip_trace)]
-    // wasmtime engine itself is ref counted, so clone is available default, no need to wrap it in
-    // Arc
-    pub(crate) inner: wasmtime::Engine,
+    inner: backend::Engine,
 }
 
-impl Default for Engine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[rquickjs::methods]
 impl Engine {
-    #[qjs(constructor)]
-    pub fn new() -> Self {
-        let mut config = wasmtime::Config::new();
-        // config.async_support(true);
-        Self {
-            inner: wasmtime::Engine::new(&config).unwrap(),
-        }
+    pub fn new() -> core::result::Result<Self, backend::Error> {
+        backend::new_engine().map(|inner| Self { inner })
+    }
+
+    /// The engine `den:wasm` installed in this context.
+    pub fn from_ctx(ctx: &Ctx<'_>) -> Result<backend::Engine> {
+        ctx.userdata::<Self>()
+            .map(|engine| engine.inner.clone())
+            .ok_or_else(|| {
+                Exception::throw_internal(
+                    ctx,
+                    "the WebAssembly engine is missing from this context",
+                )
+            })
     }
 }

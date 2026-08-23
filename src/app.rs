@@ -1,6 +1,6 @@
 use den_core::engine::{Engine, EngineError};
 use futures::prelude::*;
-use rquickjs::{async_with, convert::Coerced};
+use rquickjs::convert::Coerced;
 use tokio::{signal, sync::mpsc, task::yield_now};
 
 use crate::repl;
@@ -42,29 +42,38 @@ impl App {
                                 let source = source.clone();
                                 let subtoken = subtoken.child_token();
                                 async move {
-                                    match subtoken.run_until_cancelled(engine.eval::<Coerced<String>>(&source)).await {
+                                    match subtoken
+                                        .run_until_cancelled(
+                                            engine.eval::<Coerced<String>>(&source),
+                                        )
+                                        .await
+                                    {
                                         Some(Ok(Coerced(res))) => {
                                             println!("{res}")
                                         }
                                         // Handles runtime exception during execution
                                         Some(Err(EngineError::Rquickjs(_))) => {
-                                            async_with!(engine.context => |ctx| {
-                                                let e = ctx.catch();
-                                                if let Some(e) = e.as_exception() {
-                                                    eprintln!("{e}")
-                                                } else if let Ok(Coerced(e)) = e.get::<Coerced<String>>() {
-                                                    eprintln!("{e}")
-                                                } else {
-                                                    eprintln!("unknown error")
-                                                }
-                                            })
-                                            .await;
+                                            engine
+                                                .context
+                                                .async_with(async |ctx| {
+                                                    let e = ctx.catch();
+                                                    if let Some(e) = e.as_exception() {
+                                                        eprintln!("{e}")
+                                                    } else if let Ok(Coerced(e)) =
+                                                        e.get::<Coerced<String>>()
+                                                    {
+                                                        eprintln!("{e}")
+                                                    } else {
+                                                        eprintln!("unknown error")
+                                                    }
+                                                })
+                                                .await;
                                         }
-                                        // This can be something else such as SWC error
+                                        // This can be something else such as a transpiler error
                                         #[allow(unreachable_patterns)]
                                         Some(Err(e)) => {
                                             eprintln!("{e}")
-                                        },
+                                        }
                                         None => {}
                                     }
                                 }
@@ -88,11 +97,12 @@ impl App {
     }
 
     pub async fn run_until_end(&mut self) {
-        // This part does 3 things
+        // This part does 4 things
         // 1. Handle if a stop signal has been received (in the form of a cancellation)
         // 2. Wait until all front tasks are completed (notably if REPL is involved)
         // 3. Ensure that after being ready to stop everything, wait for the VM to
         //    finish all the pending executions
+        // 4. Stop and join whatever the realm spawned onto other threads
 
         tokio::spawn(self.engine.runtime.drive());
 
@@ -103,10 +113,11 @@ impl App {
             .stop_token
             .run_until_cancelled(self.engine.runtime.idle())
             .await;
-    }
 
-    pub fn set_wait_for_cancel_signal(&mut self, value: bool) {
-        self.wait_for_cancel_signal = value;
+        // Unconditional, and deliberately outside the `run_until_cancelled`
+        // above: a Ctrl-C is exactly the case where children are still running
+        // and still have to be joined.
+        self.engine.shutdown().await;
     }
 
     // Just hooks the Ctrl-C signal and then automatically stop the VM engine

@@ -2,6 +2,7 @@
 name = "den-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 repository.workspace = true
 readme.workspace = true
 authors.workspace = true
@@ -9,77 +10,69 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-cfg-if = "1.0.0"
+cfg-if = "1.0.4"
 derivative.workspace = true
 derive_more.workspace = true
-fmmap = { version = "0.3.3", features = ["tokio-async"] }
-matchit = "0.8.5"
+fmmap = { version = "0.5.0", features = ["tokio"] }
+matchit = "0.9.2"
 mime = "0.3.17"
-relative-path = "1.9.3"
+relative-path = "2.0.1"
+# reqwest 0.13 flipped `default-tls` from native-tls to rustls, so leaving the defaults on next to
+# `native-tls` compiles both TLS stacks. `charset`/`http2`/`system-proxy` are named explicitly so
+# that dropping the defaults (which has to happen in the workspace dependency) changes nothing here.
 reqwest = { workspace = true, features = [
     "stream",
     "deflate",
     "gzip",
     "brotli",
     "native-tls",
+    "charset",
+    "http2",
+    "system-proxy",
 ] }
 rquickjs.workspace = true
-tokio.workspace = true
+# `block_in_place` + `Handle::current` in the loaders need these; without them den-core only
+# builds when something else in the graph turns them on.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 tokio-util.workspace = true
-url = "2.5.4"
-typed-builder = "0.20.0"
+url = "2.5.8"
+typed-builder.workspace = true
 
 # Den specific stuff
-den-stdlib-console = { version = "*", path = "../den-stdlib-console", optional = true }
 den-stdlib-core = { version = "*", path = "../den-stdlib-core", optional = true }
-den-stdlib-crypto = { version = "*", path = "../den-stdlib-crypto", optional = true }
-den-stdlib-fs = { version = "*", path = "../den-stdlib-fs", optional = true }
-den-stdlib-networking = { version = "*", path = "../den-stdlib-networking", optional = true }
-den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = true }
-den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
-den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
-den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true }
-den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch", optional = true }
-den-transpiler-swc = { version = "*", path = "../den-transpiler-swc", default-features = false, optional = true }
+den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true, default-features = false }
+den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-features = false, optional = true }
 den-utils = { version = "*", path = "../den-utils" }
 
 [dev-dependencies]
-color-eyre = "0.6.3"
+color-eyre = "0.6.5"
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+# Reference assembler for the WebAssembly fixtures, and the yardstick den's own
+# `WebAssembly.wat2wasm` is pinned against.
+wat = "1.257.1"
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm-wasmtime"]
+default = ["typescript", "react", "wasm-wasmtime"]
 typescript = [
     "transpile",
-    "den-transpiler-swc?/typescript",
+    "den-transpiler-oxc?/typescript",
 ]
-react = ["transpile", "den-transpiler-swc?/react"]
+react = ["transpile", "den-transpiler-oxc?/react"]
 transpile = [
-    "dep:den-transpiler-swc",
-    "den-transpiler-swc?/transpile",
+    "dep:den-transpiler-oxc",
+    "den-transpiler-oxc?/transpile",
 ]
 
 stdlib = [
-    "stdlib-console",
     "stdlib-core",
-    "stdlib-crypto",
-    "stdlib-fs",
-    "stdlib-networking",
-    "stdlib-sqlite",
-    "stdlib-text",
-    "stdlib-timer",
-    "stdlib-whatwg-fetch",
 ]
-stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
-stdlib-crypto = ["dep:den-stdlib-crypto"]
-stdlib-fs = ["dep:den-stdlib-fs"]
-stdlib-networking = ["dep:den-stdlib-networking"]
-stdlib-sqlite = ["dep:den-stdlib-sqlite"]
-stdlib-text = ["dep:den-stdlib-text"]
-stdlib-timer = ["dep:den-stdlib-timer"]
-stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
 
-wasm = ["dep:den-stdlib-wasm"]
-wasm-wasmtime = ["wasm", "den-stdlib-wasm?/wasmtime"]
-wasm-wasmi = ["wasm", "den-stdlib-wasm?/wasmi"]
+# `wasm` is a plain alias for the default backend: making it `dep:`-only would let
+# `--features wasm-wasmi` drag wasmtime in through den-stdlib-wasm's own defaults.
+wasm = ["wasm-wasmtime"]
+wasm-wasmtime = ["dep:den-stdlib-wasm", "den-stdlib-wasm?/wasmtime"]
+wasm-wasmi = ["dep:den-stdlib-wasm", "den-stdlib-wasm?/wasmi"]
+
+[lints]
+workspace = true

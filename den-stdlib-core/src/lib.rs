@@ -1,3 +1,8 @@
+// `btoa`/`atob` have no implementation without a backend, and the resulting
+// E0308 on the empty function body says nothing about the real cause.
+#[cfg(not(any(feature = "base64", feature = "base64-simd")))]
+compile_error!("den-stdlib-core requires one of the `base64` or `base64-simd` features");
+
 use rquickjs::{Coerced, Ctx, Exception, Result};
 
 pub use crate::cancellation::CancellationTokenWrapper;
@@ -9,7 +14,7 @@ pub fn btoa(value: Coerced<String>) -> Result<String> {
         use base64_simd::STANDARD;
         Ok(STANDARD.encode_to_string(value.as_bytes()))
     }
-    #[cfg(feature = "base64")]
+    #[cfg(all(feature = "base64", not(feature = "base64-simd")))]
     {
         use base64::prelude::*;
 
@@ -27,7 +32,7 @@ pub fn atob(ctx: Ctx<'_>, value: Coerced<String>) -> Result<String> {
             Err(e) => Err(Exception::throw_internal(&ctx, &format!("{e}"))),
         }
     }
-    #[cfg(feature = "base64")]
+    #[cfg(all(feature = "base64", not(feature = "base64-simd")))]
     {
         use base64::prelude::*;
         match BASE64_STANDARD.decode(value.as_bytes()) {
@@ -45,8 +50,8 @@ pub fn gc<'js>(ctx: Ctx<'js>) {
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod core {
     use rquickjs::{
-        module::{Declarations, Exports},
         Ctx, Result,
+        module::{Declarations, Exports},
     };
 
     pub use crate::cancellation::CancellationTokenWrapper;
@@ -71,3 +76,4 @@ pub mod core {
 }
 
 pub mod cancellation;
+pub mod report;

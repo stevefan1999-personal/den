@@ -1,5 +1,8 @@
 use matchit::{MatchError, Router};
-use rquickjs::{loader::Resolver, Ctx, Error, Result};
+use rquickjs::{
+    Ctx, Error, Result,
+    loader::{ImportAttributes, Resolver},
+};
 use url::{ParseError, Url};
 
 #[derive(Default)]
@@ -9,7 +12,13 @@ pub struct HttpResolver {
 }
 
 impl Resolver for HttpResolver {
-    fn resolve(&mut self, _ctx: &Ctx<'_>, base_path: &str, path: &str) -> Result<String> {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &Ctx<'js>,
+        base_path: &str,
+        path: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> Result<String> {
         let base_path_url = Url::parse(base_path);
         let path_url = Url::parse(path);
 
@@ -31,19 +40,19 @@ impl Resolver for HttpResolver {
         .map_err(|_| Error::new_resolving_message(base_path, path, "path is invalid"))?;
 
         // If an allow list exists and the current path is not in it, deny
-        if let Some(allow) = &self.allowlist {
-            if let Err(MatchError::NotFound) = allow.at(name.as_str()) {
-                let msg = format!("{name} is not allowed");
-                return Err(Error::new_resolving_message(base_path, path, msg));
-            }
+        if let Some(allow) = &self.allowlist
+            && let Err(MatchError::NotFound) = allow.at(name.as_str())
+        {
+            let msg = format!("{name} is not allowed");
+            return Err(Error::new_resolving_message(base_path, path, msg));
         }
 
         // If a deny list exists and the current path is in it, deny
-        if let Some(deny) = &self.denylist {
-            if deny.at(name.as_str()).is_ok() {
-                let msg = format!("{name} is denied");
-                return Err(Error::new_resolving_message(base_path, path, msg));
-            }
+        if let Some(deny) = &self.denylist
+            && deny.at(name.as_str()).is_ok()
+        {
+            let msg = format!("{name} is denied");
+            return Err(Error::new_resolving_message(base_path, path, msg));
         }
 
         match name.scheme().to_ascii_lowercase().as_str() {

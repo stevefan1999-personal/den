@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use app::App;
 use clap::Parser;
 use den_core::engine::EngineError;
-use rquickjs::{async_with, Coerced};
-use tracing_subscriber::{filter::LevelFilter, EnvFilter};
+use rquickjs::Coerced;
+use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -50,17 +50,19 @@ async fn main() -> color_eyre::eyre::Result<()> {
             .await
         {
             Some(Err(EngineError::Rquickjs(_))) => {
-                async_with!(app.engine.context => |ctx| {
-                    let e = ctx.catch();
-                    if let Some(e) = e.as_exception() {
-                        eprintln!("{e}")
-                    } else if let Ok(Coerced(e)) = e.get::<Coerced<String>>() {
-                        eprintln!("{e}")
-                    } else {
-                        eprintln!("unknown error")
-                    }
-                })
-                .await;
+                app.engine
+                    .context
+                    .async_with(async |ctx| {
+                        let e = ctx.catch();
+                        if let Some(e) = e.as_exception() {
+                            eprintln!("{e}")
+                        } else if let Ok(Coerced(e)) = e.get::<Coerced<String>>() {
+                            eprintln!("{e}")
+                        } else {
+                            eprintln!("unknown error")
+                        }
+                    })
+                    .await;
             }
             #[allow(unreachable_patterns)]
             Some(Err(e)) => {
