@@ -1,3 +1,22 @@
 [submodule "vendor/test262"]
 	path = vendor/test262
 	url = https://github.com/tc39/test262.git
+[submodule "vendor/spec"]
+	path = vendor/spec
+	url = https://github.com/WebAssembly/spec.git
+# vendor/wpt is cloned shallow and cone-sparse-checked-out.
+# Materialized trees only:
+#   resources/   testharness.js + testharnessreport.js
+#   common/
+#   websockets/
+#   wasm/jsapi/
+#   url/
+#   fetch/
+#   FileAPI/
+# After `git submodule update --init --depth 1 vendor/wpt`:
+#   git -C vendor/wpt sparse-checkout init --cone
+#   git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI
+[submodule "vendor/wpt"]
+	path = vendor/wpt
+	url = https://github.com/web-platform-tests/wpt.git
+	shallow = true
