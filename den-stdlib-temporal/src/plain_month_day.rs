@@ -8,7 +8,7 @@ use rquickjs::{
     },
     function::Constructor,
     object::Property,
-    prelude::{Opt, This},
+    prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
@@ -19,14 +19,13 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        js_to_string, probe_class, reject_illformed_month_code, throw_temporal, throw_value_of,
-        to_integer_with_truncation, to_plain_month_day, unwrap_temporal,
+        calendar_slot, ctor_required_u8, get_defined, options_object, probe_class,
+        reject_illformed_month_code, require_object, throw_temporal, throw_value_of,
+        to_integer_with_truncation, to_js_string, to_plain_month_day, truncated_i32,
+        unwrap_temporal,
     },
     plain_date::PlainDate,
-    plain_date_time::PlainDateTime,
     plain_time::PlainTime,
-    plain_year_month::PlainYearMonth,
-    zoned_date_time::ZonedDateTime,
 };
 
 #[derive(Trace, JsLifetime, Clone)]
@@ -45,19 +44,12 @@ impl PlainMonthDay {
         iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
         reference_iso_year: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let month = ctor_truncated_u8(&ctx, iso_month)?;
-        let day = ctor_truncated_u8(&ctx, iso_day)?;
+        let month = ctor_required_u8(&ctx, iso_month)?;
+        let day = ctor_required_u8(&ctx, iso_day)?;
         let calendar = ctor_calendar(&ctx, calendar)?;
-        let reference_year = match reference_iso_year.0 {
+        let reference_year = match reference_iso_year.0.filter(|value| !value.is_undefined()) {
             None => None,
-            Some(value) if value.is_undefined() => None,
-            Some(value) => {
-                let integer = to_integer_with_truncation(&ctx, &value)?;
-                Some(
-                    i32::try_from(integer)
-                        .map_err(|_| Exception::throw_range(&ctx, "integer is out of range"))?,
-                )
-            }
+            Some(value) => Some(truncated_i32(&ctx, &value)?),
         };
         unwrap_temporal(
             &ctx,
@@ -225,24 +217,20 @@ impl PlainMonthDay {
     pub fn to_plain_date<'js>(
         &self, item: Value<'js>, _options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<PlainDate> {
-        let object = required_object(&ctx, &item, "toPlainDate() requires an object")?;
+        let object = require_object(&ctx, &item, "toPlainDate() requires an object")?;
         let Some(year) = get_defined(&object, "year")? else {
             return Err(Exception::throw_type(&ctx, "year is required"));
         };
-        let fields = CalendarFields::new().with_year(field_to_i32(&ctx, &year)?);
+        let fields = CalendarFields::new().with_year(truncated_i32(&ctx, &year)?);
         unwrap_temporal(&ctx, self.inner.to_plain_date(Some(fields))).map(PlainDate::wrap)
     }
 
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => {
-                let value: Value = object.get("calendarName")?;
-                if value.is_undefined() {
-                    DisplayCalendar::Auto
-                } else {
-                    option_display_calendar(&ctx, &value)?
-                }
+            Some(object) => match get_defined(&object, "calendarName")? {
+                None => DisplayCalendar::Auto,
+                Some(value) => option_display_calendar(&ctx, &value)?,
             }
         };
         Ok(self.inner.to_ixdtf_string(display))
@@ -357,7 +345,7 @@ fn month_day_bag<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<MonthDayBa
     };
     let year = match get_defined(object, "year")? {
         None => None,
-        Some(value) => Some(field_to_i32(ctx, &value)?),
+        Some(value) => Some(truncated_i32(ctx, &value)?),
     };
     Ok(MonthDayBag {
         day,
@@ -375,7 +363,7 @@ fn calendar_from_item<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calen
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    if let Some(calendar) = calendar_from_temporal(ctx, value) {
+    if let Some(calendar) = calendar_slot(ctx, value) {
         return Ok(calendar);
     }
     if value.is_undefined() {
@@ -389,25 +377,6 @@ fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
     }
     let identifier: String = value.get()?;
     Calendar::from_str(&identifier).map_err(|error| throw_temporal(ctx, error))
-}
-
-fn calendar_from_temporal<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Calendar> {
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Some(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Some(date_time.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Some(month_day.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Some(year_month.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Some(zoned.inner.calendar().clone());
-    }
-    None
 }
 
 fn ctor_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Result<Calendar> {
@@ -428,15 +397,6 @@ fn ctor_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Result<Calen
     }
 }
 
-fn ctor_truncated_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
-    let value = match value.0 {
-        None => Value::new_undefined(ctx.clone()),
-        Some(value) => value,
-    };
-    let integer = to_integer_with_truncation(ctx, &value)?;
-    u8::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
 fn field_to_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
     let integer = to_integer_with_truncation(ctx, value)?;
     if integer <= 0 {
@@ -448,43 +408,14 @@ fn field_to_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
     Ok(integer as u8)
 }
 
-fn field_to_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
-    let integer = to_integer_with_truncation(ctx, value)?;
-    i32::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-}
-
 fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    let value: Value = object.get("overflow")?;
-    if value.is_undefined() {
-        return Ok(None);
+    match get_defined(&object, "overflow")? {
+        None => Ok(None),
+        Some(value) => option_overflow(ctx, &value).map(Some),
     }
-    option_overflow(ctx, &value).map(Some)
-}
-
-/// GetOption string path: prefer `toString` so observers do not see valueOf first.
-fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if let Some(object) = value.as_object() {
-        if let Ok(func) = object.get::<_, Function>("toString") {
-            let result: Value = func.call((This(object.clone()),))?;
-            if let Some(string) = result.as_string() {
-                return string.to_string();
-            }
-            return js_to_string(ctx, &result);
-        }
-    }
-    js_to_string(ctx, value)
 }
 
 fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
@@ -502,13 +433,7 @@ fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
     let Some(object) = value.as_object() else {
         return Ok(false);
     };
-    if probe_class::<PlainDate>(ctx, value).is_some()
-        || probe_class::<PlainDateTime>(ctx, value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, value).is_some()
-        || probe_class::<PlainTime>(ctx, value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, value).is_some()
-    {
+    if calendar_slot(ctx, value).is_some() || probe_class::<PlainTime>(ctx, value).is_some() {
         return Ok(false);
     }
     if get_defined(object, "calendar")?.is_some() || get_defined(object, "timeZone")?.is_some() {
@@ -517,32 +442,4 @@ fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
     Ok(true)
 }
 
-fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Object<'js>>> {
-    let Some(value) = options.0 else {
-        return Ok(None);
-    };
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    value
-        .as_object()
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| Exception::throw_type(ctx, "options must be an object"))
-}
 
-fn required_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<Object<'js>> {
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, message))
-}
-
-fn get_defined<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}

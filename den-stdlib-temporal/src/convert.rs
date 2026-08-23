@@ -6,10 +6,11 @@
 
 use std::{cmp::Ordering, str::FromStr};
 
+use den_util::Probe as _;
 use indexmap::IndexMap;
 use rquickjs::{
-    BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Result, Value, atom::PredefinedAtom,
-    class::JsClass, prelude::Opt,
+    BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Value,
+    atom::PredefinedAtom, class::JsClass, function::This, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, TimeZone, UtcOffset,
@@ -66,11 +67,54 @@ where
     C: JsClass<'js> + Clone,
 {
     let object = value.as_object()?;
-    let class = Class::<C>::from_object(object);
-    if class.is_none() && ctx.has_exception() {
-        drop(ctx.catch());
+    let class = ctx.probe(|| Class::<C>::from_object(object))?;
+    class.try_borrow().ok().map(|borrowed| (*borrowed).clone())
+}
+
+/// Read a property, mapping `undefined` to `None` — the shared shape of the
+/// dictionary getters used on option bags and property bags.
+pub fn get_defined<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
+    let value: Value<'js> = object.get(key)?;
+    if value.is_undefined() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
     }
-    class.and_then(|class| class.try_borrow().ok().map(|borrowed| (*borrowed).clone()))
+}
+
+/// GetOptionsObject: a missing or `undefined` argument means no options at
+/// all; anything else must be an object.
+pub fn options_object<'js>(
+    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
+) -> Result<Option<Object<'js>>> {
+    match options.0 {
+        None => Ok(None),
+        Some(value) if value.is_undefined() => Ok(None),
+        Some(value) => require_object(ctx, &value, "options must be an object").map(Some),
+    }
+}
+
+pub fn require_object<'js>(
+    ctx: &Ctx<'js>, value: &Value<'js>, message: &str,
+) -> Result<Object<'js>> {
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| Exception::throw_type(ctx, message))
+}
+
+/// Reject `calendar` / `timeZone` properties on the partial bags `with()`
+/// takes. Callers supply the messages their interface reports.
+pub fn reject_calendar_or_time_zone<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, calendar_message: &str, time_zone_message: &str,
+) -> Result<()> {
+    if get_defined(object, "calendar")?.is_some() {
+        return Err(Exception::throw_type(ctx, calendar_message));
+    }
+    if get_defined(object, "timeZone")?.is_some() {
+        return Err(Exception::throw_type(ctx, time_zone_message));
+    }
+    Ok(())
 }
 
 pub fn options_bag<'js>(
@@ -122,6 +166,30 @@ pub fn js_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
     }
     let string: Function = ctx.globals().get(PredefinedAtom::String)?;
     string.call((value.clone(),))
+}
+
+/// GetOption string path: prefer `toString` so observers do not see `valueOf`
+/// first. A non-string primitive result still goes through `ToString`.
+pub fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
+    if value.is_symbol() {
+        return Err(Exception::throw_type(
+            ctx,
+            "cannot convert Symbol to a string",
+        ));
+    }
+    if let Some(string) = value.as_string() {
+        return string.to_string();
+    }
+    if let Some(object) = value.as_object() {
+        if let Ok(func) = object.get::<_, Function>("toString") {
+            let result: Value = func.call((This(object.clone()),))?;
+            if let Some(string) = result.as_string() {
+                return string.to_string();
+            }
+            return js_to_string(ctx, &result);
+        }
+    }
+    js_to_string(ctx, value)
 }
 
 pub fn to_number<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<f64> {
@@ -189,27 +257,105 @@ pub fn required_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>, name: &str) -> R
     u8::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
 }
 
-pub fn optional_truncated_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
+/// `ToIntegerWithTruncation`, then a range check reporting
+/// `"integer is out of range"` for every out-of-range input.
+pub fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
+    let integer = to_integer_with_truncation(ctx, value)?;
+    i32::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+}
+
+pub fn truncated_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
+    u8::try_from(truncated_i32(ctx, value)?)
+        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+}
+
+pub fn truncated_u16<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u16> {
+    u16::try_from(truncated_i32(ctx, value)?)
+        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+}
+
+/// Constructor arguments: an absent argument is `undefined`, which truncation
+/// reads as `NaN` and rejects — required fields of `new PlainDate()` and
+/// friends throw rather than default.
+pub fn ctor_required_i32<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<i32> {
+    let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    truncated_i32(ctx, &value)
+}
+
+pub fn ctor_required_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
+    let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    truncated_u8(ctx, &value)
+}
+
+pub fn truncated_u8_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
     match value.0 {
         None => Ok(0),
         Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => {
-            let integer = to_integer_with_truncation(ctx, &value)?;
-            u8::try_from(integer)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
+        Some(value) => truncated_u8(ctx, &value),
     }
 }
 
-pub fn optional_truncated_u16<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u16> {
+pub fn truncated_u16_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u16> {
     match value.0 {
         None => Ok(0),
         Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => {
-            let integer = to_integer_with_truncation(ctx, &value)?;
-            u16::try_from(integer)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
+        Some(value) => truncated_u16(ctx, &value),
+    }
+}
+
+/// `ToIntegerIfIntegral` on a defined property; absent stays `None`.
+pub fn optional_integral_i64<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i64>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_integral_i128<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i128>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => to_integer_if_integral(ctx, &value).map(Some),
+    }
+}
+
+/// `ToIntegerWithTruncation` on a defined property; absent stays `None`.
+pub fn optional_truncated_i32<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i32>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => truncated_i32(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_truncated_i128<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<i128>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => to_integer_with_truncation(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_truncated_u8<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<u8>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => truncated_u8(ctx, &value).map(Some),
+    }
+}
+
+pub fn optional_truncated_u16<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
+) -> Result<Option<u16>> {
+    match get_defined(object, key)? {
+        None => Ok(None),
+        Some(value) => truncated_u16(ctx, &value).map(Some),
     }
 }
 
@@ -282,7 +428,12 @@ pub fn to_string_rounding_options<'js>(
 ) -> Result<ToStringRoundingOptions> {
     let precision = match bag_value(bag, "fractionalSecondDigits") {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(ctx, value)?,
+        Some(value) => fractional_second_digits(
+            ctx,
+            value,
+            "fractionalSecondDigits must be \"auto\" or 0-9",
+            js_to_string,
+        )?,
     };
     let smallest_unit = match bag_value(bag, "smallestUnit") {
         None => None,
@@ -340,15 +491,19 @@ pub fn to_rounding_options<'js>(
 }
 
 /// `GetStringOrNumberOption` for `fractionalSecondDigits`: a Number is
-/// floored, everything else goes through `ToString` (`"auto"` or RangeError).
-fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
+/// floored, everything else goes through the caller's options-bag string
+/// coercion (`"auto"` or RangeError). Interfaces disagree on the not-finite
+/// message, so the caller supplies it.
+pub fn fractional_second_digits<'js, ToString>(
+    ctx: &Ctx<'js>, value: &Value<'js>, not_finite_message: &str, to_string: ToString,
+) -> Result<Precision>
+where
+    ToString: FnOnce(&Ctx<'js>, &Value<'js>) -> Result<String>,
+{
     if value.is_number() {
         let number = to_number(ctx, value)?;
         if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
+            return Err(Exception::throw_range(ctx, not_finite_message));
         }
         let digits = number.floor() as i128;
         if !(0..=9).contains(&digits) {
@@ -359,7 +514,7 @@ fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<P
         }
         return Ok(Precision::Digit(digits as u8));
     }
-    let name = js_to_string(ctx, value)?;
+    let name = to_string(ctx, value)?;
     if name == "auto" {
         return Ok(Precision::Auto);
     }
@@ -381,6 +536,28 @@ fn rounding_increment<'js>(
     }
 }
 
+/// The calendar carried by any Temporal object with a `[[Calendar]]` slot.
+/// The class probes are disjoint — a value can only be one of them — so the
+/// probe order is not observable.
+pub fn calendar_slot<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Calendar> {
+    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
+        return Some(date.inner.calendar().clone());
+    }
+    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
+        return Some(date_time.inner.calendar().clone());
+    }
+    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
+        return Some(year_month.inner.calendar().clone());
+    }
+    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
+        return Some(month_day.inner.calendar().clone());
+    }
+    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
+        return Some(zoned.inner.calendar().clone());
+    }
+    None
+}
+
 pub fn to_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
     if value.is_undefined() {
         return Ok(Calendar::ISO);
@@ -389,20 +566,8 @@ pub fn to_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> 
         let identifier = value.get::<String>()?;
         return Calendar::from_str(&identifier).map_err(|error| throw_temporal(ctx, error));
     }
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Ok(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Ok(year_month.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Ok(month_day.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.calendar().clone());
+    if let Some(calendar) = calendar_slot(ctx, value) {
+        return Ok(calendar);
     }
     if let Some(object) = value.as_object() {
         if let Ok(identifier) = object.get::<_, Value>("calendarId") {
