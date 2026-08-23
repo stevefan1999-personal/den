@@ -146,8 +146,10 @@ impl NativePort {
     ///
     /// A message that cannot be rebuilt here is a `messageerror` event, not an
     /// error of the pump's (HTML §9.4.4), so the pending exception is caught
-    /// and dropped rather than reported.
-    fn dispatch<'js>(
+    /// and dropped rather than reported. Broadcast delivery uses the same
+    /// helper: a channel never carries ports, so the JS callback just ignores
+    /// the empty second argument.
+    pub(crate) fn dispatch<'js>(
         ctx: &Ctx<'js>,
         message: Message,
         on_message: &Function<'js>,

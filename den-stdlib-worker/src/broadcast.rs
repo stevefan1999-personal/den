@@ -19,11 +19,11 @@ use std::{
     },
 };
 
-use rquickjs::{Class, Ctx, Error, Function, JsLifetime, Object, Result, Value, class::Trace};
+use rquickjs::{Class, Ctx, Function, JsLifetime, Object, Result, Value, class::Trace};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-use crate::{message::Message, report::report_exception};
+use crate::{message::Message, port::NativePort};
 
 /// One live `BroadcastChannel`, as seen by every *other* one with its name.
 struct Subscriber {
@@ -92,39 +92,6 @@ impl NativeBroadcast {
         }
     }
 
-    /// Rebuild one message in this realm and hand it to the channel's
-    /// callbacks. A message that cannot be rebuilt here is a `messageerror`
-    /// event, not an error of the pump's, so its exception is caught and
-    /// dropped rather than reported.
-    fn dispatch<'js>(
-        ctx: &Ctx<'js>,
-        message: Message,
-        on_message: &Function<'js>,
-        on_message_error: &Function<'js>,
-    ) {
-        let outcome = match message.deserialize(ctx) {
-            // A broadcast never carries ports — they are not serialisable and
-            // `post` offers no transfer list — so the second half is empty.
-            Ok((value, _)) => on_message.call::<_, ()>((value,)),
-            Err(error) => {
-                // Clear the pending exception, or it surfaces at the next
-                // unrelated call into this context.
-                if let Error::Exception = error {
-                    ctx.catch();
-                }
-                on_message_error.call::<_, ()>(())
-            }
-        };
-        // A handler that throws has nobody to propagate to: whoever posted is
-        // on another thread, or returned long ago.
-        if let Err(error) = outcome {
-            match error {
-                Error::Exception => report_exception(ctx, &ctx.catch()),
-                error => eprintln!("{error}"),
-            }
-        }
-    }
-
     /// The pump: deliver until `close()` cancels us.
     ///
     /// Like a port's pump this is *the* process-lifetime mechanism —
@@ -141,7 +108,7 @@ impl NativeBroadcast {
         on_message_error: Function<'js>,
     ) {
         while let Some(Some(message)) = stop.run_until_cancelled(inbox.recv()).await {
-            Self::dispatch(&ctx, message, &on_message, &on_message_error);
+            NativePort::dispatch(&ctx, message, &on_message, &on_message_error);
         }
     }
 }
