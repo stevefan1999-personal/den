@@ -6,6 +6,20 @@ Made during the Easter holiday of 2023.
 
 ## Features
 
+- QuickJS (via [rquickjs](https://github.com/DelSkayn/rquickjs)) on a Tokio multi-thread runtime
+- TypeScript and JSX transpiled by [oxc](https://github.com/oxc-project/oxc) — parse → semantic →
+  transform → codegen, wired into the file and HTTP module loaders
+- A standard library exposed both as `den:*` modules and as globals: `console`, `atob`/`btoa`/`gc`,
+  `TextEncoder`/`TextDecoder`, timers, `fetch`, `crypto`, `den:fs`, `den:networking`, `den:sqlite`
+- The WebAssembly JS API on a choice of two backends, wasmtime or wasmi, selected at compile time
+- Web Workers: `Worker` (classic and module), `MessageChannel`/`MessagePort`, `BroadcastChannel`,
+  `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
+  thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
+- Everything above is a cargo feature, so you can compile most of it away
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together, and
+[docs/research/](docs/research/) for the dependency/API research notes behind them.
+
 # Build instruction
 
 ## Steps
@@ -37,6 +51,23 @@ the [min-sized-rust guide](https://github.com/johnthagen/min-sized-rust#optimize
 ```bash
 $ cargo install den
 ```
+
+## Testing
+
+The two WebAssembly backends are mutually exclusive and share the JS-API layer without sharing its
+capabilities, so a green run on one says nothing about the other. Both have to pass:
+
+```bash
+# wasmtime backend (the default feature set)
+$ cargo test --workspace --all-targets
+
+# wasmi backend
+$ cargo test --workspace --all-targets --no-default-features \
+    --features stdlib,typescript,react,wasm-wasmi
+```
+
+`--no-default-features` is not optional for the second one: cargo features are additive, so leaving
+the defaults on keeps `wasm-wasmtime` enabled and the build stops on a `compile_error!`.
 
 ## Build matrix
 
@@ -88,7 +119,18 @@ on it.
 There are still a lot of bugs that needs to be addressed before it can be deemed functional:
 
 - [ ] MAKE SOME UNIT TESTS AND INTEGRATION TESTS
-- [ ] Detect when the task list is empty and is safe to shutdown (like Node)
+    - [x] Unit tests for the transpiler, the engine and the standard library
+    - [x] Integration tests for the WebAssembly JS API, driven as JS through a real QuickJS context
+      on both backends
+    - [x] Unit and integration tests for Web Workers, including the thread boundary, the error
+      chain and the process-lifetime rule
+    - [ ] End-to-end tests that actually run the `den` binary (the worker suite spawns a child
+      *test* process to capture stderr, which is as close as it gets today)
+- [x] Detect when the task list is empty and is safe to shutdown (like Node)
+    - `AsyncRuntime::idle()` is the whole rule: den exits when nothing is spawned. A worker only
+      keeps the process alive while it is doing work or something is still listening to it — see
+      [ARCHITECTURE.md](ARCHITECTURE.md) §6.5. The process still exits 0 on an uncaught error,
+      which is the next thing to fix.
 - [x] Make it easily embeddable to other Rust projects
     - [x] Remove the need for the global state. There is only one so far and that is the "global cancellation token"
     - This is also important because we can reuse it to test the standard library
@@ -104,9 +146,18 @@ There are still a lot of bugs that needs to be addressed before it can be deemed
 - [x] Figure out how to expose Rust modules as one big module. You don't want to cherrypick each exposed Rust rquickjs
   module in one big Rust module
 - [ ] Add GH Actions manifests to automate CI/CD workflow such as linting, testing and build release
-    - Should have had ran rustfmt before pushing
+    - [x] Linting: `cargo clippy` and `cargo fmt --check` (`.github/workflows/lint.yml`)
+    - [x] Docs: `cargo doc --no-deps`
+    - [x] Testing: `cargo test` as a matrix over both WebAssembly backends
+    - [ ] Release builds and artifact publishing
 - [ ] Add GH Workspace config or Nix to have consistent build environment
+    - There is a `devfile.yaml` for Che/OpenShift Dev Spaces, but no devcontainer and no Nix flake
 - [ ] Add [tracing](https://docs.rs/tracing/latest/tracing/) support and also instruments
+    - [x] `tracing-subscriber` installed in `main` with `RUST_LOG` filtering, and `console.*` routed
+      to `tracing` instead of `println!`
+    - [x] Optional `tokio-console` support behind the `tokio-console` feature (needs
+      `--cfg tokio_unstable`)
+    - [ ] Actual `#[instrument]` spans on the runtime's own code paths
 
 # Contributors
 
