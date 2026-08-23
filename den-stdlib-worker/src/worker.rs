@@ -292,10 +292,12 @@ fn natives<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
 fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
     match options {
         Some(options) if options.is_array() => Some(options),
-        Some(options) if options.is_object() => options
-            .as_object()
-            .and_then(|object| object.get("transfer").ok())
-            .filter(|value: &Value| !value.is_undefined() && !value.is_null()),
+        Some(options) if options.is_object() => {
+            options
+                .as_object()
+                .and_then(|object| object.get("transfer").ok())
+                .filter(|value: &Value| !value.is_undefined() && !value.is_null())
+        }
         _ => None,
     }
 }
@@ -303,12 +305,7 @@ fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
 /// HTML §8.1.4.6 step 3: fire a cancelable `error` at `target`. `true` means
 /// something called `preventDefault()` — the error was claimed.
 fn report_error_at<'js>(
-    ctx: &Ctx<'js>,
-    target: Value<'js>,
-    message: String,
-    filename: String,
-    lineno: u32,
-    colno: u32,
+    ctx: &Ctx<'js>, target: Value<'js>, message: String, filename: String, lineno: u32, colno: u32,
 ) -> Result<bool> {
     let init = Object::new(ctx.clone())?;
     init.set("message", message)?;
@@ -484,9 +481,7 @@ impl NativeWorker {
     /// The pump ends when the worker thread drops its sender — which it does
     /// by exiting — or at `terminate()`, whichever comes first.
     async fn pump_faults<'js>(
-        ctx: Ctx<'js>,
-        mut inbox: UnboundedReceiver<WorkerFault>,
-        stop: CancellationToken,
+        ctx: Ctx<'js>, mut inbox: UnboundedReceiver<WorkerFault>, stop: CancellationToken,
         on_fault: Function<'js>,
     ) {
         while let Some(Some(fault)) = stop.run_until_cancelled(inbox.recv()).await {
@@ -510,18 +505,12 @@ impl NativeWorker {
     /// interrupt handler aborts whatever the worker is running without letting
     /// a `finally` block observe it, and the cancelled token releases a worker
     /// that is merely parked. Idempotent.
-    pub fn terminate(&self) {
-        self.stop.cancel();
-    }
+    pub fn terminate(&self) { self.stop.cancel(); }
 }
 
 /// Spawn a worker thread (HTML §10.2.6.3 step 10, "run a worker in parallel").
 pub fn spawn<'js>(
-    ctx: Ctx<'js>,
-    url: String,
-    kind: String,
-    name: String,
-    port: Class<'js, NativePort>,
+    ctx: Ctx<'js>, url: String, kind: String, name: String, port: Class<'js, NativePort>,
     on_fault: Function<'js>,
 ) -> Result<Class<'js, NativeWorker>> {
     let kind = ScriptKind::parse(&ctx, &kind)?;
@@ -565,13 +554,10 @@ pub fn spawn<'js>(
             Exception::throw_internal(&ctx, &format!("cannot start a worker thread: {error}"))
         })?;
 
-    WorkerRegistry::register(
-        &ctx,
-        WorkerHandle {
-            stop: stop.clone(),
-            join,
-        },
-    )?;
+    WorkerRegistry::register(&ctx, WorkerHandle {
+        stop: stop.clone(),
+        join,
+    })?;
     ctx.spawn(NativeWorker::pump_faults(
         ctx.clone(),
         fault_inbox,
@@ -709,13 +695,8 @@ impl WorkerThread {
     /// Install the global scope, run the script, open the message queue.
     /// Returns whatever the parent still needs to hear about.
     async fn boot<'js>(
-        ctx: &Ctx<'js>,
-        channel: PortHandle,
-        name: &str,
-        kind: ScriptKind,
-        script: &Url,
-        closing: &CancellationToken,
-        faults: UnboundedSender<WorkerFault>,
+        ctx: &Ctx<'js>, channel: PortHandle, name: &str, kind: ScriptKind, script: &Url,
+        closing: &CancellationToken, faults: UnboundedSender<WorkerFault>,
     ) -> Option<WorkerFault> {
         match Self::install_scope(ctx, channel, name, kind, script, closing, faults) {
             Ok(scope) => Self::run_and_report(ctx, &scope, kind, script).await,
@@ -726,13 +707,8 @@ impl WorkerThread {
     /// Hand the prelude's installer the worker's port, name and the two things
     /// only Rust can do, and keep the two hooks it gives back.
     fn install_scope<'js>(
-        ctx: &Ctx<'js>,
-        channel: PortHandle,
-        name: &str,
-        kind: ScriptKind,
-        script: &Url,
-        closing: &CancellationToken,
-        faults: UnboundedSender<WorkerFault>,
+        ctx: &Ctx<'js>, channel: PortHandle, name: &str, kind: ScriptKind, script: &Url,
+        closing: &CancellationToken, faults: UnboundedSender<WorkerFault>,
     ) -> Result<Object<'js>> {
         let port = Class::instance(ctx.clone(), NativePort::from_handle(channel))?;
         let hooks = Object::new(ctx.clone())?;
@@ -777,10 +753,7 @@ impl WorkerThread {
     }
 
     async fn run_and_report<'js>(
-        ctx: &Ctx<'js>,
-        scope: &Object<'js>,
-        kind: ScriptKind,
-        script: &Url,
+        ctx: &Ctx<'js>, scope: &Object<'js>, kind: ScriptKind, script: &Url,
     ) -> Option<WorkerFault> {
         let outcome = match kind {
             ScriptKind::Classic => Self::run_classic(ctx, script),
@@ -875,10 +848,7 @@ impl WorkerThread {
     /// the first URL that fails aborts the rest and the exception continues
     /// into the calling script.
     fn import_scripts(
-        ctx: &Ctx<'_>,
-        base: &Url,
-        kind: ScriptKind,
-        urls: Vec<String>,
+        ctx: &Ctx<'_>, base: &Url, kind: ScriptKind, urls: Vec<String>,
     ) -> Result<()> {
         if let ScriptKind::Module = kind {
             return Err(Exception::throw_type(
@@ -955,9 +925,7 @@ impl WorkerGlobalScope {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "WorkerGlobalScope"
-    }
+    pub fn to_string_tag() -> &'static str { "WorkerGlobalScope" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -972,9 +940,7 @@ impl DedicatedWorkerGlobalScope {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "DedicatedWorkerGlobalScope"
-    }
+    pub fn to_string_tag() -> &'static str { "DedicatedWorkerGlobalScope" }
 }
 
 /// HTML §10.2.6 `Worker`.
@@ -989,9 +955,7 @@ pub struct Worker<'js> {
 impl<'js> Worker<'js> {
     #[qjs(constructor)]
     pub fn new(
-        ctx: Ctx<'js>,
-        script_url: Opt<Value<'js>>,
-        options: Opt<Value<'js>>,
+        ctx: Ctx<'js>, script_url: Opt<Value<'js>>, options: Opt<Value<'js>>,
     ) -> Result<Class<'js, Self>> {
         let Some(script_url) = script_url.0 else {
             return Err(Exception::throw_type(
@@ -1028,13 +992,10 @@ impl<'js> Worker<'js> {
             },
         )?;
         let thread = spawn(ctx.clone(), url, kind, name, inside, on_fault.clone())?;
-        let worker = Class::instance(
-            ctx.clone(),
-            Self {
-                port: outside.clone(),
-                thread,
-            },
-        )?;
+        let worker = Class::instance(ctx.clone(), Self {
+            port: outside.clone(),
+            thread,
+        })?;
         on_fault.set("_worker", worker.clone())?;
         let arm = track_message_listeners(ctx.clone(), worker.clone().into_value(), outside)?;
         arm.call::<_, ()>(())?;
@@ -1042,10 +1003,7 @@ impl<'js> Worker<'js> {
     }
 
     pub fn post_message(
-        &self,
-        ctx: Ctx<'js>,
-        message: Value<'js>,
-        options: Opt<Value<'js>>,
+        &self, ctx: Ctx<'js>, message: Value<'js>, options: Opt<Value<'js>>,
     ) -> Result<()> {
         let (buffers, ports) = split_transfer(&ctx, transfer_list(options.0))?;
         self.port.borrow().post(ctx, message, buffers, ports)
@@ -1057,18 +1015,13 @@ impl<'js> Worker<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Worker"
-    }
+    pub fn to_string_tag() -> &'static str { "Worker" }
 }
 
 /// Called from the worker thread after the engine exists and before its
 /// script runs. Returns `{ start, reportError }` for the thread body.
 fn install_worker_scope<'js>(
-    ctx: &Ctx<'js>,
-    scope: Object<'js>,
-    native: Class<'js, NativePort>,
-    name: &str,
+    ctx: &Ctx<'js>, scope: Object<'js>, native: Class<'js, NativePort>, name: &str,
     hooks: Object<'js>,
 ) -> Result<Object<'js>> {
     if let Some(proto) = Class::<DedicatedWorkerGlobalScope>::prototype(ctx)? {
@@ -1111,10 +1064,7 @@ fn install_worker_scope<'js>(
 
     let import = Function::new(
         ctx.clone(),
-        |ctx: Ctx<'js>,
-         function: FuncArg<Function<'js>>,
-         urls: Rest<Value<'js>>|
-         -> Result<()> {
+        |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, urls: Rest<Value<'js>>| -> Result<()> {
             let hook: Function<'js> = function.0.get("_import")?;
             let mut strings = Vec::with_capacity(urls.0.len());
             for url in urls.0 {
@@ -1352,10 +1302,7 @@ mod tests {
 
     impl Resolver for FileUrlResolver {
         fn resolve<'js>(
-            &mut self,
-            ctx: &Ctx<'js>,
-            base: &str,
-            name: &str,
+            &mut self, ctx: &Ctx<'js>, base: &str, name: &str,
             _attributes: Option<rquickjs::loader::ImportAttributes<'js>>,
         ) -> rquickjs::Result<String> {
             let base = Url::parse(base)
@@ -1382,9 +1329,7 @@ mod tests {
 
     impl WorkerHost for BareHost {
         fn build_engine(
-            &self,
-            stop: CancellationToken,
-            base: BaseUrl,
+            &self, stop: CancellationToken, base: BaseUrl,
         ) -> Result<WorkerEngine, WorkerHostError> {
             // Same pair den-core's host uses: a synchronous trait method
             // reaching an async constructor from inside a runtime.
@@ -1602,9 +1547,7 @@ mod tests {
     /// Elsewhere there is no `/proc`, so the thread assertions degrade to
     /// nothing rather than to a lie; the joins they follow are still exercised.
     #[cfg(not(target_os = "linux"))]
-    fn threads_named(_name: &str) -> usize {
-        0
-    }
+    fn threads_named(_name: &str) -> usize { 0 }
 
     /// Await every thread called `name` going away, bounded by [`DEADLINE`].
     ///
@@ -1663,19 +1606,16 @@ mod tests {
     /// delivered to a handler that does not exist yet.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_message_posted_before_the_script_finished_is_delivered_to_it() {
-        let fixture = Fixture::new(
-            "queued",
-            &[(
-                "late.js",
-                r#"
+        let fixture = Fixture::new("queued", &[(
+            "late.js",
+            r#"
             // Long enough that the parent's postMessage is certainly first, and
             // synchronous so the queue cannot open in the middle of it.
             let sum = 0;
             for (let step = 0; step < 3_000_000; step += 1) sum += step;
             self.onmessage = (event) => postMessage(`late:${event.data}:${sum > 0}`);
             "#,
-            )],
-        )
+        )])
         .await;
         let reply: String = fixture
             .eval(
@@ -1722,13 +1662,10 @@ mod tests {
     /// `terminate()` anywhere.
     #[tokio::test(flavor = "multi_thread")]
     async fn close_from_inside_the_worker_delivers_the_last_message_and_ends_it() {
-        let fixture = Fixture::new(
-            "close",
-            &[(
-                "close.js",
-                r#"postMessage("bye"); close(); postMessage("after");"#,
-            )],
-        )
+        let fixture = Fixture::new("close", &[(
+            "close.js",
+            r#"postMessage("bye"); close(); postMessage("after");"#,
+        )])
         .await;
         let last: String = fixture
             .eval(
@@ -1748,13 +1685,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_uncaught_error_becomes_an_error_event_on_the_worker_object() {
-        let fixture = Fixture::new(
-            "uncaught",
-            &[(
-                "throw.js",
-                "// line 1\n// line 2\nthrow new TypeError(\"boom\");\n",
-            )],
-        )
+        let fixture = Fixture::new("uncaught", &[(
+            "throw.js",
+            "// line 1\n// line 2\nthrow new TypeError(\"boom\");\n",
+        )])
         .await;
         let reported: String = fixture
             .eval(
@@ -1788,11 +1722,9 @@ mod tests {
     /// the parent ever hears about it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_worker_onerror_returning_true_suppresses_the_parent_error_event() {
-        let fixture = Fixture::new(
-            "suppressed",
-            &[(
-                "suppress.js",
-                r#"
+        let fixture = Fixture::new("suppressed", &[(
+            "suppress.js",
+            r#"
             self.onmessage = (event) => postMessage(`pong:${event.data}`);
             self.onerror = function (message, filename, lineno, colno, error) {
               postMessage(`caught:${message}:${arguments.length}:${error}`);
@@ -1800,8 +1732,7 @@ mod tests {
             };
             throw new Error("hidden");
             "#,
-            )],
-        )
+        )])
         .await;
         let seen: String = fixture
             .eval(
@@ -1828,19 +1759,16 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn import_scripts_runs_a_script_in_the_worker_global_relative_to_it() {
-        let fixture = Fixture::new(
-            "import-scripts",
-            &[
-                ("helper.js", r#"globalThis.helped = "helper";"#),
-                (
-                    "importer.js",
-                    r#"
+        let fixture = Fixture::new("import-scripts", &[
+            ("helper.js", r#"globalThis.helped = "helper";"#),
+            (
+                "importer.js",
+                r#"
                 importScripts("./helper.js");
                 self.onmessage = () => postMessage(`${helped}:${typeof importScripts}`);
                 "#,
-                ),
-            ],
-        )
+            ),
+        ])
         .await;
         let reply: String = fixture
             .eval(
@@ -1861,19 +1789,16 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_module_worker_runs_through_the_engine_loader_chain() {
-        let fixture = Fixture::new(
-            "module",
-            &[
-                ("lib.js", r#"export const greeting = "from a module";"#),
-                (
-                    "module.js",
-                    r#"
+        let fixture = Fixture::new("module", &[
+            ("lib.js", r#"export const greeting = "from a module";"#),
+            (
+                "module.js",
+                r#"
                 import { greeting } from "./lib.js";
                 self.onmessage = () => postMessage(`${greeting}:${typeof importScripts}`);
                 "#,
-                ),
-            ],
-        )
+            ),
+        ])
         .await;
         let reply: String = fixture
             .eval(
@@ -1897,23 +1822,20 @@ mod tests {
     /// script's directory.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_worker_can_spawn_a_worker() {
-        let fixture = Fixture::new(
-            "nested",
-            &[
-                (
-                    "inner.js",
-                    r#"self.onmessage = (event) => postMessage(`inner:${event.data}`);"#,
-                ),
-                (
-                    "outer.js",
-                    r#"
+        let fixture = Fixture::new("nested", &[
+            (
+                "inner.js",
+                r#"self.onmessage = (event) => postMessage(`inner:${event.data}`);"#,
+            ),
+            (
+                "outer.js",
+                r#"
                 const inner = new Worker("./inner.js");
                 inner.onmessage = (event) => postMessage(`outer:${event.data}`);
                 self.onmessage = (event) => inner.postMessage(event.data);
                 "#,
-                ),
-            ],
-        )
+            ),
+        ])
         .await;
         let reply: String = fixture
             .eval(
@@ -1955,11 +1877,9 @@ mod tests {
     /// goes, the worker ends like one that never had any.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_worker_that_drops_its_last_listener_ends() {
-        let fixture = Fixture::new(
-            "fickle",
-            &[(
-                "fickle.js",
-                r#"
+        let fixture = Fixture::new("fickle", &[(
+            "fickle.js",
+            r#"
             self.onmessage = (event) => {
               if (event.data === "stop") {
                 self.onmessage = null;
@@ -1968,8 +1888,7 @@ mod tests {
               postMessage(`echo:${event.data}`);
             };
             "#,
-            )],
-        )
+        )])
         .await;
         let reply: String = fixture
             .eval(
@@ -1998,19 +1917,16 @@ mod tests {
     /// intermittently hang its parent.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_message_posted_before_the_parent_listens_is_queued_for_it() {
-        let fixture = Fixture::new(
-            "eager",
-            &[(
-                "eager.js",
-                r#"
+        let fixture = Fixture::new("eager", &[(
+            "eager.js",
+            r#"
             postMessage("posted before anyone listened");
             // Out-of-band proof that the post above has already happened: the
             // error chain is not the port, and an uncaught error does not stop
             // a worker (§10.2.5).
             throw new Error("the worker has posted");
             "#,
-            )],
-        )
+        )])
         .await;
         let queued: String = fixture
             .eval(
@@ -2112,17 +2028,14 @@ mod tests {
     /// parent hears the same failure once per level.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_throwing_worker_onerror_reports_the_original_error_exactly_once() {
-        let fixture = Fixture::new(
-            "reentrant-onerror",
-            &[(
-                "reentrant.js",
-                r#"
+        let fixture = Fixture::new("reentrant-onerror", &[(
+            "reentrant.js",
+            r#"
             self.onerror = () => { throw new Error("from onerror"); };
             self.onmessage = (event) => postMessage(`alive:${event.data}`);
             throw new Error("the original");
             "#,
-            )],
-        )
+        )])
         .await;
         let seen: String = fixture
             .eval(
@@ -2157,18 +2070,15 @@ mod tests {
     /// itself enough to make the parent's end of the port deliver.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_payload_the_parent_cannot_rebuild_becomes_messageerror_on_the_worker() {
-        let fixture = Fixture::new(
-            "parent-messageerror",
-            &[(
-                "bad.js",
-                // A clone tag whose revival throws on the far side: a DataView
-                // cannot be built past the end of its buffer.
-                r#"postMessage({
+        let fixture = Fixture::new("parent-messageerror", &[(
+            "bad.js",
+            // A clone tag whose revival throws on the far side: a DataView
+            // cannot be built past the end of its buffer.
+            r#"postMessage({
                      "\u0000den:structured-clone": "DataView",
                      buffer: new ArrayBuffer(4), byteOffset: 99, byteLength: 99,
                    });"#,
-            )],
-        )
+        )])
         .await;
         let seen: String = fixture
             .eval(

@@ -55,9 +55,7 @@ impl Message {
     /// only then threw would leave the sender holding a `MessagePort` whose
     /// channel is gone — a silent loss no `catch` can undo.
     pub fn serialize<'js>(
-        ctx: &Ctx<'js>,
-        value: Value<'js>,
-        transfer_buffers: Vec<Value<'js>>,
+        ctx: &Ctx<'js>, value: Value<'js>, transfer_buffers: Vec<Value<'js>>,
         transfer_ports: Vec<Class<'js, NativePort>>,
     ) -> Result<Self> {
         Self::validate_transfer(ctx, &transfer_buffers, &transfer_ports)?;
@@ -107,9 +105,7 @@ impl Message {
     /// touching anything — so it can be run twice, before and after the
     /// serialisation walk.
     fn validate_transfer<'js>(
-        ctx: &Ctx<'js>,
-        buffers: &[Value<'js>],
-        ports: &[Class<'js, NativePort>],
+        ctx: &Ctx<'js>, buffers: &[Value<'js>], ports: &[Class<'js, NativePort>],
     ) -> Result<()> {
         Self::validate_buffers(ctx, buffers)?;
         Self::validate_ports(ctx, ports)
@@ -125,9 +121,11 @@ impl Message {
     /// graph and this case is unreachable from script — it is `Option` rather
     /// than a panic because that is the only way to keep it so.
     pub fn try_clone(&self) -> Option<Self> {
-        self.ports.is_empty().then(|| Self {
-            bytes: self.bytes.clone(),
-            ports: Vec::new(),
+        self.ports.is_empty().then(|| {
+            Self {
+                bytes: self.bytes.clone(),
+                ports: Vec::new(),
+            }
         })
     }
 
@@ -138,8 +136,7 @@ impl Message {
     /// A failure here is *not* a `DataCloneError`; the caller turns it into a
     /// `messageerror` event (HTML §9.4.4).
     pub fn deserialize<'js>(
-        self,
-        ctx: &Ctx<'js>,
+        self, ctx: &Ctx<'js>,
     ) -> Result<(Value<'js>, Vec<Class<'js, NativePort>>)> {
         let Self { bytes, ports } = self;
         let value = Self::read(ctx, &bytes)?;
@@ -360,9 +357,7 @@ pub fn throw_data_clone(ctx: &Ctx<'_>, message: &str) -> Error {
 
 /// `structuredClone(value, { transfer })`.
 pub fn structured_clone<'js>(
-    ctx: Ctx<'js>,
-    value: Value<'js>,
-    options: rquickjs::function::Opt<Value<'js>>,
+    ctx: Ctx<'js>, value: Value<'js>, options: rquickjs::function::Opt<Value<'js>>,
 ) -> Result<Value<'js>> {
     let transfer = match options.0 {
         Some(options) if options.is_object() => options.as_object().unwrap().get("transfer")?,
@@ -373,25 +368,23 @@ pub fn structured_clone<'js>(
 }
 
 fn clone_with_transfer<'js>(
-    ctx: Ctx<'js>,
-    value: Value<'js>,
-    buffers: Vec<Value<'js>>,
-    ports: Vec<Class<'js, NativePort>>,
+    ctx: Ctx<'js>, value: Value<'js>, buffers: Vec<Value<'js>>, ports: Vec<Class<'js, NativePort>>,
 ) -> Result<Value<'js>> {
     let message = Message::serialize(&ctx, value, buffers, ports)?;
     message
         .deserialize(&ctx)
         .map(|(value, _)| value)
-        .map_err(|error| match error {
-            Error::Exception => Message::rethrow_as_data_clone(&ctx),
-            error => error,
+        .map_err(|error| {
+            match error {
+                Error::Exception => Message::rethrow_as_data_clone(&ctx),
+                error => error,
+            }
         })
 }
 
 #[rquickjs::function(rename = "splitTransfer")]
 fn split_transfer_js<'js>(
-    ctx: Ctx<'js>,
-    transfer: rquickjs::function::Opt<Value<'js>>,
+    ctx: Ctx<'js>, transfer: rquickjs::function::Opt<Value<'js>>,
 ) -> Result<Object<'js>> {
     let (buffers, ports) = clone::split_transfer(&ctx, transfer.0)?;
     let out = Object::new(ctx.clone())?;
@@ -445,10 +438,12 @@ mod tests {
     /// `Display` says nothing useful.
     fn thrown_name(error: CaughtError<'_>) -> String {
         match error {
-            CaughtError::Value(value) => value
-                .as_object()
-                .and_then(|object| object.get::<_, String>("name").ok())
-                .unwrap_or_else(|| "a value that is not a DOMException".to_owned()),
+            CaughtError::Value(value) => {
+                value
+                    .as_object()
+                    .and_then(|object| object.get::<_, String>("name").ok())
+                    .unwrap_or_else(|| "a value that is not a DOMException".to_owned())
+            }
             other => other.to_string(),
         }
     }
@@ -986,12 +981,9 @@ mod tests {
         let (message, resent) = sender.with(|ctx| {
             let port = Class::instance(ctx.clone(), NativePort::from_handle(moved))
                 .expect("the native port instantiates");
-            let message = Message::serialize(
-                &ctx,
-                Value::new_null(ctx.clone()),
-                vec![],
-                vec![port.clone()],
-            )
+            let message = Message::serialize(&ctx, Value::new_null(ctx.clone()), vec![], vec![
+                port.clone(),
+            ])
             .catch(&ctx)
             .map_err(|err| err.to_string())
             .expect("the port transfers");
@@ -1037,12 +1029,10 @@ mod tests {
         let failure = context.with(|ctx| {
             let port = Class::instance(ctx.clone(), NativePort::from_handle(handle))
                 .expect("the native port instantiates");
-            Message::serialize(
-                &ctx,
-                Value::new_null(ctx.clone()),
-                vec![],
-                vec![port.clone(), port],
-            )
+            Message::serialize(&ctx, Value::new_null(ctx.clone()), vec![], vec![
+                port.clone(),
+                port,
+            ])
             .catch(&ctx)
             .map_err(thrown_name)
             .unwrap_err()

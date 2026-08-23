@@ -63,14 +63,16 @@ pub mod worker_module {
         object::Property,
     };
 
-    pub use super::abort::{AbortController, AbortSignal};
-    pub use super::broadcast::BroadcastChannel;
-    pub use super::events::{
-        CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
+    pub use super::{
+        abort::{AbortController, AbortSignal},
+        broadcast::BroadcastChannel,
+        events::{
+            CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
+        },
+        navigator::NavigatorUAData,
+        port::{MessageChannel, MessagePort},
+        worker::Worker,
     };
-    pub use super::navigator::NavigatorUAData;
-    pub use super::port::{MessageChannel, MessagePort};
-    pub use super::worker::Worker;
 
     #[rquickjs::function(rename = "reportError")]
     #[qjs(rename = "reportError")]
@@ -81,9 +83,7 @@ pub mod worker_module {
     #[rquickjs::function(rename = "structuredClone")]
     #[qjs(rename = "structuredClone")]
     pub fn structured_clone<'js>(
-        ctx: Ctx<'js>,
-        value: Value<'js>,
-        options: rquickjs::function::Opt<Value<'js>>,
+        ctx: Ctx<'js>, value: Value<'js>, options: rquickjs::function::Opt<Value<'js>>,
     ) -> Result<Value<'js>> {
         super::message::structured_clone(ctx, value, options)
     }
@@ -211,9 +211,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    fn text(source: &str) -> String {
-        eval::<String>(source)
-    }
+    fn text(source: &str) -> String { eval::<String>(source) }
 
     /// Like [`text`], then drain microtasks so a script that parks its result
     /// on `globalThis.__result` from a `Promise.then` can still be read

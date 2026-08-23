@@ -58,9 +58,7 @@ pub trait WorkerHost: Send + Sync + 'static {
     /// construction is `async` blocks on it there; nothing else is running on
     /// that thread yet.
     fn build_engine(
-        &self,
-        stop: CancellationToken,
-        base: BaseUrl,
+        &self, stop: CancellationToken, base: BaseUrl,
     ) -> Result<WorkerEngine, WorkerHostError>;
 }
 

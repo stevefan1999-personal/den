@@ -47,9 +47,7 @@ struct TimeOrigin(f64);
 
 /// Construct a `DOMException` from the engine intrinsic.
 pub(crate) fn new_dom_exception<'js>(
-    ctx: &Ctx<'js>,
-    message: &str,
-    name: &str,
+    ctx: &Ctx<'js>, message: &str, name: &str,
 ) -> Result<Value<'js>> {
     let ctor: rquickjs::Constructor<'js> = ctx.globals().get("DOMException")?;
     ctor.construct((message, name))
@@ -134,9 +132,7 @@ fn dict_bool<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>, key: &str) -> Re
 }
 
 fn call_with_this<'js>(
-    ctx: &Ctx<'js>,
-    function: &Function<'js>,
-    this: Value<'js>,
+    ctx: &Ctx<'js>, function: &Function<'js>, this: Value<'js>,
     args: impl IntoIterator<Item = Value<'js>>,
 ) -> Result<Value<'js>> {
     let collected: Vec<Value<'js>> = args.into_iter().collect();
@@ -202,28 +198,24 @@ fn patch_event_constants<'js>(ctx: &Ctx<'js>, constructors: &Object<'js>) -> Res
 /// and uses [`Event`]'s own copy.
 #[derive(Trace, JsLifetime)]
 pub struct EventFields<'js> {
-    event_type: String,
-    target: Value<'js>,
-    current_target: Value<'js>,
-    event_phase: u32,
-    bubbles: bool,
-    cancelable: bool,
-    composed: bool,
-    canceled: bool,
+    event_type:       String,
+    target:           Value<'js>,
+    current_target:   Value<'js>,
+    event_phase:      u32,
+    bubbles:          bool,
+    cancelable:       bool,
+    composed:         bool,
+    canceled:         bool,
     stop_propagation: bool,
-    stop_immediate: bool,
-    dispatch: bool,
-    is_trusted: bool,
-    time_stamp: f64,
+    stop_immediate:   bool,
+    dispatch:         bool,
+    is_trusted:       bool,
+    time_stamp:       f64,
 }
 
 impl<'js> EventFields<'js> {
     fn new(
-        ctx: &Ctx<'js>,
-        event_type: String,
-        bubbles: bool,
-        cancelable: bool,
-        composed: bool,
+        ctx: &Ctx<'js>, event_type: String, bubbles: bool, cancelable: bool, composed: bool,
     ) -> Self {
         Self {
             event_type,
@@ -243,9 +235,7 @@ impl<'js> EventFields<'js> {
     }
 
     fn from_args(
-        ctx: &Ctx<'js>,
-        event_type: Value<'js>,
-        options: Option<&Value<'js>>,
+        ctx: &Ctx<'js>, event_type: Value<'js>, options: Option<&Value<'js>>,
     ) -> Result<Self> {
         Ok(Self::new(
             ctx,
@@ -264,9 +254,7 @@ impl<'js> EventFields<'js> {
 }
 
 fn with_event_fields<'js, R>(
-    ctx: &Ctx<'js>,
-    this: &Value<'js>,
-    body: impl FnOnce(&mut EventFields<'js>) -> Result<R>,
+    ctx: &Ctx<'js>, this: &Value<'js>, body: impl FnOnce(&mut EventFields<'js>) -> Result<R>,
 ) -> Result<R> {
     if let Ok(event) = Class::<Event>::from_value(this) {
         return body(&mut event.try_borrow_mut()?.fields);
@@ -366,9 +354,7 @@ impl<'js> Event<'js> {
 
     #[qjs(set, rename = "cancelBubble")]
     pub fn set_cancel_bubble(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         if to_bool(&ctx, value)? {
             with_event_fields(&ctx, &this.0, |fields| {
@@ -386,9 +372,7 @@ impl<'js> Event<'js> {
 
     #[qjs(set, rename = "returnValue")]
     pub fn set_return_value(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, value: Value<'js>,
     ) -> Result<()> {
         if !to_bool(&ctx, value)? {
             with_event_fields(&ctx, &this.0, |fields| {
@@ -411,10 +395,7 @@ impl<'js> Event<'js> {
     }
 
     pub fn init_event(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        event_type: Value<'js>,
-        bubbles: Opt<Value<'js>>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, bubbles: Opt<Value<'js>>,
         cancelable: Opt<Value<'js>>,
     ) -> Result<()> {
         let event_type = coerce_string(&ctx, event_type)?;
@@ -465,9 +446,7 @@ impl<'js> Event<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Event"
-    }
+    pub fn to_string_tag() -> &'static str { "Event" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -493,17 +472,11 @@ impl<'js> CustomEvent<'js> {
     }
 
     #[qjs(get)]
-    pub fn detail(&self) -> Value<'js> {
-        self.detail.clone()
-    }
+    pub fn detail(&self) -> Value<'js> { self.detail.clone() }
 
     pub fn init_custom_event(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        event_type: Value<'js>,
-        bubbles: Opt<Value<'js>>,
-        cancelable: Opt<Value<'js>>,
-        detail: Opt<Value<'js>>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, bubbles: Opt<Value<'js>>,
+        cancelable: Opt<Value<'js>>, detail: Opt<Value<'js>>,
     ) -> Result<()> {
         Event::init_event(
             This(this.0.clone()),
@@ -524,20 +497,18 @@ impl<'js> CustomEvent<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "CustomEvent"
-    }
+    pub fn to_string_tag() -> &'static str { "CustomEvent" }
 }
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct MessageEvent<'js> {
-    fields: EventFields<'js>,
-    data: Value<'js>,
-    origin: String,
+    fields:        EventFields<'js>,
+    data:          Value<'js>,
+    origin:        String,
     last_event_id: String,
-    source: Value<'js>,
-    ports: Value<'js>,
+    source:        Value<'js>,
+    ports:         Value<'js>,
 }
 
 impl<'js> MessageEvent<'js> {
@@ -592,45 +563,33 @@ impl<'js> MessageEvent<'js> {
     }
 
     #[qjs(get)]
-    pub fn data(&self) -> Value<'js> {
-        self.data.clone()
-    }
+    pub fn data(&self) -> Value<'js> { self.data.clone() }
 
     #[qjs(get)]
-    pub fn origin(&self) -> String {
-        self.origin.clone()
-    }
+    pub fn origin(&self) -> String { self.origin.clone() }
 
     #[qjs(get)]
-    pub fn last_event_id(&self) -> String {
-        self.last_event_id.clone()
-    }
+    pub fn last_event_id(&self) -> String { self.last_event_id.clone() }
 
     #[qjs(get)]
-    pub fn source(&self) -> Value<'js> {
-        self.source.clone()
-    }
+    pub fn source(&self) -> Value<'js> { self.source.clone() }
 
     #[qjs(get)]
-    pub fn ports(&self) -> Value<'js> {
-        self.ports.clone()
-    }
+    pub fn ports(&self) -> Value<'js> { self.ports.clone() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "MessageEvent"
-    }
+    pub fn to_string_tag() -> &'static str { "MessageEvent" }
 }
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct ErrorEvent<'js> {
-    fields: EventFields<'js>,
-    message: String,
+    fields:   EventFields<'js>,
+    message:  String,
     filename: String,
-    lineno: u32,
-    colno: u32,
-    error: Value<'js>,
+    lineno:   u32,
+    colno:    u32,
+    error:    Value<'js>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -669,42 +628,30 @@ impl<'js> ErrorEvent<'js> {
     }
 
     #[qjs(get)]
-    pub fn message(&self) -> String {
-        self.message.clone()
-    }
+    pub fn message(&self) -> String { self.message.clone() }
 
     #[qjs(get)]
-    pub fn filename(&self) -> String {
-        self.filename.clone()
-    }
+    pub fn filename(&self) -> String { self.filename.clone() }
 
     #[qjs(get)]
-    pub fn lineno(&self) -> u32 {
-        self.lineno
-    }
+    pub fn lineno(&self) -> u32 { self.lineno }
 
     #[qjs(get)]
-    pub fn colno(&self) -> u32 {
-        self.colno
-    }
+    pub fn colno(&self) -> u32 { self.colno }
 
     #[qjs(get)]
-    pub fn error(&self) -> Value<'js> {
-        self.error.clone()
-    }
+    pub fn error(&self) -> Value<'js> { self.error.clone() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "ErrorEvent"
-    }
+    pub fn to_string_tag() -> &'static str { "ErrorEvent" }
 }
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct PromiseRejectionEvent<'js> {
-    fields: EventFields<'js>,
+    fields:  EventFields<'js>,
     promise: Value<'js>,
-    reason: Value<'js>,
+    reason:  Value<'js>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -712,47 +659,39 @@ impl<'js> PromiseRejectionEvent<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Value<'js>) -> Result<Self> {
         Ok(Self {
-            fields: EventFields::from_args(&ctx, event_type, Some(&options))?,
+            fields:  EventFields::from_args(&ctx, event_type, Some(&options))?,
             promise: dict_get(Some(&options), "promise")?
                 .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-            reason: dict_get(Some(&options), "reason")?
+            reason:  dict_get(Some(&options), "reason")?
                 .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
         })
     }
 
     #[qjs(get)]
-    pub fn promise(&self) -> Value<'js> {
-        self.promise.clone()
-    }
+    pub fn promise(&self) -> Value<'js> { self.promise.clone() }
 
     #[qjs(get)]
-    pub fn reason(&self) -> Value<'js> {
-        self.reason.clone()
-    }
+    pub fn reason(&self) -> Value<'js> { self.reason.clone() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "PromiseRejectionEvent"
-    }
+    pub fn to_string_tag() -> &'static str { "PromiseRejectionEvent" }
 }
 
 #[derive(Clone, JsLifetime)]
 struct Listener<'js> {
     callback: Value<'js>,
-    capture: bool,
-    once: bool,
-    removed: Rc<Cell<bool>>,
+    capture:  bool,
+    once:     bool,
+    removed:  Rc<Cell<bool>>,
 }
 
 impl<'js> Trace<'js> for Listener<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        self.callback.trace(tracer);
-    }
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) { self.callback.trace(tracer); }
 }
 
 #[derive(JsLifetime)]
 struct HandlerSlot<'js> {
-    value: Value<'js>,
+    value:    Value<'js>,
     listener: Option<Value<'js>>,
 }
 
@@ -767,7 +706,7 @@ impl<'js> Trace<'js> for HandlerSlot<'js> {
 
 #[derive(Default, JsLifetime)]
 struct ListenerTable<'js> {
-    by_type: HashMap<String, Vec<Listener<'js>>>,
+    by_type:  HashMap<String, Vec<Listener<'js>>>,
     handlers: HashMap<String, HandlerSlot<'js>>,
 }
 
@@ -879,10 +818,7 @@ impl<'js> EventTarget<'js> {
     }
 
     fn add_abort_listener(
-        ctx: &Ctx<'js>,
-        target: Value<'js>,
-        signal: Value<'js>,
-        record: Listener<'js>,
+        ctx: &Ctx<'js>, target: Value<'js>, signal: Value<'js>, record: Listener<'js>,
         event_type: String,
     ) -> Result<()> {
         let Some(object) = signal.as_object() else {
@@ -923,22 +859,21 @@ impl<'js> EventTarget<'js> {
     }
 
     fn invoke_listener(
-        ctx: &Ctx<'js>,
-        record: &Listener<'js>,
-        event: &Value<'js>,
-        current_target: &Value<'js>,
+        ctx: &Ctx<'js>, record: &Listener<'js>, event: &Value<'js>, current_target: &Value<'js>,
     ) {
         let outcome = if let Some(function) = record.callback.as_function() {
             call_with_this(ctx, function, current_target.clone(), [event.clone()]).map(|_| ())
         } else if let Some(object) = record.callback.as_object() {
             match object.get::<_, Value<'js>>("handleEvent") {
-                Ok(handle) => match handle.as_function() {
-                    Some(function) => {
-                        call_with_this(ctx, function, record.callback.clone(), [event.clone()])
-                            .map(|_| ())
+                Ok(handle) => {
+                    match handle.as_function() {
+                        Some(function) => {
+                            call_with_this(ctx, function, record.callback.clone(), [event.clone()])
+                                .map(|_| ())
+                        }
+                        None => Err(Exception::throw_type(ctx, "handleEvent is not a function")),
                     }
-                    None => Err(Exception::throw_type(ctx, "handleEvent is not a function")),
-                },
+                }
                 Err(error) => Err(error),
             }
         } else {
@@ -955,10 +890,7 @@ impl<'js> EventTarget<'js> {
     /// DOM §2.7 dispatch, AT_TARGET only. `trusted` is the user-agent mark:
     /// only [`dispatch_trusted`] sets it, so a script cannot forge `isTrusted`.
     pub fn dispatch(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        event: Value<'js>,
-        trusted: bool,
+        ctx: &Ctx<'js>, this: &Value<'js>, event: Value<'js>, trusted: bool,
     ) -> Result<bool> {
         let already = with_event_fields(ctx, &event, |fields| Ok(fields.dispatch))?;
         if already {
@@ -1010,13 +942,8 @@ impl<'js> EventTarget<'js> {
     }
 
     fn add(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        event_type: String,
-        callback: Value<'js>,
-        capture: bool,
-        once: bool,
-        signal: Option<Value<'js>>,
+        ctx: &Ctx<'js>, this: &Value<'js>, event_type: String, callback: Value<'js>, capture: bool,
+        once: bool, signal: Option<Value<'js>>,
     ) -> Result<()> {
         if let Some(signal) = &signal
             && Self::is_aborted(signal)?
@@ -1055,11 +982,7 @@ impl<'js> EventTarget<'js> {
     }
 
     fn remove(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        event_type: &str,
-        callback: &Value<'js>,
-        capture: bool,
+        ctx: &Ctx<'js>, this: &Value<'js>, event_type: &str, callback: &Value<'js>, capture: bool,
     ) -> Result<()> {
         let target = Self::resolve(ctx, this)?;
         let inner = target.try_borrow()?;
@@ -1079,9 +1002,7 @@ impl<'js> EventTarget<'js> {
     }
 
     pub(crate) fn handler_value(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        name: &str,
+        ctx: &Ctx<'js>, this: &Value<'js>, name: &str,
     ) -> Result<Value<'js>> {
         let target = Self::resolve(ctx, this)?;
         let inner = target.try_borrow()?;
@@ -1097,11 +1018,7 @@ impl<'js> EventTarget<'js> {
     }
 
     fn set_handler(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        name: &str,
-        event_type: &str,
-        value: Value<'js>,
+        ctx: &Ctx<'js>, this: &Value<'js>, name: &str, event_type: &str, value: Value<'js>,
         global_on_error: bool,
     ) -> Result<()> {
         let stored = if value.is_function() || (value.is_object() && !value.is_null()) {
@@ -1136,13 +1053,10 @@ impl<'js> EventTarget<'js> {
                 .table
                 .try_borrow_mut()
                 .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
-            table.handlers.insert(
-                name.to_owned(),
-                HandlerSlot {
-                    value: stored,
-                    listener: None,
-                },
-            );
+            table.handlers.insert(name.to_owned(), HandlerSlot {
+                value:    stored,
+                listener: None,
+            });
             return Ok(());
         }
         if existing.is_some() {
@@ -1171,13 +1085,10 @@ impl<'js> EventTarget<'js> {
                 .table
                 .try_borrow_mut()
                 .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
-            table.handlers.insert(
-                name_owned,
-                HandlerSlot {
-                    value: stored,
-                    listener: Some(listener),
-                },
-            );
+            table.handlers.insert(name_owned, HandlerSlot {
+                value:    stored,
+                listener: Some(listener),
+            });
         }
         Ok(())
     }
@@ -1185,11 +1096,7 @@ impl<'js> EventTarget<'js> {
     /// HTML §8.1.8.1 goes through `this.addEventListener` so a target that
     /// wrapped those methods (the ref-on-listener rule) still sees the slot.
     fn call_listener_method(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        method: &str,
-        event_type: &str,
-        listener: &Value<'js>,
+        ctx: &Ctx<'js>, this: &Value<'js>, method: &str, event_type: &str, listener: &Value<'js>,
     ) -> Result<()> {
         if let Some(object) = this.as_object()
             && let Ok(function) = object.get::<_, Function<'js>>(method)
@@ -1198,26 +1105,24 @@ impl<'js> EventTarget<'js> {
             return Ok(());
         }
         match method {
-            "addEventListener" => Self::add(
-                ctx,
-                this,
-                event_type.to_owned(),
-                listener.clone(),
-                false,
-                false,
-                None,
-            ),
+            "addEventListener" => {
+                Self::add(
+                    ctx,
+                    this,
+                    event_type.to_owned(),
+                    listener.clone(),
+                    false,
+                    false,
+                    None,
+                )
+            }
             "removeEventListener" => Self::remove(ctx, this, event_type, listener, false),
             _ => Ok(()),
         }
     }
 
     fn invoke_handler(
-        ctx: &Ctx<'js>,
-        this: &Value<'js>,
-        name: &str,
-        event: Value<'js>,
-        global_on_error: bool,
+        ctx: &Ctx<'js>, this: &Value<'js>, name: &str, event: Value<'js>, global_on_error: bool,
     ) -> Result<()> {
         let callback = {
             let target = Self::resolve(ctx, this)?;
@@ -1241,18 +1146,13 @@ impl<'js> EventTarget<'js> {
         let returned = if special {
             let error_event = Class::<ErrorEvent>::from_value(&event)?;
             let borrowed = error_event.try_borrow()?;
-            call_with_this(
-                ctx,
-                function,
-                this.clone(),
-                [
-                    borrowed.message.clone().into_js(ctx)?,
-                    borrowed.filename.clone().into_js(ctx)?,
-                    Value::new_number(ctx.clone(), f64::from(borrowed.lineno)),
-                    Value::new_number(ctx.clone(), f64::from(borrowed.colno)),
-                    borrowed.error.clone(),
-                ],
-            )?
+            call_with_this(ctx, function, this.clone(), [
+                borrowed.message.clone().into_js(ctx)?,
+                borrowed.filename.clone().into_js(ctx)?,
+                Value::new_number(ctx.clone(), f64::from(borrowed.lineno)),
+                Value::new_number(ctx.clone(), f64::from(borrowed.colno)),
+                borrowed.error.clone(),
+            ])?
         } else {
             call_with_this(ctx, function, this.clone(), [event.clone()])?
         };
@@ -1274,15 +1174,10 @@ impl<'js> EventTarget<'js> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> EventTarget<'js> {
     #[qjs(constructor)]
-    pub fn new_js() -> Self {
-        Self::new()
-    }
+    pub fn new_js() -> Self { Self::new() }
 
     pub fn add_event_listener(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        event_type: Value<'js>,
-        callback: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, callback: Value<'js>,
         options: Opt<Value<'js>>,
     ) -> Result<()> {
         if !callback.is_null()
@@ -1308,10 +1203,7 @@ impl<'js> EventTarget<'js> {
     }
 
     pub fn remove_event_listener(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        event_type: Value<'js>,
-        callback: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, callback: Value<'js>,
         options: Opt<Value<'js>>,
     ) -> Result<()> {
         let (capture, _, _) = Self::flatten(options.0.as_ref())?;
@@ -1325,25 +1217,18 @@ impl<'js> EventTarget<'js> {
     }
 
     pub fn dispatch_event(
-        this: This<Value<'js>>,
-        ctx: Ctx<'js>,
-        event: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event: Value<'js>,
     ) -> Result<bool> {
         Self::dispatch(&ctx, &this.0, event, false)
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "EventTarget"
-    }
+    pub fn to_string_tag() -> &'static str { "EventTarget" }
 }
 
 /// HTML §8.1.8.1. Defines an `onX` accessor on `target` (usually a prototype).
 pub fn define_event_handler<'js>(
-    _ctx: Ctx<'js>,
-    target: Object<'js>,
-    name: String,
-    global_on_error: Opt<bool>,
+    _ctx: Ctx<'js>, target: Object<'js>, name: String, global_on_error: Opt<bool>,
 ) -> Result<()> {
     let event_type = name.strip_prefix("on").unwrap_or(name.as_str()).to_owned();
     let special = global_on_error.0.unwrap_or(false);
@@ -1427,9 +1312,7 @@ pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
 
 /// `natives.reportException(value)` — the *printer*, not the dispatcher.
 #[rquickjs::function(rename = "reportException")]
-pub fn report_exception_js<'js>(ctx: Ctx<'js>, value: Value<'js>) {
-    print_exception(&ctx, &value)
-}
+pub fn report_exception_js<'js>(ctx: Ctx<'js>, value: Value<'js>) { print_exception(&ctx, &value) }
 
 #[cfg(test)]
 mod tests {
@@ -1481,9 +1364,7 @@ mod tests {
         })
     }
 
-    fn trace(source: &str) -> String {
-        eval::<String>(source).expect("script evaluates")
-    }
+    fn trace(source: &str) -> String { eval::<String>(source).expect("script evaluates") }
 
     #[test]
     fn listeners_run_in_registration_order_and_once_removes_itself() {

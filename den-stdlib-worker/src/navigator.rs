@@ -15,12 +15,12 @@ use crate::events::freeze;
 /// Snapshot of the process, taken when the navigator object is built.
 #[derive(Clone)]
 pub struct HostInfo {
-    os: String,
-    arch: String,
-    version: String,
+    os:                   String,
+    arch:                 String,
+    version:              String,
     hardware_concurrency: u32,
-    bitness: String,
-    kernel_release: String,
+    bitness:              String,
+    kernel_release:       String,
 }
 
 unsafe impl<'js> JsLifetime<'js> for HostInfo {
@@ -31,30 +31,24 @@ impl HostInfo {
     fn capture() -> Self {
         let (machine, release) = Self::uname();
         Self {
-            os: Self::os().to_owned(),
-            arch: if machine.is_empty() {
+            os:                   Self::os().to_owned(),
+            arch:                 if machine.is_empty() {
                 Self::arch().to_owned()
             } else {
                 machine
             },
-            version: Self::version().to_owned(),
+            version:              Self::version().to_owned(),
             hardware_concurrency: Self::hardware_concurrency(),
-            bitness: Self::bitness().to_owned(),
-            kernel_release: release,
+            bitness:              Self::bitness().to_owned(),
+            kernel_release:       release,
         }
     }
 
-    fn os() -> &'static str {
-        std::env::consts::OS
-    }
+    fn os() -> &'static str { std::env::consts::OS }
 
-    fn arch() -> &'static str {
-        std::env::consts::ARCH
-    }
+    fn arch() -> &'static str { std::env::consts::ARCH }
 
-    fn version() -> &'static str {
-        env!("CARGO_PKG_VERSION")
-    }
+    fn version() -> &'static str { env!("CARGO_PKG_VERSION") }
 
     fn hardware_concurrency() -> u32 {
         std::thread::available_parallelism()
@@ -123,21 +117,27 @@ impl HostInfo {
         match self.os.as_str() {
             "macos" => "MacIntel".to_owned(),
             "windows" => "Win32".to_owned(),
-            "linux" => match machine {
-                "x86" | "i686" | "i386" => "Linux i686".to_owned(),
-                "x86_64" => "Linux x86_64".to_owned(),
-                _ => format!("Linux {machine}"),
-            },
-            "freebsd" => match machine {
-                "i386" => "FreeBSD i386".to_owned(),
-                "amd64" | "x86_64" => "FreeBSD amd64".to_owned(),
-                _ => format!("FreeBSD {machine}"),
-            },
-            "openbsd" => match machine {
-                "i386" => "OpenBSD i386".to_owned(),
-                "amd64" | "x86_64" => "OpenBSD amd64".to_owned(),
-                _ => format!("OpenBSD {machine}"),
-            },
+            "linux" => {
+                match machine {
+                    "x86" | "i686" | "i386" => "Linux i686".to_owned(),
+                    "x86_64" => "Linux x86_64".to_owned(),
+                    _ => format!("Linux {machine}"),
+                }
+            }
+            "freebsd" => {
+                match machine {
+                    "i386" => "FreeBSD i386".to_owned(),
+                    "amd64" | "x86_64" => "FreeBSD amd64".to_owned(),
+                    _ => format!("FreeBSD {machine}"),
+                }
+            }
+            "openbsd" => {
+                match machine {
+                    "i386" => "OpenBSD i386".to_owned(),
+                    "amd64" | "x86_64" => "OpenBSD amd64".to_owned(),
+                    _ => format!("OpenBSD {machine}"),
+                }
+            }
             other => format!("{other} {machine}"),
         }
     }
@@ -158,9 +158,7 @@ impl HostInfo {
         format!("{major}.{minor}.{patch}")
     }
 
-    fn major_version(&self) -> &str {
-        self.version.split('.').next().unwrap_or(&self.version)
-    }
+    fn major_version(&self) -> &str { self.version.split('.').next().unwrap_or(&self.version) }
 }
 
 fn brand_entry<'js>(ctx: &Ctx<'js>, brand: &str, version: &str) -> Result<Object<'js>> {
@@ -181,11 +179,11 @@ fn frozen_brands<'js>(ctx: &Ctx<'js>, brand: &str, version: &str) -> Result<Arra
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct NavigatorUAData<'js> {
-    brands: Array<'js>,
-    mobile: bool,
+    brands:   Array<'js>,
+    mobile:   bool,
     platform: String,
     #[qjs(skip_trace)]
-    host: HostInfo,
+    host:     HostInfo,
 }
 
 impl<'js> NavigatorUAData<'js> {
@@ -204,29 +202,19 @@ impl<'js> NavigatorUAData<'js> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> NavigatorUAData<'js> {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>) -> Result<Self> {
-        Self::from_host(&ctx, HostInfo::capture())
-    }
+    pub fn new(ctx: Ctx<'js>) -> Result<Self> { Self::from_host(&ctx, HostInfo::capture()) }
 
     #[qjs(get)]
-    pub fn brands(&self) -> Array<'js> {
-        self.brands.clone()
-    }
+    pub fn brands(&self) -> Array<'js> { self.brands.clone() }
 
     #[qjs(get)]
-    pub fn mobile(&self) -> bool {
-        self.mobile
-    }
+    pub fn mobile(&self) -> bool { self.mobile }
 
     #[qjs(get)]
-    pub fn platform(&self) -> String {
-        self.platform.clone()
-    }
+    pub fn platform(&self) -> String { self.platform.clone() }
 
     pub fn get_high_entropy_values(
-        &self,
-        ctx: Ctx<'js>,
-        hints: Value<'js>,
+        &self, ctx: Ctx<'js>, hints: Value<'js>,
     ) -> Result<rquickjs::Promise<'js>> {
         let (promise, resolve, reject) = ctx.promise()?;
         if hints.as_array().is_none() {
@@ -294,16 +282,14 @@ impl<'js> NavigatorUAData<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "NavigatorUAData"
-    }
+    pub fn to_string_tag() -> &'static str { "NavigatorUAData" }
 }
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct Navigator<'js> {
     #[qjs(skip_trace)]
-    host: HostInfo,
+    host:            HostInfo,
     user_agent_data: Class<'js, NavigatorUAData<'js>>,
 }
 
@@ -325,19 +311,13 @@ impl<'js> Navigator<'js> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> Navigator<'js> {
     #[qjs(get)]
-    pub fn user_agent(&self) -> String {
-        format!("den/{}", self.host.version)
-    }
+    pub fn user_agent(&self) -> String { format!("den/{}", self.host.version) }
 
     #[qjs(get)]
-    pub fn hardware_concurrency(&self) -> u32 {
-        self.host.hardware_concurrency
-    }
+    pub fn hardware_concurrency(&self) -> u32 { self.host.hardware_concurrency }
 
     #[qjs(get)]
-    pub fn platform(&self) -> String {
-        self.host.navigator_platform()
-    }
+    pub fn platform(&self) -> String { self.host.navigator_platform() }
 
     #[qjs(get)]
     pub fn user_agent_data(&self) -> Class<'js, NavigatorUAData<'js>> {
@@ -345,9 +325,7 @@ impl<'js> Navigator<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Navigator"
-    }
+    pub fn to_string_tag() -> &'static str { "Navigator" }
 }
 
 /// Install `NavigatorUAData` is the module's job; this places the `navigator`

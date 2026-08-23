@@ -76,22 +76,19 @@ fn remove_listener<'js>(source: &Value<'js>, listener: &Function<'js>) {
 #[rquickjs::class]
 pub struct AbortSignal<'js> {
     aborted: bool,
-    reason: Value<'js>,
+    reason:  Value<'js>,
 }
 
 impl<'js> AbortSignal<'js> {
     fn fresh(ctx: &Ctx<'js>) -> Self {
         Self {
             aborted: false,
-            reason: Value::new_undefined(ctx.clone()),
+            reason:  Value::new_undefined(ctx.clone()),
         }
     }
 
     fn abort_inner(
-        ctx: &Ctx<'js>,
-        this: &Class<'js, Self>,
-        reason: Option<Value<'js>>,
-        dispatch: bool,
+        ctx: &Ctx<'js>, this: &Class<'js, Self>, reason: Option<Value<'js>>, dispatch: bool,
     ) -> Result<bool> {
         if this.try_borrow()?.aborted {
             return Ok(false);
@@ -119,19 +116,13 @@ impl<'js> AbortSignal<'js> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> AbortSignal<'js> {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>) -> Self {
-        Self::fresh(&ctx)
-    }
+    pub fn new(ctx: Ctx<'js>) -> Self { Self::fresh(&ctx) }
 
     #[qjs(get)]
-    pub fn aborted(&self) -> bool {
-        self.aborted
-    }
+    pub fn aborted(&self) -> bool { self.aborted }
 
     #[qjs(get)]
-    pub fn reason(&self) -> Value<'js> {
-        self.reason.clone()
-    }
+    pub fn reason(&self) -> Value<'js> { self.reason.clone() }
 
     pub fn throw_if_aborted(&self, ctx: Ctx<'js>) -> Result<()> {
         if self.aborted {
@@ -204,9 +195,7 @@ impl<'js> AbortSignal<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "AbortSignal"
-    }
+    pub fn to_string_tag() -> &'static str { "AbortSignal" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -225,9 +214,7 @@ impl<'js> AbortController<'js> {
     }
 
     #[qjs(get)]
-    pub fn signal(&self) -> Class<'js, AbortSignal<'js>> {
-        self.signal.clone()
-    }
+    pub fn signal(&self) -> Class<'js, AbortSignal<'js>> { self.signal.clone() }
 
     pub fn abort(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) -> Result<()> {
         AbortSignal::abort_inner(&ctx, &self.signal, reason.0, true)?;
@@ -235,9 +222,7 @@ impl<'js> AbortController<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "AbortController"
-    }
+    pub fn to_string_tag() -> &'static str { "AbortController" }
 }
 
 /// Prototype chain and `onabort`.

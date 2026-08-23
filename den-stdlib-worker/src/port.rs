@@ -44,11 +44,11 @@ struct PortState {
     /// can leave it behind: unreffing a port disables *delivery*, not receipt,
     /// and every envelope the peer already sent has to still be there when the
     /// next pump picks the queue up (HTML §9.4.4).
-    inbox: RefCell<Option<UnboundedReceiver<Envelope>>>,
+    inbox:  RefCell<Option<UnboundedReceiver<Envelope>>>,
     /// The token of the pump run that is currently delivering, if any. `Some`
     /// is exactly "a pump future is live and this port is keeping the event
     /// loop awake".
-    run: RefCell<Option<CancellationToken>>,
+    run:    RefCell<Option<CancellationToken>>,
 }
 
 /// The transport end of one `MessagePort`.
@@ -59,13 +59,13 @@ struct PortState {
 #[rquickjs::class(rename = "NativePort")]
 pub struct NativePort {
     #[qjs(skip_trace)]
-    state: Rc<PortState>,
+    state:   Rc<PortState>,
     /// Ends the port for good, and every pump run with it — each run's token
     /// is a child of this one. Nothing but `close()` can: the inbox is fed by
     /// the peer, and a peer that is merely quiet is indistinguishable from one
     /// that is gone.
     #[qjs(skip_trace)]
-    stop: CancellationToken,
+    stop:    CancellationToken,
     /// Whether the inbox has left the handle. Once it has, the port cannot be
     /// handed to another realm, which is why a started port refuses transfer.
     #[qjs(skip_trace)]
@@ -75,11 +75,11 @@ pub struct NativePort {
 impl NativePort {
     pub fn from_handle(handle: PortHandle) -> Self {
         Self {
-            state: Rc::new(PortState {
+            state:   Rc::new(PortState {
                 handle: RefCell::new(Some(handle)),
                 ..PortState::default()
             }),
-            stop: CancellationToken::new(),
+            stop:    CancellationToken::new(),
             started: Cell::new(false),
         }
     }
@@ -109,9 +109,7 @@ impl NativePort {
     /// detached: `take_handle` refuses a started port, and
     /// a refusal discovered halfway through the transfer is a port the sender
     /// silently loses.
-    pub fn is_started(&self) -> bool {
-        self.started.get()
-    }
+    pub fn is_started(&self) -> bool { self.started.get() }
 
     /// Whether this port still holds a live channel end.
     pub fn is_open(&self) -> bool {
@@ -154,9 +152,7 @@ impl NativePort {
     /// helper: a channel never carries ports, so the JS callback just ignores
     /// the empty second argument.
     pub(crate) fn dispatch<'js>(
-        ctx: &Ctx<'js>,
-        message: Message,
-        on_message: &Function<'js>,
+        ctx: &Ctx<'js>, message: Message, on_message: &Function<'js>,
         on_message_error: &Function<'js>,
     ) {
         let outcome = match message.deserialize(ctx) {
@@ -222,12 +218,8 @@ impl NativePort {
     /// is what keeps a port with a listener from being collected while its peer
     /// can still reach it (HTML §9.4.5).
     async fn pump<'js>(
-        ctx: Ctx<'js>,
-        state: Rc<PortState>,
-        run: CancellationToken,
-        on_message: Function<'js>,
-        on_message_error: Function<'js>,
-        on_close: Function<'js>,
+        ctx: Ctx<'js>, state: Rc<PortState>, run: CancellationToken, on_message: Function<'js>,
+        on_message_error: Function<'js>, on_close: Function<'js>,
     ) {
         loop {
             let envelope = tokio::select! {
@@ -277,9 +269,7 @@ impl NativePort {
 impl NativePort {
     /// `nativePort.close()` — HTML §9.4.4 "close() method steps": detach, and
     /// disentangle, which is what tells the peer. Idempotent.
-    pub fn close(&self) {
-        self.detach();
-    }
+    pub fn close(&self) { self.detach(); }
 
     /// `nativePort.post(value, buffers, ports)` — the "message port post
     /// message steps" (HTML §9.4.4), with the transfer list already split by
@@ -290,10 +280,7 @@ impl NativePort {
     /// nothing, while a message to a closed or unentangled port is dropped in
     /// silence *after* its transfer list has been consumed.
     pub fn post<'js>(
-        &self,
-        ctx: Ctx<'js>,
-        value: Value<'js>,
-        buffers: Vec<Value<'js>>,
+        &self, ctx: Ctx<'js>, value: Value<'js>, buffers: Vec<Value<'js>>,
         ports: Vec<Class<'js, Self>>,
     ) -> Result<()> {
         for port in &ports {
@@ -337,10 +324,7 @@ impl NativePort {
     /// fires once, when the peer has gone and nothing can arrive again — never
     /// for a [`NativePort::pause`], which is this realm's own doing.
     pub fn start<'js>(
-        &self,
-        ctx: Ctx<'js>,
-        on_message: Function<'js>,
-        on_message_error: Function<'js>,
+        &self, ctx: Ctx<'js>, on_message: Function<'js>, on_message_error: Function<'js>,
         on_close: Function<'js>,
     ) {
         let Ok(mut run) = self.state.run.try_borrow_mut() else {
@@ -414,10 +398,7 @@ pub fn pair<'js>(ctx: Ctx<'js>) -> Result<Vec<Class<'js, NativePort>>> {
 const WRAPPER_SLOT: &str = "\0den:port-wrapper";
 
 fn dispatch_messages_at<'js>(
-    ctx: &Ctx<'js>,
-    target: Value<'js>,
-    native: Class<'js, NativePort>,
-    after: Function<'js>,
+    ctx: &Ctx<'js>, target: Value<'js>, native: Class<'js, NativePort>, after: Function<'js>,
 ) {
     let on_message = Function::new(ctx.clone(), {
         let target = target.clone();
@@ -492,21 +473,16 @@ impl<'js> MessagePort<'js> {
         if let Ok(existing) = native.get::<_, Class<'js, Self>>(WRAPPER_SLOT) {
             return Ok(existing);
         }
-        let port = Class::instance(
-            ctx.clone(),
-            Self {
-                native: native.clone(),
-            },
-        )?;
+        let port = Class::instance(ctx.clone(), Self {
+            native: native.clone(),
+        })?;
         native.set(WRAPPER_SLOT, port.clone())?;
         let handle = crate::message::clone::CloneState::port_handle(ctx)?;
         port.set(handle, native)?;
         Ok(port)
     }
 
-    fn native(&self) -> Class<'js, NativePort> {
-        self.native.clone()
-    }
+    fn native(&self) -> Class<'js, NativePort> { self.native.clone() }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -517,10 +493,7 @@ impl<'js> MessagePort<'js> {
     }
 
     pub fn post_message(
-        &self,
-        ctx: Ctx<'js>,
-        message: Value<'js>,
-        options: Opt<Value<'js>>,
+        &self, ctx: Ctx<'js>, message: Value<'js>, options: Opt<Value<'js>>,
     ) -> Result<()> {
         let transfer = match options.0 {
             Some(options) if options.is_array() => Some(options),
@@ -538,14 +511,10 @@ impl<'js> MessagePort<'js> {
         Ok(())
     }
 
-    pub fn close(&self) {
-        self.native.borrow().close();
-    }
+    pub fn close(&self) { self.native.borrow().close(); }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "MessagePort"
-    }
+    pub fn to_string_tag() -> &'static str { "MessagePort" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -567,26 +536,18 @@ impl<'js> MessageChannel<'js> {
     }
 
     #[qjs(get)]
-    pub fn port1(&self) -> Class<'js, MessagePort<'js>> {
-        self.port1.clone()
-    }
+    pub fn port1(&self) -> Class<'js, MessagePort<'js>> { self.port1.clone() }
 
     #[qjs(get)]
-    pub fn port2(&self) -> Class<'js, MessagePort<'js>> {
-        self.port2.clone()
-    }
+    pub fn port2(&self) -> Class<'js, MessagePort<'js>> { self.port2.clone() }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "MessageChannel"
-    }
+    pub fn to_string_tag() -> &'static str { "MessageChannel" }
 }
 
 /// Ref-on-listener: returns the arm function. See docs/research/11 §2.1 rule 2.
 pub fn track_message_listeners<'js>(
-    ctx: Ctx<'js>,
-    target: Value<'js>,
-    native: Class<'js, NativePort>,
+    ctx: Ctx<'js>, target: Value<'js>, native: Class<'js, NativePort>,
 ) -> Result<Function<'js>> {
     let helper: Function<'js> = ctx.eval(
         r#"(function (target, native, dispatchMessagesAt) {
@@ -793,13 +754,9 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{error}"))
         }
 
-        async fn run(&self, source: &'static str) {
-            self.eval::<()>(source).await
-        }
+        async fn run(&self, source: &'static str) { self.eval::<()>(source).await }
 
-        async fn text(&self, source: &'static str) -> String {
-            self.eval::<String>(source).await
-        }
+        async fn text(&self, source: &'static str) -> String { self.eval::<String>(source).await }
 
         /// Drive the runtime until every spawned future is done. A port whose
         /// pump is still running never settles, which is exactly the

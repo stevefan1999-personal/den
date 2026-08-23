@@ -39,7 +39,7 @@ use crate::{
 struct Subscriber {
     /// Identity, so that a post can skip its own channel. A raw pointer would
     /// do it too, but an id is comparable across threads without being one.
-    id: u64,
+    id:    u64,
     inbox: UnboundedSender<Message>,
 }
 
@@ -59,16 +59,16 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 #[rquickjs::class(rename = "NativeBroadcast")]
 pub struct NativeBroadcast {
     #[qjs(skip_trace)]
-    name: String,
+    name:  String,
     #[qjs(skip_trace)]
-    id: u64,
+    id:    u64,
     /// This channel's own inbox, until the pump takes it.
     #[qjs(skip_trace)]
     inbox: RefCell<Option<UnboundedReceiver<Message>>>,
     /// Ends the pump, and doubles as the closed flag: nothing else can tell a
     /// quiet channel from a closed one.
     #[qjs(skip_trace)]
-    stop: CancellationToken,
+    stop:  CancellationToken,
 }
 
 impl NativeBroadcast {
@@ -111,11 +111,8 @@ impl NativeBroadcast {
     /// cannot end it: this channel's own sender lives in the registry until
     /// then.
     async fn pump<'js>(
-        ctx: Ctx<'js>,
-        mut inbox: UnboundedReceiver<Message>,
-        stop: CancellationToken,
-        on_message: Function<'js>,
-        on_message_error: Function<'js>,
+        ctx: Ctx<'js>, mut inbox: UnboundedReceiver<Message>, stop: CancellationToken,
+        on_message: Function<'js>, on_message_error: Function<'js>,
     ) {
         while let Some(Some(message)) = stop.run_until_cancelled(inbox.recv()).await {
             NativePort::dispatch(&ctx, message, &on_message, &on_message_error);
@@ -166,10 +163,7 @@ impl NativeBroadcast {
     /// `nativeBroadcast.subscribe(onMessage, onMessageError)` — start
     /// delivering. Idempotent, and a no-op once closed.
     pub fn subscribe<'js>(
-        &self,
-        ctx: Ctx<'js>,
-        on_message: Function<'js>,
-        on_message_error: Function<'js>,
+        &self, ctx: Ctx<'js>, on_message: Function<'js>, on_message_error: Function<'js>,
     ) {
         let inbox = self
             .inbox
@@ -211,7 +205,7 @@ impl Drop for NativeBroadcast {
 #[rquickjs::class]
 pub struct BroadcastChannel<'js> {
     #[qjs(skip_trace)]
-    name: String,
+    name:   String,
     native: Class<'js, NativeBroadcast>,
     #[qjs(skip_trace)]
     closed: Cell<bool>,
@@ -226,14 +220,11 @@ impl<'js> BroadcastChannel<'js> {
             None => "undefined".to_owned(),
         };
         let native = Class::instance(ctx.clone(), NativeBroadcast::new(name.clone()))?;
-        let channel = Class::instance(
-            ctx.clone(),
-            Self {
-                name,
-                native: native.clone(),
-                closed: Cell::new(false),
-            },
-        )?;
+        let channel = Class::instance(ctx.clone(), Self {
+            name,
+            native: native.clone(),
+            closed: Cell::new(false),
+        })?;
         let on_message = Function::new(
             ctx.clone(),
             |ctx: Ctx<'js>,
@@ -275,9 +266,7 @@ impl<'js> BroadcastChannel<'js> {
     }
 
     #[qjs(get)]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
+    pub fn name(&self) -> &str { &self.name }
 
     pub fn post_message(&self, ctx: Ctx<'js>, message: Value<'js>) -> Result<()> {
         if self.closed.get() {
@@ -296,9 +285,7 @@ impl<'js> BroadcastChannel<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "BroadcastChannel"
-    }
+    pub fn to_string_tag() -> &'static str { "BroadcastChannel" }
 }
 
 /// NativeBroadcast stays off the public surface; the wrapper is the export.
@@ -374,13 +361,9 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{error}"))
         }
 
-        async fn run(&self, source: &'static str) {
-            self.eval::<()>(source).await
-        }
+        async fn run(&self, source: &'static str) { self.eval::<()>(source).await }
 
-        async fn text(&self, source: &'static str) -> String {
-            self.eval::<String>(source).await
-        }
+        async fn text(&self, source: &'static str) -> String { self.eval::<String>(source).await }
 
         /// Drive the runtime until every spawned future is done. An open
         /// channel whose pump is still running never settles, which is exactly

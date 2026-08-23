@@ -56,14 +56,10 @@ impl PortHandle {
     }
 
     /// Take this end's inbox, once, for a pump to await. `None` afterwards.
-    pub fn take_receiver(&mut self) -> Option<UnboundedReceiver<Envelope>> {
-        self.inbox.take()
-    }
+    pub fn take_receiver(&mut self) -> Option<UnboundedReceiver<Envelope>> { self.inbox.take() }
 
     /// Whether this end can still deliver to its peer.
-    pub fn is_open(&self) -> bool {
-        self.outbox.is_some()
-    }
+    pub fn is_open(&self) -> bool { self.outbox.is_some() }
 
     /// Detach the port: tell the peer, and stop being able to send or receive.
     /// Idempotent.
@@ -78,7 +74,5 @@ impl PortHandle {
 }
 
 impl Drop for PortHandle {
-    fn drop(&mut self) {
-        self.close();
-    }
+    fn drop(&mut self) { self.close(); }
 }

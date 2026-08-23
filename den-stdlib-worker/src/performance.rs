@@ -14,7 +14,7 @@ use rquickjs::{Class, Ctx, JsLifetime, Object, Result, atom::PredefinedAtom, cla
 #[rquickjs::class]
 pub struct Performance {
     #[qjs(skip_trace)]
-    origin: Instant,
+    origin:      Instant,
     time_origin: f64,
 }
 
@@ -43,19 +43,13 @@ impl Performance {
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Performance {
-    pub fn now(&self) -> f64 {
-        self.origin.elapsed().as_secs_f64() * 1000.0
-    }
+    pub fn now(&self) -> f64 { self.origin.elapsed().as_secs_f64() * 1000.0 }
 
     #[qjs(get)]
-    pub fn time_origin(&self) -> f64 {
-        self.time_origin
-    }
+    pub fn time_origin(&self) -> f64 { self.time_origin }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Performance"
-    }
+    pub fn to_string_tag() -> &'static str { "Performance" }
 }
 
 /// Previously `natives.now` / `natives.timeOrigin`. The instance is installed
