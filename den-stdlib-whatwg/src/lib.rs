@@ -44,6 +44,7 @@ const API: [&str; 14] = [
 
 #[rquickjs::module]
 pub mod whatwg {
+    use den_util::inherit;
     use rquickjs::{Class, Ctx, Result, class::JsClass, module::Exports};
 
     use crate::host::Host;
@@ -87,7 +88,7 @@ pub mod whatwg {
         install::<WebSocket>(ctx, "WebSocket")?;
         install::<XMLHttpRequest>(ctx, "XMLHttpRequest")?;
         install::<WritableStream>(ctx, "WritableStream")?;
-        Host::set_super_class::<File, Blob>(ctx)?;
+        inherit::<File, Blob>(ctx)?;
         Host::set_event_target_proto::<ProgressEvent>(ctx, "Event")?;
         Host::set_event_target_proto::<CloseEvent>(ctx, "Event")?;
         Host::set_event_target_proto::<FileReader>(ctx, "EventTarget")?;

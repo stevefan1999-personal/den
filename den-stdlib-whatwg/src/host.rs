@@ -2,9 +2,10 @@
 
 use std::ffi::CString;
 
+use den_util::{BufferSource, Probe as _};
 use rquickjs::{
-    ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol,
-    TypedArray, Value, class::JsClass, function::Constructor, qjs,
+    ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol, Value,
+    class::JsClass, function::Constructor, qjs,
 };
 
 use crate::{
@@ -32,22 +33,8 @@ impl Host {
     }
 
     pub fn throw_dom(ctx: &Ctx<'_>, message: &str, name: &str) -> rquickjs::Error {
-        if let Ok(name_c) = CString::new(name)
-            && let Ok(message_c) = CString::new(message)
-        {
-            // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack
-            // buffer (quickjs.c:62309), so the caller's text is passed as an
-            // *argument* to a constant `%s` format, never as the format itself.
-            // Both C strings outlive the call.
-            unsafe {
-                qjs::JS_ThrowDOMException(
-                    ctx.as_raw().as_ptr(),
-                    name_c.as_ptr(),
-                    c"%s".as_ptr(),
-                    message_c.as_ptr(),
-                );
-            }
-            return rquickjs::Error::Exception;
+        if CString::new(name).is_ok() && CString::new(message).is_ok() {
+            return den_util::throw_dom_exception(ctx, name, message);
         }
         if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
             && let Ok(exc) = ctor.construct::<_, Value>((message, name))
@@ -90,65 +77,57 @@ impl Host {
         Exception::throw_message(ctx, message)
     }
 
-    pub fn coerce_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-        Ok(Coerced::<String>::from_js(ctx, value)?.0)
-    }
-
     /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with U+FFFD.
     pub fn coerce_usv_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-        let js = Coerced::<rquickjs::String>::from_js(ctx, value.clone())?;
-        match js.to_string() {
-            Ok(text) => Ok(text),
-            Err(_) => {
-                let convert: Function = ctx.eval(
-                    "(v) => { const s = String(v); let o = ''; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c >= 0xD800 && c <= 0xDBFF) { const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0; if (d >= 0xDC00 && d <= 0xDFFF) { o += String.fromCharCode(c, d); i++; } else { o += '\\uFFFD'; } } else if (c >= 0xDC00 && c <= 0xDFFF) { o += '\\uFFFD'; } else { o += String.fromCharCode(c); } } return o; }",
-                )?;
-                convert.call((value,))
-            }
+        let value = if value.is_string() {
+            value
+        } else {
+            Coerced::<rquickjs::String>::from_js(ctx, value)?
+                .0
+                .into_value()
+        };
+        if let Some(string) = value.as_string()
+            && let Ok(text) = string.to_string()
+        {
+            return Ok(text);
         }
+        let mut len = std::mem::MaybeUninit::uninit();
+        // SAFETY: `JS_ToCStringLenUTF16` writes the unit count and returns a
+        // buffer QuickJS owns until `JS_FreeCStringUTF16`. Null means a JS
+        // exception is pending. The slice is only used before that free.
+        let ptr = unsafe {
+            qjs::JS_ToCStringLenUTF16(ctx.as_raw().as_ptr(), len.as_mut_ptr(), value.as_raw())
+        };
+        if ptr.is_null() {
+            return Err(rquickjs::Error::Exception);
+        }
+        let len = usize::try_from(unsafe { len.assume_init() }).unwrap_or(0);
+        let units = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let text = String::from_utf16_lossy(units);
+        unsafe {
+            qjs::JS_FreeCStringUTF16(ctx.as_raw().as_ptr(), ptr);
+        }
+        Ok(text)
     }
 
+    /// Lenient `BufferSource` read: `None` for anything that is not a buffer
+    /// source, empty bytes for detached or unusable ones — never throws.
     pub fn buffer_source_bytes<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Option<Vec<u8>>> {
-        if Self::js_pred(ctx, "(v) => v instanceof ArrayBuffer", &value)? {
+        if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
             return Ok(Some(
-                ArrayBuffer::from_js(ctx, value)
-                    .ok()
-                    .and_then(|buffer| buffer.as_bytes().map(|bytes| bytes.to_vec()))
-                    .unwrap_or_default(),
+                buffer.as_bytes().map(<[u8]>::to_vec).unwrap_or_default(),
             ));
         }
-        if Self::js_pred(ctx, "(v) => ArrayBuffer.isView(v)", &value)? {
-            if let Some(obj) = value.as_object() {
-                if let Ok(buffer) = obj.get::<_, ArrayBuffer>("buffer") {
-                    let offset = obj.get::<_, usize>("byteOffset").unwrap_or(0);
-                    let len = obj.get::<_, usize>("byteLength").unwrap_or(0);
-                    return Ok(Some(match buffer.as_bytes() {
-                        Some(bytes) => {
-                            let end = offset.saturating_add(len).min(bytes.len());
-                            let start = offset.min(end);
-                            bytes[start..end].to_vec()
-                        }
-                        None => Vec::new(),
-                    }));
-                }
-            }
-            return Ok(Some(Vec::new()));
+        let is_view = ctx
+            .probe(|| BufferSource::is_array_buffer_view(ctx, &value).ok())
+            .unwrap_or(false);
+        if !is_view {
+            return Ok(None);
         }
-        if let Ok(view) = TypedArray::<u8>::from_js(ctx, value) {
-            return Ok(Some(
-                view.as_bytes()
-                    .map(|bytes| bytes.to_vec())
-                    .unwrap_or_default(),
-            ));
-        }
-        Ok(None)
-    }
-
-    fn js_pred<'js>(ctx: &Ctx<'js>, source: &str, value: &Value<'js>) -> Result<bool> {
-        match ctx.eval::<Function<'js>, _>(source) {
-            Ok(func) => func.call((value.clone(),)),
-            Err(_) => Ok(false),
-        }
+        Ok(Some(
+            ctx.probe(|| BufferSource::view_bytes(ctx, &value).ok())
+                .unwrap_or_default(),
+        ))
     }
 
     pub fn blob_like_bytes<'js>(_ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Vec<u8>> {
@@ -191,29 +170,6 @@ impl Host {
         } else {
             String::new()
         }
-    }
-
-    pub fn encode_base64(bytes: &[u8]) -> String {
-        const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-        for chunk in bytes.chunks(3) {
-            let b0 = chunk[0];
-            let b1 = chunk.get(1).copied().unwrap_or(0);
-            let b2 = chunk.get(2).copied().unwrap_or(0);
-            out.push(TABLE[(b0 >> 2) as usize] as char);
-            out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-            if chunk.len() > 1 {
-                out.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
-            } else {
-                out.push('=');
-            }
-            if chunk.len() > 2 {
-                out.push(TABLE[(b2 & 0x3f) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-        out
     }
 
     pub fn construct<'js, A, R>(ctx: &Ctx<'js>, name: &str, args: A) -> Result<R>
@@ -314,20 +270,6 @@ impl Host {
                 Ok(event)
             }
         }
-    }
-
-    pub fn set_super_class<'js, Sub, Super>(ctx: &Ctx<'js>) -> Result<()>
-    where
-        Sub: JsClass<'js>,
-        Super: JsClass<'js>,
-    {
-        if let (Some(sub), Some(super_proto)) = (
-            Class::<Sub>::prototype(ctx)?,
-            Class::<Super>::prototype(ctx)?,
-        ) {
-            sub.set_prototype(Some(&super_proto))?;
-        }
-        Ok(())
     }
 
     pub fn set_event_target_proto<'js, C: JsClass<'js>>(ctx: &Ctx<'js>, name: &str) -> Result<()> {

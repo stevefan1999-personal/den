@@ -25,7 +25,7 @@ pub(crate) fn parse(input: &str) -> Option<DataUrl> {
     if let Some(stripped) = strip_base64_flag(&mime_type) {
         mime_type = stripped;
         let text: String = body.iter().map(|byte| char::from(*byte)).collect();
-        body = forgiving_base64(&text)?;
+        body = den_util::base64_forgiving_decode(&text).ok()?;
     }
     if mime_type.starts_with(';') {
         mime_type.insert_str(0, "text/plain");
@@ -240,77 +240,11 @@ fn percent_decode(input: &[u8]) -> Vec<u8> {
     out
 }
 
-fn forgiving_base64(input: &str) -> Option<Vec<u8>> {
-    let mut filtered: Vec<u8> = input
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect();
-    if filtered.len() % 4 == 0 {
-        let trailing = filtered.iter().rev().take_while(|byte| **byte == b'=').count();
-        if trailing > 2 {
-            return None;
-        }
-        if trailing > 0 {
-            filtered.truncate(filtered.len() - trailing);
-        }
-    }
-    if filtered.iter().any(|byte| !is_base64_alphabet(*byte)) {
-        return None;
-    }
-    if filtered.is_empty() {
-        return Some(Vec::new());
-    }
-    if filtered.len() % 4 == 1 {
-        return None;
-    }
-    while filtered.len() % 4 != 0 {
-        filtered.push(b'=');
-    }
-    decode_base64(&filtered)
-}
-
-fn is_base64_alphabet(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/')
-}
-
-fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
-    let table = |byte: u8| -> Option<u8> {
-        Some(match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            b'=' => 0,
-            _ => return None,
-        })
-    };
-    let mut out = Vec::with_capacity(input.len() / 4 * 3);
-    for chunk in input.chunks(4) {
-        if chunk.len() < 4 {
-            return None;
-        }
-        let a = table(chunk[0])?;
-        let b = table(chunk[1])?;
-        let c = table(chunk[2])?;
-        let d = table(chunk[3])?;
-        out.push((a << 2) | (b >> 4));
-        if chunk[2] != b'=' {
-            out.push((b << 4) | (c >> 2));
-        }
-        if chunk[3] != b'=' {
-            out.push((c << 6) | d);
-        }
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_http_quoted_string, decode_base64, forgiving_base64, is_base64_alphabet,
-        parse, parse_mime, percent_decode, quoted_string_tokens_only, serialize_mime,
-        skip_http_whitespace, strip_base64_flag,
+        collect_http_quoted_string, parse, parse_mime, percent_decode,
+        quoted_string_tokens_only, serialize_mime, skip_http_whitespace, strip_base64_flag,
     };
 
     #[test]
@@ -365,11 +299,8 @@ mod tests {
         assert_eq!(strip_base64_flag(";base64;").as_deref(), None);
         assert_eq!(percent_decode(b"%FF"), vec![255]);
         assert_eq!(percent_decode(b"X"), vec![b'X']);
-        assert_eq!(forgiving_base64("WA").as_deref(), Some([b'X'].as_slice()));
-        assert_eq!(forgiving_base64("W A").as_deref(), Some([b'X'].as_slice()));
-        assert!(is_base64_alphabet(b'A'));
-        assert!(!is_base64_alphabet(b'*'));
-        assert_eq!(decode_base64(b"WA==").as_deref(), Some([b'X'].as_slice()));
+        assert_eq!(den_util::base64_forgiving_decode("WA").ok().as_deref(), Some(b"X" as &[u8]));
+        assert_eq!(den_util::base64_forgiving_decode("W A").ok().as_deref(), Some(b"X" as &[u8]));
         assert!(quoted_string_tokens_only(" x"));
         assert!(!quoted_string_tokens_only("\u{0008}"));
         assert_eq!(skip_http_whitespace("  x", 0), 2);

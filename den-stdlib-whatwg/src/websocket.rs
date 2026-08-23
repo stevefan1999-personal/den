@@ -10,7 +10,6 @@ use rquickjs::{
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Opt, Rest, This},
-    qjs,
 };
 
 use crate::{
@@ -97,39 +96,6 @@ impl<'js> WebSocket<'js> {
         } else {
             u16::try_from(number as u32).unwrap_or(u16::MAX)
         }
-    }
-
-    /// Web IDL `USVString`: ToString, then unpaired UTF-16 surrogates become U+FFFD.
-    fn to_usv_string(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-        let value = if value.is_string() {
-            value
-        } else {
-            Coerced::<rquickjs::String>::from_js(ctx, value)?
-                .0
-                .into_value()
-        };
-        if let Some(string) = value.as_string()
-            && let Ok(text) = string.to_string()
-        {
-            return Ok(text);
-        }
-        let mut len = std::mem::MaybeUninit::uninit();
-        // SAFETY: `JS_ToCStringLenUTF16` writes the unit count and returns a
-        // buffer QuickJS owns until `JS_FreeCStringUTF16`. Null means a JS
-        // exception is pending. The slice is only used before that free.
-        let ptr = unsafe {
-            qjs::JS_ToCStringLenUTF16(ctx.as_raw().as_ptr(), len.as_mut_ptr(), value.as_raw())
-        };
-        if ptr.is_null() {
-            return Err(rquickjs::Error::Exception);
-        }
-        let len = usize::try_from(unsafe { len.assume_init() }).unwrap_or(0);
-        let units = unsafe { std::slice::from_raw_parts(ptr, len) };
-        let text = String::from_utf16_lossy(units);
-        unsafe {
-            qjs::JS_FreeCStringUTF16(ctx.as_raw().as_ptr(), ptr);
-        }
-        Ok(text)
     }
 
     fn protocols_from_list(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<String>> {
@@ -417,7 +383,7 @@ impl<'js> WebSocket<'js> {
         } else if let Some(bytes) = Host::buffer_source_bytes(&ctx, data.clone())? {
             native.send_binary(bytes)
         } else {
-            native.send_text(Self::to_usv_string(&ctx, data)?)
+            native.send_text(Host::coerce_usv_string(&ctx, data)?)
         };
         match result {
             Ok(()) | Err(NativeWsError::Closed) => Ok(()),
@@ -441,7 +407,7 @@ impl<'js> WebSocket<'js> {
             }
         };
         let reason = match args.0.get(1) {
-            Some(value) if !value.is_undefined() => Self::to_usv_string(&ctx, value.clone())?,
+            Some(value) if !value.is_undefined() => Host::coerce_usv_string(&ctx, value.clone())?,
             _ => String::new(),
         };
         if let Some(code) = code
