@@ -8,6 +8,24 @@ use tokio::{
     sync::RwLock,
 };
 
+/// JS `write`/`send` payloads: UTF-8 text, a copied `Vec<u8>`, or a live
+/// `Uint8Array`. Detached buffers are refused rather than treated as empty.
+pub type JsByteBuf<'js> = Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>;
+
+pub struct JsBytes;
+
+impl JsBytes {
+    pub fn as_slice<'a, 'js>(buf: &'a JsByteBuf<'js>) -> Result<&'a [u8]> {
+        match buf {
+            Either::Left(text) => Ok(text.as_bytes()),
+            Either::Right(Either::Left(bytes)) => Ok(bytes.as_slice()),
+            Either::Right(Either::Right(array)) => array
+                .as_bytes()
+                .ok_or_else(|| Error::new_from_js_message("typed array", "bytes", "detached")),
+        }
+    }
+}
+
 #[derive(Clone, From, Into, Deref, DerefMut)]
 pub struct AsyncReadWrapper(pub Arc<RwLock<dyn AsyncRead + Unpin>>);
 
@@ -48,21 +66,10 @@ impl AsyncReadWrapper {
 pub struct AsyncWriteWrapper(pub Arc<RwLock<dyn AsyncWrite + Unpin>>);
 
 impl AsyncWriteWrapper {
-    pub async fn write_all<'js>(
-        self,
-        buf: Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>,
-    ) -> Result<()> {
-        let buf = match buf {
-            Either::Left(ref x) => x.as_bytes(),
-            Either::Right(Either::Left(ref x)) => x.as_slice(),
-            // `as_bytes` yields `None` on a detached buffer, which JS can arrange at will.
-            Either::Right(Either::Right(ref x)) => {
-                x.as_bytes()
-                    .ok_or_else(|| Error::new_from_js_message("typed array", "bytes", "detached"))?
-            }
-        };
+    pub async fn write_all<'js>(self, buf: JsByteBuf<'js>) -> Result<()> {
+        let bytes = JsBytes::as_slice(&buf)?;
         let mut write = self.write().await;
-        write.write_all(buf).await?;
+        write.write_all(bytes).await?;
         Ok(())
     }
 

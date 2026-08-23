@@ -17,7 +17,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-core       atob/btoa/gc, CancellationToken
       ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
       ├── den-stdlib-fs         den:fs
-      ├── den-stdlib-networking den:networking (TCP sockets)
+      ├── den-stdlib-networking den:networking (TCP, UDP, Unix, TLS sockets)
       ├── den-stdlib-sqlite     den:sqlite (rusqlite, bundled)
       ├── den-stdlib-text       TextEncoder / TextDecoder
       ├── den-stdlib-timer      setTimeout / setInterval
