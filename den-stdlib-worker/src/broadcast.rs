@@ -17,6 +17,7 @@ use std::{
     },
 };
 
+use den_util::throw_dom_exception;
 use rquickjs::{
     Class, Coerced, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
@@ -27,10 +28,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    events::{
-        EventTarget, MessageEvent, define_event_handler, dispatch_trusted, inherit,
-        throw_dom_exception,
-    },
+    events::{EventTarget, MessageEvent, define_event_handler, dispatch_trusted, inherit},
     message::Message,
     port::NativePort,
 };

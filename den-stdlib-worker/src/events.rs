@@ -12,12 +12,12 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    ffi::CString,
     rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use den_stdlib_core::report::{print_exception, report_exception, set_exception_sink};
+use den_util::throw_dom_exception;
 use rquickjs::{
     Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Result, Value,
@@ -51,25 +51,6 @@ pub(crate) fn new_dom_exception<'js>(
 ) -> Result<Value<'js>> {
     let ctor: rquickjs::Constructor<'js> = ctx.globals().get("DOMException")?;
     ctor.construct((message, name))
-}
-
-/// Throw `DOMException(message, name)`.
-pub(crate) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> Error {
-    let name = CString::new(name).unwrap_or_default();
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack buffer
-    // (quickjs.c:62309), so the caller's text is passed as an *argument* to a
-    // constant `%s` format, never as the format itself. Both C strings outlive
-    // the call.
-    unsafe {
-        qjs::JS_ThrowDOMException(
-            ctx.as_raw().as_ptr(),
-            name.as_ptr(),
-            c"%s".as_ptr(),
-            message.as_ptr(),
-        );
-    }
-    Error::Exception
 }
 
 fn unix_ms() -> f64 {
