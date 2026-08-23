@@ -16,7 +16,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use den_stdlib_core::report::{print_exception, report_exception, set_exception_sink};
+use den_stdlib_core::report::{
+    print_exception, report_exception, report_uncaught, set_exception_sink,
+};
 use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
@@ -842,12 +844,7 @@ impl<'js> EventTarget<'js> {
         } else {
             Ok(())
         };
-        if let Err(error) = outcome {
-            match error {
-                Error::Exception => report_exception(ctx, &ctx.catch()),
-                error => eprintln!("{error}"),
-            }
-        }
+        report_uncaught(ctx, outcome);
     }
 
     /// DOM §2.7 dispatch, AT_TARGET only. `trusted` is the user-agent mark:

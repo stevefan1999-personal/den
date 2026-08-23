@@ -46,7 +46,7 @@ use crate::{
     host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost},
     message::clone::split_transfer,
     port::{NativePort, pair, track_message_listeners},
-    report::{report_exception, sink_hook},
+    report::{report_uncaught, sink_hook},
     transport::PortHandle,
 };
 
@@ -327,12 +327,7 @@ fn report_error_at<'js>(
 
 fn escalate(ctx: &Ctx<'_>, message: String, filename: String, lineno: u32, colno: u32) {
     if let Some(hook) = sink_hook(ctx, "escalate") {
-        if let Err(error) = hook.call::<_, ()>((message, filename, lineno, colno)) {
-            match error {
-                Error::Exception => report_exception(ctx, &ctx.catch()),
-                other => eprintln!("{other}"),
-            }
-        }
+        report_uncaught(ctx, hook.call::<_, ()>((message, filename, lineno, colno)));
         return;
     }
     let text = format!("{message}\n    at {filename}:{lineno}:{colno}");
@@ -489,13 +484,8 @@ impl NativeWorker {
             let dispatched =
                 on_fault.call::<_, ()>((fault.message, fault.filename, fault.lineno, fault.colno));
             // The handler for "nobody handled an error" throwing is the end of
-            // the line; print it rather than lose it.
-            if let Err(error) = dispatched {
-                match error {
-                    Error::Exception => report_exception(&ctx, &ctx.catch()),
-                    other => eprintln!("{other}"),
-                }
-            }
+            // the line; report it rather than lose it.
+            report_uncaught(&ctx, dispatched);
         }
     }
 }

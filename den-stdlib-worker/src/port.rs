@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     message::{Message, throw_data_clone},
-    report::report_exception,
+    report::report_uncaught,
     transport::{Envelope, PortHandle},
 };
 
@@ -163,14 +163,9 @@ impl NativePort {
             }
         };
         // A handler that throws has nobody to propagate to: whoever posted the
-        // message is on another thread, or returned long ago. Print it like any
-        // other uncaught error instead of swallowing it.
-        if let Err(error) = outcome {
-            match error {
-                Error::Exception => report_exception(ctx, &ctx.catch()),
-                error => eprintln!("{error}"),
-            }
-        }
+        // message is on another thread, or returned long ago. Report it like
+        // any other uncaught error instead of swallowing it.
+        report_uncaught(ctx, outcome);
     }
 
     /// Clear the pending exception behind an `Err`, so that it cannot surface
@@ -256,12 +251,7 @@ impl NativePort {
         // gets its one `close` event. Fired after the teardown above so that a
         // listener sees a port that is already dead — `post` is a no-op and
         // `close()` idempotent — rather than one mid-collapse.
-        if let Err(error) = on_close.call::<_, ()>(()) {
-            match error {
-                Error::Exception => report_exception(&ctx, &ctx.catch()),
-                error => eprintln!("{error}"),
-            }
-        }
+        report_uncaught(&ctx, on_close.call::<_, ()>(()));
     }
 }
 
