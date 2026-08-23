@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[cfg(feature = "transpile")]
@@ -31,7 +31,11 @@ use {
 
 use crate::{
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
-    resolver::{file::AbsolutePathResolver, http::HttpResolver},
+    resolver::{
+        file::AbsolutePathResolver,
+        http::HttpResolver,
+        import_map::{ImportMap, ImportMapError, ImportMapResolver},
+    },
 };
 
 /// A rejection: the promise, and the value it rejected with. Both halves are
@@ -167,6 +171,7 @@ impl Engine {
 
         {
             let resolver = (
+                ImportMapResolver,
                 {
                     #[allow(unused_mut)]
                     let mut resolver = BuiltinResolver::default();
@@ -570,6 +575,21 @@ impl Engine {
         den_stdlib_worker::worker::shutdown(&self.context).await;
     }
 
+    /// Install an [import map](https://wicg.github.io/import-maps/) on this
+    /// realm. Relative `./` / `../` targets join against `base_dir`. Calling
+    /// again replaces the previous map.
+    pub async fn set_import_map(
+        &self,
+        json: &str,
+        base_dir: impl AsRef<Path> + Send,
+    ) -> Result<(), EngineError> {
+        let map = ImportMap::parse(json, base_dir.as_ref())?;
+        self.context
+            .with(move |ctx| Self::store_userdata(&ctx, map))
+            .await?;
+        Ok(())
+    }
+
     /// Point the realm's relative script URLs at `base`.
     #[cfg(feature = "stdlib-worker")]
     async fn set_base_url(&self, base: BaseUrl) -> rquickjs::Result<()> {
@@ -812,6 +832,8 @@ pub enum EngineError {
     EasyOxcTranspiler(EasyOxcTranspilerError),
     #[from]
     Rquickjs(rquickjs::Error),
+    #[from]
+    ImportMap(ImportMapError),
     #[cfg(feature = "transpile")]
     #[from]
     InferTranspileSyntaxError(den_transpiler_oxc::InferTranspileSyntaxError),
