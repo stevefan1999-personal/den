@@ -2,18 +2,10 @@
 //! `BroadcastChannel`, the `EventTarget` family, `AbortController`,
 //! `performance`, `navigator` and `structuredClone`.
 //!
-//! The split follows quickjs-libc and txiki.js: **Rust owns transport,
-//! (de)serialisation and threads**, exposed as a small bag of natives; the
-//! JS-visible API surface lives in `src/prelude/*.js`, because every interface
-//! here `extends EventTarget` and an `#[rquickjs::class]` can neither extend a
-//! JS class nor be extended by one.
-//!
-//! Each prelude file is `(function (natives, api) { …; return { …api, X } })`.
-//! They are evaluated in dependency order, each receiving the previous one's
-//! return value, and the last `api` becomes both the module's exports and a set
-//! of globals. `natives` is the shared, mutable bag: a prelude may publish a
-//! hook on it for an *earlier* prelude to call back into (that is how the port
-//! prelude gives the clone pre-pass a way to build a `MessagePort`).
+//! Event types are `#[rquickjs::class]` natives. Remaining JS-visible wrappers
+//! that still `extend EventTarget` live in `src/prelude/*.js` until they are
+//! ported; they are evaluated in dependency order against a shared `natives`
+//! bag.
 
 pub mod broadcast;
 pub mod events;
@@ -59,10 +51,8 @@ const API: [&str; 17] = [
     "structuredClone",
 ];
 
-/// The prelude, in dependency order. The filenames are what shows up in a stack
-/// trace, so they are the module-qualified paths rather than bare basenames.
-const PRELUDE: [(&str, &str); 8] = [
-    ("den:worker/events.js", include_str!("prelude/events.js")),
+/// Remaining JS preludes, in dependency order. Event types are native.
+const PRELUDE: [(&str, &str); 7] = [
     ("den:worker/abort.js", include_str!("prelude/abort.js")),
     (
         "den:worker/performance.js",
@@ -93,9 +83,31 @@ pub mod worker_module {
         object::Property,
     };
 
+    pub use super::events::{
+        CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
+    };
+
+    #[rquickjs::function(rename = "reportError")]
+    #[qjs(rename = "reportError")]
+    pub fn report_error<'js>(ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
+        super::events::report_error(ctx, value)
+    }
+
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
         for name in crate::API {
+            if matches!(
+                name,
+                "CustomEvent"
+                    | "ErrorEvent"
+                    | "Event"
+                    | "EventTarget"
+                    | "MessageEvent"
+                    | "PromiseRejectionEvent"
+                    | "reportError"
+            ) {
+                continue;
+            }
             declare.declare(name)?;
         }
         Ok(())
@@ -112,7 +124,37 @@ pub mod worker_module {
         crate::performance::PerformanceClock::install(ctx, &natives)?;
         crate::navigator::HostInfo::install(ctx, &natives)?;
 
+        let namespace = exports.module().namespace()?;
+        crate::events::finish(ctx, &namespace)?;
+        // Native functions have no `.prototype`; HTML `reportError` is an
+        // ordinary function, and the surface test distinguishes those from
+        // arrows by `typeof prototype === "object"`.
+        let report_error: Function<'js> = namespace.get("reportError")?;
+        report_error.set_name("reportError")?;
+        if report_error
+            .get::<_, Value<'js>>("prototype")?
+            .is_undefined()
+        {
+            report_error.set("prototype", Object::new(ctx.clone())?)?;
+        }
+
         let mut api = Object::new(ctx.clone())?;
+        for name in [
+            "CustomEvent",
+            "ErrorEvent",
+            "Event",
+            "EventTarget",
+            "MessageEvent",
+            "PromiseRejectionEvent",
+            "reportError",
+        ] {
+            api.set(name, namespace.get::<_, Value>(name)?)?;
+        }
+        api.set(
+            "__defineEventHandler",
+            Function::new(ctx.clone(), crate::events::define_event_handler)?,
+        )?;
+
         for (filename, source) in crate::PRELUDE {
             let mut options = EvalOptions::default();
             options.filename = Some(filename.to_owned());
@@ -123,12 +165,7 @@ pub mod worker_module {
         let globals = ctx.globals();
         for name in crate::API {
             let value: Value<'js> = api.get(name)?;
-            // A prelude that is still a stub exports nothing under its names;
-            // shadowing the global with `undefined` would be worse than leaving
-            // it alone.
             if !value.is_undefined() {
-                // HTML's `navigator` is a non-writable, non-configurable data
-                // property; everything else is a normal writable global.
                 if name == "navigator" {
                     globals.prop(name, Property::from(value.clone()).enumerable())?;
                 } else {
