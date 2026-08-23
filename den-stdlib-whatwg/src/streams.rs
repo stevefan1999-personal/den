@@ -2,7 +2,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use den_util::{BufferSource, Probe};
+use den_util::{BufferSource, Probe as _};
 use indexmap::indexmap;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, FromJs, Function, JsLifetime, Object, Promise, Result, TypedArray,
@@ -261,8 +261,8 @@ impl<'js> ReadableStream<'js> {
         } else if let Some(bytes) = ctx.probe(|| {
             BufferSource::is_array_buffer_view(ctx, &chunk)
                 .ok()
-                .filter(|is_view| *is_view)
-                .and_then(|_| BufferSource::view_bytes(ctx, &chunk).ok())
+                .filter(|is_view| *is_view)?;
+            BufferSource::view_bytes(ctx, &chunk).ok()
         }) {
             bytes
         } else {
@@ -322,8 +322,8 @@ impl<'js> ReadableStream<'js> {
             let Some(bytes) = ctx.probe(|| {
                 BufferSource::is_array_buffer_view(&ctx, &value)
                     .ok()
-                    .filter(|is_view| *is_view)
-                    .and_then(|_| BufferSource::view_bytes(&ctx, &value).ok())
+                    .filter(|is_view| *is_view)?;
+                BufferSource::view_bytes(&ctx, &value).ok()
             }) else {
                 return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
             };
