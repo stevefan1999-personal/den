@@ -13,8 +13,9 @@ keywords.workspace = true
 [dependencies]
 flate2 = "1"
 futures.workspace = true
-rquickjs = { workspace = true, features = ["macro", "futures"] }
-tokio = { workspace = true, features = ["net", "rt", "sync"] }
+indexmap.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures", "indexmap"] }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = [
   "connect",
   "handshake",
