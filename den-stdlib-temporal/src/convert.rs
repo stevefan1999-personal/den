@@ -6,6 +6,7 @@
 
 use std::{cmp::Ordering, str::FromStr};
 
+use den_util::Probe as _;
 use indexmap::IndexMap;
 use rquickjs::{
     BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Result, Value, atom::PredefinedAtom,
@@ -66,11 +67,8 @@ where
     C: JsClass<'js> + Clone,
 {
     let object = value.as_object()?;
-    let class = Class::<C>::from_object(object);
-    if class.is_none() && ctx.has_exception() {
-        drop(ctx.catch());
-    }
-    class.and_then(|class| class.try_borrow().ok().map(|borrowed| (*borrowed).clone()))
+    let class = ctx.probe(|| Class::<C>::from_object(object))?;
+    class.try_borrow().ok().map(|borrowed| (*borrowed).clone())
 }
 
 pub fn options_bag<'js>(
