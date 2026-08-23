@@ -1,14 +1,22 @@
 //! WHATWG web-platform APIs for den: Blob/File/FileReader/FormData,
 //! XMLHttpRequest, EventSource, URLPattern, compression streams and WebSocket.
 //!
-//! The split follows txiki.js and `den-stdlib-worker`: **Rust owns bytes-in /
-//! bytes-out natives**, the JS-visible classes that `extend EventTarget` live
-//! in `src/prelude/*.js`. FileReader, XHR, EventSource and WebSocket all need
-//! `EventTarget`, so `den:whatwg` is evaluated **after** `den:worker`.
+//! Classes are native `#[rquickjs::class]` types. EventTarget subclasses set
+//! `[[Prototype]]` to `globalThis.EventTarget.prototype` at evaluate time so
+//! `instanceof EventTarget` holds after `den:worker`.
 
+pub mod blob;
 pub mod compression;
+pub mod event_target;
+pub mod events;
+pub mod eventsource;
+pub mod file_reader;
+pub mod form_data;
+pub mod host;
+pub mod streams;
 pub mod urlpattern;
 pub mod websocket;
+pub mod xhr;
 
 /// Everything `den:whatwg` exports and installs as a global.
 ///
@@ -32,117 +40,57 @@ const API: [&str; 14] = [
     "XMLHttpRequest",
 ];
 
-/// The prelude, in dependency order. Filenames show up in stack traces.
-const PRELUDE: [(&str, &str); 10] = [
-    ("den:whatwg/streams.js", include_str!("prelude/streams.js")),
-    (
-        "den:whatwg/platform.js",
-        include_str!("prelude/platform.js"),
-    ),
-    ("den:whatwg/blob.js", include_str!("prelude/blob.js")),
-    ("den:whatwg/file.js", include_str!("prelude/file.js")),
-    (
-        "den:whatwg/form-data.js",
-        include_str!("prelude/form-data.js"),
-    ),
-    (
-        "den:whatwg/file-reader.js",
-        include_str!("prelude/file-reader.js"),
-    ),
-    ("den:whatwg/xhr.js", include_str!("prelude/xhr.js")),
-    (
-        "den:whatwg/eventsource.js",
-        include_str!("prelude/eventsource.js"),
-    ),
-    (
-        "den:whatwg/compression.js",
-        include_str!("prelude/compression.js"),
-    ),
-    (
-        "den:whatwg/websocket.js",
-        include_str!("prelude/websocket.js"),
-    ),
-];
-
-/// WritableStream is part of the streams polyfill CompressionStream needs, but
-/// is not on [`API`]: the WinterTC surface this crate is asked to install does
-/// not list it, and a test that iterated API would then demand it as a global.
-const STREAM_EXTRAS: [&str; 1] = ["WritableStream"];
-
 #[rquickjs::module]
 pub mod whatwg {
-    use rquickjs::{
-        Ctx, Function, Object, Result, Value,
-        class::JsClass,
-        context::EvalOptions,
-        module::{Declarations, Exports},
-    };
+    use rquickjs::{Class, Ctx, Result, class::JsClass, module::Exports};
 
-    use crate::{
-        compression::{Compressor, Decompressor},
+    use crate::host::Host;
+
+    pub use crate::{
+        blob::{Blob, File},
+        compression::{CompressionStream, DecompressionStream},
+        events::{CloseEvent, ProgressEvent},
+        eventsource::EventSource,
+        file_reader::FileReader,
+        form_data::FormData,
+        streams::{ReadableStream, TransformStream, WritableStream},
         urlpattern::URLPattern,
-        websocket::NativeWebSocket,
+        websocket::WebSocket,
+        xhr::XMLHttpRequest,
     };
 
-    #[qjs(declare)]
-    pub fn declare(declare: &Declarations) -> Result<()> {
-        for name in crate::API {
-            declare.declare(name)?;
+    fn install<'js, C: JsClass<'js>>(ctx: &Ctx<'js>, name: &str) -> Result<()> {
+        if let Some(ctor) = Class::<C>::create_constructor(ctx)? {
+            ctx.globals().set(name, ctor)?;
         }
         Ok(())
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
-        let natives = Object::new(ctx.clone())?;
-        natives.set(
-            "Compressor",
-            Compressor::constructor(ctx)?.ok_or_else(|| {
-                rquickjs::Exception::throw_internal(ctx, "Compressor constructor missing")
-            })?,
-        )?;
-        natives.set(
-            "Decompressor",
-            Decompressor::constructor(ctx)?.ok_or_else(|| {
-                rquickjs::Exception::throw_internal(ctx, "Decompressor constructor missing")
-            })?,
-        )?;
-        natives.set(
-            "NativeWebSocket",
-            NativeWebSocket::constructor(ctx)?.ok_or_else(|| {
-                rquickjs::Exception::throw_internal(ctx, "NativeWebSocket constructor missing")
-            })?,
-        )?;
-        let mut api = Object::new(ctx.clone())?;
-        for (filename, source) in crate::PRELUDE {
-            let mut options = EvalOptions::default();
-            options.filename = Some(filename.to_owned());
-            let factory: Function<'js> = ctx.eval_with_options(source, options)?;
-            api = factory.call((natives.clone(), api))?;
-        }
-
-        let globals = ctx.globals();
-        for name in crate::API {
-            let value: Value<'js> = if name == "URLPattern" {
-                URLPattern::constructor(ctx)?
-                    .ok_or_else(|| {
-                        rquickjs::Exception::throw_internal(ctx, "URLPattern constructor missing")
-                    })?
-                    .into_value()
-            } else {
-                api.get(name)?
-            };
-            if !value.is_undefined() {
-                globals.set(name, value.clone())?;
-            }
-            exports.export(name, value)?;
-        }
-        for name in crate::STREAM_EXTRAS {
-            let value: Value<'js> = api.get(name)?;
-            if !value.is_undefined() {
-                globals.set(name, value)?;
-            }
-        }
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _exports: &Exports<'js>) -> Result<()> {
+        install::<Blob>(ctx, "Blob")?;
+        install::<CloseEvent>(ctx, "CloseEvent")?;
+        install::<CompressionStream>(ctx, "CompressionStream")?;
+        install::<DecompressionStream>(ctx, "DecompressionStream")?;
+        install::<EventSource>(ctx, "EventSource")?;
+        install::<File>(ctx, "File")?;
+        install::<FileReader>(ctx, "FileReader")?;
+        install::<FormData>(ctx, "FormData")?;
+        install::<ProgressEvent>(ctx, "ProgressEvent")?;
+        install::<ReadableStream>(ctx, "ReadableStream")?;
+        install::<TransformStream>(ctx, "TransformStream")?;
+        install::<URLPattern>(ctx, "URLPattern")?;
+        install::<WebSocket>(ctx, "WebSocket")?;
+        install::<XMLHttpRequest>(ctx, "XMLHttpRequest")?;
+        install::<WritableStream>(ctx, "WritableStream")?;
+        Host::set_super_class::<File, Blob>(ctx)?;
+        Host::set_event_target_proto::<ProgressEvent>(ctx, "Event")?;
+        Host::set_event_target_proto::<CloseEvent>(ctx, "Event")?;
+        Host::set_event_target_proto::<FileReader>(ctx, "EventTarget")?;
+        Host::set_event_target_proto::<XMLHttpRequest>(ctx, "EventTarget")?;
+        Host::set_event_target_proto::<EventSource>(ctx, "EventTarget")?;
+        Host::set_event_target_proto::<WebSocket>(ctx, "EventTarget")?;
+        Host::install_formdata_symbol(ctx)?;
         Ok(())
     }
 }
