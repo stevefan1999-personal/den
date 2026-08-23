@@ -11,10 +11,13 @@ Made during the Easter holiday of 2023.
   transform → codegen, wired into the file and HTTP module loaders
 - A standard library exposed both as `den:*` modules and as globals: `console`, `atob`/`btoa`/`gc`,
   `TextEncoder`/`TextDecoder`, timers, `fetch` (`Headers`/`Request`/`Response`), `crypto.subtle.digest`,
-  `den:fs`, `den:networking` (TCP/UDP/Unix/TLS), `den:sqlite`, `den:process`
+  `den:fs`, `den:networking` (TCP/UDP/Unix/TLS), `den:sqlite`, `den:process`,
+  `Temporal` (`temporal_rs`)
 - WinterTC / WHATWG web platform APIs: `AbortController`, `Blob`/`File`/`FileReader`/`FormData`,
   `XMLHttpRequest`, `EventSource`, `URLPattern`, `CompressionStream`, `WebSocket`,
-  `performance.now`, `navigator.userAgentData`
+  `performance.now`, `navigator.userAgentData` — all native Rust classes, no JS preludes
+- test262 Temporal slice via the `vendor/test262` submodule
+  (`cargo test -p den-stdlib-temporal --test test262`)
 - Import maps and import attributes (`json` / `text` / `bytes`)
 - The WebAssembly JS API on a choice of two backends, wasmtime or wasmi, selected at compile time
 - Web Workers: `Worker` (classic and module), `MessageChannel`/`MessagePort`, `BroadcastChannel`,
