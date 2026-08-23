@@ -2,6 +2,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
+use den_util::{BufferSource, Probe};
 use indexmap::indexmap;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, FromJs, Function, JsLifetime, Object, Promise, Result, TypedArray,
@@ -257,21 +258,13 @@ impl<'js> ReadableStream<'js> {
         let chunk: Value = object.get("value")?;
         let src = if let Ok(buffer) = ArrayBuffer::from_js(ctx, chunk.clone()) {
             buffer.as_bytes().unwrap_or(&[]).to_vec()
-        } else if let Some(view) = chunk.as_object() {
-            let Ok(buffer) = view.get::<_, ArrayBuffer>("buffer") else {
-                return Ok(result);
-            };
-            let offset: usize = view.get("byteOffset").unwrap_or(0);
-            let length: usize = view.get("byteLength").unwrap_or(0);
-            let Some(bytes) = buffer.as_bytes() else {
-                return Ok(result);
-            };
-            let end = offset.saturating_add(length).min(bytes.len());
-            if offset < end {
-                bytes[offset..end].to_vec()
-            } else {
-                Vec::new()
-            }
+        } else if let Some(bytes) = ctx.probe(|| {
+            BufferSource::is_array_buffer_view(ctx, &chunk)
+                .ok()
+                .filter(|is_view| *is_view)
+                .and_then(|_| BufferSource::view_bytes(ctx, &chunk).ok())
+        }) {
+            bytes
         } else {
             return Ok(result);
         };
@@ -326,28 +319,15 @@ impl<'js> ReadableStream<'js> {
                 break;
             }
             let value: Value = object.get("value")?;
-            if value.is_undefined() || value.is_null() {
-                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
-            }
-            if value.as_string().is_some() || value.as_number().is_some() || value.as_bool().is_some()
-            {
-                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
-            }
-            let Some(view) = value.as_object() else {
+            let Some(bytes) = ctx.probe(|| {
+                BufferSource::is_array_buffer_view(&ctx, &value)
+                    .ok()
+                    .filter(|is_view| *is_view)
+                    .and_then(|_| BufferSource::view_bytes(&ctx, &value).ok())
+            }) else {
                 return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
             };
-            let Ok(buffer) = view.get::<_, rquickjs::ArrayBuffer>("buffer") else {
-                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
-            };
-            let offset: usize = view.get("byteOffset").unwrap_or(0);
-            let length: usize = view.get("byteLength").unwrap_or(0);
-            let Some(bytes) = buffer.as_bytes() else {
-                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
-            };
-            let end = offset.saturating_add(length).min(bytes.len());
-            if offset < end {
-                out.extend_from_slice(&bytes[offset..end]);
-            }
+            out.extend(bytes);
         }
         Ok(out)
     }
