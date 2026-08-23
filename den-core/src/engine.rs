@@ -207,6 +207,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:crypto");
                     }
+                    #[cfg(feature = "stdlib-process")]
+                    {
+                        resolver = resolver.with_module("den:process");
+                    }
                     #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
                     {
                         resolver = resolver.with_module("den:wasm");
@@ -276,6 +280,10 @@ impl Engine {
                     #[cfg(feature = "stdlib-crypto")]
                     {
                         loader = loader.with_module("den:crypto", den_stdlib_crypto::js_crypto);
+                    }
+                    #[cfg(feature = "stdlib-process")]
+                    {
+                        loader = loader.with_module("den:process", den_stdlib_process::js_process);
                     }
                     #[cfg(any(feature = "wasm-wasmtime", feature = "wasm-wasmi"))]
                     {
@@ -399,6 +407,14 @@ impl Engine {
                     let _ = Module::evaluate_def::<den_stdlib_crypto::js_crypto, _>(
                         ctx.clone(),
                         "den:crypto",
+                    )?;
+                }
+
+                #[cfg(feature = "stdlib-process")]
+                {
+                    let _ = Module::evaluate_def::<den_stdlib_process::js_process, _>(
+                        ctx.clone(),
+                        "den:process",
                     )?;
                 }
 
