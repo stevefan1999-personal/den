@@ -1,15 +1,25 @@
-//! test262 Temporal walker.
+//! Official test262 Temporal suite
+//! (`vendor/test262/test/built-ins/Temporal/**`).
 //!
-//! Walks `vendor/test262/test/built-ins/Temporal/{Instant,Duration}/**`,
-//! loads the harness files a test `$INCLUDE`s, evals in an Engine-free realm
-//! with `den:temporal` installed, and prints pass / skip / fail. The runner
-//! itself is not `#[ignore]`; individual files that are not yet in the green
-//! slice are counted as fail without panicking the process.
+//! Each official `.js` file is one cargo/nextest test. The file is read raw
+//! from the submodule and evaluated after the harness files it `$INCLUDE`s.
+//! This crate never rewrites files under `vendor/test262`.
+//!
+//! ```text
+//! cargo nextest run -p den-stdlib-temporal --test test262
+//! cargo nextest run -p den-stdlib-temporal --test test262 -E 'test(Instant/basic)'
+//! ```
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, Module, context::EvalOptions};
+use libtest_mimic::{Arguments, Failed, Trial};
+use rquickjs::{
+    AsyncContext, AsyncRuntime, CatchResultExt, CaughtError, Module, context::EvalOptions,
+};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -18,15 +28,13 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn test262_root() -> PathBuf {
-    workspace_root().join("vendor/test262")
-}
+fn test262_root() -> PathBuf { workspace_root().join("vendor/test262") }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Frontmatter {
     features: Vec<String>,
     includes: Vec<String>,
-    flags: Vec<String>,
+    flags:    Vec<String>,
     negative: bool,
 }
 
@@ -42,7 +50,7 @@ fn parse_frontmatter(source: &str) -> Frontmatter {
     Frontmatter {
         features: yaml_list(block, "features"),
         includes: yaml_list(block, "includes"),
-        flags: yaml_list(block, "flags"),
+        flags:    yaml_list(block, "flags"),
         negative: block.contains("\nnegative:") || block.contains("\nnegative :"),
     }
 }
@@ -117,7 +125,7 @@ fn collect_js_files(dir: &Path) -> Vec<PathBuf> {
         return files;
     };
     let mut entries: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
-    entries.sort_by_key(|entry| entry.path());
+    entries.sort_by_key(fs::DirEntry::path);
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
@@ -127,6 +135,14 @@ fn collect_js_files(dir: &Path) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+fn relative_to(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+        .replace('\\', "/")
 }
 
 fn host_prelude() -> &'static str {
@@ -142,110 +158,18 @@ fn host_prelude() -> &'static str {
     "#
 }
 
-async fn run_one(
-    runtime: &AsyncRuntime,
-    harness: &str,
-    includes: &[(String, String)],
-    test: &Path,
-    source: &str,
-    meta: &Frontmatter,
-) -> Result<(), String> {
-    let mut script = String::from(harness);
-    for include in &meta.includes {
-        let body = includes
-            .iter()
-            .find(|(name, _)| name == include)
-            .map(|(_, body)| body.as_str())
-            .ok_or_else(|| format!("missing include {include}"))?;
-        script.push('\n');
-        script.push_str(body);
-    }
-    script.push('\n');
-    script.push_str("try {\n");
-    script.push_str(source);
-    script.push_str(
-        "\n} catch (error) {\n  throw new Error((error && error.name) ? (error.name + ': ' + error.message) : String(error));\n}\n",
-    );
-
-    let context = AsyncContext::full(runtime)
-        .await
-        .map_err(|error| error.to_string())?;
-    context
-        .async_with(async |ctx| {
-            let run = async {
-                let (_module, evaluated) = Module::evaluate_def::<
-                    den_stdlib_temporal::js_temporal,
-                    _,
-                >(ctx.clone(), "den:temporal")?;
-                evaluated.into_future::<()>().await?;
-                let mut options = EvalOptions::default();
-                options.global = true;
-                options.promise = false;
-                options.strict = true;
-                options.filename = Some(test.display().to_string());
-                ctx.eval_with_options::<(), _>(script, options)?;
-                Ok::<_, rquickjs::Error>(())
-            };
-            run.await.catch(&ctx).map_err(|error| error.to_string())
-        })
-        .await
-}
-
-#[derive(Default)]
-struct Counts {
-    pass: usize,
-    skip: usize,
-    fail: usize,
-}
-
-/// The constructor / from / toString / valueOf slice we expect to keep green.
-fn is_green_slice(relative: &str) -> bool {
-    let path = relative.replace('\\', "/");
-    const PREFIXES: &[&str] = &[
-        "Instant/basic.js",
-        "Instant/constructor.js",
-        "Instant/from/argument-string.js",
-        "Instant/from/argument-instant.js",
-        "Instant/from/basic.js",
-        "Instant/prototype/toString/basic.js",
-        "Instant/prototype/valueOf/basic.js",
-        "Instant/fromEpochNanoseconds/basic.js",
-        "Duration/basic.js",
-        "Duration/constructor.js",
-        "Duration/from/argument-string.js",
-        "Duration/from/argument-duration.js",
-        "Duration/from/argument-propertybag.js",
-        "Duration/prototype/toString/options-undefined.js",
-        "Duration/prototype/toString/precision.js",
-        "Duration/prototype/valueOf/basic.js",
-    ];
-    PREFIXES
-        .iter()
-        .any(|prefix| path.ends_with(prefix) || path.contains(prefix))
-}
-
-#[tokio::test]
-async fn temporal_instant_and_duration_test262() {
-    let root = test262_root();
+fn load_harness(root: &Path) -> Result<(String, Vec<(String, String)>), Failed> {
     let harness = root.join("harness");
-    let tests = root.join("test/built-ins/Temporal");
-    assert!(
-        tests.is_dir(),
-        "vendor/test262 is missing Temporal tests; run `git submodule update --init vendor/test262`"
-    );
-
-    let mut files = collect_js_files(&tests.join("Instant"));
-    files.extend(collect_js_files(&tests.join("Duration")));
-    files.sort();
-
-    let mut core_harness = String::from(host_prelude());
+    let mut core = String::from(host_prelude());
     for name in ["assert.js", "sta.js"] {
-        core_harness.push('\n');
-        core_harness
-            .push_str(&fs::read_to_string(harness.join(name)).expect("test262 harness file"));
+        core.push('\n');
+        core.push_str(
+            &fs::read_to_string(harness.join(name))
+                .map_err(|error| format!("test262 harness {name}: {error}"))?,
+        );
     }
-    let extra_includes: Vec<(String, String)> = fs::read_dir(&harness)
-        .expect("harness")
+    let extras = fs::read_dir(&harness)
+        .map_err(|error| format!("test262 harness: {error}"))?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| {
             let path = entry.path();
@@ -259,73 +183,163 @@ async fn temporal_instant_and_duration_test262() {
             fs::read_to_string(&path).ok().map(|body| (name, body))
         })
         .collect();
+    Ok((core, extras))
+}
 
-    let runtime = AsyncRuntime::new().expect("runtime");
-    let mut counts = Counts::default();
-    let mut slice_fail = Vec::new();
-    let mut failures = Vec::new();
+fn run_one(
+    harness: &str, includes: &[(String, String)], test: &Path, source: &str, meta: &Frontmatter,
+) -> Result<(), Failed> {
+    let mut script = String::from(harness);
+    for include in &meta.includes {
+        let body = includes
+            .iter()
+            .find(|(name, _)| name == include)
+            .map(|(_, body)| body.as_str())
+            .ok_or_else(|| format!("missing include {include}"))?;
+        script.push('\n');
+        script.push_str(body);
+    }
+    script.push('\n');
+    script.push_str(source);
 
-    for file in &files {
-        let relative = file
-            .strip_prefix(&tests)
-            .unwrap_or(file)
-            .display()
-            .to_string();
-        let source = match fs::read_to_string(file) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(async {
+        let js = AsyncRuntime::new().map_err(|error| error.to_string())?;
+        let context = AsyncContext::full(&js)
+            .await
+            .map_err(|error| error.to_string())?;
+        context
+            .async_with(async |ctx| {
+                let run = async {
+                    let (_module, evaluated) = Module::evaluate_def::<
+                        den_stdlib_temporal::js_temporal,
+                        _,
+                    >(ctx.clone(), "den:temporal")?;
+                    evaluated.into_future::<()>().await?;
+                    let mut options = EvalOptions::default();
+                    options.global = true;
+                    options.promise = false;
+                    options.strict = true;
+                    options.filename = Some(test.display().to_string());
+                    ctx.eval_with_options::<(), _>(script, options)?;
+                    Ok::<_, rquickjs::Error>(())
+                };
+                run.await.catch(&ctx).map_err(|error| match error {
+                    CaughtError::Value(value) => {
+                        let object = value.as_object();
+                        let name = object
+                            .and_then(|object| object.get::<_, String>("name").ok())
+                            .unwrap_or_else(|| "Error".to_string());
+                        let message = object
+                            .and_then(|object| object.get::<_, String>("message").ok())
+                            .unwrap_or_else(|| format!("{value:?}"));
+                        format!("{name}: {message}")
+                    }
+                    other => other.to_string(),
+                })
+            })
+            .await
+    })?;
+    Ok(())
+}
+
+fn harness_classify() -> Result<(), Failed> {
+    assert!(
+        test262_root().ends_with("vendor/test262"),
+        "test262 root is the vendored submodule"
+    );
+    assert_eq!(
+        relative_to(
+            Path::new("/Temporal"),
+            Path::new("/Temporal/Instant/basic.js")
+        ),
+        "Instant/basic.js",
+        "trial names are official paths under built-ins/Temporal"
+    );
+    let meta = parse_frontmatter(
+        "/*---\nfeatures: [Temporal, Intl.DateTimeFormat]\nflags: [async]\n---*/\n",
+    );
+    assert_eq!(
+        should_skip(&meta),
+        Some("module/async flag"),
+        "async flag is a harness skip"
+    );
+    let intl = parse_frontmatter("/*---\nfeatures: [Temporal, Intl]\n---*/\n");
+    assert_eq!(
+        should_skip(&intl),
+        Some("unsupported feature"),
+        "Intl is not installed"
+    );
+    let ok = parse_frontmatter("/*---\nfeatures: [Temporal]\n---*/\n");
+    assert_eq!(should_skip(&ok), None, "plain Temporal is executable");
+    assert!(
+        collect_js_files(Path::new("/den-test262-no-such-dir")).is_empty(),
+        "missing tree walks to empty"
+    );
+    if test262_root().join("harness").is_dir() {
+        let (core, extras) = load_harness(&test262_root())?;
+        assert!(
+            run_one(&core, &extras, Path::new("harness::empty"), "", &ok).is_ok(),
+            "empty official body still installs den:temporal"
+        );
+    }
+    Ok(())
+}
+
+fn main() {
+    let mut tests = vec![Trial::test("harness::classify", harness_classify)];
+    let root = test262_root();
+    let suite = root.join("test/built-ins/Temporal");
+    if !suite.is_dir() {
+        tests.push(Trial::test("vendor/test262", || {
+            Err(
+                "vendor/test262 is missing Temporal tests; run `git submodule update --init \
+                 vendor/test262`"
+                    .into(),
+            )
+        }));
+        libtest_mimic::run(&Arguments::from_args(), tests).exit();
+    }
+    let (core_harness, extra_includes) = match load_harness(&root) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            tests.push(Trial::test("vendor/test262", move || Err(error)));
+            libtest_mimic::run(&Arguments::from_args(), tests).exit();
+        }
+    };
+    let harness = Arc::new(core_harness);
+    let includes = Arc::new(extra_includes);
+    let mut files = collect_js_files(&suite);
+    files.sort();
+    if files.is_empty() {
+        tests.push(Trial::test("vendor/test262", || {
+            Err("walker found no tests under vendor/test262/test/built-ins/Temporal".into())
+        }));
+    }
+    for file in files {
+        let relative = relative_to(&suite, &file);
+        let source = match fs::read_to_string(&file) {
             Ok(source) => source,
             Err(error) => {
-                counts.fail += 1;
-                failures.push(format!("{relative}: read: {error}"));
+                tests.push(Trial::test(relative, move || {
+                    Err(format!("read: {error}").into())
+                }));
                 continue;
             }
         };
         let meta = parse_frontmatter(&source);
-        if let Some(reason) = should_skip(&meta) {
-            counts.skip += 1;
-            println!("skip  {relative} ({reason})");
-            continue;
-        }
-        match run_one(
-            &runtime,
-            &core_harness,
-            &extra_includes,
-            file,
-            &source,
-            &meta,
-        )
-        .await
-        {
-            Ok(()) => {
-                counts.pass += 1;
-                println!("pass  {relative}");
-            }
-            Err(error) => {
-                counts.fail += 1;
-                let line = format!("{relative}: {error}");
-                println!("fail  {line}");
-                if is_green_slice(&relative) {
-                    slice_fail.push(line.clone());
-                }
-                failures.push(line);
-            }
-        }
+        let ignored = should_skip(&meta).is_some();
+        let harness = Arc::clone(&harness);
+        let includes = Arc::clone(&includes);
+        tests.push(
+            Trial::test(relative, move || {
+                run_one(&harness, &includes, &file, &source, &meta)
+            })
+            .with_ignored_flag(ignored),
+        );
     }
-
-    println!(
-        "test262 Temporal Instant+Duration: {} pass, {} skip, {} fail ({} files)",
-        counts.pass,
-        counts.skip,
-        counts.fail,
-        files.len()
-    );
-
-    assert!(
-        !files.is_empty(),
-        "walker found no tests under vendor/test262/test/built-ins/Temporal"
-    );
-    assert!(
-        slice_fail.is_empty(),
-        "green slice failed:\n{}",
-        slice_fail.join("\n")
-    );
+    libtest_mimic::run(&Arguments::from_args(), tests).exit();
 }

@@ -4,8 +4,7 @@
 //! ad-hoc `Object::set` loop. Slot-bearing Temporal objects are probed without
 //! leaving a `TypeError` pending when the value is simply the wrong class.
 
-use std::cmp::Ordering;
-use std::str::FromStr;
+use std::{cmp::Ordering, str::FromStr};
 
 use indexmap::IndexMap;
 use rquickjs::{
@@ -13,14 +12,17 @@ use rquickjs::{
     class::JsClass, prelude::Opt,
 };
 use temporal_rs::{
-    Calendar, TimeZone,
-    fields::CalendarFields,
+    Calendar, TimeZone, UtcOffset,
+    fields::{CalendarFields, DateTimeFields, YearMonthCalendarFields, ZonedDateTimeFields},
     options::{
         DifferenceSettings, DisplayCalendar, Overflow, RelativeTo, RoundingIncrement, RoundingMode,
         RoundingOptions, ToStringRoundingOptions, Unit,
     },
     parsers::Precision,
-    partial::{PartialDate, PartialDuration, PartialTime},
+    partial::{
+        PartialDate, PartialDateTime, PartialDuration, PartialTime, PartialYearMonth,
+        PartialZonedDateTime,
+    },
 };
 
 use crate::{
@@ -40,8 +42,7 @@ pub fn throw_temporal<'js>(ctx: &Ctx<'js>, error: temporal_rs::TemporalError) ->
 }
 
 pub fn unwrap_temporal<'js, T>(
-    ctx: &Ctx<'js>,
-    result: temporal_rs::TemporalResult<T>,
+    ctx: &Ctx<'js>, result: temporal_rs::TemporalResult<T>,
 ) -> Result<T> {
     result.map_err(|error| throw_temporal(ctx, error))
 }
@@ -73,8 +74,7 @@ where
 }
 
 pub fn options_bag<'js>(
-    ctx: &Ctx<'js>,
-    options: Opt<Value<'js>>,
+    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
 ) -> Result<IndexMap<String, Value<'js>>> {
     let Some(value) = options.0 else {
         return Ok(IndexMap::new());
@@ -89,13 +89,34 @@ pub fn options_bag<'js>(
 }
 
 pub fn bag_value<'js, 'a>(
-    bag: &'a IndexMap<String, Value<'js>>,
-    key: &str,
+    bag: &'a IndexMap<String, Value<'js>>, key: &str,
 ) -> Option<&'a Value<'js>> {
     bag.get(key).filter(|value| !value.is_undefined())
 }
 
+/// ISO month codes are `M` + two digits + optional `L`. Syntax is checked
+/// when the field is read; calendar suitability happens later in `from`.
+pub fn reject_illformed_month_code<'js>(ctx: &Ctx<'js>, code: &str) -> Result<()> {
+    let bytes = code.as_bytes();
+    let well_formed = matches!(
+        bytes,
+        [b'M', tens, ones] | [b'M', tens, ones, b'L']
+            if tens.is_ascii_digit() && ones.is_ascii_digit()
+    );
+    if well_formed {
+        Ok(())
+    } else {
+        Err(Exception::throw_range(ctx, "monthCode is not well-formed"))
+    }
+}
+
 pub fn js_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
+    if value.is_symbol() {
+        return Err(Exception::throw_type(
+            ctx,
+            "cannot convert a Symbol to a String",
+        ));
+    }
     if let Some(string) = value.as_string() {
         return string.to_string();
     }
@@ -192,7 +213,8 @@ pub fn optional_truncated_u16<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Re
     }
 }
 
-/// `ToBigInt`, then an `i128`. Instant epoch nanoseconds sit well outside `i64`.
+/// `ToBigInt`, then an `i128`. Instant epoch nanoseconds sit well outside
+/// `i64`.
 pub fn to_big_int_i128<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i128> {
     if value.is_number() {
         return Err(Exception::throw_type(
@@ -247,8 +269,7 @@ pub fn to_display_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Di
 }
 
 pub fn bag_overflow<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<Option<Overflow>> {
     match bag_value(bag, "overflow") {
         None => Ok(None),
@@ -257,33 +278,11 @@ pub fn bag_overflow<'js>(
 }
 
 pub fn to_string_rounding_options<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<ToStringRoundingOptions> {
     let precision = match bag_value(bag, "fractionalSecondDigits") {
         None => Precision::Auto,
-        Some(value) => {
-            if let Some(string) = value.as_string() {
-                let name = string.to_string()?;
-                if name == "auto" {
-                    Precision::Auto
-                } else {
-                    return Err(Exception::throw_range(
-                        ctx,
-                        "fractionalSecondDigits must be \"auto\" or 0-9",
-                    ));
-                }
-            } else {
-                let digits = to_integer_if_integral(ctx, value)?;
-                if !(0..=9).contains(&digits) {
-                    return Err(Exception::throw_range(
-                        ctx,
-                        "fractionalSecondDigits must be \"auto\" or 0-9",
-                    ));
-                }
-                Precision::Digit(digits as u8)
-            }
-        }
+        Some(value) => fractional_second_digits(ctx, value)?,
     };
     let smallest_unit = match bag_value(bag, "smallestUnit") {
         None => None,
@@ -301,8 +300,7 @@ pub fn to_string_rounding_options<'js>(
 }
 
 pub fn to_difference_settings<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<DifferenceSettings> {
     let mut settings = DifferenceSettings::default();
     settings.largest_unit = match bag_value(bag, "largestUnit") {
@@ -322,8 +320,7 @@ pub fn to_difference_settings<'js>(
 }
 
 pub fn to_rounding_options<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<RoundingOptions> {
     let mut options = RoundingOptions::default();
     options.largest_unit = match bag_value(bag, "largestUnit") {
@@ -342,9 +339,38 @@ pub fn to_rounding_options<'js>(
     Ok(options)
 }
 
+/// `GetStringOrNumberOption` for `fractionalSecondDigits`: a Number is
+/// floored, everything else goes through `ToString` (`"auto"` or RangeError).
+fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
+    if value.is_number() {
+        let number = to_number(ctx, value)?;
+        if !number.is_finite() {
+            return Err(Exception::throw_range(
+                ctx,
+                "fractionalSecondDigits must be \"auto\" or 0-9",
+            ));
+        }
+        let digits = number.floor() as i128;
+        if !(0..=9).contains(&digits) {
+            return Err(Exception::throw_range(
+                ctx,
+                "fractionalSecondDigits must be \"auto\" or 0-9",
+            ));
+        }
+        return Ok(Precision::Digit(digits as u8));
+    }
+    let name = js_to_string(ctx, value)?;
+    if name == "auto" {
+        return Ok(Precision::Auto);
+    }
+    Err(Exception::throw_range(
+        ctx,
+        "fractionalSecondDigits must be \"auto\" or 0-9",
+    ))
+}
+
 fn rounding_increment<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<Option<RoundingIncrement>> {
     match bag_value(bag, "roundingIncrement") {
         None => Ok(None),
@@ -359,14 +385,36 @@ pub fn to_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> 
     if value.is_undefined() {
         return Ok(Calendar::ISO);
     }
-    if !value.is_string() {
-        return Err(Exception::throw_type(
-            ctx,
-            "calendar must be a calendar identifier string",
-        ));
+    if value.is_string() {
+        let identifier = value.get::<String>()?;
+        return Calendar::from_str(&identifier).map_err(|error| throw_temporal(ctx, error));
     }
-    let identifier = value.get::<String>()?;
-    Calendar::from_str(&identifier).map_err(|error| throw_temporal(ctx, error))
+    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
+        return Ok(date.inner.calendar().clone());
+    }
+    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
+        return Ok(date_time.inner.calendar().clone());
+    }
+    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
+        return Ok(year_month.inner.calendar().clone());
+    }
+    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
+        return Ok(month_day.inner.calendar().clone());
+    }
+    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
+        return Ok(zoned.inner.calendar().clone());
+    }
+    if let Some(object) = value.as_object() {
+        if let Ok(identifier) = object.get::<_, Value>("calendarId") {
+            if !identifier.is_undefined() && !identifier.is_null() {
+                return to_calendar(ctx, &identifier);
+            }
+        }
+    }
+    Err(Exception::throw_type(
+        ctx,
+        "calendar must be a calendar identifier string",
+    ))
 }
 
 pub fn optional_calendar<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<Calendar> {
@@ -378,14 +426,24 @@ pub fn optional_calendar<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<
 }
 
 pub fn to_time_zone<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZone> {
-    if !value.is_string() {
-        return Err(Exception::throw_type(
-            ctx,
-            "time zone must be a time zone identifier string",
-        ));
+    if value.is_string() {
+        let identifier = value.get::<String>()?;
+        return TimeZone::try_from_str(&identifier).map_err(|error| throw_temporal(ctx, error));
     }
-    let identifier = value.get::<String>()?;
-    TimeZone::try_from_str(&identifier).map_err(|error| throw_temporal(ctx, error))
+    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
+        return Ok(*zoned.inner.time_zone());
+    }
+    if let Some(object) = value.as_object() {
+        if let Ok(identifier) = object.get::<_, Value>("timeZoneId") {
+            if identifier.is_string() {
+                return to_time_zone(ctx, &identifier);
+            }
+        }
+    }
+    Err(Exception::throw_type(
+        ctx,
+        "time zone must be a time zone identifier string",
+    ))
 }
 
 pub fn optional_time_zone<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<Option<TimeZone>> {
@@ -436,8 +494,7 @@ pub fn to_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_r
 }
 
 pub fn duration_from_bag<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<temporal_rs::Duration> {
     let partial = PartialDuration {
         years: bag_optional_i64(ctx, bag, "years")?,
@@ -455,9 +512,7 @@ pub fn duration_from_bag<'js>(
 }
 
 fn bag_optional_i64<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
-    key: &str,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
 ) -> Result<Option<i64>> {
     match bag_value(bag, key) {
         None => Ok(None),
@@ -466,9 +521,7 @@ fn bag_optional_i64<'js>(
 }
 
 fn bag_optional_i128<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
-    key: &str,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
 ) -> Result<Option<i128>> {
     match bag_value(bag, key) {
         None => Ok(None),
@@ -477,9 +530,7 @@ fn bag_optional_i128<'js>(
 }
 
 fn bag_optional_truncated_i32<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
-    key: &str,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
 ) -> Result<Option<i32>> {
     match bag_value(bag, key) {
         None => Ok(None),
@@ -493,9 +544,7 @@ fn bag_optional_truncated_i32<'js>(
 }
 
 fn bag_optional_truncated_u8<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
-    key: &str,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
 ) -> Result<Option<u8>> {
     match bag_optional_truncated_i32(ctx, bag, key)? {
         None => Ok(None),
@@ -506,9 +555,7 @@ fn bag_optional_truncated_u8<'js>(
 }
 
 fn bag_optional_truncated_u16<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
-    key: &str,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
 ) -> Result<Option<u16>> {
     match bag_optional_truncated_i32(ctx, bag, key)? {
         None => Ok(None),
@@ -519,8 +566,7 @@ fn bag_optional_truncated_u16<'js>(
 }
 
 pub fn calendar_fields_from_bag<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<CalendarFields> {
     let mut fields = CalendarFields::new();
     if let Some(year) = bag_optional_truncated_i32(ctx, bag, "year")? {
@@ -542,8 +588,7 @@ pub fn calendar_fields_from_bag<'js>(
 }
 
 pub fn partial_time_from_bag<'js>(
-    ctx: &Ctx<'js>,
-    bag: &IndexMap<String, Value<'js>>,
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<PartialTime> {
     Ok(PartialTime {
         hour: bag_optional_truncated_u8(ctx, bag, "hour")?,
@@ -562,10 +607,96 @@ pub fn bag_calendar<'js>(ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>) -> 
     }
 }
 
+fn bag_utc_offset<'js>(
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
+) -> Result<Option<UtcOffset>> {
+    match bag_value(bag, "offset") {
+        None => Ok(None),
+        Some(value) => {
+            let identifier = js_to_string(ctx, value)?;
+            UtcOffset::from_str(&identifier)
+                .map(Some)
+                .map_err(|error| throw_temporal(ctx, error))
+        }
+    }
+}
+
+fn date_from_bag<'js>(
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+) -> Result<temporal_rs::PlainDate> {
+    let partial = PartialDate {
+        calendar_fields: calendar_fields_from_bag(ctx, bag)?,
+        calendar: bag_calendar(ctx, bag)?,
+    };
+    unwrap_temporal(ctx, temporal_rs::PlainDate::from_partial(partial, overflow))
+}
+
+fn date_time_from_bag<'js>(
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+) -> Result<temporal_rs::PlainDateTime> {
+    let partial = PartialDateTime {
+        fields: DateTimeFields {
+            calendar_fields: calendar_fields_from_bag(ctx, bag)?,
+            time: partial_time_from_bag(ctx, bag)?,
+        },
+        calendar: bag_calendar(ctx, bag)?,
+    };
+    unwrap_temporal(
+        ctx,
+        temporal_rs::PlainDateTime::from_partial(partial, overflow),
+    )
+}
+
+fn year_month_from_bag<'js>(
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+) -> Result<temporal_rs::PlainYearMonth> {
+    let partial = PartialYearMonth {
+        calendar_fields: YearMonthCalendarFields::from(calendar_fields_from_bag(ctx, bag)?),
+        calendar: bag_calendar(ctx, bag)?,
+    };
+    unwrap_temporal(
+        ctx,
+        temporal_rs::PlainYearMonth::from_partial(partial, overflow),
+    )
+}
+
+fn month_day_from_bag<'js>(
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+) -> Result<temporal_rs::PlainMonthDay> {
+    let partial = PartialDate {
+        calendar_fields: calendar_fields_from_bag(ctx, bag)?,
+        calendar: bag_calendar(ctx, bag)?,
+    };
+    unwrap_temporal(
+        ctx,
+        temporal_rs::PlainMonthDay::from_partial(partial, overflow),
+    )
+}
+
+fn zoned_from_bag<'js>(
+    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+) -> Result<temporal_rs::ZonedDateTime> {
+    let timezone = match bag_value(bag, "timeZone") {
+        None => None,
+        Some(value) => Some(to_time_zone(ctx, value)?),
+    };
+    let partial = PartialZonedDateTime {
+        fields: ZonedDateTimeFields {
+            calendar_fields: calendar_fields_from_bag(ctx, bag)?,
+            time: partial_time_from_bag(ctx, bag)?,
+            offset: bag_utc_offset(ctx, bag)?,
+        },
+        timezone,
+        calendar: bag_calendar(ctx, bag)?,
+    };
+    unwrap_temporal(
+        ctx,
+        temporal_rs::ZonedDateTime::from_partial(partial, overflow, None, None),
+    )
+}
+
 pub fn to_plain_date<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
-    overflow: Option<Overflow>,
+    ctx: &Ctx<'js>, value: &Value<'js>, overflow: Option<Overflow>,
 ) -> Result<temporal_rs::PlainDate> {
     if let Some(date) = probe_class::<PlainDate>(ctx, value) {
         return Ok(date.inner);
@@ -582,11 +713,7 @@ pub fn to_plain_date<'js>(
     }
     if value.is_object() {
         let bag = IndexMap::from_js(ctx, value.clone())?;
-        let partial = PartialDate {
-            calendar_fields: calendar_fields_from_bag(ctx, &bag)?,
-            calendar: bag_calendar(ctx, &bag)?,
-        };
-        return unwrap_temporal(ctx, temporal_rs::PlainDate::from_partial(partial, overflow));
+        return date_from_bag(ctx, &bag, overflow);
     }
     Err(Exception::throw_type(
         ctx,
@@ -595,9 +722,7 @@ pub fn to_plain_date<'js>(
 }
 
 pub fn to_plain_time<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
-    overflow: Option<Overflow>,
+    ctx: &Ctx<'js>, value: &Value<'js>, overflow: Option<Overflow>,
 ) -> Result<temporal_rs::PlainTime> {
     if let Some(time) = probe_class::<PlainTime>(ctx, value) {
         return Ok(time.inner);
@@ -624,8 +749,7 @@ pub fn to_plain_time<'js>(
 }
 
 pub fn to_plain_date_time<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
+    ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::PlainDateTime> {
     if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
         return Ok(date_time.inner);
@@ -640,6 +764,10 @@ pub fn to_plain_date_time<'js>(
             temporal_rs::PlainDateTime::from_utf8(string.as_bytes()),
         );
     }
+    if value.is_object() {
+        let bag = IndexMap::from_js(ctx, value.clone())?;
+        return date_time_from_bag(ctx, &bag, None);
+    }
     Err(Exception::throw_type(
         ctx,
         "cannot convert value to Temporal.PlainDateTime",
@@ -647,11 +775,19 @@ pub fn to_plain_date_time<'js>(
 }
 
 pub fn to_plain_year_month<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
+    ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::PlainYearMonth> {
     if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
         return Ok(year_month.inner);
+    }
+    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
+        return unwrap_temporal(ctx, date.inner.to_plain_year_month());
+    }
+    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
+        return unwrap_temporal(ctx, date_time.inner.to_plain_date().to_plain_year_month());
+    }
+    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
+        return unwrap_temporal(ctx, zoned.inner.to_plain_date().to_plain_year_month());
     }
     if value.is_string() {
         let string = value.get::<String>()?;
@@ -660,6 +796,10 @@ pub fn to_plain_year_month<'js>(
             temporal_rs::PlainYearMonth::from_utf8(string.as_bytes()),
         );
     }
+    if value.is_object() {
+        let bag = IndexMap::from_js(ctx, value.clone())?;
+        return year_month_from_bag(ctx, &bag, None);
+    }
     Err(Exception::throw_type(
         ctx,
         "cannot convert value to Temporal.PlainYearMonth",
@@ -667,11 +807,19 @@ pub fn to_plain_year_month<'js>(
 }
 
 pub fn to_plain_month_day<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
+    ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::PlainMonthDay> {
     if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
         return Ok(month_day.inner);
+    }
+    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
+        return unwrap_temporal(ctx, date.inner.to_plain_month_day());
+    }
+    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
+        return unwrap_temporal(ctx, date_time.inner.to_plain_date().to_plain_month_day());
+    }
+    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
+        return unwrap_temporal(ctx, zoned.inner.to_plain_date().to_plain_month_day());
     }
     if value.is_string() {
         let string = value.get::<String>()?;
@@ -680,6 +828,10 @@ pub fn to_plain_month_day<'js>(
             temporal_rs::PlainMonthDay::from_utf8(string.as_bytes()),
         );
     }
+    if value.is_object() {
+        let bag = IndexMap::from_js(ctx, value.clone())?;
+        return month_day_from_bag(ctx, &bag, None);
+    }
     Err(Exception::throw_type(
         ctx,
         "cannot convert value to Temporal.PlainMonthDay",
@@ -687,8 +839,7 @@ pub fn to_plain_month_day<'js>(
 }
 
 pub fn to_zoned_date_time<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
+    ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::ZonedDateTime> {
     if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
         return Ok(zoned.inner);
@@ -703,6 +854,10 @@ pub fn to_zoned_date_time<'js>(
                 temporal_rs::options::OffsetDisambiguation::Reject,
             ),
         );
+    }
+    if value.is_object() {
+        let bag = IndexMap::from_js(ctx, value.clone())?;
+        return zoned_from_bag(ctx, &bag, None);
     }
     Err(Exception::throw_type(
         ctx,
@@ -720,6 +875,13 @@ pub fn to_relative_to<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Relativ
     if value.is_string() {
         let string = value.get::<String>()?;
         return unwrap_temporal(ctx, RelativeTo::try_from_str(&string));
+    }
+    if value.is_object() {
+        let bag = IndexMap::from_js(ctx, value.clone())?;
+        if bag_value(&bag, "timeZone").is_some() {
+            return zoned_from_bag(ctx, &bag, None).map(RelativeTo::ZonedDateTime);
+        }
+        return date_from_bag(ctx, &bag, None).map(RelativeTo::PlainDate);
     }
     Err(Exception::throw_type(
         ctx,
