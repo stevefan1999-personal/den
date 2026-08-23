@@ -2,84 +2,15 @@
 
 use std::sync::Arc;
 
+use den_util::BufferSource;
 use indexmap::{IndexMap, indexmap};
-use rquickjs::{
-    ArrayBuffer, Ctx, Exception, FromJs, Function, JsLifetime, Object, Result, Value, class::Trace,
-};
+use rquickjs::{ArrayBuffer, Ctx, JsLifetime, Result, class::Trace};
 use wasmtime::{
     Module as WasmModule,
     wasmparser::{ExternalKind, Parser, Payload},
 };
 
-use crate::{Probe, backend, engine::Engine, error::throw_compile_error};
-
-/// `[AllowShared] BufferSource` — the module bytes, copied out of the JS
-/// buffer.
-///
-/// The spec copies first ("let stableBytes be a copy of the bytes held by the
-/// buffer") precisely so that a `SharedArrayBuffer` mutated by another agent
-/// cannot be observed half-compiled.
-pub struct BufferSource(Vec<u8>);
-
-impl BufferSource {
-    pub fn bytes(&self) -> &[u8] { &self.0 }
-
-    pub fn into_bytes(self) -> Vec<u8> { self.0 }
-
-    /// Any `ArrayBufferView` — `Uint8Array`, `DataView`, `Float64Array`, … —
-    /// exposes its window over a buffer through these three properties, so
-    /// there is no need to enumerate the view types.
-    ///
-    /// `ArrayBuffer.isView` is the gate rather than the three properties
-    /// themselves: WebIDL's `BufferSource` is `ArrayBuffer or ArrayBufferView`
-    /// and nothing else, so a plain object wearing the right property names is
-    /// a `TypeError`, not a module.
-    fn view_bytes<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
-        let type_error = || Exception::throw_type(ctx, "expected a BufferSource");
-        let view = value.as_object().ok_or_else(type_error)?;
-        if !Self::is_array_buffer_view(ctx, value)? {
-            return Err(type_error());
-        }
-        let buffer: ArrayBuffer<'js> = view.get("buffer").map_err(|_| type_error())?;
-        let offset: usize = view.get("byteOffset").map_err(|_| type_error())?;
-        let length: usize = view.get("byteLength").map_err(|_| type_error())?;
-        let bytes = buffer
-            .as_bytes()
-            .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))?;
-        bytes
-            .get(offset..offset.saturating_add(length))
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| Exception::throw_type(ctx, "the view is out of bounds of its buffer"))
-    }
-
-    /// `ArrayBuffer.isView` — the one brand check that covers every typed array
-    /// and `DataView` without enumerating them, and that no ordinary object can
-    /// forge.
-    fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-        ctx.globals()
-            .get::<_, Object<'js>>("ArrayBuffer")?
-            .get::<_, Function<'js>>("isView")?
-            .call((value.clone(),))
-    }
-}
-
-impl<'js> FromJs<'js> for BufferSource {
-    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        // An `ArrayBuffer` and an `ArrayBufferView` are told apart by probing, so
-        // the probe must not leave its `TypeError` pending for the view path — and
-        // the plain `new WebAssembly.Module(uint8Array)` call *is* the view path.
-        match ctx.probe(|| ArrayBuffer::from_js(ctx, value.clone()).ok()) {
-            Some(buffer) => {
-                buffer
-                    .as_bytes()
-                    .map(<[u8]>::to_vec)
-                    .map(Self)
-                    .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))
-            }
-            None => Self::view_bytes(ctx, &value).map(Self),
-        }
-    }
-}
+use crate::{backend, engine::Engine, error::throw_compile_error};
 
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class]
@@ -146,6 +77,9 @@ impl Module {
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Module {
+    /// `[AllowShared]` per the spec: [`BufferSource`] copies the bytes before
+    /// compilation, so a `SharedArrayBuffer` mutated by another agent cannot
+    /// be observed half-compiled.
     #[qjs(constructor)]
     pub fn new(bytes: BufferSource, ctx: Ctx<'_>) -> Result<Self> {
         Self::compile(&ctx, bytes.into_bytes())
