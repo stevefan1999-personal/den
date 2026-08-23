@@ -11,7 +11,7 @@
 /// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
 /// job, and putting them here would duplicate the types fetch already
 /// constructs.
-const API: [&str; 8] = [
+const API: [&str; 9] = [
     "Blob",
     "CloseEvent",
     "File",
@@ -20,10 +20,11 @@ const API: [&str; 8] = [
     "ProgressEvent",
     "ReadableStream",
     "TransformStream",
+    "XMLHttpRequest",
 ];
 
 /// The prelude, in dependency order. Filenames show up in stack traces.
-const PRELUDE: [(&str, &str); 6] = [
+const PRELUDE: [(&str, &str); 7] = [
     ("den:whatwg/streams.js", include_str!("prelude/streams.js")),
     (
         "den:whatwg/platform.js",
@@ -39,6 +40,7 @@ const PRELUDE: [(&str, &str); 6] = [
         "den:whatwg/file-reader.js",
         include_str!("prelude/file-reader.js"),
     ),
+    ("den:whatwg/xhr.js", include_str!("prelude/xhr.js")),
 ];
 
 /// WritableStream is part of the streams polyfill CompressionStream needs, but
@@ -95,8 +97,8 @@ pub mod whatwg {
 mod tests {
     use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Promise};
 
-    /// A realm with `den:text`, `den:worker` and `den:whatwg` evaluated, in that
-    /// order: Blob uses TextEncoder, FileReader extends EventTarget.
+    /// A realm with text, fetch, worker and whatwg evaluated, in that order:
+    /// Blob uses TextEncoder, XHR uses fetch, FileReader extends EventTarget.
     async fn realm() -> (AsyncRuntime, AsyncContext) {
         let runtime = AsyncRuntime::new().expect("runtime");
         let context = AsyncContext::full(&runtime).await.expect("context");
@@ -106,6 +108,12 @@ mod tests {
                     Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?
                         .1
                         .finish::<()>()?;
+                    Module::evaluate_def::<den_stdlib_whatwg_fetch::js_whatwg, _>(
+                        ctx.clone(),
+                        "den:whatwg-fetch",
+                    )?
+                    .1
+                    .finish::<()>()?;
                     Module::evaluate_def::<den_stdlib_worker::js_worker, _>(
                         ctx.clone(),
                         "den:worker",
@@ -159,7 +167,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    const DOCUMENTED: [&str; 8] = [
+    const DOCUMENTED: [&str; 9] = [
         "Blob",
         "CloseEvent",
         "File",
@@ -168,6 +176,7 @@ mod tests {
         "ProgressEvent",
         "ReadableStream",
         "TransformStream",
+        "XMLHttpRequest",
     ];
 
     #[tokio::test]
@@ -175,7 +184,7 @@ mod tests {
         assert_eq!(crate::API, DOCUMENTED, "the API list and its tests drifted");
         let report = eval::<Vec<String>>(
             r#"
-        "Blob,CloseEvent,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream"
+        "Blob,CloseEvent,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,XMLHttpRequest"
           .split(",").map((name) => {
             const value = globalThis[name];
             if (typeof value !== "function") return `${name}: missing`;
@@ -299,4 +308,73 @@ mod tests {
             "hello|true|true"
         );
     }
+
+    #[tokio::test]
+    async fn xhr_get_and_post_against_a_local_listener() {
+        let server = super::local_http::serve(|incoming| {
+            if incoming.method == "POST" {
+                super::local_http::Outgoing::ok(incoming.body, "text/plain")
+            } else {
+                super::local_http::Outgoing {
+                    status: 200,
+                    headers: vec![
+                        ("Content-Type".into(), "text/plain".into()),
+                        ("X-Echo".into(), "yes".into()),
+                    ],
+                    body: b"hello-xhr".to_vec(),
+                    hang: false,
+                    silent: false,
+                }
+            }
+        })
+        .await;
+        let get_url = server.url("/get");
+        let post_url = server.url("/post");
+        let report = text_async(&format!(
+            r#"
+              (async () => {{
+                const get = await new Promise((resolve, reject) => {{
+                  const xhr = new XMLHttpRequest();
+                  xhr.open("GET", "{get_url}");
+                  xhr.onload = () => resolve(xhr);
+                  xhr.onerror = () => reject(new Error("xhr error"));
+                  xhr.send();
+                }});
+                const posted = await new Promise((resolve, reject) => {{
+                  const xhr = new XMLHttpRequest();
+                  xhr.open("POST", "{post_url}");
+                  xhr.setRequestHeader("Content-Type", "text/plain");
+                  xhr.onload = () => resolve(xhr);
+                  xhr.onerror = () => reject(new Error("xhr error"));
+                  xhr.send("ping");
+                }});
+                let syncThrew = false;
+                try {{
+                  const xhr = new XMLHttpRequest();
+                  xhr.open("GET", "{get_url}", false);
+                }} catch (error) {{
+                  syncThrew = error instanceof TypeError;
+                }}
+                return [
+                  get.status,
+                  get.responseText,
+                  get.getResponseHeader("x-echo"),
+                  get.readyState === XMLHttpRequest.DONE,
+                  posted.responseText,
+                  get.responseXML === null,
+                  get instanceof EventTarget,
+                  syncThrew,
+                ].join("|");
+              }})()
+            "#
+        ))
+        .await;
+        assert_eq!(
+            report,
+            "200|hello-xhr|yes|true|ping|true|true|true"
+        );
+    }
 }
+
+#[cfg(test)]
+mod local_http;

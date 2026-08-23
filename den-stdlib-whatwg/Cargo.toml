@@ -15,8 +15,9 @@ rquickjs = { workspace = true, features = ["macro", "futures"] }
 
 [dev-dependencies]
 den-stdlib-text = { version = "*", path = "../den-stdlib-text" }
+den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch" }
 den-stdlib-worker = { version = "*", path = "../den-stdlib-worker" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 
 [lints]
 workspace = true
