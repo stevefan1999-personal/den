@@ -12,6 +12,8 @@ keywords.workspace = true
 
 [dependencies]
 rquickjs = { workspace = true, features = ["macro", "futures"] }
+url = "2.5.8"
+urlpattern = "0.6"
 
 [dev-dependencies]
 den-stdlib-text = { version = "*", path = "../den-stdlib-text" }

@@ -1,4 +1,4 @@
-//! WHATWG web-platform APIs for den: Blob/File/FileReader/FormData, and later
+//! WHATWG web-platform APIs for den: Blob/File/FileReader/FormData,
 //! XMLHttpRequest, EventSource, URLPattern, compression streams and WebSocket.
 //!
 //! The split follows txiki.js and `den-stdlib-worker`: **Rust owns bytes-in /
@@ -6,12 +6,14 @@
 //! in `src/prelude/*.js`. FileReader, XHR, EventSource and WebSocket all need
 //! `EventTarget`, so `den:whatwg` is evaluated **after** `den:worker`.
 
+pub mod urlpattern;
+
 /// Everything `den:whatwg` exports and installs as a global.
 ///
 /// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
 /// job, and putting them here would duplicate the types fetch already
 /// constructs.
-const API: [&str; 10] = [
+const API: [&str; 11] = [
     "Blob",
     "CloseEvent",
     "EventSource",
@@ -21,6 +23,7 @@ const API: [&str; 10] = [
     "ProgressEvent",
     "ReadableStream",
     "TransformStream",
+    "URLPattern",
     "XMLHttpRequest",
 ];
 
@@ -57,9 +60,12 @@ const STREAM_EXTRAS: [&str; 1] = ["WritableStream"];
 pub mod whatwg {
     use rquickjs::{
         Ctx, Function, Object, Result, Value,
+        class::JsClass,
         context::EvalOptions,
         module::{Declarations, Exports},
     };
+
+    use crate::urlpattern::URLPattern;
 
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
@@ -82,7 +88,15 @@ pub mod whatwg {
 
         let globals = ctx.globals();
         for name in crate::API {
-            let value: Value<'js> = api.get(name)?;
+            let value: Value<'js> = if name == "URLPattern" {
+                URLPattern::constructor(ctx)?
+                    .ok_or_else(|| {
+                        rquickjs::Exception::throw_internal(ctx, "URLPattern constructor missing")
+                    })?
+                    .into_value()
+            } else {
+                api.get(name)?
+            };
             if !value.is_undefined() {
                 globals.set(name, value.clone())?;
             }
@@ -172,7 +186,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    const DOCUMENTED: [&str; 10] = [
+    const DOCUMENTED: [&str; 11] = [
         "Blob",
         "CloseEvent",
         "EventSource",
@@ -182,6 +196,7 @@ mod tests {
         "ProgressEvent",
         "ReadableStream",
         "TransformStream",
+        "URLPattern",
         "XMLHttpRequest",
     ];
 
@@ -190,7 +205,7 @@ mod tests {
         assert_eq!(crate::API, DOCUMENTED, "the API list and its tests drifted");
         let report = eval::<Vec<String>>(
             r#"
-        "Blob,CloseEvent,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,XMLHttpRequest"
+        "Blob,CloseEvent,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,URLPattern,XMLHttpRequest"
           .split(",").map((name) => {
             const value = globalThis[name];
             if (typeof value !== "function") return `${name}: missing`;
@@ -375,10 +390,7 @@ mod tests {
             "#
         ))
         .await;
-        assert_eq!(
-            report,
-            "200|hello-xhr|yes|true|ping|true|true|true"
-        );
+        assert_eq!(report, "200|hello-xhr|yes|true|ping|true|true|true");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -427,6 +439,25 @@ mod tests {
         .await
         .expect("EventSource test timed out");
         assert_eq!(report, "true|true|a|true|b|true");
+    }
+
+    #[tokio::test]
+    async fn url_pattern_matches_a_pathname_group() {
+        assert_eq!(
+            text(
+                r#"
+                  (() => {
+                    const pattern = new URLPattern({ pathname: "/books/:id" });
+                    const hit = pattern.test("https://x/books/1");
+                    const miss = pattern.test("https://x/authors/1");
+                    const exec = pattern.exec("https://x/books/1");
+                    return [hit, miss, exec.pathname.groups.id].join("|");
+                  })()
+                "#,
+            )
+            .await,
+            "true|false|1"
+        );
     }
 }
 
