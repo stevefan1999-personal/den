@@ -28,9 +28,8 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       └── den-utils             serde_json glue
 ```
 
-Two workspace members are not in that graph: `den-stdlib-io` (async read/write
-wrappers, used only by `den-stdlib-networking`) and `den-stdlib-regex`, whose
-`src/lib.rs` is empty — it is a placeholder, not a component.
+One workspace member is not in that graph: `den-stdlib-io` (async read/write
+wrappers, used only by `den-stdlib-networking`).
 
 `den-core` owns everything about *how* JavaScript gets in: the `Engine`
 (runtime + context + stop token), module resolution, module loading and the
@@ -514,9 +513,8 @@ keeps the process alive until `close()` or `terminate()`.
 - **WASI grants the host's stdio and environment when it is asked for.** There
   is no sandboxing knob: `wasiImports()` is all-or-nothing, and a caller passing
   it hands the module the real `WasiCtx` (§5.5). Nothing is linked without it.
-- **`den-stdlib-regex` is empty**, and several `den:fs` entry points
-  (`metadata`, `readDir`, `readLink`, `setPermissions`, `symlinkMetadata`) are
-  declared but unimplemented.
+- Several `den:fs` entry points (`metadata`, `readDir`, `readLink`,
+  `setPermissions`, `symlinkMetadata`) are declared but unimplemented.
 - **The binary swallows failures.** `src/main.rs` prints a load or run error and
   still returns `Ok(())`, so `den missing.js` exits 0. (Absolute entry points do
   resolve now: `den-core/src/resolver/file.rs`'s `AbsolutePathResolver` covers
