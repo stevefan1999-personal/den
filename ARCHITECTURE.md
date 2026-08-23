@@ -17,7 +17,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-core       atob/btoa/gc, CancellationToken
       ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
       ├── den-stdlib-fs         den:fs
-      ├── den-stdlib-networking den:networking (TCP sockets) → den-stdlib-io
+      ├── den-stdlib-networking den:networking (TCP sockets)
       ├── den-stdlib-sqlite     den:sqlite (rusqlite, bundled)
       ├── den-stdlib-text       TextEncoder / TextDecoder
       ├── den-stdlib-timer      setTimeout / setInterval
@@ -26,9 +26,6 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
                                 BroadcastChannel, EventTarget, structuredClone
 ```
-
-One workspace member is not in that graph: `den-stdlib-io` (async read/write
-wrappers, used only by `den-stdlib-networking`).
 
 `den-core` owns everything about *how* JavaScript gets in: the `Engine`
 (runtime + context + stop token), module resolution, module loading and the
@@ -608,7 +605,7 @@ asserts the right thing on either backend. The rest is `den-transpiler-oxc`
 (13: pipeline and arena behaviour), `den-core`'s integration tests in
 `den-core/tests/` (47 across `webassembly.rs`, `workers.rs`, `stdlib.rs`,
 `transpile.rs` and `lifetime.rs`), and 17 unit tests spread over `den-core`,
-`den-stdlib-io`, `den-stdlib-text` and `den-stdlib-whatwg-fetch`.
+`den-stdlib-networking`, `den-stdlib-text` and `den-stdlib-whatwg-fetch`.
 
 `den-core/tests/workers.rs` is the layer that proves a *user* gets the worker
 semantics: it writes its fixtures under `std::env::temp_dir()` at test time and

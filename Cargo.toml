@@ -6,7 +6,6 @@ members = [
     "den-stdlib-core",
     "den-stdlib-crypto",
     "den-stdlib-fs",
-    "den-stdlib-io",
     "den-stdlib-networking",
     "den-stdlib-sqlite",
     "den-stdlib-text",

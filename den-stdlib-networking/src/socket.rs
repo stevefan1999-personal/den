@@ -1,6 +1,5 @@
 use std::{ops::Deref, sync::Arc};
 
-use den_stdlib_io::{AsyncReadWrapper, AsyncWriteWrapper};
 use derive_more::{Deref, DerefMut, From, Into};
 use either::Either;
 use rquickjs::{Ctx, Error, JsLifetime, Result, TypedArray, class::Trace, convert::List};
@@ -9,7 +8,10 @@ use tokio::{
     sync::RwLock,
 };
 
-use crate::socket_addr::SocketAddrWrapper;
+use crate::{
+    io::{AsyncReadWrapper, AsyncWriteWrapper},
+    socket_addr::SocketAddrWrapper,
+};
 
 #[derive(Trace, JsLifetime, Clone, Debug, From, Into, Deref, DerefMut)]
 #[rquickjs::class(rename = "TcpStream")]

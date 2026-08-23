@@ -1069,21 +1069,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "den-stdlib-io"
-version = "0.4.0"
-dependencies = [
- "derive_more",
- "either",
- "rquickjs",
- "tokio",
-]
-
-[[package]]
 name = "den-stdlib-networking"
 version = "0.4.0"
 dependencies = [
  "delegate-attr",
- "den-stdlib-io",
  "derive_more",
  "either",
  "rquickjs",
