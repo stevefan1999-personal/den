@@ -15,10 +15,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, fractional_second_digits, get_defined, js_to_string,
-        optional_integral_i128, optional_integral_i64, optional_truncated_i128, options_object,
-        ordering_i32, probe_class, require_object, throw_value_of, to_number,
-        truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
+        calendar_slot, fractional_second_digits, get_defined, js_to_string, optional_integral_i64,
+        optional_integral_i128, optional_truncated_i128, options_object, ordering_i32, probe_class,
+        require_object, throw_value_of, to_number, truncated_u8_or_zero, truncated_u16_or_zero,
+        unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -33,9 +33,7 @@ pub struct PlainTime {
 }
 
 impl PlainTime {
-    pub(crate) fn wrap(inner: temporal_rs::PlainTime) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::PlainTime) -> Self { Self { inner } }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -85,34 +83,22 @@ impl PlainTime {
     }
 
     #[qjs(get)]
-    pub fn hour(&self) -> u8 {
-        self.inner.hour()
-    }
+    pub fn hour(&self) -> u8 { self.inner.hour() }
 
     #[qjs(get)]
-    pub fn minute(&self) -> u8 {
-        self.inner.minute()
-    }
+    pub fn minute(&self) -> u8 { self.inner.minute() }
 
     #[qjs(get)]
-    pub fn second(&self) -> u8 {
-        self.inner.second()
-    }
+    pub fn second(&self) -> u8 { self.inner.second() }
 
     #[qjs(get)]
-    pub fn millisecond(&self) -> u16 {
-        self.inner.millisecond()
-    }
+    pub fn millisecond(&self) -> u16 { self.inner.millisecond() }
 
     #[qjs(get)]
-    pub fn microsecond(&self) -> u16 {
-        self.inner.microsecond()
-    }
+    pub fn microsecond(&self) -> u16 { self.inner.microsecond() }
 
     #[qjs(get)]
-    pub fn nanosecond(&self) -> u16 {
-        self.inner.nanosecond()
-    }
+    pub fn nanosecond(&self) -> u16 { self.inner.nanosecond() }
 
     pub fn add<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
         let duration = to_duration_like(&ctx, &duration_like)?;
@@ -197,25 +183,21 @@ impl PlainTime {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.PlainTime"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.PlainTime" }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct TimeRecord {
-    hour: Option<i128>,
-    minute: Option<i128>,
-    second: Option<i128>,
+    hour:        Option<i128>,
+    minute:      Option<i128>,
+    second:      Option<i128>,
     millisecond: Option<i128>,
     microsecond: Option<i128>,
-    nanosecond: Option<i128>,
+    nanosecond:  Option<i128>,
 }
 
 impl TimeRecord {
-    fn is_empty(self) -> bool {
-        self == Self::default()
-    }
+    fn is_empty(self) -> bool { self == Self::default() }
 }
 
 fn existing_plain_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<temporal_rs::PlainTime> {
@@ -325,15 +307,15 @@ fn partial_from_record(
     ctx: &Ctx<'_>, record: TimeRecord, overflow: Overflow,
 ) -> Result<PartialTime> {
     Ok(PartialTime {
-        hour: record
+        hour:        record
             .hour
             .map(|value| regulate_field(ctx, value, 23, overflow).map(|value| value as u8))
             .transpose()?,
-        minute: record
+        minute:      record
             .minute
             .map(|value| regulate_field(ctx, value, 59, overflow).map(|value| value as u8))
             .transpose()?,
-        second: record
+        second:      record
             .second
             .map(|value| regulate_field(ctx, value, 59, overflow).map(|value| value as u8))
             .transpose()?,
@@ -345,7 +327,7 @@ fn partial_from_record(
             .microsecond
             .map(|value| regulate_field(ctx, value, 999, overflow))
             .transpose()?,
-        nanosecond: record
+        nanosecond:  record
             .nanosecond
             .map(|value| regulate_field(ctx, value, 999, overflow))
             .transpose()?,
@@ -454,12 +436,14 @@ fn string_rounding_options<'js>(
     };
     let precision = match get_defined(object, "fractionalSecondDigits")? {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(
-            ctx,
-            &value,
-            "fractionalSecondDigits must be finite",
-            to_option_string,
-        )?,
+        Some(value) => {
+            fractional_second_digits(
+                ctx,
+                &value,
+                "fractionalSecondDigits must be finite",
+                to_option_string,
+            )?
+        }
     };
     let rounding_mode = match get_defined(object, "roundingMode")? {
         None => None,

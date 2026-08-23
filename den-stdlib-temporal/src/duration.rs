@@ -18,9 +18,9 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, ctor_integer_if_integral, ctor_integer_if_integral_i128,
-        fractional_second_digits, get_defined, js_to_string, optional_integral_i128,
-        optional_integral_i64, optional_truncated_i32, optional_truncated_u16,
-        optional_truncated_u8, ordering_i32, probe_class, throw_value_of, to_calendar, to_number,
+        fractional_second_digits, get_defined, js_to_string, optional_integral_i64,
+        optional_integral_i128, optional_truncated_i32, optional_truncated_u8,
+        optional_truncated_u16, ordering_i32, probe_class, throw_value_of, to_calendar, to_number,
         to_time_zone, to_unit, unwrap_temporal,
     },
     plain_date::PlainDate,
@@ -149,9 +149,7 @@ fn partial_duration_from_object<'js>(
     Ok(partial)
 }
 
-fn to_temporal_duration<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<temporal_rs::Duration> {
+fn to_temporal_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
     if let Some(duration) = probe_class::<Duration>(ctx, value) {
         return Ok(duration.inner);
     }
@@ -169,9 +167,7 @@ fn to_temporal_duration<'js>(
     unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
 
-fn relative_to_option<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Option<RelativeTo>> {
+fn relative_to_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<RelativeTo>> {
     let Some(value) = get_defined(object, "relativeTo")? else {
         return Ok(None);
     };
@@ -216,11 +212,14 @@ fn relative_to_option<'js>(
         } else {
             return Err(Exception::throw_type(ctx, "offset must be a string"));
         };
-        UtcOffset::from_str(&text).map(Some).map_err(|error| out_of_range(ctx, error))
+        UtcOffset::from_str(&text)
+            .map(Some)
+            .map_err(|error| out_of_range(ctx, error))
     })?;
     let second = optional_truncated_u8(ctx, bag, "second")?;
-    let zone = get_defined(bag, "timeZone")?
-        .map_or(Ok(None), |time_zone| to_time_zone(ctx, &time_zone).map(Some))?;
+    let zone = get_defined(bag, "timeZone")?.map_or(Ok(None), |time_zone| {
+        to_time_zone(ctx, &time_zone).map(Some)
+    })?;
     let year = optional_truncated_i32(ctx, bag, "year")?;
     let date_fields = CalendarFields::new()
         .with_optional_year(year)
@@ -236,45 +235,52 @@ fn relative_to_option<'js>(
         nanosecond,
     };
     match zone {
-        None => unwrap_temporal(
-            ctx,
-            temporal_rs::PlainDate::from_partial(
-                PartialDate { calendar_fields: date_fields, calendar },
-                Some(Overflow::Constrain),
-            ),
-        )
-        .map(|date| Some(RelativeTo::PlainDate(date))),
-        Some(zone) => unwrap_temporal(
-            ctx,
-            temporal_rs::ZonedDateTime::from_partial(
-                PartialZonedDateTime {
-                    fields: ZonedDateTimeFields {
+        None => {
+            unwrap_temporal(
+                ctx,
+                temporal_rs::PlainDate::from_partial(
+                    PartialDate {
                         calendar_fields: date_fields,
-                        time:            clock,
-                        offset:          utc_offset,
+                        calendar,
                     },
-                    timezone: Some(zone),
-                    calendar,
-                },
-                Some(Overflow::Constrain),
-                Some(Disambiguation::Compatible),
-                Some(OffsetDisambiguation::Reject),
-            ),
-        )
-        .map(|zoned| Some(RelativeTo::ZonedDateTime(zoned))),
+                    Some(Overflow::Constrain),
+                ),
+            )
+            .map(|date| Some(RelativeTo::PlainDate(date)))
+        }
+        Some(zone) => {
+            unwrap_temporal(
+                ctx,
+                temporal_rs::ZonedDateTime::from_partial(
+                    PartialZonedDateTime {
+                        fields: ZonedDateTimeFields {
+                            calendar_fields: date_fields,
+                            time:            clock,
+                            offset:          utc_offset,
+                        },
+                        timezone: Some(zone),
+                        calendar,
+                    },
+                    Some(Overflow::Constrain),
+                    Some(Disambiguation::Compatible),
+                    Some(OffsetDisambiguation::Reject),
+                ),
+            )
+            .map(|zoned| Some(RelativeTo::ZonedDateTime(zoned)))
+        }
     }
 }
 
 fn optional_unit<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
     get_defined(object, key)?.map_or(Ok(None), |value| {
         let name = string_option(ctx, &value)?;
-        Unit::from_str(&name).map(Some).map_err(|error| out_of_range(ctx, error))
+        Unit::from_str(&name)
+            .map(Some)
+            .map_err(|error| out_of_range(ctx, error))
     })
 }
 
-fn rounding_mode_option<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Option<RoundingMode>> {
+fn rounding_mode_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<RoundingMode>> {
     get_defined(object, "roundingMode")?.map_or(Ok(None), |value| {
         let name = string_option(ctx, &value)?;
         unwrap_temporal(ctx, RoundingMode::from_str(&name)).map(Some)
@@ -377,9 +383,15 @@ impl Duration {
                 partial.hours.unwrap_or_else(|| self.inner.hours()),
                 partial.minutes.unwrap_or_else(|| self.inner.minutes()),
                 partial.seconds.unwrap_or_else(|| self.inner.seconds()),
-                partial.milliseconds.unwrap_or_else(|| self.inner.milliseconds()),
-                partial.microseconds.unwrap_or_else(|| self.inner.microseconds()),
-                partial.nanoseconds.unwrap_or_else(|| self.inner.nanoseconds()),
+                partial
+                    .milliseconds
+                    .unwrap_or_else(|| self.inner.milliseconds()),
+                partial
+                    .microseconds
+                    .unwrap_or_else(|| self.inner.microseconds()),
+                partial
+                    .nanoseconds
+                    .unwrap_or_else(|| self.inner.nanoseconds()),
             ),
         )
         .map(Self::wrap)
@@ -408,10 +420,11 @@ impl Duration {
             let object = required_options_object(&ctx, &options)?;
             let largest_unit = optional_unit(&ctx, &object, "largestUnit")?;
             let relative_to = relative_to_option(&ctx, &object)?;
-            let increment = get_defined(&object, "roundingIncrement")?.map_or(
-                Ok(None),
-                |value| unwrap_temporal(&ctx, RoundingIncrement::try_from(to_number(&ctx, &value)?)).map(Some),
-            )?;
+            let increment =
+                get_defined(&object, "roundingIncrement")?.map_or(Ok(None), |value| {
+                    unwrap_temporal(&ctx, RoundingIncrement::try_from(to_number(&ctx, &value)?))
+                        .map(Some)
+                })?;
             let rounding_mode = rounding_mode_option(&ctx, &object)?;
             let smallest_unit = optional_unit(&ctx, &object, "smallestUnit")?;
             if largest_unit.is_none() && smallest_unit.is_none() {
@@ -436,9 +449,8 @@ impl Duration {
         } else {
             let object = required_options_object(&ctx, &options)?;
             let relative_to = relative_to_option(&ctx, &object)?;
-            let unit = optional_unit(&ctx, &object, "unit")?.ok_or_else(|| {
-                Exception::throw_range(&ctx, "unit is required")
-            })?;
+            let unit = optional_unit(&ctx, &object, "unit")?
+                .ok_or_else(|| Exception::throw_range(&ctx, "unit is required"))?;
             (unit, relative_to)
         };
         unwrap_temporal(&ctx, self.inner.total(unit, relative_to)).map(|total| total.as_inner())
@@ -448,12 +460,14 @@ impl Duration {
         let object = options_object(&ctx, options)?;
         let precision = match get_defined(&object, "fractionalSecondDigits")? {
             None => Precision::Auto,
-            Some(value) => fractional_second_digits(
-                &ctx,
-                &value,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-                string_option,
-            )?,
+            Some(value) => {
+                fractional_second_digits(
+                    &ctx,
+                    &value,
+                    "fractionalSecondDigits must be \"auto\" or 0-9",
+                    string_option,
+                )?
+            }
         };
         let rounding_mode = rounding_mode_option(&ctx, &object)?;
         let smallest_unit = optional_unit(&ctx, &object, "smallestUnit")?;

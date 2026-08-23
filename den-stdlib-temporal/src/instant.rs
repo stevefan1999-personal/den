@@ -16,10 +16,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        fractional_second_digits, get_defined, i128_to_bigint, optional_integral_i128,
-        optional_integral_i64, ordering_i32, probe_class, require_object, throw_value_of,
-        to_big_int_i128, to_instant, to_integer_if_integral, to_js_string, to_number,
-        to_time_zone, unwrap_temporal,
+        fractional_second_digits, get_defined, i128_to_bigint, optional_integral_i64,
+        optional_integral_i128, ordering_i32, probe_class, require_object, throw_value_of,
+        to_big_int_i128, to_instant, to_integer_if_integral, to_js_string, to_number, to_time_zone,
+        unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -33,9 +33,7 @@ pub struct Instant {
 }
 
 impl Instant {
-    pub(crate) fn wrap(inner: temporal_rs::Instant) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::Instant) -> Self { Self { inner } }
 }
 
 fn instant_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
@@ -134,7 +132,8 @@ fn to_instant_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempor
     )
 }
 
-/// Instant.since/until: Get largestUnit, roundingIncrement, roundingMode, smallestUnit.
+/// Instant.since/until: Get largestUnit, roundingIncrement, roundingMode,
+/// smallestUnit.
 fn instant_difference_settings<'js>(
     ctx: &Ctx<'js>, options: Opt<Value<'js>>,
 ) -> Result<DifferenceSettings> {
@@ -172,7 +171,8 @@ fn instant_rounding_options<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result
     Ok(rounding)
 }
 
-/// Instant.toString: Get fractionalSecondDigits, roundingMode, smallestUnit, timeZone.
+/// Instant.toString: Get fractionalSecondDigits, roundingMode, smallestUnit,
+/// timeZone.
 fn instant_to_string_parts<'js>(
     ctx: &Ctx<'js>, options: Opt<Value<'js>>,
 ) -> Result<(Option<TimeZone>, ToStringRoundingOptions)> {
@@ -183,7 +183,12 @@ fn instant_to_string_parts<'js>(
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
         Some(value) => {
-            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite", to_js_string)?
+            fractional_second_digits(
+                ctx,
+                &value,
+                "fractionalSecondDigits is not finite",
+                to_js_string,
+            )?
         }
     };
     let rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;
@@ -192,14 +197,11 @@ fn instant_to_string_parts<'js>(
         None => None,
         Some(value) => Some(to_time_zone(ctx, &value)?),
     };
-    Ok((
-        time_zone,
-        ToStringRoundingOptions {
-            precision,
-            smallest_unit,
-            rounding_mode,
-        },
-    ))
+    Ok((time_zone, ToStringRoundingOptions {
+        precision,
+        smallest_unit,
+        rounding_mode,
+    }))
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -258,9 +260,7 @@ impl Instant {
     }
 
     #[qjs(get)]
-    pub fn epoch_milliseconds(&self) -> i64 {
-        self.inner.epoch_milliseconds()
-    }
+    pub fn epoch_milliseconds(&self) -> i64 { self.inner.epoch_milliseconds() }
 
     pub fn add<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
         let duration = to_instant_duration(&ctx, &duration_like)?;
@@ -334,7 +334,5 @@ impl Instant {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.Instant"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.Instant" }
 }

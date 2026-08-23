@@ -15,11 +15,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, options_object,
-        optional_integral_i128, optional_integral_i64, optional_truncated_i32,
-        optional_truncated_i128, ordering_i32, probe_class, reject_calendar_or_time_zone,
-        reject_illformed_month_code, throw_value_of, to_integer_with_truncation, to_number,
-        truncated_u8, unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_integral_i64,
+        optional_integral_i128, optional_truncated_i32, optional_truncated_i128, options_object,
+        ordering_i32, probe_class, reject_calendar_or_time_zone, reject_illformed_month_code,
+        throw_value_of, to_integer_with_truncation, to_number, truncated_u8, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -35,9 +34,7 @@ pub struct PlainYearMonth {
 }
 
 impl PlainYearMonth {
-    pub(crate) fn wrap(inner: temporal_rs::PlainYearMonth) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::PlainYearMonth) -> Self { Self { inner } }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -75,54 +72,34 @@ impl PlainYearMonth {
     }
 
     #[qjs(get)]
-    pub fn calendar_id(&self) -> &'static str {
-        self.inner.calendar().identifier()
-    }
+    pub fn calendar_id(&self) -> &'static str { self.inner.calendar().identifier() }
 
     #[qjs(get)]
-    pub fn year(&self) -> i32 {
-        self.inner.year()
-    }
+    pub fn year(&self) -> i32 { self.inner.year() }
 
     #[qjs(get)]
-    pub fn month(&self) -> u8 {
-        self.inner.month()
-    }
+    pub fn month(&self) -> u8 { self.inner.month() }
 
     #[qjs(get)]
-    pub fn month_code(&self) -> String {
-        self.inner.month_code().as_str().to_string()
-    }
+    pub fn month_code(&self) -> String { self.inner.month_code().as_str().to_string() }
 
     #[qjs(get)]
-    pub fn days_in_year(&self) -> u16 {
-        self.inner.days_in_year()
-    }
+    pub fn days_in_year(&self) -> u16 { self.inner.days_in_year() }
 
     #[qjs(get)]
-    pub fn days_in_month(&self) -> u16 {
-        self.inner.days_in_month()
-    }
+    pub fn days_in_month(&self) -> u16 { self.inner.days_in_month() }
 
     #[qjs(get)]
-    pub fn months_in_year(&self) -> u16 {
-        self.inner.months_in_year()
-    }
+    pub fn months_in_year(&self) -> u16 { self.inner.months_in_year() }
 
     #[qjs(get)]
-    pub fn in_leap_year(&self) -> bool {
-        self.inner.in_leap_year()
-    }
+    pub fn in_leap_year(&self) -> bool { self.inner.in_leap_year() }
 
     #[qjs(get)]
-    pub fn era(&self) -> Option<String> {
-        self.inner.era().map(|era| era.to_string())
-    }
+    pub fn era(&self) -> Option<String> { self.inner.era().map(|era| era.to_string()) }
 
     #[qjs(get)]
-    pub fn era_year(&self) -> Option<i32> {
-        self.inner.era_year()
-    }
+    pub fn era_year(&self) -> Option<i32> { self.inner.era_year() }
 
     pub fn add<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
@@ -171,7 +148,12 @@ impl PlainYearMonth {
                 "Temporal.PlainYearMonth.prototype.with requires a property bag",
             ));
         };
-        reject_calendar_or_time_zone(&ctx, object, "calendar is not allowed in Temporal.PlainYearMonth.prototype.with", "timeZone is not allowed in Temporal.PlainYearMonth.prototype.with")?;
+        reject_calendar_or_time_zone(
+            &ctx,
+            object,
+            "calendar is not allowed in Temporal.PlainYearMonth.prototype.with",
+            "timeZone is not allowed in Temporal.PlainYearMonth.prototype.with",
+        )?;
         let raw = year_month_fields(&ctx, object)?;
         if raw.is_empty() {
             return Err(Exception::throw_type(
@@ -215,23 +197,19 @@ impl PlainYearMonth {
     }
 
     #[qjs(rename = "toJSON")]
-    pub fn to_json_string(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_json_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainYearMonth"))
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.PlainYearMonth"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.PlainYearMonth" }
 }
 
 struct RawYearMonthFields {
-    year: Option<i32>,
-    month: Option<i128>,
+    year:       Option<i32>,
+    month:      Option<i128>,
     month_code: Option<String>,
 }
 
@@ -365,20 +343,24 @@ fn is_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
 fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
     match options_object(ctx, options)? {
         None => Ok(None),
-        Some(object) => match get_defined(&object, "overflow")? {
-            None => Ok(None),
-            Some(value) => parse_enum(ctx, &value, "invalid overflow option").map(Some),
-        },
+        Some(object) => {
+            match get_defined(&object, "overflow")? {
+                None => Ok(None),
+                Some(value) => parse_enum(ctx, &value, "invalid overflow option").map(Some),
+            }
+        }
     }
 }
 
 fn display_calendar<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<DisplayCalendar> {
     match options_object(ctx, options)? {
         None => Ok(DisplayCalendar::Auto),
-        Some(object) => match get_defined(&object, "calendarName")? {
-            None => Ok(DisplayCalendar::Auto),
-            Some(value) => parse_enum(ctx, &value, "invalid calendarName option"),
-        },
+        Some(object) => {
+            match get_defined(&object, "calendarName")? {
+                None => Ok(DisplayCalendar::Auto),
+                Some(value) => parse_enum(ctx, &value, "invalid calendarName option"),
+            }
+        }
     }
 }
 
@@ -427,16 +409,16 @@ fn to_duration_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
         ));
     };
     let partial = PartialDuration {
-        days: optional_integral_i64(ctx, object, "days")?,
-        hours: optional_integral_i64(ctx, object, "hours")?,
+        days:         optional_integral_i64(ctx, object, "days")?,
+        hours:        optional_integral_i64(ctx, object, "hours")?,
         microseconds: optional_integral_i128(ctx, object, "microseconds")?,
         milliseconds: optional_integral_i64(ctx, object, "milliseconds")?,
-        minutes: optional_integral_i64(ctx, object, "minutes")?,
-        months: optional_integral_i64(ctx, object, "months")?,
-        nanoseconds: optional_integral_i128(ctx, object, "nanoseconds")?,
-        seconds: optional_integral_i64(ctx, object, "seconds")?,
-        weeks: optional_integral_i64(ctx, object, "weeks")?,
-        years: optional_integral_i64(ctx, object, "years")?,
+        minutes:      optional_integral_i64(ctx, object, "minutes")?,
+        months:       optional_integral_i64(ctx, object, "months")?,
+        nanoseconds:  optional_integral_i128(ctx, object, "nanoseconds")?,
+        seconds:      optional_integral_i64(ctx, object, "seconds")?,
+        weeks:        optional_integral_i64(ctx, object, "weeks")?,
+        years:        optional_integral_i64(ctx, object, "years")?,
     };
     unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }

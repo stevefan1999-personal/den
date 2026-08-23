@@ -428,12 +428,14 @@ pub fn to_string_rounding_options<'js>(
 ) -> Result<ToStringRoundingOptions> {
     let precision = match bag_value(bag, "fractionalSecondDigits") {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(
-            ctx,
-            value,
-            "fractionalSecondDigits must be \"auto\" or 0-9",
-            js_to_string,
-        )?,
+        Some(value) => {
+            fractional_second_digits(
+                ctx,
+                value,
+                "fractionalSecondDigits must be \"auto\" or 0-9",
+                js_to_string,
+            )?
+        }
     };
     let smallest_unit = match bag_value(bag, "smallestUnit") {
         None => None,
@@ -662,16 +664,16 @@ pub fn duration_from_bag<'js>(
     ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<temporal_rs::Duration> {
     let partial = PartialDuration {
-        years: bag_optional_i64(ctx, bag, "years")?,
-        months: bag_optional_i64(ctx, bag, "months")?,
-        weeks: bag_optional_i64(ctx, bag, "weeks")?,
-        days: bag_optional_i64(ctx, bag, "days")?,
-        hours: bag_optional_i64(ctx, bag, "hours")?,
-        minutes: bag_optional_i64(ctx, bag, "minutes")?,
-        seconds: bag_optional_i64(ctx, bag, "seconds")?,
+        years:        bag_optional_i64(ctx, bag, "years")?,
+        months:       bag_optional_i64(ctx, bag, "months")?,
+        weeks:        bag_optional_i64(ctx, bag, "weeks")?,
+        days:         bag_optional_i64(ctx, bag, "days")?,
+        hours:        bag_optional_i64(ctx, bag, "hours")?,
+        minutes:      bag_optional_i64(ctx, bag, "minutes")?,
+        seconds:      bag_optional_i64(ctx, bag, "seconds")?,
         milliseconds: bag_optional_i64(ctx, bag, "milliseconds")?,
         microseconds: bag_optional_i128(ctx, bag, "microseconds")?,
-        nanoseconds: bag_optional_i128(ctx, bag, "nanoseconds")?,
+        nanoseconds:  bag_optional_i128(ctx, bag, "nanoseconds")?,
     };
     unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
@@ -713,9 +715,11 @@ fn bag_optional_truncated_u8<'js>(
 ) -> Result<Option<u8>> {
     match bag_optional_truncated_i32(ctx, bag, key)? {
         None => Ok(None),
-        Some(integer) => u8::try_from(integer)
-            .map(Some)
-            .map_err(|_| Exception::throw_range(ctx, "integer is out of range")),
+        Some(integer) => {
+            u8::try_from(integer)
+                .map(Some)
+                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+        }
     }
 }
 
@@ -724,9 +728,11 @@ fn bag_optional_truncated_u16<'js>(
 ) -> Result<Option<u16>> {
     match bag_optional_truncated_i32(ctx, bag, key)? {
         None => Ok(None),
-        Some(integer) => u16::try_from(integer)
-            .map(Some)
-            .map_err(|_| Exception::throw_range(ctx, "integer is out of range")),
+        Some(integer) => {
+            u16::try_from(integer)
+                .map(Some)
+                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+        }
     }
 }
 
@@ -756,12 +762,12 @@ pub fn partial_time_from_bag<'js>(
     ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
 ) -> Result<PartialTime> {
     Ok(PartialTime {
-        hour: bag_optional_truncated_u8(ctx, bag, "hour")?,
-        minute: bag_optional_truncated_u8(ctx, bag, "minute")?,
-        second: bag_optional_truncated_u8(ctx, bag, "second")?,
+        hour:        bag_optional_truncated_u8(ctx, bag, "hour")?,
+        minute:      bag_optional_truncated_u8(ctx, bag, "minute")?,
+        second:      bag_optional_truncated_u8(ctx, bag, "second")?,
         millisecond: bag_optional_truncated_u16(ctx, bag, "millisecond")?,
         microsecond: bag_optional_truncated_u16(ctx, bag, "microsecond")?,
-        nanosecond: bag_optional_truncated_u16(ctx, bag, "nanosecond")?,
+        nanosecond:  bag_optional_truncated_u16(ctx, bag, "nanosecond")?,
     })
 }
 
@@ -791,7 +797,7 @@ fn date_from_bag<'js>(
 ) -> Result<temporal_rs::PlainDate> {
     let partial = PartialDate {
         calendar_fields: calendar_fields_from_bag(ctx, bag)?,
-        calendar: bag_calendar(ctx, bag)?,
+        calendar:        bag_calendar(ctx, bag)?,
     };
     unwrap_temporal(ctx, temporal_rs::PlainDate::from_partial(partial, overflow))
 }
@@ -800,9 +806,9 @@ fn date_time_from_bag<'js>(
     ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
 ) -> Result<temporal_rs::PlainDateTime> {
     let partial = PartialDateTime {
-        fields: DateTimeFields {
+        fields:   DateTimeFields {
             calendar_fields: calendar_fields_from_bag(ctx, bag)?,
-            time: partial_time_from_bag(ctx, bag)?,
+            time:            partial_time_from_bag(ctx, bag)?,
         },
         calendar: bag_calendar(ctx, bag)?,
     };
@@ -817,7 +823,7 @@ fn year_month_from_bag<'js>(
 ) -> Result<temporal_rs::PlainYearMonth> {
     let partial = PartialYearMonth {
         calendar_fields: YearMonthCalendarFields::from(calendar_fields_from_bag(ctx, bag)?),
-        calendar: bag_calendar(ctx, bag)?,
+        calendar:        bag_calendar(ctx, bag)?,
     };
     unwrap_temporal(
         ctx,
@@ -830,7 +836,7 @@ fn month_day_from_bag<'js>(
 ) -> Result<temporal_rs::PlainMonthDay> {
     let partial = PartialDate {
         calendar_fields: calendar_fields_from_bag(ctx, bag)?,
-        calendar: bag_calendar(ctx, bag)?,
+        calendar:        bag_calendar(ctx, bag)?,
     };
     unwrap_temporal(
         ctx,
@@ -848,8 +854,8 @@ fn zoned_from_bag<'js>(
     let partial = PartialZonedDateTime {
         fields: ZonedDateTimeFields {
             calendar_fields: calendar_fields_from_bag(ctx, bag)?,
-            time: partial_time_from_bag(ctx, bag)?,
-            offset: bag_utc_offset(ctx, bag)?,
+            time:            partial_time_from_bag(ctx, bag)?,
+            offset:          bag_utc_offset(ctx, bag)?,
         },
         timezone,
         calendar: bag_calendar(ctx, bag)?,

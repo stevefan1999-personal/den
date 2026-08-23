@@ -1,10 +1,11 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    Ctx, Exception, Function, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    Ctx, Exception, Function, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom,
     class::{
-        impl_::{ConstructorCreate, ConstructorCreator},
         Trace,
+        impl_::{ConstructorCreate, ConstructorCreator},
     },
     function::Constructor,
     object::Property,
@@ -36,9 +37,7 @@ pub struct PlainMonthDay {
 }
 
 impl PlainMonthDay {
-    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self { Self { inner } }
 
     pub fn new<'js>(
         iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
@@ -71,7 +70,8 @@ impl PlainMonthDay {
 
 impl<'js> ConstructorCreator<'js, PlainMonthDay> for ConstructorCreate<PlainMonthDay> {
     fn create_constructor(&self, ctx: &Ctx<'js>) -> Result<Option<Constructor<'js>>> {
-        let constr = Constructor::new_class::<PlainMonthDay, _, _>(ctx.clone(), PlainMonthDay::new)?;
+        let constr =
+            Constructor::new_class::<PlainMonthDay, _, _>(ctx.clone(), PlainMonthDay::new)?;
         let func: &Function = constr.as_ref();
         func.set_length(2)?;
         let from = Function::new(ctx.clone(), PlainMonthDay::from)?.with_name("from")?;
@@ -173,21 +173,14 @@ impl<'js> ConstructorCreator<'js, PlainMonthDay> for ConstructorCreate<PlainMont
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl PlainMonthDay {
+    #[qjs(get, configurable)]
+    pub fn calendar_id(&self) -> &'static str { self.inner.calendar_id() }
 
     #[qjs(get, configurable)]
-    pub fn calendar_id(&self) -> &'static str {
-        self.inner.calendar_id()
-    }
+    pub fn month_code(&self) -> String { self.inner.month_code().as_str().to_string() }
 
     #[qjs(get, configurable)]
-    pub fn month_code(&self) -> String {
-        self.inner.month_code().as_str().to_string()
-    }
-
-    #[qjs(get, configurable)]
-    pub fn day(&self) -> u8 {
-        self.inner.day()
-    }
+    pub fn day(&self) -> u8 { self.inner.day() }
 
     pub fn with<'js>(
         &self, item: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
@@ -228,38 +221,34 @@ impl PlainMonthDay {
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => match get_defined(&object, "calendarName")? {
-                None => DisplayCalendar::Auto,
-                Some(value) => option_display_calendar(&ctx, &value)?,
+            Some(object) => {
+                match get_defined(&object, "calendarName")? {
+                    None => DisplayCalendar::Auto,
+                    Some(value) => option_display_calendar(&ctx, &value)?,
+                }
             }
         };
         Ok(self.inner.to_ixdtf_string(display))
     }
 
-    pub fn to_locale_string(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_locale_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     #[qjs(rename = "toJSON")]
-    pub fn to_json(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_json(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainMonthDay"))
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.PlainMonthDay"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.PlainMonthDay" }
 }
 
 struct MonthDayBag {
-    day: Option<u8>,
-    month: Option<u8>,
+    day:        Option<u8>,
+    month:      Option<u8>,
     month_code: Option<String>,
-    year: Option<i32>,
+    year:       Option<i32>,
 }
 
 impl MonthDayBag {
@@ -441,5 +430,3 @@ fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
     }
     Ok(true)
 }
-
-
