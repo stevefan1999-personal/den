@@ -9,7 +9,7 @@ use tokio::{
 use tokio_native_tls::{TlsAcceptor, TlsConnector, TlsStream as NativeTlsStream};
 
 use crate::{
-    io::{AsyncReadWrapper, AsyncWriteWrapper, JsByteBuf},
+    io::{AsyncReadWrapper, AsyncWriteWrapper, JsByteBuf, impl_stream_wrapper},
     socket_addr::SocketAddrWrapper,
 };
 
@@ -46,18 +46,8 @@ pub struct TlsStreamWrapper {
     stream: Arc<RwLock<NativeTlsStream<TcpStream>>>,
 }
 
-#[rquickjs::methods]
-impl TlsStreamWrapper {
-    // rquickjs only attaches `#[qjs(static)]` members to a class that
-    // declares a constructor, and a `()` return makes `new TlsStream()`
-    // throw: instances only ever come from `TlsStream.connect` or
-    // `TlsListener.accept`.
-    #[allow(
-        clippy::new_ret_no_self,
-        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-    )]
-    #[qjs(constructor)]
-    pub fn new() {}
+impl_stream_wrapper! {
+    TlsStreamWrapper,
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
@@ -78,26 +68,6 @@ impl TlsStreamWrapper {
             .map_err(NativeTls::error)?;
         Ok(Arc::new(RwLock::new(stream)).into())
     }
-
-    pub async fn read_to_string(self) -> Result<String> {
-        AsyncReadWrapper(self.stream).read_to_string().await
-    }
-
-    pub async fn read_to_end(self) -> Result<Vec<u8>> {
-        AsyncReadWrapper(self.stream).read_to_end().await
-    }
-
-    pub async fn read<'js>(self, bytes: usize, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        AsyncReadWrapper(self.stream).read(bytes, ctx).await
-    }
-
-    pub async fn write_all<'js>(self, buf: JsByteBuf<'js>) -> Result<()> {
-        AsyncWriteWrapper(self.stream).write_all(buf).await
-    }
-
-    pub async fn flush(self) -> Result<()> { AsyncWriteWrapper(self.stream).flush().await }
-
-    pub async fn shutdown(self) -> Result<()> { AsyncWriteWrapper(self.stream).shutdown().await }
 }
 
 #[derive(Trace, JsLifetime, Clone, Debug)]

@@ -380,29 +380,37 @@ impl Engine {
 
         context
             .with(|ctx| {
-                #[cfg(feature = "stdlib-console")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_console::js_console, _>(
-                        ctx.clone(),
-                        "den:console",
-                    )?;
+                // Every stdlib module is wired the same way: evaluate its
+                // definition under its `den:` name. The resolver and loader
+                // lists above decide which modules exist; this list decides
+                // which of them run.
+                #[cfg(any(
+                    feature = "stdlib-console",
+                    feature = "stdlib-core",
+                    feature = "stdlib-text",
+                    feature = "stdlib-timer",
+                    feature = "stdlib-whatwg-fetch",
+                    feature = "stdlib-crypto",
+                    feature = "stdlib-process",
+                    feature = "stdlib-temporal",
+                    feature = "wasm",
+                    feature = "stdlib-worker",
+                    feature = "stdlib-whatwg",
+                ))]
+                macro_rules! evaluate_stdlib_module {
+                    ($module:path, $name:literal) => {
+                        let _ = Module::evaluate_def::<$module, _>(ctx.clone(), $name)?;
+                    };
                 }
+
+                #[cfg(feature = "stdlib-console")]
+                evaluate_stdlib_module!(den_stdlib_console::js_console, "den:console");
 
                 #[cfg(feature = "stdlib-core")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_core::js_core, _>(
-                        ctx.clone(),
-                        "den:core",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_core::js_core, "den:core");
 
                 #[cfg(feature = "stdlib-text")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_text::js_text, _>(
-                        ctx.clone(),
-                        "den:text",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_text::js_text, "den:text");
 
                 #[cfg(feature = "stdlib-timer")]
                 {
@@ -410,58 +418,27 @@ impl Engine {
                     // install (none today) would still observe Ctrl-C. The
                     // interrupt handler reads the same token.
                     Self::store_userdata(&ctx, den_stdlib_timer::StopToken(stop_token.clone()))?;
-                    let _ = Module::evaluate_def::<den_stdlib_timer::js_timer, _>(
-                        ctx.clone(),
-                        "den:timer",
-                    )?;
+                    evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
                 }
 
                 #[cfg(feature = "stdlib-whatwg-fetch")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_whatwg_fetch::js_whatwg, _>(
-                        ctx.clone(),
-                        "den:whatwg-fetch",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_whatwg_fetch::js_whatwg, "den:whatwg-fetch");
 
                 #[cfg(feature = "stdlib-crypto")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_crypto::js_crypto, _>(
-                        ctx.clone(),
-                        "den:crypto",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_crypto::js_crypto, "den:crypto");
 
                 #[cfg(feature = "stdlib-process")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_process::js_process, _>(
-                        ctx.clone(),
-                        "den:process",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_process::js_process, "den:process");
 
                 #[cfg(feature = "stdlib-temporal")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_temporal::js_temporal, _>(
-                        ctx.clone(),
-                        "den:temporal",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_temporal::js_temporal, "den:temporal");
 
                 #[cfg(feature = "wasm")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_wasm::js_wasm, _>(
-                        ctx.clone(),
-                        "den:wasm",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_wasm::js_wasm, "den:wasm");
 
                 #[cfg(feature = "stdlib-worker")]
                 {
-                    let _ = Module::evaluate_def::<den_stdlib_worker::js_worker, _>(
-                        ctx.clone(),
-                        "den:worker",
-                    )?;
+                    evaluate_stdlib_module!(den_stdlib_worker::js_worker, "den:worker");
 
                     // Every context gets the host and a base URL, worker
                     // contexts included: that — and nothing else — is what
@@ -481,12 +458,7 @@ impl Engine {
                 // After `den:worker` so FileReader / XHR / EventSource / WebSocket
                 // can extend EventTarget. Fetch is already wired above.
                 #[cfg(feature = "stdlib-whatwg")]
-                {
-                    let _ = Module::evaluate_def::<den_stdlib_whatwg::js_whatwg, _>(
-                        ctx.clone(),
-                        "den:whatwg",
-                    )?;
-                }
+                evaluate_stdlib_module!(den_stdlib_whatwg::js_whatwg, "den:whatwg");
 
                 Self::store_userdata(&ctx, PendingRejections::default())?;
 
@@ -636,8 +608,8 @@ impl Engine {
         self.stop_token.cancel();
         #[cfg(feature = "stdlib-worker")]
         den_stdlib_worker::worker::shutdown(&self.context).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), self.runtime.idle())
-            .await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_millis(500), self.runtime.idle()).await;
         let _ = self
             .context
             .with(|ctx| {

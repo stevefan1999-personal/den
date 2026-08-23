@@ -48,17 +48,7 @@ impl Connection {
         self, sql: String, Opt(params): Opt<Either<Array<'js>, Object<'js>>>, ctx: Ctx<'js>,
     ) -> Result<usize> {
         if let Some(conn) = self.conn.borrow().deref() {
-            let stmt = conn.prepare(&sql);
-            let mut stmt = stmt.map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
-            match params {
-                Some(Either::Left(params)) => {
-                    bind_parameters_from_rquickjs_array(&mut stmt, params, ctx.clone())?;
-                }
-                Some(Either::Right(params)) => {
-                    bind_parameters_from_rquickjs_object(&mut stmt, params, ctx.clone())?;
-                }
-                None => {}
-            }
+            let mut stmt = prepare_and_bind(conn, &sql, params, &ctx)?;
 
             Ok(stmt
                 .raw_execute()
@@ -72,17 +62,7 @@ impl Connection {
         self, sql: String, Opt(params): Opt<Either<Array<'js>, Object<'js>>>, ctx: Ctx<'js>,
     ) -> Result<Option<Array<'js>>> {
         if let Some(conn) = self.conn.borrow().deref() {
-            let stmt = conn.prepare(&sql);
-            let mut stmt = stmt.map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
-            match params {
-                Some(Either::Left(params)) => {
-                    bind_parameters_from_rquickjs_array(&mut stmt, params, ctx.clone())?;
-                }
-                Some(Either::Right(params)) => {
-                    bind_parameters_from_rquickjs_object(&mut stmt, params, ctx.clone())?;
-                }
-                None => {}
-            }
+            let mut stmt = prepare_and_bind(conn, &sql, params, &ctx)?;
             execute_stmt_and_collect_rows(&mut stmt, ctx)
         } else {
             Err(Exception::throw_internal(&ctx, "already closed"))
@@ -99,6 +79,28 @@ impl Connection {
             Err(Exception::throw_internal(&ctx, "already closed"))
         }
     }
+}
+
+/// `execute` and `query_rows` share their first half: prepare `sql` on
+/// `conn`, then bind `params` — array as positional, object as named — onto
+/// the statement.
+fn prepare_and_bind<'conn, 'js>(
+    conn: &'conn rusqlite::Connection, sql: &str, params: Option<Either<Array<'js>, Object<'js>>>,
+    ctx: &Ctx<'js>,
+) -> Result<Statement<'conn>> {
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| Exception::throw_internal(ctx, &format!("{e}")))?;
+    match params {
+        Some(Either::Left(params)) => {
+            bind_parameters_from_rquickjs_array(&mut stmt, params, ctx.clone())?;
+        }
+        Some(Either::Right(params)) => {
+            bind_parameters_from_rquickjs_object(&mut stmt, params, ctx.clone())?;
+        }
+        None => {}
+    }
+    Ok(stmt)
 }
 
 fn bind_parameters_from_rquickjs_object<'js>(
