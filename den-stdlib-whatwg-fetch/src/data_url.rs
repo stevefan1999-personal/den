@@ -299,14 +299,8 @@ mod tests {
         assert_eq!(strip_base64_flag(";base64;").as_deref(), None);
         assert_eq!(percent_decode(b"%FF"), vec![255]);
         assert_eq!(percent_decode(b"X"), vec![b'X']);
-        assert_eq!(
-            den_util::base64_forgiving_decode("WA").ok().as_deref(),
-            Some([b'X'].as_slice())
-        );
-        assert_eq!(
-            den_util::base64_forgiving_decode("W A").ok().as_deref(),
-            Some([b'X'].as_slice())
-        );
+        assert_eq!(den_util::base64_forgiving_decode("WA").ok().as_deref(), Some(b"X" as &[u8]));
+        assert_eq!(den_util::base64_forgiving_decode("W A").ok().as_deref(), Some(b"X" as &[u8]));
         assert!(quoted_string_tokens_only(" x"));
         assert!(!quoted_string_tokens_only("\u{0008}"));
         assert_eq!(skip_http_whitespace("  x", 0), 2);
