@@ -53,8 +53,7 @@ const API: [&str; 17] = [
 ];
 
 /// Remaining JS preludes, in dependency order. Event types are native.
-const PRELUDE: [(&str, &str); 4] = [
-    ("den:worker/clone.js", include_str!("prelude/clone.js")),
+const PRELUDE: [(&str, &str); 3] = [
     ("den:worker/port.js", include_str!("prelude/port.js")),
     ("den:worker/worker.js", include_str!("prelude/worker.js")),
     (
@@ -87,6 +86,16 @@ pub mod worker_module {
         super::events::report_error(ctx, value)
     }
 
+    #[rquickjs::function(rename = "structuredClone")]
+    #[qjs(rename = "structuredClone")]
+    pub fn structured_clone<'js>(
+        ctx: Ctx<'js>,
+        value: Value<'js>,
+        options: rquickjs::function::Opt<Value<'js>>,
+    ) -> Result<Value<'js>> {
+        super::message::structured_clone(ctx, value, options)
+    }
+
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
         for name in crate::API {
@@ -102,6 +111,7 @@ pub mod worker_module {
                     | "NavigatorUAData"
                     | "PromiseRejectionEvent"
                     | "reportError"
+                    | "structuredClone"
             ) {
                 continue;
             }
@@ -127,6 +137,8 @@ pub mod worker_module {
         // arrows by `typeof prototype === "object"`.
         let report_error: Function<'js> = namespace.get("reportError")?;
         report_error.set_name("reportError")?;
+        let structured_clone: Function<'js> = namespace.get("structuredClone")?;
+        structured_clone.set_name("structuredClone")?;
         if report_error
             .get::<_, Value<'js>>("prototype")?
             .is_undefined()
@@ -146,6 +158,7 @@ pub mod worker_module {
             "NavigatorUAData",
             "PromiseRejectionEvent",
             "reportError",
+            "structuredClone",
         ] {
             api.set(name, namespace.get::<_, Value>(name)?)?;
         }
