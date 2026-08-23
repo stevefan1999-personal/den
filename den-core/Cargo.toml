@@ -30,6 +30,7 @@ reqwest = { workspace = true, features = [
     "system-proxy",
 ] }
 rquickjs.workspace = true
+serde_json.workspace = true
 # `block_in_place` + `Handle::current` in the loaders need these; without them den-core only
 # builds when something else in the graph turns them on.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }

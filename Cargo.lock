@@ -1014,6 +1014,7 @@ dependencies = [
  "relative-path",
  "reqwest",
  "rquickjs",
+ "serde_json",
  "tokio",
  "tokio-util",
  "typed-builder",

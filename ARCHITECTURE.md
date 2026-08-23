@@ -91,11 +91,23 @@ rquickjs takes one resolver tuple and one loader tuple; each is tried in order.
    `text/*` or `application/*` with subtype `javascript` (or `typescript`, when
    that feature is on) is accepted. The sniffed extension is what the
    transpiler is then told the source is.
-4. `MmapScriptLoader` (`loader/mod.rs`) — checks the extension against its
-   registered list, then memory-maps the file with `fmmap`. The mapping
+4. `MmapScriptLoader` (`loader/mmap_script.rs`) — checks the extension against
+   its registered list, then memory-maps the file with `fmmap`. The mapping
    constructor is `unsafe` because an external writer truncating the file while
    the mapping is live is UB; the safety comment on that call states the
    exposure.
+
+When an import carries a `type` attribute (`import x from "./data.json" with {
+type: "json" }`), both `HttpLoader` and `MmapScriptLoader` skip those
+script/MIME/extension gates and `Module::declare` a synthetic module whose
+default export is the body interpreted as that type (`loader/typed.rs`):
+
+- `json` — UTF-8, must already be valid JSON; source is `export default
+  <json>;` so evaluating it is `JSON.parse` of the same text.
+- `text` — UTF-8; source is `export default ${JSON.stringify(text)};`.
+- `bytes` — raw bytes; source is `export default Uint8Array.from([..])`.
+- any other `type` — a loading error.
+- missing `type` — the JS/TS path above.
 
 Both file loaders are synchronous `Loader` impls wrapping async work, so both
 end in `tokio::task::block_in_place(|| Handle::current().block_on(task))` —
