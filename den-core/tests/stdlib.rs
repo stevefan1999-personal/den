@@ -221,3 +221,67 @@ async fn process_global_exposes_pid_argv_and_env() -> eyre::Result<()> {
     assert_eq!(failures, "");
     Ok(())
 }
+
+/// Blob/File/FormData/FileReader are installed by `den:whatwg` after
+/// `den:worker`, so this also proves that evaluate order (EventTarget first).
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "stdlib-whatwg")]
+async fn blob_file_form_data_and_file_reader_are_globals() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let failures: String = engine
+        .eval(
+            r#"
+              const blob = new Blob(["hello ", "world"], { type: "text/plain" });
+              const file = new File(["x"], "x.txt", { type: "text/plain", lastModified: 1 });
+              const form = new FormData();
+              form.append("a", "1");
+              const reader = new FileReader();
+              const text = await blob.text();
+              const read = await new Promise((resolve, reject) => {
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error);
+                reader.readAsText(new Blob(["from-reader"]));
+              });
+              Object.entries({
+                blobSize: blob.size === 11,
+                blobText: text === "hello world",
+                fileIsBlob: file instanceof Blob,
+                fileName: file.name === "x.txt",
+                formGet: form.get("a") === "1",
+                readerIsTarget: reader instanceof EventTarget,
+                readerText: read === "from-reader",
+                globals: [Blob, File, FileReader, FormData, XMLHttpRequest, EventSource, URLPattern, CompressionStream, DecompressionStream, WebSocket].every((value) => typeof value === "function"),
+              }).filter(([, held]) => !held).map(([name]) => name).join(",")
+            "#,
+        )
+        .await?;
+    assert_eq!(failures, "");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "stdlib-whatwg-fetch")]
+async fn headers_and_request_are_globals_and_constructible() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let failures: String = engine
+        .eval(
+            r#"
+              const headers = new Headers({ "X-A": "b" });
+              headers.append("X-A", "c");
+              const request = new Request("http://127.0.0.1/post", {
+                method: "post",
+                headers,
+                body: "hi",
+              });
+              Object.entries({
+                headersGet: headers.get("x-a") === "b, c",
+                requestMethod: request.method === "POST",
+                requestUrl: request.url === "http://127.0.0.1/post",
+                fetchIsFn: typeof fetch === "function",
+              }).filter(([, held]) => !held).map(([name]) => name).join(",")
+            "#,
+        )
+        .await?;
+    assert_eq!(failures, "");
+    Ok(())
+}

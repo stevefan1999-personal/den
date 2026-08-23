@@ -1,0 +1,32 @@
+[package]
+name = "den-stdlib-whatwg"
+description = "WHATWG web platform APIs for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+flate2 = "1"
+futures.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = [
+  "connect",
+  "handshake",
+] }
+url = "2.5.8"
+urlpattern = "0.6"
+
+[dev-dependencies]
+den-stdlib-text = { version = "*", path = "../den-stdlib-text" }
+den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch" }
+den-stdlib-worker = { version = "*", path = "../den-stdlib-worker" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+
+[lints]
+workspace = true

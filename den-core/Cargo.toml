@@ -49,6 +49,7 @@ den-stdlib-sqlite = { version = "*", path = "../den-stdlib-sqlite", optional = t
 den-stdlib-text = { version = "*", path = "../den-stdlib-text", optional = true }
 den-stdlib-timer = { version = "*", path = "../den-stdlib-timer", optional = true }
 den-stdlib-wasm = { version = "*", path = "../den-stdlib-wasm", optional = true, default-features = false }
+den-stdlib-whatwg = { version = "*", path = "../den-stdlib-whatwg", optional = true }
 den-stdlib-whatwg-fetch = { version = "*", path = "../den-stdlib-whatwg-fetch", optional = true }
 den-stdlib-worker = { version = "*", path = "../den-stdlib-worker", optional = true, default-features = false }
 den-transpiler-oxc = { version = "*", path = "../den-transpiler-oxc", default-features = false, optional = true }
@@ -84,6 +85,7 @@ stdlib = [
     "stdlib-text",
     "stdlib-timer",
     "stdlib-whatwg-fetch",
+    "stdlib-whatwg",
     "stdlib-worker",
 ]
 stdlib-console = ["dep:den-stdlib-console"]
@@ -95,6 +97,7 @@ stdlib-process = ["dep:den-stdlib-process"]
 stdlib-sqlite = ["dep:den-stdlib-sqlite"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
+stdlib-whatwg = ["dep:den-stdlib-whatwg"]
 stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
 stdlib-worker = ["dep:den-stdlib-worker"]
 

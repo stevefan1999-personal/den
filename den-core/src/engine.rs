@@ -53,7 +53,7 @@ type Rejection = (Persistent<Value<'static>>, Persistent<Value<'static>>);
 /// p.catch(…)` would be a false positive.
 #[derive(Default)]
 struct PendingRejections {
-    unhandled:   RefCell<Vec<Rejection>>,
+    unhandled: RefCell<Vec<Rejection>>,
     /// The reasons of the rejections retracted during the current turn.
     ///
     /// A module body is called as an async function
@@ -65,14 +65,14 @@ struct PendingRejections {
     /// later. Suppressing a reason that something claimed in the same turn is
     /// what keeps `den main.js`, for a `main.js` that throws, from printing the
     /// failure twice.
-    claimed:     RefCell<Vec<Persistent<Value<'static>>>>,
+    claimed: RefCell<Vec<Persistent<Value<'static>>>>,
     /// Rejections already reported, so that a handler attached to one *later*
     /// can still fire `rejectionhandled` (HTML §8.1.7.5).
     outstanding: RefCell<VecDeque<Rejection>>,
     /// How many rejections have been printed so far. Printing goes to stderr,
     /// which a test inside this process cannot read; this counter is its only
     /// seam on the decision the tracker actually makes.
-    reported:    Cell<usize>,
+    reported: Cell<usize>,
 }
 
 // SAFETY: `PendingRejections` borrows no `'js` lifetime — a `Persistent` owns
@@ -119,8 +119,8 @@ impl WorkerHost for DenWorkerHost {
 pub struct Engine {
     #[cfg(feature = "transpile")]
     pub transpiler: Arc<EasyOxcTranspiler>,
-    pub runtime:    AsyncRuntime,
-    pub context:    AsyncContext,
+    pub runtime: AsyncRuntime,
+    pub context: AsyncContext,
     pub stop_token: CancellationToken,
 }
 
@@ -224,6 +224,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:worker");
                     }
+                    #[cfg(feature = "stdlib-whatwg")]
+                    {
+                        resolver = resolver.with_module("den:whatwg");
+                    }
                     resolver
                 },
                 HttpResolver::default(),
@@ -297,6 +301,10 @@ impl Engine {
                     #[cfg(feature = "stdlib-worker")]
                     {
                         loader = loader.with_module("den:worker", den_stdlib_worker::js_worker);
+                    }
+                    #[cfg(feature = "stdlib-whatwg")]
+                    {
+                        loader = loader.with_module("den:whatwg", den_stdlib_whatwg::js_whatwg);
                     }
                     loader
                 },
@@ -451,6 +459,16 @@ impl Engine {
                     // token is a fresh root and `Engine::stop()` — which is
                     // documented to reach workers — would leave it running.
                     Self::store_userdata(&ctx, den_stdlib_worker::RealmStop(stop_token.clone()))?;
+                }
+
+                // After `den:worker` so FileReader / XHR / EventSource / WebSocket
+                // can extend EventTarget. Fetch is already wired above.
+                #[cfg(feature = "stdlib-whatwg")]
+                {
+                    let _ = Module::evaluate_def::<den_stdlib_whatwg::js_whatwg, _>(
+                        ctx.clone(),
+                        "den:whatwg",
+                    )?;
                 }
 
                 Self::store_userdata(&ctx, PendingRejections::default())?;
