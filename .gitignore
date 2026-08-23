@@ -2,3 +2,5 @@
 scratchpad/
 history.db
 /.worktrees/
+.qwen/
+.serena/
