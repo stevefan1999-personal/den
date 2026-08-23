@@ -1,7 +1,5 @@
-use std::ffi::CString;
-
 use den_util::BufferSource;
-use rquickjs::{ArrayBuffer, Ctx, Error, Exception, Object, Result, TypedArray, Value, qjs};
+use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray, Value};
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use uuid::Uuid;
@@ -83,12 +81,14 @@ impl DigestAlgorithm {
     /// runs inside the async `digest` body.
     fn from_algorithm(ctx: &Ctx<'_>, algorithm: Value<'_>) -> Result<Self> {
         let raw_name = Self::raw_name(algorithm)?;
+        let name = raw_name.as_deref().unwrap_or("undefined");
         match raw_name.as_deref().and_then(Self::parse) {
             Some(algorithm) => Ok(algorithm),
             None => {
-                Err(Self::not_supported(
+                Err(den_util::throw_dom_exception(
                     ctx,
-                    raw_name.as_deref().unwrap_or("undefined"),
+                    "NotSupportedError",
+                    &format!("Unrecognized algorithm name: {name}"),
                 ))
             }
         }
@@ -109,24 +109,6 @@ impl DigestAlgorithm {
             Some(name) => Ok(Some(name.to_string()?)),
             None => Ok(None),
         }
-    }
-
-    fn not_supported(ctx: &Ctx<'_>, name: &str) -> Error {
-        let message =
-            CString::new(format!("Unrecognized algorithm name: {name}")).unwrap_or_default();
-        // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack
-        // buffer, so the caller's text is passed as an *argument* to a
-        // constant `%s` format, never as the format itself. Both C strings
-        // outlive the call.
-        unsafe {
-            qjs::JS_ThrowDOMException(
-                ctx.as_raw().as_ptr(),
-                c"NotSupportedError".as_ptr(),
-                c"%s".as_ptr(),
-                message.as_ptr(),
-            );
-        }
-        Error::Exception
     }
 
     fn hash(self, data: &[u8]) -> Vec<u8> {
