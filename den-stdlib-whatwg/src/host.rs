@@ -267,20 +267,6 @@ impl Host {
         }
     }
 
-    pub fn set_super_class<'js, Sub, Super>(ctx: &Ctx<'js>) -> Result<()>
-    where
-        Sub: JsClass<'js>,
-        Super: JsClass<'js>,
-    {
-        if let (Some(sub), Some(super_proto)) = (
-            Class::<Sub>::prototype(ctx)?,
-            Class::<Super>::prototype(ctx)?,
-        ) {
-            sub.set_prototype(Some(&super_proto))?;
-        }
-        Ok(())
-    }
-
     pub fn set_event_target_proto<'js, C: JsClass<'js>>(ctx: &Ctx<'js>, name: &str) -> Result<()> {
         let Some(sub) = Class::<C>::prototype(ctx)? else {
             return Ok(());
