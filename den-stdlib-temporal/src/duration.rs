@@ -17,15 +17,14 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ctor_integer_if_integral, ctor_integer_if_integral_i128, get_defined, js_to_string,
-        optional_integral_i128, optional_integral_i64, optional_truncated_i32,
-        optional_truncated_u16, optional_truncated_u8, ordering_i32, probe_class, throw_value_of,
-        to_calendar, to_number, to_time_zone, to_unit, unwrap_temporal,
+        calendar_slot, ctor_integer_if_integral, ctor_integer_if_integral_i128,
+        fractional_second_digits, get_defined, js_to_string, optional_integral_i128,
+        optional_integral_i64, optional_truncated_i32, optional_truncated_u16,
+        optional_truncated_u8, ordering_i32, probe_class, throw_value_of, to_calendar, to_number,
+        to_time_zone, to_unit, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
-    plain_month_day::PlainMonthDay,
-    plain_year_month::PlainYearMonth,
     zoned_date_time::ZonedDateTime,
 };
 
@@ -196,22 +195,7 @@ fn relative_to_option<'js>(
         ));
     };
     let calendar = get_defined(bag, "calendar")?.map_or(Ok(Calendar::ISO), |calendar| {
-        if let Some(date) = probe_class::<PlainDate>(ctx, &calendar) {
-            return Ok(date.inner.calendar().clone());
-        }
-        if let Some(date_time) = probe_class::<PlainDateTime>(ctx, &calendar) {
-            return Ok(date_time.inner.calendar().clone());
-        }
-        if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, &calendar) {
-            return Ok(year_month.inner.calendar().clone());
-        }
-        if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, &calendar) {
-            return Ok(month_day.inner.calendar().clone());
-        }
-        if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, &calendar) {
-            return Ok(zoned.inner.calendar().clone());
-        }
-        to_calendar(ctx, &calendar)
+        calendar_slot(ctx, &calendar).map_or_else(|| to_calendar(ctx, &calendar), Ok)
     })?;
     let day = optional_truncated_u8(ctx, bag, "day")?;
     let hour = optional_truncated_u8(ctx, bag, "hour")?;
@@ -464,34 +448,12 @@ impl Duration {
         let object = options_object(&ctx, options)?;
         let precision = match get_defined(&object, "fractionalSecondDigits")? {
             None => Precision::Auto,
-            Some(value) if value.is_number() => {
-                let number = to_number(&ctx, &value)?;
-                if !number.is_finite() {
-                    return Err(Exception::throw_range(
-                        &ctx,
-                        "fractionalSecondDigits must be \"auto\" or 0-9",
-                    ));
-                }
-                let digits = number.floor() as i128;
-                if !(0..=9).contains(&digits) {
-                    return Err(Exception::throw_range(
-                        &ctx,
-                        "fractionalSecondDigits must be \"auto\" or 0-9",
-                    ));
-                }
-                Precision::Digit(digits as u8)
-            }
-            Some(value) => {
-                let name = string_option(&ctx, &value)?;
-                if name == "auto" {
-                    Precision::Auto
-                } else {
-                    return Err(Exception::throw_range(
-                        &ctx,
-                        "fractionalSecondDigits must be \"auto\" or 0-9",
-                    ));
-                }
-            }
+            Some(value) => fractional_second_digits(
+                &ctx,
+                &value,
+                "fractionalSecondDigits must be \"auto\" or 0-9",
+                string_option,
+            )?,
         };
         let rounding_mode = rounding_mode_option(&ctx, &object)?;
         let smallest_unit = optional_unit(&ctx, &object, "smallestUnit")?;

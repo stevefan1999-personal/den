@@ -15,18 +15,16 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        ctor_required_i32, ctor_required_u8, get_defined, options_object, optional_integral_i128,
-        optional_integral_i64, optional_truncated_i32, optional_truncated_i128, ordering_i32,
-        probe_class, reject_calendar_or_time_zone, reject_illformed_month_code, throw_value_of,
-        to_integer_with_truncation, to_number, truncated_u8, unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, options_object,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i32,
+        optional_truncated_i128, ordering_i32, probe_class, reject_calendar_or_time_zone,
+        reject_illformed_month_code, throw_value_of, to_integer_with_truncation, to_number,
+        truncated_u8, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
     plain_date::PlainDate,
-    plain_date_time::PlainDateTime,
-    plain_month_day::PlainMonthDay,
     plain_time::PlainTime,
-    zoned_date_time::ZonedDateTime,
 };
 
 #[derive(Trace, JsLifetime, Clone)]
@@ -310,25 +308,6 @@ fn object_calendar<'js>(
         return Ok(calendar);
     }
     calendar_from_value(ctx, &object.get("calendar")?, true)
-}
-
-fn calendar_slot<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Calendar> {
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Some(year_month.inner.calendar().clone());
-    }
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Some(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Some(date_time.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Some(month_day.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Some(zoned.inner.calendar().clone());
-    }
-    None
 }
 
 fn calendar_from_value<'js>(

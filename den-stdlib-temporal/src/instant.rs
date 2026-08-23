@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    BigInt, Ctx, Exception, Function, JsLifetime, Object, Result, Value,
-    atom::PredefinedAtom,
-    class::Trace,
-    prelude::{Opt, This},
+    BigInt, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
+    prelude::Opt,
 };
 use temporal_rs::{
     TimeZone,
@@ -18,10 +16,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, i128_to_bigint, js_to_string, optional_integral_i128,
+        fractional_second_digits, get_defined, i128_to_bigint, optional_integral_i128,
         optional_integral_i64, ordering_i32, probe_class, require_object, throw_value_of,
-        to_big_int_i128, to_instant, to_integer_if_integral, to_number, to_time_zone,
-        unwrap_temporal,
+        to_big_int_i128, to_instant, to_integer_if_integral, to_js_string, to_number,
+        to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -38,29 +36,6 @@ impl Instant {
     pub(crate) fn wrap(inner: temporal_rs::Instant) -> Self {
         Self { inner }
     }
-}
-
-/// GetOption string path: prefer `toString` so observers do not see valueOf first.
-fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if let Some(object) = value.as_object() {
-        if let Ok(func) = object.get::<_, Function>("toString") {
-            let result: Value = func.call((This(object.clone()),))?;
-            if let Some(string) = result.as_string() {
-                return string.to_string();
-            }
-            return js_to_string(ctx, &result);
-        }
-    }
-    js_to_string(ctx, value)
 }
 
 fn instant_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
@@ -197,36 +172,6 @@ fn instant_rounding_options<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result
     Ok(rounding)
 }
 
-/// GetStringOrNumberOption for `fractionalSecondDigits`: Number uses floor.
-fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
-    if value.is_number() {
-        let number = to_number(ctx, value)?;
-        if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits is not finite",
-            ));
-        }
-        let digits = number.floor() as i128;
-        if !(0..=9).contains(&digits) {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
-        }
-        return Ok(Precision::Digit(digits as u8));
-    }
-    let name = to_js_string(ctx, value)?;
-    if name == "auto" {
-        Ok(Precision::Auto)
-    } else {
-        Err(Exception::throw_range(
-            ctx,
-            "fractionalSecondDigits must be \"auto\" or 0-9",
-        ))
-    }
-}
-
 /// Instant.toString: Get fractionalSecondDigits, roundingMode, smallestUnit, timeZone.
 fn instant_to_string_parts<'js>(
     ctx: &Ctx<'js>, options: Opt<Value<'js>>,
@@ -237,7 +182,9 @@ fn instant_to_string_parts<'js>(
     let object = require_object(ctx, &value, "options must be an object")?;
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(ctx, &value)?,
+        Some(value) => {
+            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite", to_js_string)?
+        }
     };
     let rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;
     let smallest_unit = optional_unit(ctx, &object, "smallestUnit")?;

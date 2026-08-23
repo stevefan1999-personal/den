@@ -10,7 +10,7 @@ use den_util::Probe as _;
 use indexmap::IndexMap;
 use rquickjs::{
     BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Value,
-    atom::PredefinedAtom, class::JsClass, prelude::Opt,
+    atom::PredefinedAtom, class::JsClass, function::This, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, TimeZone, UtcOffset,
@@ -166,6 +166,30 @@ pub fn js_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
     }
     let string: Function = ctx.globals().get(PredefinedAtom::String)?;
     string.call((value.clone(),))
+}
+
+/// GetOption string path: prefer `toString` so observers do not see `valueOf`
+/// first. A non-string primitive result still goes through `ToString`.
+pub fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
+    if value.is_symbol() {
+        return Err(Exception::throw_type(
+            ctx,
+            "cannot convert Symbol to a string",
+        ));
+    }
+    if let Some(string) = value.as_string() {
+        return string.to_string();
+    }
+    if let Some(object) = value.as_object() {
+        if let Ok(func) = object.get::<_, Function>("toString") {
+            let result: Value = func.call((This(object.clone()),))?;
+            if let Some(string) = result.as_string() {
+                return string.to_string();
+            }
+            return js_to_string(ctx, &result);
+        }
+    }
+    js_to_string(ctx, value)
 }
 
 pub fn to_number<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<f64> {
@@ -404,7 +428,12 @@ pub fn to_string_rounding_options<'js>(
 ) -> Result<ToStringRoundingOptions> {
     let precision = match bag_value(bag, "fractionalSecondDigits") {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(ctx, value)?,
+        Some(value) => fractional_second_digits(
+            ctx,
+            value,
+            "fractionalSecondDigits must be \"auto\" or 0-9",
+            js_to_string,
+        )?,
     };
     let smallest_unit = match bag_value(bag, "smallestUnit") {
         None => None,
@@ -462,15 +491,19 @@ pub fn to_rounding_options<'js>(
 }
 
 /// `GetStringOrNumberOption` for `fractionalSecondDigits`: a Number is
-/// floored, everything else goes through `ToString` (`"auto"` or RangeError).
-fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
+/// floored, everything else goes through the caller's options-bag string
+/// coercion (`"auto"` or RangeError). Interfaces disagree on the not-finite
+/// message, so the caller supplies it.
+pub fn fractional_second_digits<'js, ToString>(
+    ctx: &Ctx<'js>, value: &Value<'js>, not_finite_message: &str, to_string: ToString,
+) -> Result<Precision>
+where
+    ToString: FnOnce(&Ctx<'js>, &Value<'js>) -> Result<String>,
+{
     if value.is_number() {
         let number = to_number(ctx, value)?;
         if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
+            return Err(Exception::throw_range(ctx, not_finite_message));
         }
         let digits = number.floor() as i128;
         if !(0..=9).contains(&digits) {
@@ -481,7 +514,7 @@ fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<P
         }
         return Ok(Precision::Digit(digits as u8));
     }
-    let name = js_to_string(ctx, value)?;
+    let name = to_string(ctx, value)?;
     if name == "auto" {
         return Ok(Precision::Auto);
     }
@@ -503,6 +536,28 @@ fn rounding_increment<'js>(
     }
 }
 
+/// The calendar carried by any Temporal object with a `[[Calendar]]` slot.
+/// The class probes are disjoint — a value can only be one of them — so the
+/// probe order is not observable.
+pub fn calendar_slot<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Option<Calendar> {
+    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
+        return Some(date.inner.calendar().clone());
+    }
+    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
+        return Some(date_time.inner.calendar().clone());
+    }
+    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
+        return Some(year_month.inner.calendar().clone());
+    }
+    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
+        return Some(month_day.inner.calendar().clone());
+    }
+    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
+        return Some(zoned.inner.calendar().clone());
+    }
+    None
+}
+
 pub fn to_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
     if value.is_undefined() {
         return Ok(Calendar::ISO);
@@ -511,20 +566,8 @@ pub fn to_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> 
         let identifier = value.get::<String>()?;
         return Calendar::from_str(&identifier).map_err(|error| throw_temporal(ctx, error));
     }
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return Ok(date.inner.calendar().clone());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.calendar().clone());
-    }
-    if let Some(year_month) = probe_class::<PlainYearMonth>(ctx, value) {
-        return Ok(year_month.inner.calendar().clone());
-    }
-    if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
-        return Ok(month_day.inner.calendar().clone());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.calendar().clone());
+    if let Some(calendar) = calendar_slot(ctx, value) {
+        return Ok(calendar);
     }
     if let Some(object) = value.as_object() {
         if let Ok(identifier) = object.get::<_, Value>("calendarId") {

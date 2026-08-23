@@ -15,15 +15,13 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        get_defined, js_to_string, optional_integral_i128, optional_integral_i64,
-        optional_truncated_i128, options_object, ordering_i32, probe_class, require_object,
-        throw_value_of, to_number, truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
+        calendar_slot, fractional_second_digits, get_defined, js_to_string,
+        optional_integral_i128, optional_integral_i64, optional_truncated_i128, options_object,
+        ordering_i32, probe_class, require_object, throw_value_of, to_number,
+        truncated_u16_or_zero, truncated_u8_or_zero, unwrap_temporal,
     },
     duration::Duration,
-    plain_date::PlainDate,
     plain_date_time::PlainDateTime,
-    plain_month_day::PlainMonthDay,
-    plain_year_month::PlainYearMonth,
     zoned_date_time::ZonedDateTime,
 };
 
@@ -291,13 +289,7 @@ fn to_time_record<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<TimeRecor
 
 fn reject_calendar_or_time_zone<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
     let value = Value::from_object(object.clone());
-    if probe_class::<PlainTime>(ctx, &value).is_some()
-        || probe_class::<PlainDate>(ctx, &value).is_some()
-        || probe_class::<PlainDateTime>(ctx, &value).is_some()
-        || probe_class::<PlainYearMonth>(ctx, &value).is_some()
-        || probe_class::<PlainMonthDay>(ctx, &value).is_some()
-        || probe_class::<ZonedDateTime>(ctx, &value).is_some()
-    {
+    if probe_class::<PlainTime>(ctx, &value).is_some() || calendar_slot(ctx, &value).is_some() {
         return Err(Exception::throw_type(
             ctx,
             "calendar or time zone objects are not valid for Temporal.PlainTime.with",
@@ -462,7 +454,12 @@ fn string_rounding_options<'js>(
     };
     let precision = match get_defined(object, "fractionalSecondDigits")? {
         None => Precision::Auto,
-        Some(value) => fractional_second_digits(ctx, &value)?,
+        Some(value) => fractional_second_digits(
+            ctx,
+            &value,
+            "fractionalSecondDigits must be finite",
+            to_option_string,
+        )?,
     };
     let rounding_mode = match get_defined(object, "roundingMode")? {
         None => None,
@@ -477,35 +474,6 @@ fn string_rounding_options<'js>(
         smallest_unit,
         rounding_mode,
     })
-}
-
-fn fractional_second_digits<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Precision> {
-    if value.is_number() {
-        let number = to_number(ctx, value)?;
-        if !number.is_finite() {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be finite",
-            ));
-        }
-        let digits = number.floor() as i128;
-        if !(0..=9).contains(&digits) {
-            return Err(Exception::throw_range(
-                ctx,
-                "fractionalSecondDigits must be \"auto\" or 0-9",
-            ));
-        }
-        return Ok(Precision::Digit(digits as u8));
-    }
-    let name = to_option_string(ctx, value)?;
-    if name == "auto" {
-        Ok(Precision::Auto)
-    } else {
-        Err(Exception::throw_range(
-            ctx,
-            "fractionalSecondDigits must be \"auto\" or 0-9",
-        ))
-    }
 }
 
 fn option_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
