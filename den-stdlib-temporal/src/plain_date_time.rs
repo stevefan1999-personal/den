@@ -17,7 +17,8 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        js_to_string, ordering_i32, probe_class, reject_illformed_month_code, throw_value_of,
+        get_defined, js_to_string, options_object, ordering_i32, probe_class,
+        reject_calendar_or_time_zone, reject_illformed_month_code, require_object, throw_value_of,
         to_integer_if_integral, to_integer_if_integral_i64, to_integer_with_truncation, to_number,
         to_time_zone, unwrap_temporal,
     },
@@ -144,31 +145,13 @@ fn to_month_code_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Strin
     Ok(code)
 }
 
-fn require_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<Object<'js>> {
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, message))
-}
-
-fn options_object<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<Option<Object<'js>>> {
-    match options.0 {
-        None => Ok(None),
-        Some(value) if value.is_undefined() => Ok(None),
-        Some(value) => require_object(ctx, &value, "options must be an object").map(Some),
-    }
-}
-
 fn get_overflow<'js>(ctx: &Ctx<'js>, options: &Option<Object<'js>>) -> Result<Option<Overflow>> {
     let Some(object) = options else {
         return Ok(None);
     };
-    let value: Value = object.get("overflow")?;
-    if value.is_undefined() {
+    let Some(value) = get_defined(object, "overflow")? else {
         return Ok(None);
-    }
+    };
     let name = temporal_to_string(ctx, &value)?;
     Overflow::from_str(&name)
         .map(Some)
@@ -178,10 +161,9 @@ fn get_overflow<'js>(ctx: &Ctx<'js>, options: &Option<Object<'js>>) -> Result<Op
 fn get_unit_option<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<Unit>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
+    let Some(value) = get_defined(object, key)? else {
         return Ok(None);
-    }
+    };
     let name = temporal_to_string(ctx, &value)?;
     Unit::from_str(&name)
         .map(Some)
@@ -191,10 +173,9 @@ fn get_unit_option<'js>(
 fn get_rounding_mode_option<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<Option<RoundingMode>> {
-    let value: Value = object.get("roundingMode")?;
-    if value.is_undefined() {
+    let Some(value) = get_defined(object, "roundingMode")? else {
         return Ok(None);
-    }
+    };
     let name = temporal_to_string(ctx, &value)?;
     RoundingMode::from_str(&name)
         .map(Some)
@@ -204,10 +185,9 @@ fn get_rounding_mode_option<'js>(
 fn get_rounding_increment<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<Option<RoundingIncrement>> {
-    let value: Value = object.get("roundingIncrement")?;
-    if value.is_undefined() {
+    let Some(value) = get_defined(object, "roundingIncrement")? else {
         return Ok(None);
-    }
+    };
     let number = to_number(ctx, &value)?;
     unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
 }
@@ -215,10 +195,9 @@ fn get_rounding_increment<'js>(
 fn get_fractional_second_digits<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<Precision> {
-    let value: Value = object.get("fractionalSecondDigits")?;
-    if value.is_undefined() {
+    let Some(value) = get_defined(object, "fractionalSecondDigits")? else {
         return Ok(Precision::Auto);
-    }
+    };
     if value.is_number() {
         let number = to_number(ctx, &value)?;
         if !number.is_finite() {
@@ -327,11 +306,10 @@ fn to_constructor_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Ca
 fn get_calendar_with_iso_default<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<Calendar> {
-    let value: Value = object.get("calendar")?;
-    if value.is_undefined() {
-        return Ok(Calendar::ISO);
+    match get_defined(object, "calendar")? {
+        None => Ok(Calendar::ISO),
+        Some(value) => to_calendar_like(ctx, &value),
     }
-    to_calendar_like(ctx, &value)
 }
 
 fn truncated_i32_field<'js>(
@@ -395,13 +373,9 @@ fn datetime_fields_from_object<'js>(
     let millisecond = truncated_u16_field(ctx, object, "millisecond")?;
     let minute = truncated_u8_field(ctx, object, "minute")?;
     let month = truncated_u8_field(ctx, object, "month")?;
-    let month_code_text = {
-        let value: Value = object.get("monthCode")?;
-        if value.is_undefined() {
-            None
-        } else {
-            Some(to_month_code_string(ctx, &value)?)
-        }
+    let month_code_text = match get_defined(object, "monthCode")? {
+        None => None,
+        Some(value) => Some(to_month_code_string(ctx, &value)?),
     };
     let nanosecond = truncated_u16_field(ctx, object, "nanosecond")?;
     let second = truncated_u8_field(ctx, object, "second")?;
@@ -440,24 +414,6 @@ fn apply_month_code<'js>(
         fields.calendar_fields = fields.calendar_fields.with_month_code(month_code);
     }
     Ok(fields)
-}
-
-fn reject_calendar_or_time_zone<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
-    let calendar: Value = object.get("calendar")?;
-    if !calendar.is_undefined() {
-        return Err(Exception::throw_type(
-            ctx,
-            "calendar is not allowed in with()",
-        ));
-    }
-    let time_zone: Value = object.get("timeZone")?;
-    if !time_zone.is_undefined() {
-        return Err(Exception::throw_type(
-            ctx,
-            "timeZone is not allowed in with()",
-        ));
-    }
-    Ok(())
 }
 
 fn to_pdt<'js>(
@@ -604,10 +560,9 @@ fn get_disambiguation<'js>(
     let Some(object) = options else {
         return Ok(Disambiguation::Compatible);
     };
-    let value: Value = object.get("disambiguation")?;
-    if value.is_undefined() {
+    let Some(value) = get_defined(object, "disambiguation")? else {
         return Ok(Disambiguation::Compatible);
-    }
+    };
     let name = temporal_to_string(ctx, &value)?;
     Disambiguation::from_str(&name)
         .map_err(|_| Exception::throw_range(ctx, "invalid disambiguation"))
@@ -776,7 +731,7 @@ impl PlainDateTime {
             ));
         }
         let object = require_object(&ctx, &item, "argument must be an object")?;
-        reject_calendar_or_time_zone(&ctx, &object)?;
+        reject_calendar_or_time_zone(&ctx, &object, "calendar is not allowed in with()", "timeZone is not allowed in with()")?;
         let (fields, month_code) = datetime_fields_from_object(&ctx, &object)?;
         let overflow = get_overflow(&ctx, &options_object(&ctx, options)?)?;
         let fields = apply_month_code(&ctx, fields, month_code)?;
@@ -823,11 +778,9 @@ impl PlainDateTime {
         let (rounding, display) = match object {
             None => (ToStringRoundingOptions::default(), DisplayCalendar::Auto),
             Some(object) => {
-                let display = {
-                    let value: Value = object.get("calendarName")?;
-                    if value.is_undefined() {
-                        DisplayCalendar::Auto
-                    } else {
+                let display = match get_defined(&object, "calendarName")? {
+                    None => DisplayCalendar::Auto,
+                    Some(value) => {
                         let name = temporal_to_string(&ctx, &value)?;
                         DisplayCalendar::from_str(&name).map_err(|_| {
                             Exception::throw_range(&ctx, "invalid calendarName option")

@@ -20,10 +20,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        i128_to_bigint, js_to_string, ordering_i32, probe_class, reject_illformed_month_code,
-        throw_value_of, to_big_int_i128, to_calendar, to_duration, to_integer_if_integral,
-        to_integer_if_integral_i64, to_integer_with_truncation, to_number, to_time_zone,
-        to_zoned_date_time, unwrap_temporal,
+        get_defined, i128_to_bigint, js_to_string, options_object, ordering_i32, probe_class,
+        reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
+        to_integer_if_integral, to_integer_if_integral_i64, to_integer_with_truncation, to_number,
+        to_time_zone, to_zoned_date_time, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -389,29 +389,6 @@ impl ZonedDateTime {
     }
 }
 
-fn get_optional<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
-    let value: Value<'js> = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
-fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Object<'js>>> {
-    let Some(value) = options.0 else {
-        return Ok(None);
-    };
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, "options must be an object"))
-        .map(Some)
-}
-
 fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
     i32::try_from(to_integer_with_truncation(ctx, value)?)
         .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
@@ -589,7 +566,7 @@ fn reject_calendar_or_time_zone<'js>(
             "calendar and timeZone are not allowed in with()",
         ));
     }
-    if get_optional(object, "calendar")?.is_some() || get_optional(object, "timeZone")?.is_some() {
+    if get_defined(object, "calendar")?.is_some() || get_defined(object, "timeZone")?.is_some() {
         return Err(Exception::throw_type(
             ctx,
             "calendar and timeZone are not allowed in with()",
@@ -602,40 +579,40 @@ fn zoned_fields_from_object<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<(ZonedDateTimeFields, Option<String>)> {
     let mut fields = ZonedDateTimeFields::new();
-    if let Some(value) = get_optional(object, "day")? {
+    if let Some(value) = get_defined(object, "day")? {
         fields.calendar_fields = fields.calendar_fields.with_day(truncated_u8(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "hour")? {
+    if let Some(value) = get_defined(object, "hour")? {
         fields.time.hour = Some(truncated_u8(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "microsecond")? {
+    if let Some(value) = get_defined(object, "microsecond")? {
         fields.time.microsecond = Some(truncated_u16(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "millisecond")? {
+    if let Some(value) = get_defined(object, "millisecond")? {
         fields.time.millisecond = Some(truncated_u16(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "minute")? {
+    if let Some(value) = get_defined(object, "minute")? {
         fields.time.minute = Some(truncated_u8(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "month")? {
+    if let Some(value) = get_defined(object, "month")? {
         fields.calendar_fields = fields
             .calendar_fields
             .with_month(truncated_u8(ctx, &value)?);
     }
-    let month_code = if let Some(value) = get_optional(object, "monthCode")? {
+    let month_code = if let Some(value) = get_defined(object, "monthCode")? {
         let code = require_string_field(ctx, &value)?;
         reject_illformed_month_code(ctx, &code)?;
         Some(code)
     } else {
         None
     };
-    if let Some(value) = get_optional(object, "nanosecond")? {
+    if let Some(value) = get_defined(object, "nanosecond")? {
         fields.time.nanosecond = Some(truncated_u16(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "offset")? {
+    if let Some(value) = get_defined(object, "offset")? {
         fields.offset = Some(parse_offset_string(ctx, &value)?);
     }
-    if let Some(value) = get_optional(object, "second")? {
+    if let Some(value) = get_defined(object, "second")? {
         fields.time.second = Some(truncated_u8(ctx, &value)?);
     }
     Ok((fields, month_code))
@@ -654,7 +631,7 @@ fn apply_zoned_month_code<'js>(
 fn apply_year<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, mut fields: ZonedDateTimeFields,
 ) -> Result<ZonedDateTimeFields> {
-    if let Some(value) = get_optional(object, "year")? {
+    if let Some(value) = get_defined(object, "year")? {
         fields.calendar_fields = fields
             .calendar_fields
             .with_year(truncated_i32(ctx, &value)?);
@@ -672,7 +649,7 @@ fn zoned_options<'js>(
     let Some(object) = options_object(ctx, options)? else {
         return Ok((None, Some(default_offset), None));
     };
-    let disambiguation = match get_optional(&object, "disambiguation")? {
+    let disambiguation = match get_defined(&object, "disambiguation")? {
         None => None,
         Some(value) => {
             let name = to_option_string(ctx, &value)?;
@@ -682,7 +659,7 @@ fn zoned_options<'js>(
             )
         }
     };
-    let offset_option = match get_optional(&object, "offset")? {
+    let offset_option = match get_defined(&object, "offset")? {
         None => Some(default_offset),
         Some(value) => {
             let name = to_option_string(ctx, &value)?;
@@ -692,7 +669,7 @@ fn zoned_options<'js>(
             )
         }
     };
-    let overflow = match get_optional(&object, "overflow")? {
+    let overflow = match get_defined(&object, "overflow")? {
         None => None,
         Some(value) => Some(overflow_from_value(ctx, &value)?),
     };
@@ -710,12 +687,12 @@ fn to_zoned<'js>(
         return Ok(zoned.inner);
     }
     if let Some(object) = value.as_object() {
-        let calendar = match get_optional(object, "calendar")? {
+        let calendar = match get_defined(object, "calendar")? {
             None => Calendar::ISO,
             Some(calendar) => calendar_from_value(ctx, &calendar)?,
         };
         let (fields, month_code) = zoned_fields_from_object(ctx, object)?;
-        let timezone = match get_optional(object, "timeZone")? {
+        let timezone = match get_defined(object, "timeZone")? {
             None => {
                 return Err(Exception::throw_type(ctx, "timeZone is required"));
             }
@@ -764,7 +741,7 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    match get_optional(&object, "overflow")? {
+    match get_defined(&object, "overflow")? {
         None => Ok(None),
         Some(value) => overflow_from_value(ctx, &value).map(Some),
     }
@@ -795,7 +772,7 @@ fn duration_like_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempor
 fn optional_integral_i64<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i64>> {
-    match get_optional(object, key)? {
+    match get_defined(object, key)? {
         None => Ok(None),
         Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
     }
@@ -804,7 +781,7 @@ fn optional_integral_i64<'js>(
 fn optional_integral_i128<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i128>> {
-    match get_optional(object, key)? {
+    match get_defined(object, key)? {
         None => Ok(None),
         Some(value) => to_integer_if_integral(ctx, &value).map(Some),
     }
@@ -817,22 +794,22 @@ fn difference_settings<'js>(
     let Some(object) = options_object(ctx, options)? else {
         return Ok(settings);
     };
-    settings.largest_unit = match get_optional(&object, "largestUnit")? {
+    settings.largest_unit = match get_defined(&object, "largestUnit")? {
         None => None,
         Some(value) => Some(unit_from_value(ctx, &value)?),
     };
-    settings.increment = match get_optional(&object, "roundingIncrement")? {
+    settings.increment = match get_defined(&object, "roundingIncrement")? {
         None => None,
         Some(value) => {
             let number = to_number(ctx, &value)?;
             Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
         }
     };
-    settings.rounding_mode = match get_optional(&object, "roundingMode")? {
+    settings.rounding_mode = match get_defined(&object, "roundingMode")? {
         None => None,
         Some(value) => Some(rounding_mode_from_value(ctx, &value)?),
     };
-    settings.smallest_unit = match get_optional(&object, "smallestUnit")? {
+    settings.smallest_unit = match get_defined(&object, "smallestUnit")? {
         None => None,
         Some(value) => Some(unit_from_value(ctx, &value)?),
     };
@@ -841,18 +818,18 @@ fn difference_settings<'js>(
 
 fn datetime_rounding_options<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RoundingOptions> {
     let mut options = RoundingOptions::default();
-    options.increment = match get_optional(object, "roundingIncrement")? {
+    options.increment = match get_defined(object, "roundingIncrement")? {
         None => None,
         Some(value) => {
             let number = to_number(ctx, &value)?;
             Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
         }
     };
-    options.rounding_mode = match get_optional(object, "roundingMode")? {
+    options.rounding_mode = match get_defined(object, "roundingMode")? {
         None => None,
         Some(value) => Some(rounding_mode_from_value(ctx, &value)?),
     };
-    options.smallest_unit = match get_optional(object, "smallestUnit")? {
+    options.smallest_unit = match get_defined(object, "smallestUnit")? {
         None => None,
         Some(value) => Some(unit_from_value(ctx, &value)?),
     };
@@ -866,7 +843,7 @@ fn direction_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Transitio
         let object = value
             .as_object()
             .ok_or_else(|| Exception::throw_type(ctx, "direction must be a string or object"))?;
-        match get_optional(object, "direction")? {
+        match get_defined(object, "direction")? {
             None => {
                 return Err(Exception::throw_range(ctx, "direction is required"));
             }
@@ -919,7 +896,7 @@ fn plain_time_from_value<'js>(
 fn optional_truncated_u8<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<u8>> {
-    match get_optional(object, key)? {
+    match get_defined(object, key)? {
         None => Ok(None),
         Some(value) => truncated_u8(ctx, &value).map(Some),
     }
@@ -928,7 +905,7 @@ fn optional_truncated_u8<'js>(
 fn optional_truncated_u16<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<u16>> {
-    match get_optional(object, key)? {
+    match get_defined(object, key)? {
         None => Ok(None),
         Some(value) => truncated_u16(ctx, &value).map(Some),
     }
@@ -950,15 +927,15 @@ fn to_string_options<'js>(
             ToStringRoundingOptions::default(),
         ));
     };
-    let display_calendar = match get_optional(&object, "calendarName")? {
+    let display_calendar = match get_defined(&object, "calendarName")? {
         None => DisplayCalendar::Auto,
         Some(value) => display_calendar_from_value(ctx, &value)?,
     };
-    let precision = match get_optional(&object, "fractionalSecondDigits")? {
+    let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
         Some(value) => fractional_second_digits(ctx, &value)?,
     };
-    let display_offset = match get_optional(&object, "offset")? {
+    let display_offset = match get_defined(&object, "offset")? {
         None => DisplayOffset::Auto,
         Some(value) => {
             let name = to_option_string(ctx, &value)?;
@@ -966,15 +943,15 @@ fn to_string_options<'js>(
                 .map_err(|_| Exception::throw_range(ctx, "invalid offset option"))?
         }
     };
-    let rounding_mode = match get_optional(&object, "roundingMode")? {
+    let rounding_mode = match get_defined(&object, "roundingMode")? {
         None => None,
         Some(value) => Some(rounding_mode_from_value(ctx, &value)?),
     };
-    let smallest_unit = match get_optional(&object, "smallestUnit")? {
+    let smallest_unit = match get_defined(&object, "smallestUnit")? {
         None => None,
         Some(value) => Some(unit_from_value(ctx, &value)?),
     };
-    let display_timezone = match get_optional(&object, "timeZoneName")? {
+    let display_timezone = match get_defined(&object, "timeZoneName")? {
         None => DisplayTimeZone::Auto,
         Some(value) => {
             let name = to_option_string(ctx, &value)?;

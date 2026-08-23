@@ -18,9 +18,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        i128_to_bigint, js_to_string, ordering_i32, probe_class, throw_value_of, to_big_int_i128,
-        to_instant, to_integer_if_integral, to_integer_if_integral_i64, to_number, to_time_zone,
-        unwrap_temporal,
+        get_defined, i128_to_bigint, js_to_string, ordering_i32, probe_class, require_object,
+        throw_value_of, to_big_int_i128, to_instant, to_integer_if_integral,
+        to_integer_if_integral_i64, to_number, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -36,22 +36,6 @@ pub struct Instant {
 impl Instant {
     pub(crate) fn wrap(inner: temporal_rs::Instant) -> Self {
         Self { inner }
-    }
-}
-
-fn require_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>, what: &str) -> Result<Object<'js>> {
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| Exception::throw_type(ctx, &format!("{what} must be an object")))
-}
-
-fn get_defined<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<'js>>> {
-    let value: Value = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
     }
 }
 
@@ -148,7 +132,7 @@ fn to_instant_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempor
         let string = value.get::<String>()?;
         return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
     }
-    let object = require_object(ctx, value, "duration")?;
+    let object = require_object(ctx, value, "duration must be an object")?;
     let days = optional_integral_i64(ctx, &object, "days")?;
     let hours = optional_integral_i64(ctx, &object, "hours")?;
     let microseconds = optional_integral_i128(ctx, &object, "microseconds")?;
@@ -199,7 +183,7 @@ fn instant_difference_settings<'js>(
     let Some(value) = options.0.filter(|value| !value.is_undefined()) else {
         return Ok(DifferenceSettings::default());
     };
-    let object = require_object(ctx, &value, "options")?;
+    let object = require_object(ctx, &value, "options must be an object")?;
     let mut settings = DifferenceSettings::default();
     settings.largest_unit = optional_unit(ctx, &object, "largestUnit")?;
     settings.increment = optional_rounding_increment(ctx, &object)?;
@@ -219,7 +203,7 @@ fn instant_rounding_options<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result
         rounding.smallest_unit = Some(instant_unit(ctx, options)?);
         return Ok(rounding);
     }
-    let object = require_object(ctx, options, "options")?;
+    let object = require_object(ctx, options, "options must be an object")?;
     let increment = optional_rounding_increment(ctx, &object)?;
     let rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;
     let smallest_unit = optional_unit(ctx, &object, "smallestUnit")?;
@@ -267,7 +251,7 @@ fn instant_to_string_parts<'js>(
     let Some(value) = options.0.filter(|value| !value.is_undefined()) else {
         return Ok((None, ToStringRoundingOptions::default()));
     };
-    let object = require_object(ctx, &value, "options")?;
+    let object = require_object(ctx, &value, "options must be an object")?;
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
         Some(value) => fractional_second_digits(ctx, &value)?,
