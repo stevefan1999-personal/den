@@ -16,10 +16,14 @@ Made during the Easter holiday of 2023.
 - WinterTC / WHATWG web platform APIs: `AbortController`, `Blob`/`File`/`FileReader`/`FormData`,
   `XMLHttpRequest`, `EventSource`, `URLPattern`, `CompressionStream`, `WebSocket`,
   `performance.now`, `navigator.userAgentData` — all native Rust classes, no JS preludes
-- test262 Temporal slice via the `vendor/test262` submodule
-  (`cargo test -p den-stdlib-temporal --test test262`)
+- Official suites, one nextest test per vendored file (sources are never rewritten):
+  test262 Temporal (`cargo nextest run -p den-stdlib-temporal --test test262`),
+  WebAssembly spec (`cargo nextest run -p den-stdlib-wasm --test spec_core`),
+  WPT (`cargo nextest run -p den-core --test wpt --features stdlib`).
+  All three: `cargo nextest run --profile official`
 - Import maps and import attributes (`json` / `text` / `bytes`)
-- The WebAssembly JS API on a choice of two backends, wasmtime or wasmi, selected at compile time
+- The WebAssembly JS API on wasmtime 48, with a `jit` feature (native Cranelift)
+  and Pulley for no-JIT / unsupported hosts (App Store, hardened runtime, iOS)
 - Web Workers: `Worker` (classic and module), `MessageChannel`/`MessagePort`, `BroadcastChannel`,
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
   thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
@@ -62,20 +66,24 @@ $ cargo install den
 
 ## Testing
 
-The two WebAssembly backends are mutually exclusive and share the JS-API layer without sharing its
-capabilities, so a green run on one says nothing about the other. Both have to pass:
+A green `jit` run says nothing about Pulley: same JS-API layer, different compiler
+target. Both have to pass:
 
 ```bash
-# wasmtime backend (the default feature set)
-$ cargo test --workspace --all-targets
+# wasmtime + native Cranelift (the default feature set)
+$ cargo nextest run --workspace --all-targets
 
-# wasmi backend
-$ cargo test --workspace --all-targets --no-default-features \
-    --features stdlib,typescript,react,wasm-wasmi
+# den unit tests only (skip official vendor binaries)
+$ cargo nextest run --profile compat --workspace --all-targets
+
+# wasmtime + Pulley (no JIT pages)
+$ cargo nextest run --workspace --all-targets --no-default-features \
+    --features stdlib,typescript,react,wasm
 ```
 
-`--no-default-features` is not optional for the second one: cargo features are additive, so leaving
-the defaults on keeps `wasm-wasmtime` enabled and the build stops on a `compile_error!`.
+`--no-default-features` is required for the Pulley run: cargo features are additive,
+so leaving the defaults on keeps `jit` enabled. aarch64-apple-darwin *has*
+Cranelift; App Store / hardened runtime / iOS builds omit `jit` on purpose.
 
 ## Build matrix
 
@@ -129,7 +137,7 @@ There are still a lot of bugs that needs to be addressed before it can be deemed
 - [ ] MAKE SOME UNIT TESTS AND INTEGRATION TESTS
     - [x] Unit tests for the transpiler, the engine and the standard library
     - [x] Integration tests for the WebAssembly JS API, driven as JS through a real QuickJS context
-      on both backends
+      on wasmtime (native Cranelift and Pulley)
     - [x] Unit and integration tests for Web Workers, including the thread boundary, the error
       chain and the process-lifetime rule
     - [ ] End-to-end tests that actually run the `den` binary (the worker suite spawns a child
@@ -156,7 +164,7 @@ There are still a lot of bugs that needs to be addressed before it can be deemed
 - [ ] Add GH Actions manifests to automate CI/CD workflow such as linting, testing and build release
     - [x] Linting: `cargo clippy` and `cargo fmt --check` (`.github/workflows/lint.yml`)
     - [x] Docs: `cargo doc --no-deps`
-    - [x] Testing: `cargo test` as a matrix over both WebAssembly backends
+    - [x] Testing: `cargo nextest run` as a matrix over `jit` and Pulley
     - [ ] Release builds and artifact publishing
 - [ ] Add GH Workspace config or Nix to have consistent build environment
     - There is a `devfile.yaml` for Che/OpenShift Dev Spaces, but no devcontainer and no Nix flake

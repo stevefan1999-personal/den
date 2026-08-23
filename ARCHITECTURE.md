@@ -27,7 +27,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-whatwg     Blob/File/FileReader/FormData, XMLHttpRequest,
                                 EventSource, URLPattern, CompressionStream,
                                 WebSocket (evaluated after den:worker)
-      ├── den-stdlib-wasm       the WebAssembly JS API (optional, one backend)
+      ├── den-stdlib-wasm       the WebAssembly JS API (optional, wasmtime; `jit` vs Pulley)
       └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
                                 BroadcastChannel, EventTarget, AbortController,
                                 performance, navigator, structuredClone
@@ -218,81 +218,70 @@ whose real path is not known at this layer.
 
 Implements the WebAssembly JS API (`WebAssembly.{validate, compile, instantiate,
 compileStreaming, instantiateStreaming, Module, Instance, Memory, Table, Global,
-Tag, Exception, CompileError, LinkError, RuntimeError}`, plus a den-specific
-`wat2wasm`). `compileStreaming`/`instantiateStreaming` are written in JS
-(`DEFINE_STREAMING` in `lib.rs`) and duck-type the `Response`, so the crate
-does not depend on den's fetch.
+Tag, Exception, CompileError, LinkError, RuntimeError}`). `wat2wasm` is a
+den-specific export of the `den:wasm` *module*, not a member of `WebAssembly`.
+`compileStreaming`/`instantiateStreaming` are written in JS (`DEFINE_STREAMING`
+in `lib.rs`) and duck-type the `Response`, so the crate does not depend on den's
+fetch.
 
-### 6.1 The `backend` shim
+### 6.1 wasmtime and `jit` / Pulley
 
-`src/backend/mod.rs` declares a contract; `backend/wasmtime.rs` (wasmtime 48 +
-wasmtime-wasi 48) and `backend/wasmi.rs` (wasmi 1.1) each implement it with the
-*same item names* — `pub type Store = ::wasmtime::Store<StoreData>` versus
-`::wasmi::Store<StoreData>`, and so on for two dozen types plus a set of shim
-functions. Everything above the shim (`module.rs`, `instance.rs`, `memory.rs`,
-`table.rs`, `global.rs`, `tag.rs`, `exception.rs`, `store.rs`, `utils.rs`) names
-`crate::backend::*` and is written once.
+The engine is wasmtime 48. `src/backend.rs` owns the den-specific pieces: the
+store payload (`OwnedCtx`, `StoreData`), `new_engine`, WASI linking, and the
+value-type helpers (`ValKind`, `ValView`). `Store` / `Linker` / `Caller` are
+aliases only because they are parameterized on `StoreData`. Everything else
+(`Engine`, `Module`, `Val`, `Memory`, …) is a wasmtime type used directly.
 
-Why cfg'd type aliases and not a trait or an enum: exactly one implementation
-exists per build (the two `compile_error!`s at the top of `backend/mod.rs` enforce
-that), so a trait would add generic plumbing and an enum would add a dispatch
-arm — both for a choice that is already made at compile time. Aliases also let
-the shared code use the engines' own inherent methods directly, which a trait
-would have to re-declare.
+`jit` is a den cfg that chooses the *target triple*, not whether Cranelift is
+linked. The wasmtime crate always has the `cranelift` and `pulley` cargo
+features so modules can be compiled at runtime. `new_engine` then:
 
-Where the backends genuinely disagree, the shim owns the difference:
+- with `jit`, and when the host ISA is a Cranelift target (`x86_64`,
+  `aarch64`, `s390x`, `riscv64`), leaves the target alone so Cranelift emits
+  native code;
+- otherwise calls `Config::target("pulley64")` or `"pulley32"` (there is no
+  `Strategy::Pulley` variant). Cranelift still compiles wasm, but to portable
+  Pulley bytecode — no host RWX/JIT pages. That is the App Store / hardened
+  runtime / iOS case.
 
-- `ValKind` / `ValView` — backend-neutral discriminants. wasmtime nests
-  reference types in `ValType::Ref(RefType)` and derives neither `Copy` nor
-  `PartialEq`; wasmi has a flat `Copy + PartialEq` enum with no `anyref`. So
-  shared code asks `val_type_is(ty, ValKind::I64)` rather than matching.
-- Capability constants. Each backend file declares `NAME`, `SUPPORTS_TAGS`,
-  `SUPPORTS_ANYREF`, `SUPPORTS_V128` and `SUPPORTS_WASI`; `backend/mod.rs`
-  declares `SUPPORTS_SHARED_MEMORY` and `WASI_NAMESPACE` once for both, because
-  those two are den's limits rather than an engine's. Being `const bool`, a
-  "not supported by the {NAME} backend of this build" `TypeError` is a plain
-  branch the optimiser folds away on the backend that does have the feature.
+aarch64-apple-darwin *has* Cranelift. Users who want no-JIT on Apple build
+with `--no-default-features --features stdlib,typescript,react,wasm` (no
+`jit`). `USES_PULLEY` and `Engine::is_pulley()` report which path was taken.
 
-  Every one of them is consumed twice over, which is what keeps them honest.
-  `new_engine` derives the engine's `Config` from the constant
-  (`.wasm_exceptions(SUPPORTS_TAGS)`, `.wasm_gc(SUPPORTS_ANYREF)`,
-  `.wasm_simd(SUPPORTS_V128)`, `.wasm_threads(SUPPORTS_SHARED_MEMORY)`), so
-  what a module is allowed to *validate* follows the constant; and the JS layer
-  branches on the same constant — `SUPPORTS_TAGS` in `tag.rs` and
-  `exception.rs`, `SUPPORTS_SHARED_MEMORY` in `memory.rs`, `SUPPORTS_WASI` in
-  `store.rs`. `SUPPORTS_ANYREF` and `SUPPORTS_V128` have no JS-layer branch
-  because those *values* never cross the boundary on either backend: `utils.rs`
-  refuses `v128` in both directions and `anyref` for anything but null,
-  regardless of which engine accepted the module.
+wasmtime does not keep the original module bytes. `WebAssembly.Module` stores
+`[[Bytes]]` and walks them with `wasmtime::wasmparser` (`reexport-wasmparser`)
+for `customSections` and for the function index an Exported Function is named
+after. Import/export *declaration order* comes from wasmtime's own iterators.
 
-  `backend/mod.rs`'s `parity` test module runs one JS program against whichever
-  engine was compiled in and derives its expectations from the constants, so a
-  constant that stops matching its backend fails there rather than in a script.
-- `WasiCtx` — `wasmtime_wasi::p1::WasiP1Ctx` on wasmtime,
-  `core::convert::Infallible` on wasmi, so the `Option<WasiCtx>` slot in the
-  store payload stays backend-neutral at zero cost and can never be filled on
-  wasmi. `link_wasi` is the only thing that fills it; wasmi's is the negative
-  half of the contract, and is the one function that changes the day a
-  `wasmi_wasi` dependency appears.
+Capability constants (`SUPPORTS_TAGS`, `SUPPORTS_ANYREF`, `SUPPORTS_V128`,
+`SUPPORTS_WASI`) stay `true`; `SUPPORTS_SHARED_MEMORY` stays `false` because
+den still cannot alias a `SharedArrayBuffer` onto linear memory.
+`new_engine` derives the engine `Config` from the same constants, and
+`backend.rs`'s JS-program test checks the engine against them.
+
+`WasiCtx` is `wasmtime_wasi::p1::WasiP1Ctx`. `link_wasi` is the only thing that
+fills the store slot.
 
 ### 6.2 `OwnedCtx` and the `'static` store payload
 
 wasmtime 48 bounds `T: 'static` on `Linker<T>` / `Instance` / `Func`, so the
-store payload cannot borrow `'js`. `OwnedCtx` (`backend/mod.rs`) parks a
+store payload cannot borrow `'js`. `OwnedCtx` (`backend.rs`) parks a
 `Ctx<'static>` obtained via `Ctx::from_raw`, which performs `JS_DupContext` and
 therefore owns a reference. Access is only ever through
 `OwnedCtx::with(|ctx| …)`, which mints a fresh callback-scoped `'js` — a
 `fn ctx(&self) -> Ctx<'_>` would hand out a lifetime the caller could outlive,
 and `Ctx` is invariant in `'js` so it cannot simply be reborrowed.
 
-`unsafe impl Sync for OwnedCtx` is the crate's one foundational `unsafe`. Its
-invariant, stated in full on that impl: every path that can reach
-an `OwnedCtx` runs under the rquickjs runtime lock (the value lives in the
-`Store` payload, the `Store` lives in the userdata of the very context the
-handle points at, and a wasm host callback is only entered from a JS call that
-already holds the lock for the whole closure), and the pointee cannot dangle
-because the duplicated reference lives as long as the handle and the runtime
-drops its userdata before `JS_FreeRuntime`.
+`OwnedCtx` is deliberately *not* `Sync`: the store payload is only ever reached
+through `&mut Store`, and asserting `Sync` would make `wasmtime::Store<StoreData>`
+look shareable between threads, which a `JSContext` is not. The `unsafe` is
+`Ctx::from_raw`. Its invariant: every path that can reach an `OwnedCtx` runs
+under the rquickjs runtime lock (the value lives in the `Store` payload, the
+`Store` lives in the userdata of the very context the handle points at, and a
+wasm host callback is only entered from a JS call that already holds the lock
+for the whole closure), and the pointee cannot dangle because the duplicated
+reference lives as long as the handle and the runtime drops its userdata before
+`JS_FreeRuntime`.
 
 This is what makes the JS↔wasm bridge possible: `HostFunction::run`
 (`instance.rs`) reaches JS from inside an engine callback via
@@ -327,9 +316,9 @@ context userdata) owns every live buffer:
   buffer at once: any whose base or length has changed is detached, so the next
   `.buffer` read builds a fresh view. It runs on entry to a host callback
   (`refresh_in`, `instance.rs`) and after every export call (`utils.rs`), which
-  is what catches a `memory.grow` executed *inside* wasm — wasmi backs a linear
-  memory with a `Vec`, so an internal grow reallocates and every previously
-  built `Uint8Array` would otherwise point at freed memory.
+  is what catches a `memory.grow` executed *inside* wasm — an internal grow
+  moves the linear memory and every previously built `Uint8Array` would
+  otherwise alias the old pages.
 - `detach_at()` is the unconditional version `Memory.prototype.grow` needs,
   because the spec replaces `[[BufferObject]]` even for a zero delta, which
   moves and resizes nothing and so is invisible to `refresh`.
@@ -372,9 +361,8 @@ instance's linear memory, which no JS function can stand in for. So
 calls `WasiImports::link` instead of reading names out of it. Three properties
 of that path are load-bearing:
 
-- `WasiImports::namespace` throws a `TypeError` naming the backend when
-  `SUPPORTS_WASI` is false, so `wasiImports()` on a wasmi build never yields a
-  marker at all.
+- `WasiImports::namespace` throws a `TypeError` when `SUPPORTS_WASI` is false,
+  so a build that flipped the constant never yields a marker at all.
 - `WasiImports::link` refuses any namespace but `wasi_snapshot_preview1` with a
   `LinkError` naming both, so `{ env: wasiImports() }` cannot quietly swallow a
   module's real `env` imports.
@@ -551,22 +539,16 @@ keeps the process alive until `close()` or `terminate()`.
   `store.rs`'s `a_host_callback_cannot_reach_another_export_of_the_same_store`
   pins the ceiling end to end. Lifting it needs the borrow scoped per call
   frame rather than per outermost call.
-- **`v128` and `anyref` values never cross the JS boundary, on either
-  backend.** Modules *containing* `v128` do validate everywhere now — wasmi's
-  `simd` cargo feature is enabled and `SUPPORTS_V128` is `true` on both, because
-  `v128` is what LLVM emits for ordinary Rust and C — but `utils.rs` refuses a
+- **`v128` and `anyref` values never cross the JS boundary.** Modules
+  *containing* `v128` do validate — `SUPPORTS_V128` is `true`, because `v128`
+  is what LLVM emits for ordinary Rust and C — but `utils.rs` refuses a
   `v128` in both directions with a `TypeError`, and `anyref` accepts only null,
   since it is not in the spec's `ValueType` enum and den has no
   `i31`/`struct`/`array` conversions. `funcref` and `externref` are fully
   supported: a `funcref` round-trips as the same Exported Function object,
   through the identity cache in `utils.rs`.
-- **wasmi is still the smaller backend**, in two places rather than four: no
-  tags, so `WebAssembly.Tag` and `WebAssembly.Exception` construction throw
-  `TypeError`; and no WASI, since `wasmi_wasi` is not a dependency, so
-  `wasiImports()` throws instead of yielding a marker.
-- **Shared memory is refused on both backends, by choice.**
-  `SUPPORTS_SHARED_MEMORY` is a single `false` in `backend/mod.rs` rather than a
-  per-backend constant: the JS-API spec's §5.6 requires the `[[BufferObject]]` to be a
+- **Shared memory is refused, by choice.**
+  `SUPPORTS_SHARED_MEMORY` is a single `false` in `backend.rs`: the JS-API spec's §5.6 requires the `[[BufferObject]]` to be a
   `SharedArrayBuffer`, and den has no way to build one that aliases linear
   memory — QuickJS silently refuses to detach a shared buffer
   (`JS_DetachArrayBuffer`), which would turn §5.4's growth protocol into a
@@ -627,7 +609,7 @@ keeps the process alive until `close()` or `terminate()`.
 
 ## 9. Feature flags
 
-Root `Cargo.toml` default: `stdlib, typescript, react, wasm-wasmtime, mimalloc`.
+Root `Cargo.toml` default: `stdlib, typescript, react, wasm, jit, mimalloc`.
 Nearly every root feature is a pass-through to `den-core`.
 
 | Feature | Effect |
@@ -637,31 +619,31 @@ Nearly every root feature is a pass-through to `den-core`.
 | `transpile` | pulls in `den-transpiler-oxc`; loaders start transpiling |
 | `typescript` | implies `transpile`; `.ts`/`.tsx` and TS lowering |
 | `react` | implies `transpile`; `.jsx`/`.mjsx`/`.tsx` and classic-runtime JSX |
-| `wasm-wasmtime` | `den-stdlib-wasm` with the wasmtime 48 backend |
-| `wasm-wasmi` | `den-stdlib-wasm` with the wasmi 1.1 backend |
-| `wasm` | alias for `wasm-wasmtime` |
+| `wasm` | `den-stdlib-wasm` (wasmtime 48 + wasmtime-wasi 48) |
+| `jit` | native Cranelift when the host ISA supports it; without `jit`, Pulley |
 | `mimalloc` | mimalloc as the global allocator (binary only) |
 | `tracing` | `color-eyre` span traces / `track_caller` |
 | `tokio-console` | `console-subscriber`; also needs `--cfg tokio_unstable` |
 
-`wasm-wasmtime` and `wasm-wasmi` are mutually exclusive and cargo will not
-enforce that for you: because features are additive, asking for `wasm-wasmi`
-without `--no-default-features` leaves `wasm-wasmtime` on and the build fails
-on `den-stdlib-wasm`'s `compile_error!`. That is why `wasm` is a plain alias
-rather than a `dep:`-only feature.
+`jit` is additive and empty at the wasm crate: Cranelift and Pulley stay
+linked either way. Leaving `jit` off (or building for a host Cranelift does
+not target) makes `new_engine` select Pulley.
 
 ## 9. test262 (`vendor/test262`)
 
 The [test262](https://github.com/tc39/test262) harness lives as a git submodule
 at `vendor/test262` (not a second vendored copy). Temporal tests are
-`vendor/test262/test/built-ins/Temporal/`. `den-stdlib-temporal` walks Instant
-and Duration from that tree (`cargo test -p den-stdlib-temporal --test test262`):
-it concatenates `harness/assert.js`, `harness/sta.js` and any frontmatter
-`includes`, evals them with `den:temporal` installed, and prints pass / skip /
-fail. Tests whose `features` we do not support yet (anything `Intl*`, `module`,
-`async`) are skipped. If the submodule checkout is empty, `git submodule
-update --init vendor/test262` (or `git -C vendor/test262 fetch --depth 1 origin
-master` on a shallow clone).
+`vendor/test262/test/built-ins/Temporal/`. `den-stdlib-temporal` registers
+every official `.js` file there as its own nextest test
+(`cargo nextest run -p den-stdlib-temporal --test test262`): it concatenates
+`harness/assert.js`, `harness/sta.js` and any frontmatter `$INCLUDE`s, then
+evals the official file body raw with `den:temporal` installed. Tests whose
+`features` we cannot execute yet (`Intl*`, `module`, `async`, negative) are
+registered and ignored, not hidden. The WebAssembly core `.wast` tree and the
+WPT testharness trees use the same per-file nextest shape
+(`--test spec_core`, `--test wpt`). If the submodule checkout is empty, `git
+submodule update --init vendor/test262` (or `git -C vendor/test262 fetch
+--depth 1 origin master` on a shallow clone).
 
 ## 10. Build and test
 
@@ -670,20 +652,25 @@ cargo build                                  # debug
 cargo build --release
 cargo build --profile min-size-release       # size-favoured
 
-# wasmtime backend (default)
-cargo test --workspace --all-targets
+# wasmtime + native Cranelift (default: `wasm` + `jit`)
+cargo nextest run --workspace --all-targets
 
-# wasmi backend
-cargo test --workspace --all-targets --no-default-features \
-  --features stdlib,typescript,react,wasm-wasmi
+# den unit tests only
+cargo nextest run --profile compat --workspace --all-targets
+
+# official vendor files (spec / WPT / test262)
+cargo nextest run --profile official
+
+# wasmtime + Pulley (no JIT pages; App Store / hardened runtime / iOS)
+cargo nextest run --workspace --all-targets --no-default-features \
+  --features stdlib,typescript,react,wasm
 ```
 
-Both invocations must be green: 368 tests on wasmtime, 366 on wasmi (two are
-`#[cfg(feature = "wasmtime")]`, both about WASI). The bulk is still
-`den-stdlib-worker` (132) and `den-stdlib-wasm` (93); the WinterTC crates add
-process, whatwg, fetch, fs, crypto, networking, and den-core import-map/attribute
-suites on top. The timer crate now covers numeric ids, and den-core pins
-`Engine::stop()` releasing `idle()` from a long timer.
+Both invocations must be green. The bulk is still `den-stdlib-worker` and
+`den-stdlib-wasm`; the WinterTC crates add process, whatwg, fetch, fs, crypto,
+networking, and den-core import-map/attribute suites on top. The timer crate
+now covers numeric ids, and den-core pins `Engine::stop()` releasing `idle()`
+from a long timer.
 
 `den-core/tests/workers.rs` is the layer that proves a *user* gets the worker
 semantics: it writes its fixtures under `std::env::temp_dir()` at test time and
@@ -693,5 +680,5 @@ cross-thread wait is a promise settled by an event under a
 `tokio::time::timeout`; nothing synchronises by sleeping.
 
 CI (`.github/workflows/lint.yml`) runs clippy, `fmt --check`, `doc` and the
-test suite across both backends as a matrix — a green wasmtime run says nothing
-about wasmi, since they share the JS-API layer but not its capabilities.
+test suite. A green `jit` run says nothing about Pulley: same JS-API layer,
+different compiler target.

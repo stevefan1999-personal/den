@@ -656,7 +656,7 @@ are the executable to-do list for the JS API.
 ### 5.6 Test cases — `den-core/tests/`
 
 All `#[tokio::test(flavor = "multi_thread")]` (the loaders use `block_in_place`, §3.1).
-`cargo test` runs with cwd = the package root, so fixtures are addressed as `tests/fixtures/x.ts`.
+`cargo nextest run` runs with cwd = the package root, so fixtures are addressed as `tests/fixtures/x.ts`.
 
 | # | File | Test name | Asserts |
 |---|---|---|---|
@@ -688,7 +688,7 @@ Also rename the two existing tests while you are in there:
 | **`HttpLoader` does real network I/O** | `http.rs:27` | no test should import an `http://` URL. If HTTP loading needs coverage, bind a `tokio::net::TcpListener` on `127.0.0.1:0` and serve one canned response; otherwise skip the layer. |
 | **`run_file` interpolates the path into a JS template literal** | `engine.rs:322` | forward slashes only; a Windows path or a backtick in a fixture name breaks the eval |
 | **Wasm engine has `async_support` disabled** | `engine.rs:24` (commented out) | host imports are synchronous; a JS import returning a Promise cannot be awaited by the guest. Document it; do not write tests that assume otherwise. |
-| **No `cargo test` in CI** | `.github/workflows/lint.yml` | add a `test` job mirroring the `clippy` job: `cargo test --workspace`, plus one `--no-default-features` build to keep the feature gates honest — but fix §6.9b and §6.9c first, they are exactly what that build catches. Widen `paths:` to include `**/Cargo.toml` and `Cargo.lock` (§6.9d) or the job will not run on dependency commits. |
+| **No `cargo nextest run` in CI** | `.github/workflows/lint.yml` | add a `test` job mirroring the `clippy` job: `cargo nextest run --workspace`, plus one `--no-default-features` build to keep the feature gates honest — but fix §6.9b and §6.9c first, they are exactly what that build catches. Widen `paths:` to include `**/Cargo.toml` and `Cargo.lock` (§6.9d) or the job will not run on dependency commits. |
 
 ---
 
@@ -1040,7 +1040,7 @@ lib.rs:67, :68                                  edition-2024 `ref` — §6.5
    Folding it into `den-stdlib-networking` removes a workspace member; keeping it is justified only
    if `den:fs` is going to grow file handles. (Not urgent — no action needed for this migration.)
 7. **CI**: add a `test` job to `.github/workflows/lint.yml`? Without it the new suite rots. The
-   runners are self-hosted, so wasmtime build time is a real cost — consider `cargo test
+   runners are self-hosted, so wasmtime build time is a real cost — consider `cargo nextest run
    --workspace --no-fail-fast` on PRs plus a nightly full-feature-matrix run. Widen `paths:` too
    (§6.9d).
 8. **Does the `wasmi` backend exist or not?** (§6.9a) Three manifests advertise a `wasmi` feature

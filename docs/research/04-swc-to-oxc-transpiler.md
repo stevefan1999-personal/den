@@ -899,7 +899,7 @@ out: var a = 1;                   ← resolved to Script
 
 Drop this in as `den-transpiler-oxc/tests/smoke.rs` (inlined here on purpose — the scratch crate that
 validated this doc lives under `/tmp` and will not survive). Run it with
-`cargo test -p den-transpiler-oxc --features typescript,react`.
+`cargo nextest run -p den-transpiler-oxc --features typescript,react`.
 
 It covers, one behaviour each:
 

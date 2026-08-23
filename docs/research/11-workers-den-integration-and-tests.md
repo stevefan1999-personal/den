@@ -59,7 +59,7 @@ keeps the process alive; no SharedWorker / ServiceWorker.
 | `EasyOxcTranspiler` is a ZST, `Send + Sync`, and proven shareable across 8 threads | `den-transpiler-oxc/src/lib.rs:375-400`, ARCHITECTURE §4 |
 | quickjs-ng `Error` objects carry `message` and `stack` only — no `fileName`/`lineNumber` own properties; frames are formatted `    at name (file:line:col)`; `Error.prepareStackTrace` CallSites expose `getFileName/getLineNumber/getColumnNumber` | `quickjs.c:7878-7893`, `:7956`, `:62109-62115` |
 | `tempfile` is in `Cargo.lock` only transitively via wasmtime; no workspace crate depends on it | `cargo tree -i tempfile` |
-| CI runs `cargo test --workspace --no-default-features --features stdlib,typescript,react,<backend>` for both wasm backends | `.github/workflows/lint.yml:44-55` |
+| CI runs `cargo nextest run --workspace --no-default-features --features stdlib,typescript,react,<backend>` for both wasm backends | `.github/workflows/lint.yml:44-55` |
 
 ---
 
@@ -946,7 +946,7 @@ const FIRST_MESSAGE: &str = r#"
 `Worker` takes a URL, so integration tests need files. Constraints: `tempfile`
 is not a direct dependency (only wasmtime's, `cargo tree -i tempfile`), and
 absolute paths do not resolve (§7.4), so `std::env::temp_dir()` is out until
-the resolver bug is fixed. `cargo test` runs with cwd = `den-core/`
+the resolver bug is fixed. `cargo nextest run` runs with cwd = `den-core/`
 (doc 07 §5.6), and `/target` is gitignored (`.gitignore:1`). So:
 
 ```rust
