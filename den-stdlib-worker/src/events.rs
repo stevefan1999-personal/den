@@ -17,12 +17,12 @@ use std::{
 };
 
 use den_stdlib_core::report::{print_exception, report_exception, set_exception_sink};
-use den_util::throw_dom_exception;
+use den_util::{inherit, throw_dom_exception};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Result, Value,
     atom::PredefinedAtom,
-    class::{JsClass, Trace, Tracer},
+    class::{Trace, Tracer},
     function::{Args, Opt, This},
     object::{Accessor, Property},
     qjs,
@@ -134,20 +134,6 @@ pub(crate) fn freeze<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<()> {
     } else {
         Ok(())
     }
-}
-
-pub(crate) fn inherit<'js, Sub, Super>(ctx: &Ctx<'js>) -> Result<()>
-where
-    Sub: JsClass<'js>,
-    Super: JsClass<'js>,
-{
-    if let (Some(sub), Some(super_proto)) = (
-        Class::<Sub>::prototype(ctx)?,
-        Class::<Super>::prototype(ctx)?,
-    ) {
-        sub.set_prototype(Some(&super_proto))?;
-    }
-    Ok(())
 }
 
 fn patch_length<'js>(constructors: &Object<'js>, name: &str, length: usize) -> Result<()> {

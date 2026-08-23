@@ -24,6 +24,7 @@ use std::{
 use den_stdlib_core::report::print_exception;
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{EasyOxcTranspiler, IsModule, infer_transpile_syntax_by_extension};
+use den_util::inherit;
 use rquickjs::{
     AsyncContext, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime,
     Object, Persistent, Promise, Result, Value,
@@ -41,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
-    events::{ErrorEvent, EventTarget, define_event_handler, dispatch_trusted, inherit},
+    events::{ErrorEvent, EventTarget, define_event_handler, dispatch_trusted},
     host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost},
     message::clone::split_transfer,
     port::{NativePort, pair, track_message_listeners},

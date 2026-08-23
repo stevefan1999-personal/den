@@ -645,7 +645,7 @@ pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
 }
 
 pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
-    crate::events::inherit::<MessagePort, crate::events::EventTarget>(ctx)?;
+    den_util::inherit::<MessagePort, crate::events::EventTarget>(ctx)?;
     if let Some(proto) = Class::<MessagePort>::prototype(ctx)? {
         crate::events::define_event_handler(
             ctx.clone(),
