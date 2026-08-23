@@ -6,6 +6,10 @@
 //! boundary — the parent and the worker each own a runtime, and they speak
 //! only through the channel a [`PortHandle`] pair is made of.
 //!
+//! The JS-visible [`Worker`] is an EventTarget wrapper around [`NativeWorker`]
+//! and the outside [`NativePort`]. `DedicatedWorkerGlobalScope` is the same
+//! for the worker's global object.
+//!
 //! See docs/research/09-rquickjs-threads-and-event-loop.md §4, §6, §7 and
 //! docs/research/11-workers-den-integration-and-tests.md §9.
 
@@ -17,11 +21,17 @@ use std::{
     time::Duration,
 };
 
+use den_stdlib_core::report::print_exception;
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{EasyOxcTranspiler, IsModule, infer_transpile_syntax_by_extension};
 use rquickjs::{
     AsyncContext, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime,
-    Object, Promise, Result, Value, class::Trace, context::EvalOptions, function::Func,
+    Object, Persistent, Promise, Result, Value,
+    atom::PredefinedAtom,
+    class::Trace,
+    context::EvalOptions,
+    function::{Func, FuncArg, Opt, Rest, This},
+    object::Property,
 };
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -31,11 +41,16 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
+    events::{ErrorEvent, EventTarget, define_event_handler, dispatch_trusted, inherit},
     host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost},
-    port::NativePort,
-    report::report_exception,
+    message::clone::split_transfer,
+    port::{NativePort, pair, track_message_listeners},
+    report::{report_exception, sink_hook},
     transport::PortHandle,
 };
+
+/// Hidden own property: the worker global's closing flag (`close()`).
+const CLOSING_SLOT: &str = "\0den:worker-closing";
 
 /// How long [`shutdown`] gives a worker thread to notice its cancellation.
 ///
@@ -256,32 +271,114 @@ impl ScriptError {
     }
 }
 
-/// The `installWorkerScope` function that `src/prelude/worker.js` registers
-/// while `den:worker` evaluates.
-///
-/// It has to outlive that prelude's scope by a long way: the worker thread
-/// calls it once its own engine exists, and the context userdata is the only
-/// place in a realm that lives that long without being visible to script.
-#[derive(JsLifetime)]
-struct ScopeInstaller<'js>(Function<'js>);
+/// The natives bag `events::install` parks as the exception sink. Worker
+/// scope installation replaces `reportException` and `escalate` on it.
+struct NativesBag(Persistent<Object<'static>>);
 
-impl<'js> ScopeInstaller<'js> {
-    /// The guard is dropped before the installer is called: a live userdata
-    /// guard blocks `store_userdata` for *every* type, and the installer runs
-    /// JS that may well store some.
-    fn take(ctx: &Ctx<'js>) -> Result<Function<'js>> {
-        ctx.userdata::<Self>()
-            .map(|installer| installer.0.clone())
-            .ok_or_else(|| Exception::throw_internal(ctx, "den:worker is not installed"))
+// SAFETY: `Persistent` owns its value and is tied to the runtime, not a scope.
+unsafe impl<'js> JsLifetime<'js> for NativesBag {
+    type Changed<'to> = NativesBag;
+}
+
+fn natives<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
+    ctx.userdata::<NativesBag>()
+        .ok_or_else(|| Exception::throw_internal(ctx, "den:worker is not installed"))?
+        .0
+        .clone()
+        .restore(ctx)
+        .map_err(|_| Exception::throw_internal(ctx, "den:worker natives vanished"))
+}
+
+fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
+    match options {
+        Some(options) if options.is_array() => Some(options),
+        Some(options) if options.is_object() => options
+            .as_object()
+            .and_then(|object| object.get("transfer").ok())
+            .filter(|value: &Value| !value.is_undefined() && !value.is_null()),
+        _ => None,
     }
 }
 
-/// `natives.registerScope(installWorkerScope)` — called once by the prelude.
-#[rquickjs::function(rename = "registerScope")]
-pub fn register_scope<'js>(ctx: Ctx<'js>, installer: Function<'js>) -> Result<()> {
-    ctx.store_userdata(ScopeInstaller(installer))
-        .map_err(|_| Exception::throw_internal(&ctx, "den:worker is already installed"))?;
-    Ok(())
+fn bind<'js>(function: &Function<'js>, this: Value<'js>) -> Result<Function<'js>> {
+    let bind: Function<'js> = function.get("bind")?;
+    bind.call((This(function.clone()), this))
+}
+
+/// HTML §8.1.4.6 step 3: fire a cancelable `error` at `target`. `true` means
+/// something called `preventDefault()` — the error was claimed.
+fn report_error_at<'js>(
+    ctx: &Ctx<'js>,
+    target: Value<'js>,
+    message: String,
+    filename: String,
+    lineno: u32,
+    colno: u32,
+) -> Result<bool> {
+    let init = Object::new(ctx.clone())?;
+    init.set("message", message)?;
+    init.set("filename", filename)?;
+    init.set("lineno", lineno)?;
+    init.set("colno", colno)?;
+    init.set("cancelable", true)?;
+    let event = Class::instance(
+        ctx.clone(),
+        ErrorEvent::new(
+            ctx.clone(),
+            "error".into_js(ctx)?,
+            Opt(Some(init.into_value())),
+        )?,
+    )?;
+    Ok(!dispatch_trusted(ctx.clone(), target, event.into_value())?)
+}
+
+fn escalate(ctx: &Ctx<'_>, message: String, filename: String, lineno: u32, colno: u32) {
+    if let Some(hook) = sink_hook(ctx, "escalate") {
+        if let Err(error) = hook.call::<_, ()>((message, filename, lineno, colno)) {
+            match error {
+                Error::Exception => report_exception(ctx, &ctx.catch()),
+                other => eprintln!("{other}"),
+            }
+        }
+        return;
+    }
+    let text = format!("{message}\n    at {filename}:{lineno}:{colno}");
+    if let Ok(value) = text.into_js(ctx) {
+        print_exception(ctx, &value);
+    }
+}
+
+fn worker_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<(String, String)> {
+    let object = options.as_ref().and_then(Value::as_object);
+    let kind = match object {
+        Some(options) => {
+            let value: Value<'js> = options.get("type")?;
+            if value.is_undefined() {
+                "classic".to_owned()
+            } else {
+                Coerced::<String>::from_js(ctx, value)?.0
+            }
+        }
+        None => "classic".to_owned(),
+    };
+    if kind != "classic" && kind != "module" {
+        return Err(Exception::throw_type(
+            ctx,
+            &format!("Worker constructor: '{kind}' is not a valid worker type"),
+        ));
+    }
+    let name = match object {
+        Some(options) => {
+            let value: Value<'js> = options.get("name")?;
+            if value.is_undefined() {
+                String::new()
+            } else {
+                Coerced::<String>::from_js(ctx, value)?.0
+            }
+        }
+        None => String::new(),
+    };
+    Ok((kind, name))
 }
 
 /// The stop token of the realm a context belongs to — what `Engine::stop()`
@@ -423,9 +520,7 @@ impl NativeWorker {
     }
 }
 
-/// `natives.spawn(url, type, name, port, onFault)` — the `Worker` constructor's
-/// one native step (HTML §10.2.6.3 step 10, "run a worker in parallel").
-#[rquickjs::function(rename = "spawn")]
+/// Spawn a worker thread (HTML §10.2.6.3 step 10, "run a worker in parallel").
 pub fn spawn<'js>(
     ctx: Ctx<'js>,
     url: String,
@@ -683,7 +778,7 @@ impl WorkerThread {
                 },
             ),
         )?;
-        ScopeInstaller::take(ctx)?.call((ctx.globals(), port, name, hooks))
+        install_worker_scope(ctx, ctx.globals(), port, name, hooks)
     }
 
     async fn run_and_report<'js>(
@@ -850,10 +945,380 @@ impl WorkerThread {
     }
 }
 
-/// Add this module's natives to the `natives` bag the prelude is called with.
-pub fn install<'js>(_ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
-    natives.set("registerScope", js_register_scope)?;
-    natives.set("spawn", js_spawn)?;
+/// HTML §10.2.1 / §10.3.1: empty classes so `self instanceof EventTarget` and
+/// `Object.prototype.toString.call(self)` say what the spec says. Not
+/// constructible and not exported.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub struct WorkerGlobalScope {}
+
+#[rquickjs::methods]
+impl WorkerGlobalScope {
+    #[qjs(constructor)]
+    pub fn new(ctx: Ctx<'_>) -> Result<Self> {
+        Err(Exception::throw_type(&ctx, "Illegal constructor"))
+    }
+
+    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str {
+        "WorkerGlobalScope"
+    }
+}
+
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub struct DedicatedWorkerGlobalScope {}
+
+#[rquickjs::methods]
+impl DedicatedWorkerGlobalScope {
+    #[qjs(constructor)]
+    pub fn new(ctx: Ctx<'_>) -> Result<Self> {
+        Err(Exception::throw_type(&ctx, "Illegal constructor"))
+    }
+
+    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str {
+        "DedicatedWorkerGlobalScope"
+    }
+}
+
+/// HTML §10.2.6 `Worker`.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub struct Worker<'js> {
+    port:   Class<'js, NativePort>,
+    thread: Class<'js, NativeWorker>,
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl<'js> Worker<'js> {
+    #[qjs(constructor)]
+    pub fn new(
+        ctx: Ctx<'js>,
+        script_url: Opt<Value<'js>>,
+        options: Opt<Value<'js>>,
+    ) -> Result<Class<'js, Self>> {
+        let Some(script_url) = script_url.0 else {
+            return Err(Exception::throw_type(
+                &ctx,
+                "Worker constructor: at least 1 argument required",
+            ));
+        };
+        let url = Coerced::<String>::from_js(&ctx, script_url)?.0;
+        let (kind, name) = worker_options(&ctx, options.0)?;
+        let ports = pair(ctx.clone())?;
+        let outside = ports[0].clone();
+        let inside = ports[1].clone();
+        let on_fault = Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>,
+             function: FuncArg<Function<'js>>,
+             message: String,
+             filename: String,
+             lineno: u32,
+             colno: u32|
+             -> Result<()> {
+                let worker: Value<'js> = function.0.get("_worker")?;
+                if !report_error_at(
+                    &ctx,
+                    worker,
+                    message.clone(),
+                    filename.clone(),
+                    lineno,
+                    colno,
+                )? {
+                    escalate(&ctx, message, filename, lineno, colno);
+                }
+                Ok(())
+            },
+        )?;
+        let thread = spawn(ctx.clone(), url, kind, name, inside, on_fault.clone())?;
+        let worker = Class::instance(
+            ctx.clone(),
+            Self {
+                port: outside.clone(),
+                thread,
+            },
+        )?;
+        on_fault.set("_worker", worker.clone())?;
+        let arm = track_message_listeners(ctx.clone(), worker.clone().into_value(), outside)?;
+        arm.call::<_, ()>(())?;
+        Ok(worker)
+    }
+
+    pub fn post_message(
+        &self,
+        ctx: Ctx<'js>,
+        message: Value<'js>,
+        options: Opt<Value<'js>>,
+    ) -> Result<()> {
+        let (buffers, ports) = split_transfer(&ctx, transfer_list(options.0))?;
+        self.port.borrow().post(ctx, message, buffers, ports)
+    }
+
+    pub fn terminate(&self) {
+        self.thread.borrow().terminate();
+        self.port.borrow().close();
+    }
+
+    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str {
+        "Worker"
+    }
+}
+
+/// Called from the worker thread after the engine exists and before its
+/// script runs. Returns `{ start, reportError }` for the thread body.
+fn install_worker_scope<'js>(
+    ctx: &Ctx<'js>,
+    scope: Object<'js>,
+    native: Class<'js, NativePort>,
+    name: &str,
+    hooks: Object<'js>,
+) -> Result<Object<'js>> {
+    if let Some(proto) = Class::<DedicatedWorkerGlobalScope>::prototype(ctx)? {
+        scope.set_prototype(Some(&proto))?;
+    }
+    scope.set(CLOSING_SLOT, false)?;
+    scope.prop("self", Property::from(scope.clone()).configurable())?;
+    scope.prop("name", Property::from(name).writable().configurable())?;
+
+    let post = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>,
+         function: FuncArg<Function<'js>>,
+         message: Value<'js>,
+         options: Opt<Value<'js>>|
+         -> Result<()> {
+            let native: Class<'js, NativePort> = function.0.get("_native")?;
+            let (buffers, ports) = split_transfer(&ctx, transfer_list(options.0))?;
+            native.borrow().post(ctx, message, buffers, ports)
+        },
+    )?;
+    post.set("_native", native.clone())?;
+    scope.prop(
+        "postMessage",
+        Property::from(post).writable().configurable(),
+    )?;
+
+    let close = Function::new(
+        ctx.clone(),
+        |function: FuncArg<Function<'js>>| -> Result<()> {
+            let scope: Object<'js> = function.0.get("_scope")?;
+            scope.set(CLOSING_SLOT, true)?;
+            let hook: Function<'js> = function.0.get("_close")?;
+            hook.call::<_, ()>(())
+        },
+    )?;
+    close.set("_scope", scope.clone())?;
+    close.set("_close", hooks.get::<_, Function<'js>>("close")?)?;
+    scope.prop("close", Property::from(close).writable().configurable())?;
+
+    let import = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>,
+         function: FuncArg<Function<'js>>,
+         urls: Rest<Value<'js>>|
+         -> Result<()> {
+            let hook: Function<'js> = function.0.get("_import")?;
+            let mut strings = Vec::with_capacity(urls.0.len());
+            for url in urls.0 {
+                strings.push(Coerced::<String>::from_js(&ctx, url)?.0);
+            }
+            hook.call::<_, ()>((strings,))
+        },
+    )?;
+    import.set("_import", hooks.get::<_, Function<'js>>("importScripts")?)?;
+    scope.prop(
+        "importScripts",
+        Property::from(import).writable().configurable(),
+    )?;
+
+    if let Some(proto) = Class::<EventTarget>::prototype(ctx)? {
+        for method_name in ["addEventListener", "removeEventListener", "dispatchEvent"] {
+            let method: Function<'js> = proto.get(method_name)?;
+            let bound = bind(&method, scope.clone().into_value())?;
+            scope.prop(
+                method_name,
+                Property::from(bound).writable().configurable(),
+            )?;
+        }
+    }
+
+    let arm = track_message_listeners(ctx.clone(), scope.clone().into_value(), native)?;
+    define_event_handler(
+        ctx.clone(),
+        scope.clone(),
+        "onmessage".to_owned(),
+        Opt(None),
+    )?;
+    define_event_handler(
+        ctx.clone(),
+        scope.clone(),
+        "onmessageerror".to_owned(),
+        Opt(None),
+    )?;
+    define_event_handler(
+        ctx.clone(),
+        scope.clone(),
+        "onerror".to_owned(),
+        Opt(Some(true)),
+    )?;
+    define_event_handler(
+        ctx.clone(),
+        scope.clone(),
+        "onunhandledrejection".to_owned(),
+        Opt(None),
+    )?;
+    define_event_handler(
+        ctx.clone(),
+        scope.clone(),
+        "onrejectionhandled".to_owned(),
+        Opt(None),
+    )?;
+
+    let natives = natives(ctx)?;
+    let escalate_fn = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>,
+         function: FuncArg<Function<'js>>,
+         message: String,
+         filename: String,
+         lineno: u32,
+         colno: u32|
+         -> Result<()> {
+            let target: Value<'js> = function.0.get("_scope")?;
+            if !report_error_at(
+                &ctx,
+                target,
+                message.clone(),
+                filename.clone(),
+                lineno,
+                colno,
+            )? {
+                let fault: Function<'js> = function.0.get("_fault")?;
+                fault.call::<_, ()>((message, filename, lineno, colno))?;
+            }
+            Ok(())
+        },
+    )?;
+    escalate_fn.set("_scope", scope.clone())?;
+    escalate_fn.set("_fault", hooks.get::<_, Function<'js>>("fault")?)?;
+    natives.set("escalate", escalate_fn.clone())?;
+
+    let print: Function<'js> = natives.get("reportException")?;
+    let reporter = Function::new(
+        ctx.clone(),
+        |_ctx: Ctx<'js>, function: FuncArg<Function<'js>>, value: Value<'js>| -> Result<()> {
+            let reporting: bool = function.0.get("_reporting")?;
+            if reporting {
+                let print: Function<'js> = function.0.get("_print")?;
+                print.call::<_, ()>((value,))?;
+                return Ok(());
+            }
+            function.0.set("_reporting", true)?;
+            let locate: Function<'js> = function.0.get("_locate")?;
+            let escalate: Function<'js> = function.0.get("_escalate")?;
+            let outcome = (|| {
+                let located: Object<'js> = locate.call((value,))?;
+                escalate.call::<_, ()>((
+                    located.get::<_, String>("message")?,
+                    located.get::<_, String>("filename")?,
+                    located.get::<_, u32>("lineno")?,
+                    located.get::<_, u32>("colno")?,
+                ))
+            })();
+            function.0.set("_reporting", false)?;
+            outcome
+        },
+    )?;
+    reporter.set("_print", print)?;
+    reporter.set("_locate", hooks.get::<_, Function<'js>>("locate")?)?;
+    reporter.set("_escalate", escalate_fn)?;
+    reporter.set("_reporting", false)?;
+    natives.set("reportException", reporter)?;
+
+    let start = Function::new(
+        ctx.clone(),
+        |function: FuncArg<Function<'js>>| -> Result<()> {
+            let scope: Object<'js> = function.0.get("_scope")?;
+            let closing: bool = scope.get(CLOSING_SLOT)?;
+            if !closing {
+                let arm: Function<'js> = function.0.get("_arm")?;
+                arm.call::<_, ()>(())?;
+            }
+            Ok(())
+        },
+    )?;
+    start.set("_scope", scope.clone())?;
+    start.set("_arm", arm)?;
+
+    let report = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>,
+         function: FuncArg<Function<'js>>,
+         message: String,
+         filename: String,
+         lineno: u32,
+         colno: u32|
+         -> Result<bool> {
+            let target: Value<'js> = function.0.get("_scope")?;
+            report_error_at(&ctx, target, message, filename, lineno, colno)
+        },
+    )?;
+    report.set("_scope", scope.clone())?;
+
+    let returned = Object::new(ctx.clone())?;
+    returned.set("start", start)?;
+    returned.set("reportError", report)?;
+    Ok(returned)
+}
+
+/// Park the natives bag and the default (print) escalate hook.
+pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
+    ctx.store_userdata(NativesBag(Persistent::save(ctx, natives.clone())))
+        .map_err(|_| Exception::throw_internal(ctx, "den:worker is already installed"))?;
+    natives.set(
+        "escalate",
+        Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, message: String, filename: String, lineno: u32, colno: u32| {
+                let text = format!("{message}\n    at {filename}:{lineno}:{colno}");
+                if let Ok(value) = text.into_js(&ctx) {
+                    print_exception(&ctx, &value);
+                }
+            },
+        )?,
+    )?;
+    Ok(())
+}
+
+/// Prototype chain, `onX` slots, constructor `length`.
+pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
+    let hidden = Object::new(ctx.clone())?;
+    Class::<WorkerGlobalScope>::define(&hidden)?;
+    Class::<DedicatedWorkerGlobalScope>::define(&hidden)?;
+    inherit::<WorkerGlobalScope, EventTarget>(ctx)?;
+    inherit::<DedicatedWorkerGlobalScope, WorkerGlobalScope>(ctx)?;
+    inherit::<Worker, EventTarget>(ctx)?;
+    if let Some(proto) = Class::<Worker>::prototype(ctx)? {
+        define_event_handler(
+            ctx.clone(),
+            proto.clone(),
+            "onmessage".to_owned(),
+            Opt(None),
+        )?;
+        define_event_handler(
+            ctx.clone(),
+            proto.clone(),
+            "onmessageerror".to_owned(),
+            Opt(None),
+        )?;
+        define_event_handler(ctx.clone(), proto, "onerror".to_owned(), Opt(None))?;
+    }
+    if let Some(ctor) = Class::<Worker>::create_constructor(ctx)? {
+        ctor.set_length(1)?;
+    }
     Ok(())
 }
 

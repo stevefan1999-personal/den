@@ -1,8 +1,6 @@
-//! `BroadcastChannel`'s native half (HTML §9.5): the process-global registry
-//! of subscribers by channel name, and the pump that delivers to one of them.
-//!
-//! The JS-visible `BroadcastChannel` lives in `src/prelude/broadcast.js`
-//! because it `extends EventTarget`.
+//! `BroadcastChannel` (HTML §9.5): the process-global registry of subscribers
+//! by channel name, the pump that delivers to one of them, and the EventTarget
+//! wrapper.
 //!
 //! The registry is a plain process-global map rather than anything per-realm,
 //! and that is the whole cross-thread story: a `BroadcastChannel` in a worker
@@ -11,7 +9,7 @@
 //! no runtime — crosses; the receiving realm rebuilds the value itself.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     sync::{
         LazyLock, Mutex, PoisonError,
@@ -19,17 +17,29 @@ use std::{
     },
 };
 
-use rquickjs::{Class, Ctx, Function, JsLifetime, Object, Result, Value, class::Trace};
+use rquickjs::{
+    Class, Coerced, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom,
+    class::Trace,
+    function::{FuncArg, Opt},
+};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-use crate::{message::Message, port::NativePort};
+use crate::{
+    events::{
+        EventTarget, MessageEvent, define_event_handler, dispatch_trusted, inherit,
+        throw_dom_exception,
+    },
+    message::Message,
+    port::NativePort,
+};
 
 /// One live `BroadcastChannel`, as seen by every *other* one with its name.
 struct Subscriber {
     /// Identity, so that a post can skip its own channel. A raw pointer would
     /// do it too, but an id is comparable across threads without being one.
-    id:    u64,
+    id: u64,
     inbox: UnboundedSender<Message>,
 }
 
@@ -49,16 +59,16 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 #[rquickjs::class(rename = "NativeBroadcast")]
 pub struct NativeBroadcast {
     #[qjs(skip_trace)]
-    name:  String,
+    name: String,
     #[qjs(skip_trace)]
-    id:    u64,
+    id: u64,
     /// This channel's own inbox, until the pump takes it.
     #[qjs(skip_trace)]
     inbox: RefCell<Option<UnboundedReceiver<Message>>>,
     /// Ends the pump, and doubles as the closed flag: nothing else can tell a
     /// quiet channel from a closed one.
     #[qjs(skip_trace)]
-    stop:  CancellationToken,
+    stop: CancellationToken,
 }
 
 impl NativeBroadcast {
@@ -196,9 +206,122 @@ impl Drop for NativeBroadcast {
     }
 }
 
-/// Install the broadcast natives: the class constructor the prelude wraps.
+/// HTML §9.5 `BroadcastChannel`.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub struct BroadcastChannel<'js> {
+    #[qjs(skip_trace)]
+    name: String,
+    native: Class<'js, NativeBroadcast>,
+    #[qjs(skip_trace)]
+    closed: Cell<bool>,
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl<'js> BroadcastChannel<'js> {
+    #[qjs(constructor)]
+    pub fn new(ctx: Ctx<'js>, name: Opt<Value<'js>>) -> Result<Class<'js, Self>> {
+        let name = match name.0 {
+            Some(value) => Coerced::<String>::from_js(&ctx, value)?.0,
+            None => "undefined".to_owned(),
+        };
+        let native = Class::instance(ctx.clone(), NativeBroadcast::new(name.clone()))?;
+        let channel = Class::instance(
+            ctx.clone(),
+            Self {
+                name,
+                native: native.clone(),
+                closed: Cell::new(false),
+            },
+        )?;
+        let on_message = Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>,
+             function: FuncArg<Function<'js>>,
+             data: Value<'js>,
+             _ports: Opt<Value<'js>>|
+             -> Result<()> {
+                let target: Value<'js> = function.0.get("_target")?;
+                let init = Object::new(ctx.clone())?;
+                init.set("data", data)?;
+                let event = Class::instance(
+                    ctx.clone(),
+                    MessageEvent::new(
+                        ctx.clone(),
+                        "message".into_js(&ctx)?,
+                        Opt(Some(init.into_value())),
+                    )?,
+                )?;
+                dispatch_trusted(ctx.clone(), target, event.into_value())?;
+                Ok(())
+            },
+        )?;
+        on_message.set("_target", channel.clone())?;
+        let on_error = Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, function: FuncArg<Function<'js>>| -> Result<()> {
+                let target: Value<'js> = function.0.get("_target")?;
+                let event = Class::instance(
+                    ctx.clone(),
+                    MessageEvent::new(ctx.clone(), "messageerror".into_js(&ctx)?, Opt(None))?,
+                )?;
+                dispatch_trusted(ctx.clone(), target, event.into_value())?;
+                Ok(())
+            },
+        )?;
+        on_error.set("_target", channel.clone())?;
+        native.borrow().subscribe(ctx.clone(), on_message, on_error);
+        Ok(channel)
+    }
+
+    #[qjs(get)]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn post_message(&self, ctx: Ctx<'js>, message: Value<'js>) -> Result<()> {
+        if self.closed.get() {
+            return Err(throw_dom_exception(
+                &ctx,
+                "InvalidStateError",
+                "the BroadcastChannel is closed",
+            ));
+        }
+        self.native.borrow().post(ctx, message)
+    }
+
+    pub fn close(&self) {
+        self.closed.set(true);
+        self.native.borrow().close();
+    }
+
+    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str {
+        "BroadcastChannel"
+    }
+}
+
+/// NativeBroadcast stays off the public surface; the wrapper is the export.
 pub fn install<'js>(_ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
     Class::<NativeBroadcast>::define(natives)
+}
+
+/// Prototype chain and `onmessage` / `onmessageerror`.
+pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
+    inherit::<BroadcastChannel, EventTarget>(ctx)?;
+    if let Some(proto) = Class::<BroadcastChannel>::prototype(ctx)? {
+        define_event_handler(
+            ctx.clone(),
+            proto.clone(),
+            "onmessage".to_owned(),
+            Opt(None),
+        )?;
+        define_event_handler(ctx.clone(), proto, "onmessageerror".to_owned(), Opt(None))?;
+    }
+    if let Some(ctor) = Class::<BroadcastChannel>::create_constructor(ctx)? {
+        ctor.set_length(1)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

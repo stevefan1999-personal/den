@@ -2,19 +2,11 @@
 //! `BroadcastChannel`, the `EventTarget` family, `AbortController`,
 //! `performance`, `navigator` and `structuredClone`.
 //!
-//! The split follows quickjs-libc and txiki.js: **Rust owns transport,
-//! (de)serialisation and threads**, exposed as a small bag of natives; the
-//! JS-visible API surface lives in `src/prelude/*.js`, because every interface
-//! here `extends EventTarget` and an `#[rquickjs::class]` can neither extend a
-//! JS class nor be extended by one.
-//!
-//! Each prelude file is `(function (natives, api) { …; return { …api, X } })`.
-//! They are evaluated in dependency order, each receiving the previous one's
-//! return value, and the last `api` becomes both the module's exports and a set
-//! of globals. `natives` is the shared, mutable bag: a prelude may publish a
-//! hook on it for an *earlier* prelude to call back into (that is how the port
-//! prelude gives the clone pre-pass a way to build a `MessagePort`).
+//! Every JS-visible type is a `#[rquickjs::class]` / `#[rquickjs::function]`.
+//! `evaluate` registers classes, reparents EventTarget subclasses, and copies
+//! the exports onto `globalThis`.
 
+pub mod abort;
 pub mod broadcast;
 pub mod events;
 pub mod host;
@@ -59,28 +51,6 @@ const API: [&str; 17] = [
     "structuredClone",
 ];
 
-/// The prelude, in dependency order. The filenames are what shows up in a stack
-/// trace, so they are the module-qualified paths rather than bare basenames.
-const PRELUDE: [(&str, &str); 8] = [
-    ("den:worker/events.js", include_str!("prelude/events.js")),
-    ("den:worker/abort.js", include_str!("prelude/abort.js")),
-    (
-        "den:worker/performance.js",
-        include_str!("prelude/performance.js"),
-    ),
-    (
-        "den:worker/navigator.js",
-        include_str!("prelude/navigator.js"),
-    ),
-    ("den:worker/clone.js", include_str!("prelude/clone.js")),
-    ("den:worker/port.js", include_str!("prelude/port.js")),
-    ("den:worker/worker.js", include_str!("prelude/worker.js")),
-    (
-        "den:worker/broadcast.js",
-        include_str!("prelude/broadcast.js"),
-    ),
-];
-
 /// The module definition itself. It is named for what it declares rather than
 /// `worker`, which belongs to the file that spawns worker threads; the alias
 /// below is the name embedders use.
@@ -88,16 +58,40 @@ const PRELUDE: [(&str, &str); 8] = [
 pub mod worker_module {
     use rquickjs::{
         Ctx, Function, Object, Result, Value,
-        context::EvalOptions,
         module::{Declarations, Exports},
         object::Property,
     };
 
+    pub use super::abort::{AbortController, AbortSignal};
+    pub use super::broadcast::BroadcastChannel;
+    pub use super::events::{
+        CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
+    };
+    pub use super::navigator::NavigatorUAData;
+    pub use super::port::{MessageChannel, MessagePort};
+    pub use super::worker::Worker;
+
+    #[rquickjs::function(rename = "reportError")]
+    #[qjs(rename = "reportError")]
+    pub fn report_error<'js>(ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
+        super::events::report_error(ctx, value)
+    }
+
+    #[rquickjs::function(rename = "structuredClone")]
+    #[qjs(rename = "structuredClone")]
+    pub fn structured_clone<'js>(
+        ctx: Ctx<'js>,
+        value: Value<'js>,
+        options: rquickjs::function::Opt<Value<'js>>,
+    ) -> Result<Value<'js>> {
+        super::message::structured_clone(ctx, value, options)
+    }
+
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> Result<()> {
-        for name in crate::API {
-            declare.declare(name)?;
-        }
+        // Instances, not constructors: the module macro cannot see them.
+        declare.declare("navigator")?;
+        declare.declare("performance")?;
         Ok(())
     }
 
@@ -109,26 +103,44 @@ pub mod worker_module {
         crate::port::install(ctx, &natives)?;
         crate::worker::install(ctx, &natives)?;
         crate::broadcast::install(ctx, &natives)?;
-        crate::performance::PerformanceClock::install(ctx, &natives)?;
-        crate::navigator::HostInfo::install(ctx, &natives)?;
 
-        let mut api = Object::new(ctx.clone())?;
-        for (filename, source) in crate::PRELUDE {
-            let mut options = EvalOptions::default();
-            options.filename = Some(filename.to_owned());
-            let factory: Function<'js> = ctx.eval_with_options(source, options)?;
-            api = factory.call((natives.clone(), api))?;
+        let namespace = exports.module().namespace()?;
+        crate::events::finish(ctx, &namespace)?;
+        crate::abort::finish(ctx)?;
+        crate::port::finish(ctx)?;
+        crate::worker::finish(ctx)?;
+        crate::broadcast::finish(ctx)?;
+        // Native functions have no `.prototype`; HTML `reportError` is an
+        // ordinary function, and the surface test distinguishes those from
+        // arrows by `typeof prototype === "object"`.
+        let report_error: Function<'js> = namespace.get("reportError")?;
+        report_error.set_name("reportError")?;
+        let structured_clone: Function<'js> = namespace.get("structuredClone")?;
+        structured_clone.set_name("structuredClone")?;
+        if report_error
+            .get::<_, Value<'js>>("prototype")?
+            .is_undefined()
+        {
+            report_error.set("prototype", Object::new(ctx.clone())?)?;
         }
+
+        let api = Object::new(ctx.clone())?;
+        for name in crate::API {
+            if name == "navigator" || name == "performance" {
+                continue;
+            }
+            api.set(name, namespace.get::<_, Value>(name)?)?;
+        }
+        api.set(
+            "performance",
+            crate::performance::Performance::instance(ctx)?,
+        )?;
+        crate::navigator::install_navigator(ctx, &api)?;
 
         let globals = ctx.globals();
         for name in crate::API {
             let value: Value<'js> = api.get(name)?;
-            // A prelude that is still a stub exports nothing under its names;
-            // shadowing the global with `undefined` would be worse than leaving
-            // it alone.
             if !value.is_undefined() {
-                // HTML's `navigator` is a non-writable, non-configurable data
-                // property; everything else is a normal writable global.
                 if name == "navigator" {
                     globals.prop(name, Property::from(value.clone()).enumerable())?;
                 } else {
@@ -146,7 +158,7 @@ mod tests {
     use rquickjs::{CatchResultExt, Context, FromJs, Module, Runtime};
 
     /// A realm with the **real** `den:worker` module evaluated, exactly as an
-    /// embedder gets it: the natives, the whole prelude chain, the globals and
+    /// embedder gets it: the natives, the globals and
     /// the module exports. Nothing here re-implements [`worker_module`].
     ///
     /// One runtime per test: the module keeps its clone hooks in the context
@@ -160,7 +172,7 @@ mod tests {
                     Module::evaluate_def::<crate::js_worker, _>(ctx.clone(), "den:worker")?;
                 evaluated.finish::<()>()?;
                 // The module object itself is what the export assertions read,
-                // so it is parked on the global under a name no prelude uses.
+                // so it is parked on the global under a name the module does not export.
                 ctx.globals().set("moduleExports", module.namespace()?)
             };
             install()
@@ -288,7 +300,7 @@ mod tests {
     }
 
     /// `DOMException` is quickjs-ng's, not ours (see [`API`]'s doc comment) —
-    /// but the preludes throw it, so a build where it is missing has to fail
+    /// but the APIs throw it, so a build where it is missing has to fail
     /// loudly here rather than at the first failed clone.
     #[test]
     fn dom_exception_comes_from_the_engine_and_is_an_error() {

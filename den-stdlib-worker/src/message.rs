@@ -5,18 +5,19 @@
 //! plain objects, ArrayBuffer, every typed array, Map, Set, and — crucially —
 //! cycles, shared references and typed-array/buffer aliasing. What they cannot
 //! carry (Error, DOMException, DataView), wrongly accept (Symbol, accessor
-//! properties), or report with the wrong error type is handled by the JS
-//! pre/post pass in `src/prelude/clone.js`. The whole investigation, with
-//! quickjs.c line references, is docs/research/10-structured-clone-strategy.md.
+//! properties), or report with the wrong error type is handled by the Rust
+//! pre/post pass in [`clone`]. The whole investigation, with quickjs.c line
+//! references, is docs/research/10-structured-clone-strategy.md.
 
 use std::{ffi::CString, ptr, slice};
 
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Error, Exception, Function, JsLifetime, Object, Result, Value,
-    object::Filter, qjs,
+    ArrayBuffer, Class, Ctx, Error, Exception, Object, Result, Value, object::Filter, qjs,
 };
 
 use crate::{port::NativePort, transport::PortHandle};
+
+pub(crate) mod clone;
 
 /// A structured-clone-serialised value, plus the channel ends of every
 /// transferred `MessagePort`.
@@ -61,9 +62,7 @@ impl Message {
     ) -> Result<Self> {
         Self::validate_transfer(ctx, &transfer_buffers, &transfer_ports)?;
 
-        let prepare = CloneHooks::prepare(ctx)?;
-        let prepared: Value<'js> =
-            prepare.call((value, Self::port_array(ctx, &transfer_ports)?))?;
+        let prepared = clone::prepare(ctx, value, &transfer_ports)?;
         let bytes = Self::write(ctx, &prepared)?;
 
         // The walk just ran arbitrary script — every getter in the graph — and
@@ -126,11 +125,9 @@ impl Message {
     /// graph and this case is unreachable from script — it is `Option` rather
     /// than a panic because that is the only way to keep it so.
     pub fn try_clone(&self) -> Option<Self> {
-        self.ports.is_empty().then(|| {
-            Self {
-                bytes: self.bytes.clone(),
-                ports: Vec::new(),
-            }
+        self.ports.is_empty().then(|| Self {
+            bytes: self.bytes.clone(),
+            ports: Vec::new(),
         })
     }
 
@@ -150,8 +147,7 @@ impl Message {
             .into_iter()
             .map(|handle| Class::instance(ctx.clone(), NativePort::from_handle(handle)))
             .collect::<Result<Vec<_>>>()?;
-        let restore = CloneHooks::restore(ctx)?;
-        let value: Value<'js> = restore.call((value, Self::port_array(ctx, &ports)?))?;
+        let value = clone::restore(ctx, value, &ports)?;
         Ok((value, ports))
     }
 
@@ -264,14 +260,6 @@ impl Message {
         Ok(())
     }
 
-    fn port_array<'js>(ctx: &Ctx<'js>, ports: &[Class<'js, NativePort>]) -> Result<Array<'js>> {
-        let array = Array::new(ctx.clone())?;
-        for (index, port) in ports.iter().enumerate() {
-            array.set(index, port.clone())?;
-        }
-        Ok(array)
-    }
-
     fn write<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
         // `REFERENCE` is what encodes cycles and shared references. Never
         // `BYTECODE` — it would serialise functions and turn a message channel
@@ -370,104 +358,52 @@ pub fn throw_data_clone(ctx: &Ctx<'_>, message: &str) -> Error {
     Error::Exception
 }
 
-/// The `prepare` / `restore` pair from `src/prelude/clone.js`, kept in the
-/// context userdata so that serialising does not depend on the globals a script
-/// may have replaced.
-#[derive(JsLifetime)]
-pub struct CloneHooks<'js> {
-    prepare: Function<'js>,
-    restore: Function<'js>,
-}
-
-impl<'js> CloneHooks<'js> {
-    fn prepare(ctx: &Ctx<'js>) -> Result<Function<'js>> {
-        Self::pick(ctx, |hooks| hooks.prepare.clone())
-    }
-
-    fn restore(ctx: &Ctx<'js>) -> Result<Function<'js>> {
-        Self::pick(ctx, |hooks| hooks.restore.clone())
-    }
-
-    /// The guard is dropped before the picked function is ever called: a live
-    /// userdata guard blocks `store_userdata` for *every* type, which would
-    /// break an unrelated module installing its own state from inside a getter.
-    fn pick<T>(ctx: &Ctx<'js>, pick: impl FnOnce(&Self) -> T) -> Result<T> {
-        ctx.userdata::<Self>()
-            .map(|hooks| pick(&hooks))
-            .ok_or_else(|| Exception::throw_internal(ctx, "den:worker is not installed"))
-    }
-}
-
-/// `natives.registerClone(prepare, restore)` — called once by the prelude.
-#[rquickjs::function(rename = "registerClone")]
-pub fn register_clone<'js>(
+/// `structuredClone(value, { transfer })`.
+pub fn structured_clone<'js>(
     ctx: Ctx<'js>,
-    prepare: Function<'js>,
-    restore: Function<'js>,
-) -> Result<()> {
-    ctx.store_userdata(CloneHooks { prepare, restore })
-        .map_err(|_| Exception::throw_internal(&ctx, "den:worker is already installed"))?;
-    Ok(())
+    value: Value<'js>,
+    options: rquickjs::function::Opt<Value<'js>>,
+) -> Result<Value<'js>> {
+    let transfer = match options.0 {
+        Some(options) if options.is_object() => options.as_object().unwrap().get("transfer")?,
+        _ => None,
+    };
+    let (buffers, ports) = clone::split_transfer(&ctx, transfer)?;
+    clone_with_transfer(ctx, value, buffers, ports)
 }
 
-/// `natives.classIdOf(value)` — the only way to ask "is this an ordinary
-/// object?": the `JS_CLASS_*` ids are a private enum in quickjs.c, so JS
-/// compares the id of a value against that of a freshly made `{}`.
-#[rquickjs::function(rename = "classIdOf")]
-pub fn class_id_of(value: Value<'_>) -> qjs::JSClassID {
-    // SAFETY: a pure read of the value's class id; it throws nothing and takes
-    // no ownership.
-    unsafe { qjs::JS_GetClassID(value.as_raw()) }
-}
-
-/// `natives.isProxy(value)`. `Object.getPrototypeOf` and `instanceof` both run
-/// Proxy traps, so the pre-pass has to ask before it touches anything.
-#[rquickjs::function(rename = "isProxy")]
-pub fn is_proxy(value: Value<'_>) -> bool {
-    value.is_proxy()
-}
-
-/// `natives.isError(value)` — class-id based, so unlike `instanceof Error` it
-/// cannot be forged, and it is correctly false for a `DOMException`.
-#[rquickjs::function(rename = "isError")]
-pub fn is_error(value: Value<'_>) -> bool {
-    value.is_error()
-}
-
-/// `natives.cloneWithTransfer(value, buffers, ports)` — the whole pipeline in
-/// one context, which is what `structuredClone(value, { transfer })` is.
-#[rquickjs::function(rename = "cloneWithTransfer")]
-pub fn clone_with_transfer<'js>(
+fn clone_with_transfer<'js>(
     ctx: Ctx<'js>,
     value: Value<'js>,
     buffers: Vec<Value<'js>>,
     ports: Vec<Class<'js, NativePort>>,
 ) -> Result<Value<'js>> {
     let message = Message::serialize(&ctx, value, buffers, ports)?;
-    // Same realm, so unlike a worker there is no far side to hand a
-    // `messageerror` to. A graph this side wrote and cannot read back was not
-    // cloneable after all, and `structuredClone` owes the caller a
-    // `DataCloneError` for that rather than the reader's `RangeError`. The
-    // known instance of it — an ArrayBufferView left out of bounds by shrinking
-    // its resizable buffer — is now refused during the graph walk, so this is
-    // the net that catches whatever else quickjs writes and cannot read.
     message
         .deserialize(&ctx)
         .map(|(value, _)| value)
-        .map_err(|error| {
-            match error {
-                Error::Exception => Message::rethrow_as_data_clone(&ctx),
-                error => error,
-            }
+        .map_err(|error| match error {
+            Error::Exception => Message::rethrow_as_data_clone(&ctx),
+            error => error,
         })
 }
 
-pub fn install<'js>(_ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
-    natives.set("registerClone", js_register_clone)?;
-    natives.set("classIdOf", js_class_id_of)?;
-    natives.set("isProxy", js_is_proxy)?;
-    natives.set("isError", js_is_error)?;
-    natives.set("cloneWithTransfer", js_clone_with_transfer)?;
+#[rquickjs::function(rename = "splitTransfer")]
+fn split_transfer_js<'js>(
+    ctx: Ctx<'js>,
+    transfer: rquickjs::function::Opt<Value<'js>>,
+) -> Result<Object<'js>> {
+    let (buffers, ports) = clone::split_transfer(&ctx, transfer.0)?;
+    let out = Object::new(ctx.clone())?;
+    out.set("buffers", buffers)?;
+    out.set("ports", ports)?;
+    Ok(out)
+}
+
+pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
+    let port_handle = clone::CloneState::install(ctx)?;
+    natives.set("portHandleKey", port_handle)?;
+    natives.set("splitTransfer", js_split_transfer_js)?;
     Ok(())
 }
 
@@ -509,12 +445,10 @@ mod tests {
     /// `Display` says nothing useful.
     fn thrown_name(error: CaughtError<'_>) -> String {
         match error {
-            CaughtError::Value(value) => {
-                value
-                    .as_object()
-                    .and_then(|object| object.get::<_, String>("name").ok())
-                    .unwrap_or_else(|| "a value that is not a DOMException".to_owned())
-            }
+            CaughtError::Value(value) => value
+                .as_object()
+                .and_then(|object| object.get::<_, String>("name").ok())
+                .unwrap_or_else(|| "a value that is not a DOMException".to_owned()),
             other => other.to_string(),
         }
     }

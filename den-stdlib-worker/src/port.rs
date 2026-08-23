@@ -1,10 +1,10 @@
-//! `MessagePort`'s native half: the channel end and the pump that drains it.
+//! `MessagePort` / `MessageChannel`: the channel end, the pump, and the
+//! EventTarget wrappers.
 //!
-//! The JS-visible `MessagePort` lives in `src/prelude/port.js` because it
-//! `extends EventTarget`, which an `#[rquickjs::class]` cannot. Each such
-//! wrapper keeps its [`NativePort`] under the symbol published as
+//! Each [`MessagePort`] keeps its [`NativePort`] under the symbol published as
 //! `natives.portHandleKey`, which is how the structured-clone pre-pass
-//! recognises a port in a message graph.
+//! recognises a port in a message graph. `MessagePort.prototype` is reparented
+//! onto `EventTarget.prototype` so `port instanceof EventTarget` holds.
 
 use std::{
     cell::{Cell, RefCell},
@@ -13,7 +13,11 @@ use std::{
     task::Poll,
 };
 
-use rquickjs::{Class, Ctx, Error, Function, JsLifetime, Object, Result, Value, class::Trace};
+use rquickjs::{
+    Class, Ctx, Error, Exception, Function, IntoJs, JsLifetime, Object, Result, Value,
+    class::Trace,
+    function::{Opt, This},
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
@@ -40,11 +44,11 @@ struct PortState {
     /// can leave it behind: unreffing a port disables *delivery*, not receipt,
     /// and every envelope the peer already sent has to still be there when the
     /// next pump picks the queue up (HTML §9.4.4).
-    inbox:  RefCell<Option<UnboundedReceiver<Envelope>>>,
+    inbox: RefCell<Option<UnboundedReceiver<Envelope>>>,
     /// The token of the pump run that is currently delivering, if any. `Some`
     /// is exactly "a pump future is live and this port is keeping the event
     /// loop awake".
-    run:    RefCell<Option<CancellationToken>>,
+    run: RefCell<Option<CancellationToken>>,
 }
 
 /// The transport end of one `MessagePort`.
@@ -55,13 +59,13 @@ struct PortState {
 #[rquickjs::class(rename = "NativePort")]
 pub struct NativePort {
     #[qjs(skip_trace)]
-    state:   Rc<PortState>,
+    state: Rc<PortState>,
     /// Ends the port for good, and every pump run with it — each run's token
     /// is a child of this one. Nothing but `close()` can: the inbox is fed by
     /// the peer, and a peer that is merely quiet is indistinguishable from one
     /// that is gone.
     #[qjs(skip_trace)]
-    stop:    CancellationToken,
+    stop: CancellationToken,
     /// Whether the inbox has left the handle. Once it has, the port cannot be
     /// handed to another realm, which is why a started port refuses transfer.
     #[qjs(skip_trace)]
@@ -71,11 +75,11 @@ pub struct NativePort {
 impl NativePort {
     pub fn from_handle(handle: PortHandle) -> Self {
         Self {
-            state:   Rc::new(PortState {
+            state: Rc::new(PortState {
                 handle: RefCell::new(Some(handle)),
                 ..PortState::default()
             }),
-            stop:    CancellationToken::new(),
+            stop: CancellationToken::new(),
             started: Cell::new(false),
         }
     }
@@ -407,10 +411,313 @@ pub fn pair<'js>(ctx: Ctx<'js>) -> Result<Vec<Class<'js, NativePort>>> {
     ])
 }
 
-/// Install the port natives. Everything else a port does is a method on the
-/// [`NativePort`] instances the prelude already holds.
-pub fn install<'js>(_ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
+const WRAPPER_SLOT: &str = "\0den:port-wrapper";
+
+fn dispatch_messages_at<'js>(
+    ctx: &Ctx<'js>,
+    target: Value<'js>,
+    native: Class<'js, NativePort>,
+    after: Function<'js>,
+) {
+    let on_message = Function::new(ctx.clone(), {
+        let target = target.clone();
+        let after = after.clone();
+        move |ctx: Ctx<'js>, data: Value<'js>, ports: Vec<Class<'js, NativePort>>| -> Result<()> {
+            let wrapped = ports
+                .into_iter()
+                .map(|port| MessagePort::wrap(&ctx, port))
+                .collect::<Result<Vec<_>>>()?;
+            let init = Object::new(ctx.clone())?;
+            init.set("data", data)?;
+            init.set("ports", wrapped)?;
+            let event = Class::instance(
+                ctx.clone(),
+                crate::events::MessageEvent::new(
+                    ctx.clone(),
+                    "message".into_js(&ctx)?,
+                    Opt(Some(init.into_value())),
+                )?,
+            )?;
+            crate::events::dispatch_trusted(ctx.clone(), target.clone(), event.into_value())?;
+            after.call::<_, ()>(("message",))?;
+            Ok(())
+        }
+    })
+    .expect("on_message");
+    let on_message_error = Function::new(ctx.clone(), {
+        let target = target.clone();
+        let after = after.clone();
+        move |ctx: Ctx<'js>| -> Result<()> {
+            let event = Class::instance(
+                ctx.clone(),
+                crate::events::MessageEvent::new(
+                    ctx.clone(),
+                    "messageerror".into_js(&ctx)?,
+                    Opt(None),
+                )?,
+            )?;
+            crate::events::dispatch_trusted(ctx.clone(), target.clone(), event.into_value())?;
+            after.call::<_, ()>(("messageerror",))?;
+            Ok(())
+        }
+    })
+    .expect("on_message_error");
+    let on_close = Function::new(ctx.clone(), {
+        let target = target.clone();
+        move |ctx: Ctx<'js>| -> Result<()> {
+            let event = Class::instance(
+                ctx.clone(),
+                crate::events::Event::new(ctx.clone(), "close".into_js(&ctx)?, Opt(None))?,
+            )?;
+            crate::events::dispatch_trusted(ctx.clone(), target.clone(), event.into_value())?;
+            Ok(())
+        }
+    })
+    .expect("on_close");
+    native
+        .borrow()
+        .start(ctx.clone(), on_message, on_message_error, on_close);
+}
+
+/// HTML §9.4.4 `MessagePort`. Ports come from a channel, a transfer, or a
+/// Worker; the constructor is illegal.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub struct MessagePort<'js> {
+    native: Class<'js, NativePort>,
+}
+
+impl<'js> MessagePort<'js> {
+    pub fn wrap(ctx: &Ctx<'js>, native: Class<'js, NativePort>) -> Result<Class<'js, Self>> {
+        if let Ok(existing) = native.get::<_, Class<'js, Self>>(WRAPPER_SLOT) {
+            return Ok(existing);
+        }
+        let port = Class::instance(
+            ctx.clone(),
+            Self {
+                native: native.clone(),
+            },
+        )?;
+        native.set(WRAPPER_SLOT, port.clone())?;
+        let handle = crate::message::clone::CloneState::port_handle(ctx)?;
+        port.set(handle, native)?;
+        Ok(port)
+    }
+
+    fn native(&self) -> Class<'js, NativePort> {
+        self.native.clone()
+    }
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl<'js> MessagePort<'js> {
+    #[qjs(constructor)]
+    pub fn new(ctx: Ctx<'js>) -> Result<Self> {
+        Err(Exception::throw_type(&ctx, "Illegal constructor"))
+    }
+
+    pub fn post_message(
+        &self,
+        ctx: Ctx<'js>,
+        message: Value<'js>,
+        options: Opt<Value<'js>>,
+    ) -> Result<()> {
+        let transfer = match options.0 {
+            Some(options) if options.is_array() => Some(options),
+            Some(options) if options.is_object() => options.as_object().unwrap().get("transfer")?,
+            _ => None,
+        };
+        let (buffers, ports) = crate::message::clone::split_transfer(&ctx, transfer)?;
+        self.native.borrow().post(ctx, message, buffers, ports)
+    }
+
+    pub fn start(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<()> {
+        let native = this.0.borrow().native();
+        let noop = Function::new(ctx.clone(), |_: String| ())?;
+        dispatch_messages_at(&ctx, this.0.clone().into_value(), native, noop);
+        Ok(())
+    }
+
+    pub fn close(&self) {
+        self.native.borrow().close();
+    }
+
+    #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str {
+        "MessagePort"
+    }
+}
+
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub struct MessageChannel<'js> {
+    port1: Class<'js, MessagePort<'js>>,
+    port2: Class<'js, MessagePort<'js>>,
+}
+
+#[rquickjs::methods]
+impl<'js> MessageChannel<'js> {
+    #[qjs(constructor)]
+    pub fn new(ctx: Ctx<'js>) -> Result<Self> {
+        let pair = pair(ctx.clone())?;
+        Ok(Self {
+            port1: MessagePort::wrap(&ctx, pair[0].clone())?,
+            port2: MessagePort::wrap(&ctx, pair[1].clone())?,
+        })
+    }
+
+    #[qjs(get)]
+    pub fn port1(&self) -> Class<'js, MessagePort<'js>> {
+        self.port1.clone()
+    }
+
+    #[qjs(get)]
+    pub fn port2(&self) -> Class<'js, MessagePort<'js>> {
+        self.port2.clone()
+    }
+
+    #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str {
+        "MessageChannel"
+    }
+}
+
+/// Ref-on-listener: returns the arm function. See docs/research/11 §2.1 rule 2.
+pub fn track_message_listeners<'js>(
+    ctx: Ctx<'js>,
+    target: Value<'js>,
+    native: Class<'js, NativePort>,
+) -> Result<Function<'js>> {
+    let helper: Function<'js> = ctx.eval(
+        r#"(function (target, native, dispatchMessagesAt) {
+          const buckets = new Map();
+          const bucketFor = (type, capture) => {
+            const key = `${type}|${capture}`;
+            const bucket = buckets.get(key) ?? new Map();
+            buckets.set(key, bucket);
+            return bucket;
+          };
+          let armed = false;
+          let refed = false;
+          const refresh = () => {
+            const listening = armed &&
+              [...buckets.values()].some((bucket) => bucket.size > 0);
+            if (listening === refed) return;
+            refed = listening;
+            if (listening) dispatchMessagesAt(target, native, retire);
+            else native.pause();
+          };
+          const retire = (type) => {
+            for (const capture of [false, true]) {
+              const bucket = bucketFor(type, capture);
+              for (const [callback, once] of bucket) {
+                if (once) bucket.delete(callback);
+              }
+            }
+            refresh();
+          };
+          const inherited = {
+            add: target.addEventListener.bind(target),
+            remove: target.removeEventListener.bind(target),
+          };
+          const flatten = (options) =>
+            typeof options === "boolean"
+              ? { capture: options, once: false, signal: undefined }
+              : {
+                  capture: !!options?.capture,
+                  once: !!options?.once,
+                  signal: options?.signal ?? undefined,
+                };
+          const track = (type, callback, options) => {
+            const { capture, once, signal } = flatten(options);
+            if (callback === null || callback === undefined || signal?.aborted) return;
+            const bucket = bucketFor(type, capture);
+            if (bucket.has(callback)) return;
+            bucket.set(callback, once);
+            signal?.addEventListener("abort", () => {
+              bucket.delete(callback);
+              refresh();
+            }, { once: true });
+          };
+          const property = (value) => ({ value, writable: true, configurable: true });
+          Object.defineProperties(target, {
+            addEventListener: property((...args) => {
+              inherited.add(...args);
+              const [type, callback, options] = args;
+              if (!["message", "messageerror"].includes(String(type))) return;
+              track(String(type), callback, options);
+              refresh();
+            }),
+            removeEventListener: property((...args) => {
+              inherited.remove(...args);
+              const [type, callback, options] = args;
+              if (!["message", "messageerror"].includes(String(type))) return;
+              bucketFor(String(type), flatten(options).capture).delete(callback);
+              refresh();
+            }),
+          });
+          return () => { armed = true; refresh(); };
+        })"#,
+    )?;
+    let dispatch = Function::new(ctx.clone(), {
+        move |ctx: Ctx<'js>,
+              target: Value<'js>,
+              native: Class<'js, NativePort>,
+              after: Function<'js>| {
+            dispatch_messages_at(&ctx, target, native, after);
+        }
+    })?;
+    helper.call((target, native, dispatch))
+}
+
+/// Install pair + wrapPort. Public classes are module exports.
+pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
     natives.set("pair", js_pair)?;
+    natives.set(
+        "wrapPort",
+        Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, native: Class<'js, NativePort>| MessagePort::wrap(&ctx, native),
+        )?,
+    )?;
+    Ok(())
+}
+
+pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
+    crate::events::inherit::<MessagePort, crate::events::EventTarget>(ctx)?;
+    if let Some(proto) = Class::<MessagePort>::prototype(ctx)? {
+        crate::events::define_event_handler(
+            ctx.clone(),
+            proto.clone(),
+            "onmessage".to_owned(),
+            Opt(None),
+        )?;
+        crate::events::define_event_handler(
+            ctx.clone(),
+            proto.clone(),
+            "onmessageerror".to_owned(),
+            Opt(None),
+        )?;
+        crate::events::define_event_handler(
+            ctx.clone(),
+            proto.clone(),
+            "onclose".to_owned(),
+            Opt(None),
+        )?;
+        let wrap_onmessage: Function<'js> = ctx.eval(
+            r#"(function (proto) {
+              const desc = Object.getOwnPropertyDescriptor(proto, "onmessage");
+              Object.defineProperty(proto, "onmessage", {
+                ...desc,
+                set(value) {
+                  desc.set.call(this, value);
+                  this.start();
+                },
+              });
+            })"#,
+        )?;
+        wrap_onmessage.call::<_, ()>((proto,))?;
+    }
     Ok(())
 }
 
@@ -425,29 +732,11 @@ mod tests {
     use crate::transport::PortHandle;
 
     /// The one piece of `den:worker` these tests need that `den:worker` does
-    /// not export: `__trackMessageListeners`, the ref rule itself.
-    ///
-    /// It is internal plumbing — `worker.js` is its only caller — so the four
-    /// ref-rule tests below re-evaluate `prelude/port.js`, the very source
-    /// lib.rs evaluates, against a stub bag purely to lift that one function
-    /// out. Everything it is then pointed at (the channel, the `NativePort`,
-    /// the `EventTarget`) comes from the real module. The stub `api` needs only
-    /// the three names port.js destructures, and `__defineEventHandler` is a
-    /// no-op because the stub's own `MessagePort` class is never constructed.
-    const LIFT_TRACKER: &str = r#"(function (source) {
-      const factory = (0, eval)(source);
-      const api = factory({
-        // The one native the lifted tracker actually reaches: it fires the
-        // port's events through it. The real bag is module-private, and trust
-        // is not what the ref rule is about, so a plain dispatch stands in.
-        dispatchTrusted: (target, event) => target.dispatchEvent(event),
-      }, {
-        Event, EventTarget, MessageEvent, __defineEventHandler: () => {},
-      });
-      globalThis.__trackMessageListeners = api.__trackMessageListeners;
-      // The symbol a real MessagePort keeps its NativePort under. Reached by
-      // description rather than by identity because the module keeps the symbol
-      // to itself, which is the whole point of it being one.
+    /// not export: `__trackMessageListeners`, the ref rule itself. Worker
+    /// construction is its production caller; the tests reach it as a global
+    /// the fixture installs, and `nativeOf` reads the port-handle symbol the
+    /// clone pre-pass uses.
+    const LIFT_TRACKER: &str = r#"(function () {
       const port = new MessageChannel().port1;
       const handle = Object.getOwnPropertySymbols(port)
         .find((symbol) => symbol.description === "den:port-handle");
@@ -476,8 +765,12 @@ mod tests {
                         let (_, evaluated) =
                             Module::evaluate_def::<crate::js_worker, _>(ctx.clone(), "den:worker")?;
                         evaluated.finish::<()>()?;
+                        ctx.globals().set(
+                            "__trackMessageListeners",
+                            Function::new(ctx.clone(), crate::port::track_message_listeners)?,
+                        )?;
                         let lift: Function<'_> = ctx.eval(LIFT_TRACKER)?;
-                        lift.call((include_str!("prelude/port.js"),))
+                        lift.call(())
                     };
                     install().catch(&ctx).map_err(|error| error.to_string())
                 })
@@ -790,9 +1083,10 @@ mod tests {
         );
     }
 
-    /// A `once` listener is retired by the dispatch that runs it, and events.js
-    /// does that without telling anyone — so the mirror the ref rule counts has
-    /// to notice, or the port would stay reffed for a listener that is gone.
+    /// A `once` listener is retired by the dispatch that runs it, and
+    /// EventTarget does that without telling anyone — so the mirror the ref
+    /// rule counts has to notice, or the port would stay reffed for a listener
+    /// that is gone.
     #[tokio::test]
     async fn a_once_listener_unrefs_the_port_after_it_has_fired() {
         let fixture = Fixture::new().await;
@@ -809,7 +1103,7 @@ mod tests {
         assert_eq!(fixture.text("log.join()").await, "only one");
     }
 
-    /// The same for a listener removed through an `AbortSignal`: events.js
+    /// The same for a listener removed through an `AbortSignal`: EventTarget
     /// duck-types the signal, so the mirror does too.
     #[tokio::test]
     async fn aborting_a_listener_signal_unrefs_the_port() {
@@ -818,9 +1112,8 @@ mod tests {
         fixture
             .run(
                 r#"
-                // den has no AbortController; events.js only ever reads
-                // `aborted` and listens for `abort`, so this is a faithful
-                // enough one.
+                // A handmade signal: EventTarget only ever reads `aborted`
+                // and listens for `abort`, so this is a faithful enough one.
                 globalThis.signal = new EventTarget();
                 signal.aborted = false;
                 target.addEventListener("message", listener, { signal });
