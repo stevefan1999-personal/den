@@ -33,22 +33,8 @@ impl Host {
     }
 
     pub fn throw_dom(ctx: &Ctx<'_>, message: &str, name: &str) -> rquickjs::Error {
-        if let Ok(name_c) = CString::new(name)
-            && let Ok(message_c) = CString::new(message)
-        {
-            // SAFETY: `JS_ThrowDOMException` vsnprintf's into a 256-byte stack
-            // buffer (quickjs.c:62309), so the caller's text is passed as an
-            // *argument* to a constant `%s` format, never as the format itself.
-            // Both C strings outlive the call.
-            unsafe {
-                qjs::JS_ThrowDOMException(
-                    ctx.as_raw().as_ptr(),
-                    name_c.as_ptr(),
-                    c"%s".as_ptr(),
-                    message_c.as_ptr(),
-                );
-            }
-            return rquickjs::Error::Exception;
+        if CString::new(name).is_ok() && CString::new(message).is_ok() {
+            return den_util::throw_dom_exception(ctx, name, message);
         }
         if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
             && let Ok(exc) = ctor.construct::<_, Value>((message, name))
