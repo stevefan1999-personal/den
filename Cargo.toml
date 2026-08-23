@@ -138,14 +138,6 @@ codegen-units = 1
 lto = "fat"
 opt-level = "s"
 
-[profile.release-strip]
-inherits = "release"
-strip = "symbols"
-
-[profile.min-size-release-strip]
-inherits = "min-size-release"
-strip = "symbols"
-
 [build-dependencies]
 cargo-emit = "0.2.1"
 
