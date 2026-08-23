@@ -36,7 +36,9 @@ pub use crate::js_worker_module as js_worker;
 ///
 /// `DOMException` is deliberately absent: quickjs-ng registers it natively in
 /// every context (`JS_AddIntrinsicAToB`), so there is nothing to install.
-const API: [&str; 12] = [
+const API: [&str; 14] = [
+    "AbortController",
+    "AbortSignal",
     "BroadcastChannel",
     "CustomEvent",
     "ErrorEvent",
@@ -53,8 +55,9 @@ const API: [&str; 12] = [
 
 /// The prelude, in dependency order. The filenames are what shows up in a stack
 /// trace, so they are the module-qualified paths rather than bare basenames.
-const PRELUDE: [(&str, &str); 5] = [
+const PRELUDE: [(&str, &str); 6] = [
     ("den:worker/events.js", include_str!("prelude/events.js")),
+    ("den:worker/abort.js", include_str!("prelude/abort.js")),
     ("den:worker/clone.js", include_str!("prelude/clone.js")),
     ("den:worker/port.js", include_str!("prelude/port.js")),
     ("den:worker/worker.js", include_str!("prelude/worker.js")),
@@ -166,7 +169,9 @@ mod tests {
     /// The whole of `den:worker`'s documented surface, spelled out here rather
     /// than read from [`API`]: a test that iterates the very list it is
     /// checking stops checking whatever that list loses.
-    const DOCUMENTED: [&str; 12] = [
+    const DOCUMENTED: [&str; 14] = [
+        "AbortController",
+        "AbortSignal",
         "BroadcastChannel",
         "CustomEvent",
         "ErrorEvent",
@@ -338,25 +343,12 @@ mod tests {
                 r#"(() => {
                      const log = [];
                      const target = new EventTarget();
-                     // den has no AbortController; events.js only ever reads
-                     // `aborted` and listens for `abort`, so an EventTarget
-                     // with the flag is a faithful stand-in.
-                     const makeSignal = () => {
-                       const signal = new EventTarget();
-                       signal.aborted = false;
-                       signal.abort = () => {
-                         signal.aborted = true;
-                         signal.dispatchEvent(new Event("abort"));
-                       };
-                       return signal;
-                     };
-
-                     const dead = makeSignal();
+                     const dead = new AbortController();
                      dead.abort();
-                     target.addEventListener("ping", () => log.push("never"), { signal: dead });
+                     target.addEventListener("ping", () => log.push("never"), { signal: dead.signal });
 
-                     const live = makeSignal();
-                     target.addEventListener("ping", () => log.push("aborted-later"), { signal: live });
+                     const live = new AbortController();
+                     target.addEventListener("ping", () => log.push("aborted-later"), { signal: live.signal });
                      target.addEventListener("ping", () => log.push("unsignalled"));
                      target.dispatchEvent(new Event("ping"));
                      live.abort();
@@ -368,6 +360,128 @@ mod tests {
         );
     }
 
+    /// WinterTC AbortController / AbortSignal, translated from txiki's
+    /// `test-abort-controller.js`. A comma-separated list of failed check
+    /// names; empty means every assertion held.
+    #[test]
+    fn abort_controller_and_signal_follow_the_dom_abort_algorithm() {
+        assert_eq!(
+            text(
+                r#"(() => {
+                     const failed = [];
+                     const check = (name, held) => { if (!held) failed.push(name); };
+
+                     const fresh = new AbortController();
+                     check("signalIsAbortSignal", fresh.signal instanceof AbortSignal);
+                     check("signalIsEventTarget", fresh.signal instanceof EventTarget);
+                     check("startsNotAborted", fresh.signal.aborted === false);
+                     check("reasonUndefinedBeforeAbort", fresh.signal.reason === undefined);
+
+                     const defaulted = new AbortController();
+                     defaulted.abort();
+                     check("abortedAfterAbort", defaulted.signal.aborted === true);
+                     check("defaultReasonIsDOMException", defaulted.signal.reason instanceof DOMException);
+                     check("defaultReasonIsAbortError", defaulted.signal.reason.name === "AbortError");
+
+                     const custom = new AbortController();
+                     const customReason = new Error("custom reason");
+                     custom.abort(customReason);
+                     check("abortedAfterCustomAbort", custom.signal.aborted === true);
+                     check("customReasonPreserved", custom.signal.reason === customReason);
+
+                     const once = new AbortController();
+                     const first = new Error("first");
+                     once.abort(first);
+                     once.abort(new Error("second"));
+                     check("abortIsIdempotent", once.signal.reason === first);
+
+                     const listened = new AbortController();
+                     let listenerCount = 0;
+                     listened.signal.addEventListener("abort", () => { listenerCount++; });
+                     let onabortCalled = false;
+                     listened.signal.onabort = () => { onabortCalled = true; };
+                     listened.abort();
+                     listened.abort();
+                     check("abortListenerFires", listenerCount === 1);
+                     check("onabortFires", onabortCalled);
+
+                     const live = new AbortController();
+                     let threwWhileLive = false;
+                     try { live.signal.throwIfAborted(); } catch { threwWhileLive = true; }
+                     check("throwIfAbortedSilentWhenLive", !threwWhileLive);
+                     const thrownReason = new Error("aborted!");
+                     live.abort(thrownReason);
+                     let threw = false;
+                     try { live.signal.throwIfAborted(); } catch (error) {
+                       threw = error === thrownReason;
+                     }
+                     check("throwIfAbortedThrowsReason", threw);
+
+                     const preAborted = AbortSignal.abort();
+                     check("staticAbortIsAborted", preAborted.aborted === true);
+                     check("staticAbortDefaultIsDOMException", preAborted.reason instanceof DOMException);
+                     check("staticAbortDefaultIsAbortError", preAborted.reason.name === "AbortError");
+                     const staticReason = new Error("custom");
+                     const preAbortedCustom = AbortSignal.abort(staticReason);
+                     check("staticAbortPreservesReason", preAbortedCustom.reason === staticReason);
+
+                     const firstSource = new AbortController();
+                     const secondSource = new AbortController();
+                     const combined = AbortSignal.any([firstSource.signal, secondSource.signal]);
+                     check("anyStartsLive", combined.aborted === false);
+                     let anyFired = false;
+                     combined.addEventListener("abort", () => { anyFired = true; });
+                     firstSource.abort(new Error("c1"));
+                     check("anyAbortsWithSource", combined.aborted === true);
+                     check("anyReasonMatchesSource", combined.reason.message === "c1");
+                     check("anyAbortEventFired", anyFired);
+                     secondSource.abort();
+                     let anyCount = 0;
+                     const a = new AbortController();
+                     const b = new AbortController();
+                     const onceCombined = AbortSignal.any([a.signal, b.signal]);
+                     onceCombined.addEventListener("abort", () => { anyCount++; });
+                     a.abort();
+                     b.abort();
+                     check("anyFiresOnlyOnce", anyCount === 1);
+
+                     const already = new AbortController();
+                     already.abort(new Error("already"));
+                     const fromAborted = AbortSignal.any([already.signal]);
+                     check("anyWithAbortedInputIsAborted", fromAborted.aborted === true);
+                     check("anyWithAbortedInputKeepsReason", fromAborted.reason.message === "already");
+
+                     const queued = [];
+                     globalThis.setTimeout = (callback) => {
+                       queued.push(callback);
+                       return queued.length;
+                     };
+                     const timed = AbortSignal.timeout(50);
+                     check("timeoutStartsLive", timed.aborted === false);
+                     queued.forEach((callback) => callback());
+                     check("timeoutAborts", timed.aborted === true);
+                     check(
+                       "timeoutReasonIsTimeoutError",
+                       timed.reason instanceof DOMException && timed.reason.name === "TimeoutError",
+                     );
+                     delete globalThis.setTimeout;
+
+                     check(
+                       "controllerToStringTag",
+                       Object.prototype.toString.call(new AbortController()) === "[object AbortController]",
+                     );
+                     check(
+                       "signalToStringTag",
+                       Object.prototype.toString.call(new AbortController().signal) === "[object AbortSignal]",
+                     );
+
+                     return failed.join(",");
+                   })()"#
+            ),
+            ""
+        );
+    }
+
     /// WebIDL: an interface object without a `Symbol.toStringTag` of its own
     /// makes `Object.prototype.toString.call(instance)` read `[object Object]`,
     /// which is what most of these used to say. The tag is read off each
@@ -375,7 +489,9 @@ mod tests {
     /// need a runtime, and the tag lives on the prototype either way.
     #[test]
     fn every_platform_class_brands_itself_with_a_to_string_tag() {
-        const BRANDED: [&str; 10] = [
+        const BRANDED: [&str; 12] = [
+            "AbortController",
+            "AbortSignal",
             "Event",
             "CustomEvent",
             "MessageEvent",

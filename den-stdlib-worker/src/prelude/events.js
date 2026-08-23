@@ -371,8 +371,8 @@
         if (duplicate) return;
         list.push(record);
       }
-      // den has no `AbortController` yet, so this is duck-typed rather than
-      // brand-checked: whatever ships one will work without touching this file.
+      // Duck-typed rather than brand-checked: AbortSignal is one such object,
+      // but any `{ aborted, addEventListener("abort") }` works.
       if (signal) {
         signal.addEventListener("abort", () => removeRecord(this, record), {
           once: true,

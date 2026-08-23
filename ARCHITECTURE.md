@@ -24,7 +24,8 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-whatwg-fetch  fetch() + Response (reqwest)
       ├── den-stdlib-wasm       the WebAssembly JS API (optional, one backend)
       └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
-                                BroadcastChannel, EventTarget, structuredClone
+                                BroadcastChannel, EventTarget, AbortController,
+                                structuredClone
 ```
 
 `den-core` owns everything about *how* JavaScript gets in: the `Engine`
@@ -326,7 +327,8 @@ nothing.
 ## 6. `den-stdlib-worker`
 
 Web Workers, `MessageChannel`/`MessagePort`, `BroadcastChannel`, the
-`EventTarget` family, `structuredClone` and `reportError`. The design notes are
+`EventTarget` family, `AbortController`/`AbortSignal`, `structuredClone` and
+`reportError`. The design notes are
 [`docs/research/08`-`11`](docs/research/); this is the shape they settled into.
 
 ### 6.1 Why half of it is JavaScript
@@ -338,8 +340,8 @@ stylistic one:
 - **Rust owns** transport (channels, threads), (de)serialisation, and the two
   or three things JS cannot do — reading a thrown value's location out of its
   stack, reaching another thread, cancelling a runtime.
-- **JS owns** the API surface: `src/prelude/*.js`, five files evaluated in
-  dependency order (`events`, `clone`, `port`, `worker`, `broadcast`).
+- **JS owns** the API surface: `src/prelude/*.js`, six files evaluated in
+  dependency order (`events`, `abort`, `clone`, `port`, `worker`, `broadcast`).
 
 Each prelude file is one `(function (natives, api) { …; return { …api, X } })`.
 They are chained — each receives the previous one's return value — and the last
