@@ -44,6 +44,16 @@ const PHASE_BUBBLING: u32 = 3;
 #[derive(JsLifetime)]
 struct TimeOrigin(f64);
 
+/// Construct a `DOMException` from the engine intrinsic.
+pub(crate) fn new_dom_exception<'js>(
+    ctx: &Ctx<'js>,
+    message: &str,
+    name: &str,
+) -> Result<Value<'js>> {
+    let ctor: rquickjs::Constructor<'js> = ctx.globals().get("DOMException")?;
+    ctor.construct((message, name))
+}
+
 /// Throw `DOMException(message, name)`.
 pub(crate) fn throw_dom_exception(ctx: &Ctx<'_>, name: &str, message: &str) -> Error {
     let name = CString::new(name).unwrap_or_default();
@@ -148,7 +158,7 @@ fn freeze<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<()> {
     }
 }
 
-fn inherit<'js, Sub, Super>(ctx: &Ctx<'js>) -> Result<()>
+pub(crate) fn inherit<'js, Sub, Super>(ctx: &Ctx<'js>) -> Result<()>
 where
     Sub: JsClass<'js>,
     Super: JsClass<'js>,

@@ -7,6 +7,7 @@
 //! ported; they are evaluated in dependency order against a shared `natives`
 //! bag.
 
+pub mod abort;
 pub mod broadcast;
 pub mod events;
 pub mod host;
@@ -52,8 +53,7 @@ const API: [&str; 17] = [
 ];
 
 /// Remaining JS preludes, in dependency order. Event types are native.
-const PRELUDE: [(&str, &str); 7] = [
-    ("den:worker/abort.js", include_str!("prelude/abort.js")),
+const PRELUDE: [(&str, &str); 6] = [
     (
         "den:worker/performance.js",
         include_str!("prelude/performance.js"),
@@ -83,6 +83,7 @@ pub mod worker_module {
         object::Property,
     };
 
+    pub use super::abort::{AbortController, AbortSignal};
     pub use super::events::{
         CustomEvent, ErrorEvent, Event, EventTarget, MessageEvent, PromiseRejectionEvent,
     };
@@ -98,7 +99,9 @@ pub mod worker_module {
         for name in crate::API {
             if matches!(
                 name,
-                "CustomEvent"
+                "AbortController"
+                    | "AbortSignal"
+                    | "CustomEvent"
                     | "ErrorEvent"
                     | "Event"
                     | "EventTarget"
@@ -126,6 +129,7 @@ pub mod worker_module {
 
         let namespace = exports.module().namespace()?;
         crate::events::finish(ctx, &namespace)?;
+        crate::abort::finish(ctx)?;
         // Native functions have no `.prototype`; HTML `reportError` is an
         // ordinary function, and the surface test distinguishes those from
         // arrows by `typeof prototype === "object"`.
@@ -140,6 +144,8 @@ pub mod worker_module {
 
         let mut api = Object::new(ctx.clone())?;
         for name in [
+            "AbortController",
+            "AbortSignal",
             "CustomEvent",
             "ErrorEvent",
             "Event",
