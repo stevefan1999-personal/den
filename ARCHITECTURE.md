@@ -18,6 +18,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
       ├── den-stdlib-fs         den:fs
       ├── den-stdlib-networking den:networking (TCP, UDP, Unix, TLS sockets)
+      ├── den-stdlib-process    den:process (env, argv, cwd, spawn, signals, DNS)
       ├── den-stdlib-sqlite     den:sqlite (rusqlite, bundled)
       ├── den-stdlib-text       TextEncoder / TextDecoder
       ├── den-stdlib-timer      setTimeout / setInterval
@@ -53,7 +54,8 @@ The globals come out of step 3, not out of some separate registration: a
 module's `evaluate` hook receives the `Ctx` and writes to `ctx.globals()`
 directly. `den-stdlib-console` sets `console`; `den-stdlib-core` exports
 `atob`/`btoa`/`gc` *and* sets the same three as globals; `den-stdlib-wasm`
-builds the whole `WebAssembly` namespace object and installs it. So
+builds the whole `WebAssembly` namespace object and installs it;
+`den-stdlib-process` installs `process`. So
 "importable module" and
 "ambient global" are the same code with two entry points, and the cfg blocks in
 all three lists must stay in lockstep — a module registered in one list and not
@@ -61,9 +63,10 @@ the others is the failure mode to watch for.
 
 `den:fs`, `den:networking` and `den:sqlite` are import-only: they appear in the
 resolver and loader lists but are not `evaluate_def`'d, so they contribute no
-globals. The seven that are — `den:console`, `den:core`, `den:text`,
-`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:wasm` — are exactly the
-ones whose APIs a script expects to find without importing anything.
+globals. The ones that are — `den:console`, `den:core`, `den:text`,
+`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:process`, `den:wasm`,
+`den:worker` — are exactly the ones whose APIs a script expects to find without
+importing anything.
 
 ## 3. Resolver and loader chain
 

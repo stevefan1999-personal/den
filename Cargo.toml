@@ -7,6 +7,7 @@ members = [
     "den-stdlib-crypto",
     "den-stdlib-fs",
     "den-stdlib-networking",
+    "den-stdlib-process",
     "den-stdlib-sqlite",
     "den-stdlib-text",
     "den-stdlib-timer",
@@ -112,6 +113,7 @@ stdlib-core = ["den-core/stdlib-core"]
 stdlib-crypto = ["den-core/stdlib-crypto"]
 stdlib-fs = ["den-core/stdlib-fs"]
 stdlib-networking = ["den-core/stdlib-networking"]
+stdlib-process = ["den-core/stdlib-process"]
 stdlib-sqlite = ["den-core/stdlib-sqlite"]
 stdlib-text = ["den-core/stdlib-text"]
 stdlib-timer = ["den-core/stdlib-timer"]

@@ -1,0 +1,39 @@
+[package]
+name = "den-stdlib-process"
+description = "Process, environment, spawn, signals and DNS lookup for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+either.workspace = true
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+tokio = { workspace = true, features = [
+    "io-util",
+    "net",
+    "process",
+    "rt",
+    "signal",
+    "sync",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

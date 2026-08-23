@@ -200,3 +200,24 @@ async fn den_fs_metadata_reports_a_regular_file() -> eyre::Result<()> {
     assert_eq!(failures, "");
     Ok(())
 }
+
+/// `den:process` is evaluate_def'd, so `process` is a global without an import.
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "stdlib-process")]
+async fn process_global_exposes_pid_argv_and_env() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let failures: String = engine
+        .eval(
+            r#"
+              Object.entries({
+                pidPositive: typeof process.pid === "number" && process.pid > 0,
+                argvNonEmpty: Array.isArray(process.argv) && process.argv.length > 0,
+                envString: typeof (process.env.PATH ?? process.env.HOME) === "string",
+                cwdIsFunction: typeof process.cwd === "function",
+              }).filter(([, held]) => !held).map(([name]) => name).join(",")
+            "#,
+        )
+        .await?;
+    assert_eq!(failures, "");
+    Ok(())
+}

@@ -1054,6 +1054,7 @@ dependencies = [
  "den-stdlib-crypto",
  "den-stdlib-fs",
  "den-stdlib-networking",
+ "den-stdlib-process",
  "den-stdlib-sqlite",
  "den-stdlib-text",
  "den-stdlib-timer",
@@ -1132,6 +1133,17 @@ dependencies = [
  "rquickjs",
  "tokio",
  "tokio-native-tls",
+]
+
+[[package]]
+name = "den-stdlib-process"
+version = "0.4.0"
+dependencies = [
+ "either",
+ "libc",
+ "rquickjs",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
