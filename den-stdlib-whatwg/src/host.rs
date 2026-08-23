@@ -93,16 +93,35 @@ impl Host {
 
     /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with U+FFFD.
     pub fn coerce_usv_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
-        let js = Coerced::<rquickjs::String>::from_js(ctx, value.clone())?;
-        match js.to_string() {
-            Ok(text) => Ok(text),
-            Err(_) => {
-                let convert: Function = ctx.eval(
-                    "(v) => { const s = String(v); let o = ''; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); if (c >= 0xD800 && c <= 0xDBFF) { const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0; if (d >= 0xDC00 && d <= 0xDFFF) { o += String.fromCharCode(c, d); i++; } else { o += '\\uFFFD'; } } else if (c >= 0xDC00 && c <= 0xDFFF) { o += '\\uFFFD'; } else { o += String.fromCharCode(c); } } return o; }",
-                )?;
-                convert.call((value,))
-            }
+        let value = if value.is_string() {
+            value
+        } else {
+            Coerced::<rquickjs::String>::from_js(ctx, value)?
+                .0
+                .into_value()
+        };
+        if let Some(string) = value.as_string()
+            && let Ok(text) = string.to_string()
+        {
+            return Ok(text);
         }
+        let mut len = std::mem::MaybeUninit::uninit();
+        // SAFETY: `JS_ToCStringLenUTF16` writes the unit count and returns a
+        // buffer QuickJS owns until `JS_FreeCStringUTF16`. Null means a JS
+        // exception is pending. The slice is only used before that free.
+        let ptr = unsafe {
+            qjs::JS_ToCStringLenUTF16(ctx.as_raw().as_ptr(), len.as_mut_ptr(), value.as_raw())
+        };
+        if ptr.is_null() {
+            return Err(rquickjs::Error::Exception);
+        }
+        let len = usize::try_from(unsafe { len.assume_init() }).unwrap_or(0);
+        let units = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let text = String::from_utf16_lossy(units);
+        unsafe {
+            qjs::JS_FreeCStringUTF16(ctx.as_raw().as_ptr(), ptr);
+        }
+        Ok(text)
     }
 
     /// Lenient `BufferSource` read: `None` for anything that is not a buffer
