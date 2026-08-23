@@ -7,7 +7,6 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use uuid::Uuid;
 
-#[rquickjs::function]
 pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
     {
         let array = if let Ok(array) = TypedArray::<u8>::from_object(array.clone()) {
@@ -48,7 +47,6 @@ pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Objec
     Ok(array)
 }
 
-#[rquickjs::function(rename = "randomUUID")]
 pub fn random_uuid() -> String {
     Uuid::new_v4().to_string()
 }
@@ -90,12 +88,10 @@ impl DigestAlgorithm {
         let raw_name = Self::raw_name(algorithm)?;
         match raw_name.as_deref().and_then(Self::parse) {
             Some(algorithm) => Ok(algorithm),
-            None => {
-                Err(Self::not_supported(
-                    ctx,
-                    raw_name.as_deref().unwrap_or("undefined"),
-                ))
-            }
+            None => Err(Self::not_supported(
+                ctx,
+                raw_name.as_deref().unwrap_or("undefined"),
+            )),
         }
     }
 
@@ -186,13 +182,11 @@ impl<'js> FromJs<'js> for BufferSource {
             return Self::view_bytes(ctx, &value).map(Self);
         }
         match ArrayBuffer::from_value(value) {
-            Some(buffer) => {
-                buffer
-                    .as_bytes()
-                    .map(<[u8]>::to_vec)
-                    .map(Self)
-                    .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))
-            }
+            Some(buffer) => buffer
+                .as_bytes()
+                .map(<[u8]>::to_vec)
+                .map(Self)
+                .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached")),
             None => Err(Exception::throw_type(ctx, "data must be a BufferSource")),
         }
     }
@@ -216,31 +210,33 @@ pub async fn digest<'js>(
 #[rquickjs::module]
 pub mod crypto {
     use indexmap::indexmap;
-    use rquickjs::{Ctx, IntoJs, Result, module::Exports};
+    use rquickjs::{Ctx, IntoJs, Object, Result, module::Exports};
 
-    #[qjs(declare)]
-    pub fn declare(declare: &rquickjs::module::Declarations) -> Result<()> {
-        declare.declare("getRandomValues")?.declare("randomUUID")?;
-        Ok(())
+    #[rquickjs::function]
+    #[qjs(rename = "getRandomValues")]
+    pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
+        crate::get_random_values(array, ctx)
+    }
+
+    #[rquickjs::function]
+    #[qjs(rename = "randomUUID")]
+    pub fn random_uuid() -> String {
+        crate::random_uuid()
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, e: &Exports<'js>) -> Result<()> {
-        e.export("getRandomValues", super::js_get_random_values.into_js(ctx)?)?
-            .export("randomUUID", super::js_random_uuid.into_js(ctx)?)?;
-
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         let subtle = indexmap! {
             "digest" => super::js_digest.into_js(ctx)?,
         };
         ctx.globals().set(
             "crypto",
             indexmap! {
-                "getRandomValues" => super::js_get_random_values.into_js(ctx)?,
-                "randomUUID" => super::js_random_uuid.into_js(ctx)?,
+                "getRandomValues" => js_get_random_values.into_js(ctx)?,
+                "randomUUID" => js_random_uuid.into_js(ctx)?,
                 "subtle" => subtle.into_js(ctx)?,
             },
         )?;
-
         Ok(())
     }
 }

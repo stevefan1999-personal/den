@@ -1,6 +1,9 @@
 //! `WebAssembly.Tag` — the identity of an exception kind.
 
-use rquickjs::{Array, Ctx, Exception, FromJs, JsLifetime, Object, Result, Value, class::Trace};
+use indexmap::indexmap;
+use rquickjs::{
+    Array, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace,
+};
 
 use crate::{
     backend,
@@ -106,9 +109,12 @@ impl Tag {
             })?;
             parameters.set(index, name)?;
         }
-        let ty = Object::new(ctx)?;
-        ty.set("parameters", parameters)?;
-        Ok(ty)
+        indexmap! {
+            "parameters" => parameters,
+        }
+        .into_js(&ctx)?
+        .into_object()
+        .ok_or_else(|| Exception::throw_type(&ctx, "tag type is not an object"))
     }
 }
 

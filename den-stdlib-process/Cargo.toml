@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 either.workspace = true
+indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = [
     "io-util",

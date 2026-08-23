@@ -1,6 +1,7 @@
 //! Live `process.env` as a Proxy whose traps read and write the real
 //! environment.
 
+use indexmap::indexmap;
 use rquickjs::{
     Ctx, FromJs, Function, IntoJs, Object, Proxy, Result, Value,
     atom::PredefinedAtom,
@@ -104,11 +105,12 @@ impl Env {
         let Some(value) = Self::get(&property.to_string()?) else {
             return Ok(Value::new_undefined(ctx));
         };
-        let desc = Object::new(ctx.clone())?;
-        desc.set("value", value)?;
-        desc.set("writable", true)?;
-        desc.set("enumerable", true)?;
-        desc.set("configurable", true)?;
-        Ok(desc.into_value())
+        indexmap! {
+            "value" => value.into_js(&ctx)?,
+            "writable" => true.into_js(&ctx)?,
+            "enumerable" => true.into_js(&ctx)?,
+            "configurable" => true.into_js(&ctx)?,
+        }
+        .into_js(&ctx)
     }
 }

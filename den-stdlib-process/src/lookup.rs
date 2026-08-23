@@ -1,6 +1,7 @@
 //! DNS lookup via `tokio::net::lookup_host`.
 
-use rquickjs::{Ctx, Exception, Object, Result, Value};
+use indexmap::indexmap;
+use rquickjs::{Ctx, Exception, IntoJs, Object, Result, Value};
 use tokio::net::lookup_host;
 
 /// A hostname lookup, returning `{ family, ip }` or an array of those.
@@ -33,12 +34,10 @@ impl Lookup {
         let addrs = lookup_host((host.as_str(), 0))
             .await
             .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
-            .filter(|addr| {
-                match family {
-                    4 => addr.is_ipv4(),
-                    6 => addr.is_ipv6(),
-                    _ => true,
-                }
+            .filter(|addr| match family {
+                4 => addr.is_ipv4(),
+                6 => addr.is_ipv6(),
+                _ => true,
             })
             .collect::<Vec<_>>();
 
@@ -56,14 +55,15 @@ impl Lookup {
             }
             Ok(list.into_value())
         } else {
-            Ok(Self::addr(&ctx, addrs[0])?.into_value())
+            Self::addr(&ctx, addrs[0])
         }
     }
 
-    fn addr<'js>(ctx: &Ctx<'js>, addr: std::net::SocketAddr) -> Result<Object<'js>> {
-        let object = Object::new(ctx.clone())?;
-        object.set("family", if addr.is_ipv4() { 4 } else { 6 })?;
-        object.set("ip", addr.ip().to_string())?;
-        Ok(object)
+    fn addr<'js>(ctx: &Ctx<'js>, addr: std::net::SocketAddr) -> Result<Value<'js>> {
+        indexmap! {
+            "family" => if addr.is_ipv4() { 4i32 } else { 6 }.into_js(ctx)?,
+            "ip" => addr.ip().to_string().into_js(ctx)?,
+        }
+        .into_js(ctx)
     }
 }

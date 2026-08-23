@@ -1,8 +1,10 @@
 //! `WebAssembly.Global`.
 
 use derive_more::derive::{From, Into};
+use indexmap::indexmap;
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
+    Coerced, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace,
+    prelude::Opt,
 };
 
 use crate::{
@@ -15,7 +17,7 @@ use crate::{
 /// A `GlobalDescriptor`.
 #[derive(Clone, Debug)]
 pub struct GlobalDescriptor {
-    value:   String,
+    value: String,
     mutable: bool,
 }
 
@@ -23,7 +25,7 @@ impl<'js> FromJs<'js> for GlobalDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the global descriptor")?;
         Ok(Self {
-            value:   object.required(ctx, "value")?,
+            value: object.required(ctx, "value")?,
             mutable: object
                 .get::<_, Option<Coerced<bool>>>("mutable")?
                 .is_some_and(|mutable| mutable.0),
@@ -56,10 +58,8 @@ impl Global {
         let ty = descriptor.value_type(&ctx)?;
         let initial = match value.0 {
             Some(value) => WasmValue::from_js(&ctx, &value, &ty)?,
-            None => {
-                WasmValue::default_for(&ty)
-                    .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?
-            }
+            None => WasmValue::default_for(&ty)
+                .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?,
         };
 
         Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
@@ -116,13 +116,13 @@ impl Global {
             backend::val_type_name(&backend::global_content(&declared)).ok_or_else(|| {
                 Exception::throw_type(&ctx, "this global's value type has no JS name")
             })?;
-        let ty = Object::new(ctx.clone())?;
-        ty.set(
-            "mutable",
-            matches!(declared.mutability(), backend::Mutability::Var),
-        )?;
-        ty.set("value", value)?;
-        Ok(ty)
+        indexmap! {
+            "mutable" => matches!(declared.mutability(), backend::Mutability::Var).into_js(&ctx)?,
+            "value" => value.into_js(&ctx)?,
+        }
+        .into_js(&ctx)?
+        .into_object()
+        .ok_or_else(|| Exception::throw_type(&ctx, "global type is not an object"))
     }
 
     #[qjs(rename = "valueOf")]

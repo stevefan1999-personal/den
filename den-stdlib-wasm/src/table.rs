@@ -1,8 +1,9 @@
 //! `WebAssembly.Table`.
 
 use derive_more::derive::{From, Into};
+use indexmap::indexmap;
 use rquickjs::{
-    Ctx, Exception, FromJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
+    Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
 };
 
 use crate::{
@@ -110,10 +111,8 @@ impl Table {
     ) -> Result<TableElement> {
         let value = match value {
             Some(value) => WasmValue::from_js(ctx, value, ty)?,
-            None => {
-                WasmValue::default_for(ty)
-                    .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?
-            }
+            None => WasmValue::default_for(ty)
+                .map_err(|error| Exception::throw_type(ctx, &error.to_string()))?,
         };
         TableElement::from_wasm_value(ctx, value.into_inner())
     }
@@ -163,13 +162,16 @@ impl Table {
         let element = backend::val_type_name(&element).ok_or_else(|| {
             Exception::throw_type(&ctx, "this table's element type has no JS name")
         })?;
-        let ty = Object::new(ctx.clone())?;
-        ty.set("element", element)?;
-        ty.set("minimum", minimum)?;
+        let mut ty = indexmap! {
+            "element" => element.into_js(&ctx)?,
+            "minimum" => minimum.into_js(&ctx)?,
+        };
         if let Some(maximum) = maximum {
-            ty.set("maximum", maximum)?;
+            ty.insert("maximum", maximum.into_js(&ctx)?);
         }
-        Ok(ty)
+        ty.into_js(&ctx)?
+            .into_object()
+            .ok_or_else(|| Exception::throw_type(&ctx, "table type is not an object"))
     }
 
     pub fn get<'js>(&self, index: EnforceRange, ctx: Ctx<'js>) -> Result<Value<'js>> {

@@ -1138,6 +1138,7 @@ name = "den-stdlib-process"
 version = "0.4.0"
 dependencies = [
  "either",
+ "indexmap",
  "libc",
  "rquickjs",
  "tokio",
