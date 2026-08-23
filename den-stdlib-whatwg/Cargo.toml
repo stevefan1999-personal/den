@@ -12,7 +12,13 @@ keywords.workspace = true
 
 [dependencies]
 flate2 = "1"
+futures.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
+tokio = { workspace = true, features = ["net", "rt", "sync"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = [
+  "connect",
+  "handshake",
+] }
 url = "2.5.8"
 urlpattern = "0.6"
 

@@ -8,13 +8,14 @@
 
 pub mod compression;
 pub mod urlpattern;
+pub mod websocket;
 
 /// Everything `den:whatwg` exports and installs as a global.
 ///
 /// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
 /// job, and putting them here would duplicate the types fetch already
 /// constructs.
-const API: [&str; 13] = [
+const API: [&str; 14] = [
     "Blob",
     "CloseEvent",
     "CompressionStream",
@@ -27,11 +28,12 @@ const API: [&str; 13] = [
     "ReadableStream",
     "TransformStream",
     "URLPattern",
+    "WebSocket",
     "XMLHttpRequest",
 ];
 
 /// The prelude, in dependency order. Filenames show up in stack traces.
-const PRELUDE: [(&str, &str); 9] = [
+const PRELUDE: [(&str, &str); 10] = [
     ("den:whatwg/streams.js", include_str!("prelude/streams.js")),
     (
         "den:whatwg/platform.js",
@@ -56,6 +58,10 @@ const PRELUDE: [(&str, &str); 9] = [
         "den:whatwg/compression.js",
         include_str!("prelude/compression.js"),
     ),
+    (
+        "den:whatwg/websocket.js",
+        include_str!("prelude/websocket.js"),
+    ),
 ];
 
 /// WritableStream is part of the streams polyfill CompressionStream needs, but
@@ -75,6 +81,7 @@ pub mod whatwg {
     use crate::{
         compression::{Compressor, Decompressor},
         urlpattern::URLPattern,
+        websocket::NativeWebSocket,
     };
 
     #[qjs(declare)]
@@ -98,6 +105,12 @@ pub mod whatwg {
             "Decompressor",
             Decompressor::constructor(ctx)?.ok_or_else(|| {
                 rquickjs::Exception::throw_internal(ctx, "Decompressor constructor missing")
+            })?,
+        )?;
+        natives.set(
+            "NativeWebSocket",
+            NativeWebSocket::constructor(ctx)?.ok_or_else(|| {
+                rquickjs::Exception::throw_internal(ctx, "NativeWebSocket constructor missing")
             })?,
         )?;
         let mut api = Object::new(ctx.clone())?;
@@ -208,7 +221,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    const DOCUMENTED: [&str; 13] = [
+    const DOCUMENTED: [&str; 14] = [
         "Blob",
         "CloseEvent",
         "CompressionStream",
@@ -221,6 +234,7 @@ mod tests {
         "ReadableStream",
         "TransformStream",
         "URLPattern",
+        "WebSocket",
         "XMLHttpRequest",
     ];
 
@@ -229,7 +243,7 @@ mod tests {
         assert_eq!(crate::API, DOCUMENTED, "the API list and its tests drifted");
         let report = eval::<Vec<String>>(
             r#"
-        "Blob,CloseEvent,CompressionStream,DecompressionStream,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,URLPattern,XMLHttpRequest"
+        "Blob,CloseEvent,CompressionStream,DecompressionStream,EventSource,File,FileReader,FormData,ProgressEvent,ReadableStream,TransformStream,URLPattern,WebSocket,XMLHttpRequest"
           .split(",").map((name) => {
             const value = globalThis[name];
             if (typeof value !== "function") return `${name}: missing`;
@@ -555,6 +569,65 @@ mod tests {
             .await,
             "Hello, WinterTC compression streams.|Hello, WinterTC compression streams.|Hello, WinterTC compression streams.|true|true|true"
         );
+    }
+
+    async fn echo_ws() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("ws bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
+                    use futures::{SinkExt, StreamExt};
+                    while let Some(message) = ws.next().await {
+                        let Ok(message) = message else { break };
+                        if message.is_close() {
+                            break;
+                        }
+                        if message.is_text() || message.is_binary() {
+                            let _ = ws.send(message).await;
+                        }
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn websocket_echoes_a_text_frame_on_a_local_listener() {
+        let port = echo_ws().await;
+        let url = format!("ws://127.0.0.1:{port}/");
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            text_async(&format!(
+                r#"
+                  (async () => {{
+                    const ws = new WebSocket("{url}");
+                    await new Promise((resolve, reject) => {{
+                      ws.onopen = () => resolve();
+                      ws.onerror = (event) => reject(new Error(event.message || "ws error"));
+                    }});
+                    ws.send("ping");
+                    const data = await new Promise((resolve) => {{
+                      ws.onmessage = (event) => resolve(event.data);
+                    }});
+                    ws.close();
+                    return [data, ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED].join("|");
+                  }})()
+                "#
+            )),
+        )
+        .await
+        .expect("WebSocket test timed out");
+        assert_eq!(report, "ping|true");
     }
 }
 
