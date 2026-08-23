@@ -1,7 +1,8 @@
 //! JS `URLPattern` wrapping the denoland `urlpattern` crate.
 
+use indexmap::{IndexMap, indexmap};
 use rquickjs::{
-    Ctx, Exception, FromJs, JsLifetime, Object, Result, Value, class::Trace, function::Opt,
+    Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace, function::Opt,
 };
 use url::Url;
 use urlpattern::{UrlPattern as Inner, UrlPatternInit, UrlPatternMatchInput, UrlPatternOptions};
@@ -95,22 +96,26 @@ impl URLPattern {
         ))
     }
 
-    fn component_to_object<'js>(
+    fn component_to_js<'js>(
         ctx: &Ctx<'js>,
         input: &str,
         groups: &std::collections::HashMap<String, Option<String>>,
-    ) -> Result<Object<'js>> {
-        let object = Object::new(ctx.clone())?;
-        object.set("input", input)?;
-        let group_obj = Object::new(ctx.clone())?;
+    ) -> Result<Value<'js>> {
+        let mut group_map = IndexMap::new();
         for (name, value) in groups {
-            match value {
-                Some(value) => group_obj.set(name, value.clone())?,
-                None => group_obj.set(name, Value::new_undefined(ctx.clone()))?,
-            }
+            group_map.insert(
+                name.clone(),
+                match value {
+                    Some(value) => value.clone().into_js(ctx)?,
+                    None => Value::new_undefined(ctx.clone()),
+                },
+            );
         }
-        object.set("groups", group_obj)?;
-        Ok(object)
+        indexmap! {
+          "input" => input.into_js(ctx)?,
+          "groups" => group_map.into_js(ctx)?,
+        }
+        .into_js(ctx)
     }
 }
 
@@ -139,34 +144,24 @@ impl URLPattern {
             .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))?
         {
             None => Ok(Value::new_null(ctx)),
-            Some(result) => {
-                let object = Object::new(ctx.clone())?;
-                object.set(
-                    "pathname",
-                    Self::component_to_object(
-                        &ctx,
-                        &result.pathname.input,
-                        &result.pathname.groups,
-                    )?,
-                )?;
-                object.set(
-                    "protocol",
-                    Self::component_to_object(
-                        &ctx,
-                        &result.protocol.input,
-                        &result.protocol.groups,
-                    )?,
-                )?;
-                object.set(
-                    "hostname",
-                    Self::component_to_object(
-                        &ctx,
-                        &result.hostname.input,
-                        &result.hostname.groups,
-                    )?,
-                )?;
-                Ok(object.into_value())
+            Some(result) => indexmap! {
+              "pathname" => Self::component_to_js(
+                &ctx,
+                &result.pathname.input,
+                &result.pathname.groups,
+              )?,
+              "protocol" => Self::component_to_js(
+                &ctx,
+                &result.protocol.input,
+                &result.protocol.groups,
+              )?,
+              "hostname" => Self::component_to_js(
+                &ctx,
+                &result.hostname.input,
+                &result.hostname.groups,
+              )?,
             }
+            .into_js(&ctx),
         }
     }
 
