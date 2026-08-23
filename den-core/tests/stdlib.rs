@@ -136,3 +136,29 @@ async fn crypto_get_random_values_fills_the_array_in_place() -> eyre::Result<()>
     assert_eq!(failures, "");
     Ok(())
 }
+
+/// FIPS 180-4 SHA-256 of `"abc"`. `TextEncoder` is the usual way a script
+/// produces the `BufferSource` `subtle.digest` hashes.
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(all(feature = "stdlib-crypto", feature = "stdlib-text"))]
+async fn crypto_subtle_digest_sha256_of_abc_matches_the_well_known_hex() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let hex: String = engine
+        .eval(
+            r#"
+              const digest = await crypto.subtle.digest(
+                "SHA-256",
+                new TextEncoder().encode("abc"),
+              );
+              [...new Uint8Array(digest)]
+                .map((byte) => byte.toString(16).padStart(2, "0"))
+                .join("")
+            "#,
+        )
+        .await?;
+    assert_eq!(
+        hex,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    Ok(())
+}
