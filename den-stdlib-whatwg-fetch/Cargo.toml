@@ -40,6 +40,8 @@ den-stdlib-whatwg.workspace = true
 [dev-dependencies]
 # `http::Response` is what `reqwest::Response` is built from, which is the only
 # way to exercise a body without a socket.
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
 http.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 den-stdlib-text.workspace = true

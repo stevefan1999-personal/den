@@ -123,20 +123,20 @@ enum ResponseBody {
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response<'js> {
-    pub(crate) status: u16,
-    pub(crate) redirected: bool,
+    pub(crate) status:       u16,
+    pub(crate) redirected:   bool,
     #[qjs(skip_trace)]
-    pub(crate) status_text: String,
+    pub(crate) status_text:  String,
     #[qjs(skip_trace)]
-    pub(crate) url: String,
+    pub(crate) url:          String,
     #[qjs(skip_trace)]
-    pub(crate) kind: String,
-    pub(crate) headers: Class<'js, Headers>,
-    body_stream: Option<JsValue<'js>>,
+    pub(crate) kind:         String,
+    pub(crate) headers:      Class<'js, Headers>,
+    body_stream:             Option<JsValue<'js>>,
     #[qjs(skip_trace)]
-    inner: Rc<RefCell<ResponseBody>>,
+    inner:                   Rc<RefCell<ResponseBody>>,
     #[qjs(skip_trace)]
-    consume_started: Cell<bool>,
+    consume_started:         Cell<bool>,
     pub(crate) abort_signal: JsValue<'js>,
     #[qjs(skip_trace)]
     pub(crate) abort_notify: Option<Arc<Notify>>,
@@ -160,17 +160,17 @@ impl<'js> Response<'js> {
         let mut header_obj = Headers::from_pairs(headers);
         header_obj.set_guard(headers::Guard::Immutable);
         Ok(Self {
-            status: status.as_u16(),
-            redirected: false,
-            status_text: status.canonical_reason().unwrap_or("").to_string(),
-            url: response.url().to_string(),
-            kind: kind.to_string(),
-            headers: Class::instance(ctx.clone(), header_obj)?,
-            body_stream: None,
-            inner: Rc::new(RefCell::new(ResponseBody::Live(response))),
+            status:          status.as_u16(),
+            redirected:      false,
+            status_text:     status.canonical_reason().unwrap_or("").to_string(),
+            url:             response.url().to_string(),
+            kind:            kind.to_string(),
+            headers:         Class::instance(ctx.clone(), header_obj)?,
+            body_stream:     None,
+            inner:           Rc::new(RefCell::new(ResponseBody::Live(response))),
             consume_started: Cell::new(false),
-            abort_signal: JsValue::new_null(ctx.clone()),
-            abort_notify: None,
+            abort_signal:    JsValue::new_null(ctx.clone()),
+            abort_notify:    None,
         })
     }
 
@@ -206,9 +206,7 @@ impl<'js> Response<'js> {
             .unwrap_or_default()
     }
 
-    fn mark_used(&self) {
-        *self.inner.borrow_mut() = ResponseBody::Taken;
-    }
+    fn mark_used(&self) { *self.inner.borrow_mut() = ResponseBody::Taken; }
 
     async fn take_bytes(&self, ctx: &Ctx<'_>) -> Result<Vec<u8>> {
         let taken = {
@@ -221,11 +219,13 @@ impl<'js> Response<'js> {
         match taken {
             ResponseBody::None => Ok(Vec::new()),
             ResponseBody::Bytes(bytes) => Ok(bytes),
-            ResponseBody::Live(response) => response
-                .bytes()
-                .await
-                .map(|bytes| bytes.to_vec())
-                .map_err(|err| Exception::throw_type(ctx, &format!("{err}"))),
+            ResponseBody::Live(response) => {
+                response
+                    .bytes()
+                    .await
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))
+            }
             ResponseBody::Stream(mut stream) => {
                 let mut out = Vec::new();
                 while let Some(chunk) = stream.next().await {
@@ -283,15 +283,17 @@ impl<'js> Response<'js> {
         let ctx_err = ctx.clone();
         ctx.spawn(async move {
             match consume_response(&response, &ctx_err).await {
-                Ok(bytes) => match map(bytes, ctx_err.clone()) {
-                    Ok(value) => {
-                        let _ = resolve.call::<_, ()>((value,));
+                Ok(bytes) => {
+                    match map(bytes, ctx_err.clone()) {
+                        Ok(value) => {
+                            let _ = resolve.call::<_, ()>((value,));
+                        }
+                        Err(_) => {
+                            let thrown = ctx_err.catch();
+                            let _ = reject.call::<_, ()>((thrown,));
+                        }
                     }
-                    Err(_) => {
-                        let thrown = ctx_err.catch();
-                        let _ = reject.call::<_, ()>((thrown,));
-                    }
-                },
+                }
                 Err(_) => {
                     let thrown = ctx_err.catch();
                     let _ = reject.call::<_, ()>((thrown,));
@@ -355,10 +357,12 @@ impl<'js> Response<'js> {
                 }
                 return Ok(Some(bytes));
             }
-            ResponseBody::Live(response) => Box::pin(response.bytes_stream().map(|item| {
-                item.map(|bytes| bytes.to_vec())
-                    .map_err(|err| err.to_string())
-            })) as BodyStream,
+            ResponseBody::Live(response) => {
+                Box::pin(response.bytes_stream().map(|item| {
+                    item.map(|bytes| bytes.to_vec())
+                        .map_err(|err| err.to_string())
+                })) as BodyStream
+            }
             ResponseBody::Stream(stream) => stream,
         };
         let item = if let Some(notify) = &self.abort_notify {
@@ -826,9 +830,7 @@ impl<'js> Response<'js> {
     }
 
     #[qjs(rename = "_cancelBody")]
-    pub fn cancel_body(&self) {
-        self.mark_used();
-    }
+    pub fn cancel_body(&self) { self.mark_used(); }
 
     #[qjs(enumerable, get)]
     pub fn body_used(&self) -> bool {
@@ -840,39 +842,25 @@ impl<'js> Response<'js> {
     }
 
     #[qjs(enumerable, get)]
-    pub fn ok(&self) -> bool {
-        (200..300).contains(&self.status)
-    }
+    pub fn ok(&self) -> bool { (200..300).contains(&self.status) }
 
     #[qjs(enumerable, get)]
-    pub fn redirected(&self) -> bool {
-        self.redirected
-    }
+    pub fn redirected(&self) -> bool { self.redirected }
 
     #[qjs(enumerable, get)]
-    pub fn status(&self) -> u16 {
-        self.status
-    }
+    pub fn status(&self) -> u16 { self.status }
 
     #[qjs(enumerable, get)]
-    pub fn status_text(&self) -> String {
-        self.status_text.clone()
-    }
+    pub fn status_text(&self) -> String { self.status_text.clone() }
 
     #[qjs(enumerable, get)]
-    pub fn url(&self) -> String {
-        self.url.clone()
-    }
+    pub fn url(&self) -> String { self.url.clone() }
 
     #[qjs(enumerable, get, rename = "type")]
-    pub fn type_(&self) -> String {
-        self.kind.clone()
-    }
+    pub fn type_(&self) -> String { self.kind.clone() }
 
     #[qjs(enumerable, get)]
-    pub fn headers(&self) -> Class<'js, Headers> {
-        self.headers.clone()
-    }
+    pub fn headers(&self) -> Class<'js, Headers> { self.headers.clone() }
 
     #[qjs(enumerable, get)]
     pub fn body(&mut self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
@@ -1017,9 +1005,7 @@ impl<'js> Response<'js> {
     }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Response"
-    }
+    pub fn to_string_tag() -> &'static str { "Response" }
 }
 
 struct FormBody;
@@ -1380,9 +1366,8 @@ fn wrap_readable_stream_cancel<'js>(ctx: &Ctx<'js>) -> Result<()> {
 pub mod whatwg {
     use rquickjs::{Ctx, Function, Result, Value, function::Opt, module::Exports};
 
-    use crate::body;
-
     pub use super::{Headers, Request, Response};
+    use crate::body;
 
     #[rquickjs::function]
     pub async fn fetch<'js>(
@@ -1409,34 +1394,18 @@ pub mod whatwg {
 
 #[cfg(test)]
 mod tests {
-    use rquickjs::{
-        AsyncContext, AsyncRuntime, CatchResultExt, Class, FromJs, Module, Promise, Value,
-        prelude::This,
-    };
+    use den_core::engine::Engine;
+    use rquickjs::{CatchResultExt, Class, FromJs, Promise, Value, prelude::This};
 
     use super::Response;
-
-    async fn realm() -> (AsyncRuntime, AsyncContext) {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        context
-            .with(|ctx| {
-                Module::evaluate_def::<crate::js_whatwg, _>(ctx.clone(), "den:whatwg-fetch")
-                    .and_then(|(_, evaluated)| evaluated.finish::<()>())
-                    .catch(&ctx)
-                    .map_err(|error| error.to_string())
-                    .expect("den:whatwg-fetch evaluates");
-            })
-            .await;
-        (runtime, context)
-    }
 
     async fn eval<T>(source: &str) -> T
     where
         T: for<'js> FromJs<'js> + Send + 'static,
     {
-        let (_runtime, context) = realm().await;
-        context
+        let engine = Engine::new().await;
+        engine
+            .context
             .with(|ctx| {
                 ctx.eval::<T, _>(source)
                     .catch(&ctx)
@@ -1447,8 +1416,9 @@ mod tests {
     }
 
     async fn text_async(source: &str) -> String {
-        let (_runtime, context) = realm().await;
-        context
+        let engine = Engine::new().await;
+        engine
+            .context
             .async_with(async |ctx| {
                 let run = async {
                     let promise: Promise<'_> = ctx.eval(source)?;
@@ -1468,9 +1438,9 @@ mod tests {
     /// the snippet returning at all is the assertion.
     #[tokio::test]
     async fn a_response_body_survives_transfer_and_detach() {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        let outcome: String = context
+        let engine = Engine::new().await;
+        let outcome: String = engine
+            .context
             .async_with(async |ctx| {
                 // Built from an `http::Response`, so the body is real but no
                 // socket is involved. `Response` holds an `Rc`, so it cannot be
@@ -1523,15 +1493,12 @@ mod tests {
             "#,
         )
         .await;
-        assert_eq!(
-            report,
-            vec![
-                "Headers: ok".to_string(),
-                "Request: ok".to_string(),
-                "fetch: ok".to_string(),
-                "Response: ok".to_string(),
-            ]
-        );
+        assert_eq!(report, vec![
+            "Headers: ok".to_string(),
+            "Request: ok".to_string(),
+            "fetch: ok".to_string(),
+            "Response: ok".to_string(),
+        ]);
     }
 
     #[tokio::test]
@@ -1625,15 +1592,16 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_aborts_an_in_flight_request() {
-        let server =
-            den_stdlib_whatwg::local_http::serve(|_| den_stdlib_whatwg::local_http::Outgoing {
-                status: 200,
+        let server = den_stdlib_whatwg::local_http::serve(|_| {
+            den_stdlib_whatwg::local_http::Outgoing {
+                status:  200,
                 headers: vec![],
-                body: Vec::new(),
-                hang: false,
-                silent: true,
-            })
-            .await;
+                body:    Vec::new(),
+                hang:    false,
+                silent:  true,
+            }
+        })
+        .await;
         let url = server.url("/hang");
         let report = text_async(&format!(
             r#"
@@ -1665,38 +1633,9 @@ mod tests {
 
     #[tokio::test]
     async fn response_blob_wraps_the_body_when_blob_exists() {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        context
-            .with(|ctx| {
-                let install = || -> rquickjs::Result<()> {
-                    Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?
-                        .1
-                        .finish::<()>()?;
-                    Module::evaluate_def::<den_stdlib_worker::js_worker, _>(
-                        ctx.clone(),
-                        "den:worker",
-                    )?
-                    .1
-                    .finish::<()>()?;
-                    Module::evaluate_def::<crate::js_whatwg, _>(ctx.clone(), "den:whatwg-fetch")?
-                        .1
-                        .finish::<()>()?;
-                    Module::evaluate_def::<den_stdlib_whatwg::js_whatwg, _>(
-                        ctx.clone(),
-                        "den:whatwg",
-                    )?
-                    .1
-                    .finish::<()>()?;
-                    Ok(())
-                };
-                install()
-                    .catch(&ctx)
-                    .map_err(|error| error.to_string())
-                    .expect("modules evaluate");
-            })
-            .await;
-        let outcome: String = context
+        let engine = Engine::new().await;
+        let outcome: String = engine
+            .context
             .async_with(async |ctx| {
                 let run = async {
                     let response = Response::from_reqwest(

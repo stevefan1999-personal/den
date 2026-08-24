@@ -34,6 +34,8 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]

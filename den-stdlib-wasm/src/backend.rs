@@ -462,8 +462,6 @@ pub fn val_default(ty: &ValType) -> Option<Val> {
 /// somebody's script.
 #[cfg(test)]
 mod parity {
-    use rquickjs::{Context, Module, Runtime};
-
     use super::{SUPPORTS_ANYREF, SUPPORTS_SHARED_MEMORY, SUPPORTS_TAGS, SUPPORTS_V128};
 
     /// Each entry is `"<what>: <outcome>"`, where the outcome is the value the
@@ -519,49 +517,50 @@ mod parity {
 
     #[test]
     fn the_engine_answers_the_js_program_the_constants_promise() {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| {
-            let (module, evaluation) =
-                Module::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")
-                    .expect("den:wasm evaluates");
-            evaluation.finish::<()>().expect("den:wasm finishes");
-            ctx.globals()
-                .set("denWasm", module.namespace().expect("den:wasm namespace"))
-                .expect("bind den:wasm exports");
-            let observed: Vec<String> = ctx.eval(OBSERVE).expect("the program runs");
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let engine = den_core::engine::Engine::new().await;
+                let observed: Vec<String> = engine
+                    .eval(&format!(
+                        "const denWasm = await import('den:wasm');\n{OBSERVE}"
+                    ))
+                    .await
+                    .expect("the program runs");
 
-            let expected = [
-                ("a shared memory", "TypeError".to_owned()),
-                ("a shared memory without a maximum", "TypeError".to_owned()),
-                (
-                    "a module with a shared memory",
-                    SUPPORTS_SHARED_MEMORY.to_string(),
-                ),
-                ("a module using atomics", SUPPORTS_SHARED_MEMORY.to_string()),
-                ("an anyref global", "TypeError".to_owned()),
-                ("a v128 global", "TypeError".to_owned()),
-                ("a module using anyref", SUPPORTS_ANYREF.to_string()),
-                ("a module using v128", SUPPORTS_V128.to_string()),
-                ("a module with a tag", SUPPORTS_TAGS.to_string()),
-                // The constructor reports the same lack as a `TypeError`, per §5.9.
-                (
-                    "a tag",
-                    if SUPPORTS_TAGS { "true" } else { "TypeError" }.to_owned(),
-                ),
-                ("a module using tail calls", "true".to_owned()),
-                ("a module using extended const", "true".to_owned()),
-                ("a module with two memories", "true".to_owned()),
-                ("a module using memory64", "true".to_owned()),
-                ("a module using custom page sizes", "false".to_owned()),
-                ("a module using bulk memory", "true".to_owned()),
-                ("an exported function", "3".to_owned()),
-                ("a trapping export", "RuntimeError".to_owned()),
-            ]
-            .map(|(what, outcome)| format!("{what}: {outcome}"));
+                let expected = [
+                    ("a shared memory", "TypeError".to_owned()),
+                    ("a shared memory without a maximum", "TypeError".to_owned()),
+                    (
+                        "a module with a shared memory",
+                        SUPPORTS_SHARED_MEMORY.to_string(),
+                    ),
+                    ("a module using atomics", SUPPORTS_SHARED_MEMORY.to_string()),
+                    ("an anyref global", "TypeError".to_owned()),
+                    ("a v128 global", "TypeError".to_owned()),
+                    ("a module using anyref", SUPPORTS_ANYREF.to_string()),
+                    ("a module using v128", SUPPORTS_V128.to_string()),
+                    ("a module with a tag", SUPPORTS_TAGS.to_string()),
+                    // The constructor reports the same lack as a `TypeError`, per §5.9.
+                    (
+                        "a tag",
+                        if SUPPORTS_TAGS { "true" } else { "TypeError" }.to_owned(),
+                    ),
+                    ("a module using tail calls", "true".to_owned()),
+                    ("a module using extended const", "true".to_owned()),
+                    ("a module with two memories", "true".to_owned()),
+                    ("a module using memory64", "true".to_owned()),
+                    ("a module using custom page sizes", "false".to_owned()),
+                    ("a module using bulk memory", "true".to_owned()),
+                    ("an exported function", "3".to_owned()),
+                    ("a trapping export", "RuntimeError".to_owned()),
+                ]
+                .map(|(what, outcome)| format!("{what}: {outcome}"));
 
-            assert_eq!(observed, expected.to_vec());
-        })
+                assert_eq!(observed, expected.to_vec());
+            })
     }
 }
 

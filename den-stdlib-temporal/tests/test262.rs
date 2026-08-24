@@ -16,10 +16,8 @@ use std::{
     sync::Arc,
 };
 
+use den_core::engine::Engine;
 use libtest_mimic::{Arguments, Failed, Trial};
-use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, CaughtError, Module, context::EvalOptions,
-};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -207,43 +205,11 @@ fn run_one(
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let js = AsyncRuntime::new().map_err(|error| error.to_string())?;
-        let context = AsyncContext::full(&js)
+        let engine = Engine::new().await;
+        engine
+            .eval::<()>(&format!("{script}\nundefined"))
             .await
-            .map_err(|error| error.to_string())?;
-        context
-            .async_with(async |ctx| {
-                let run = async {
-                    let (_module, evaluated) = Module::evaluate_def::<
-                        den_stdlib_temporal::js_temporal,
-                        _,
-                    >(ctx.clone(), "den:temporal")?;
-                    evaluated.into_future::<()>().await?;
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.promise = false;
-                    options.strict = true;
-                    options.filename = Some(test.display().to_string());
-                    ctx.eval_with_options::<(), _>(script, options)?;
-                    Ok::<_, rquickjs::Error>(())
-                };
-                run.await.catch(&ctx).map_err(|error| {
-                    match error {
-                        CaughtError::Value(value) => {
-                            let object = value.as_object();
-                            let name = object
-                                .and_then(|object| object.get::<_, String>("name").ok())
-                                .unwrap_or_else(|| "Error".to_string());
-                            let message = object
-                                .and_then(|object| object.get::<_, String>("message").ok())
-                                .unwrap_or_else(|| format!("{value:?}"));
-                            format!("{name}: {message}")
-                        }
-                        other => other.to_string(),
-                    }
-                })
-            })
-            .await
+            .map_err(|error| format!("{}: {error}", test.display()))
     })?;
     Ok(())
 }

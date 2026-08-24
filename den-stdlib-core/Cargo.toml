@@ -15,5 +15,10 @@ base64-simd.workspace = true
 den-util.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 
+[dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true

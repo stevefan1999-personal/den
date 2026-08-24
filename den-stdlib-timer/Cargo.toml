@@ -17,6 +17,8 @@ tokio = { workspace = true, features = ["time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

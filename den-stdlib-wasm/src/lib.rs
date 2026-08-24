@@ -593,10 +593,7 @@ pub mod wasm {
 
 #[cfg(test)]
 mod tests {
-    use rquickjs::{
-        AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Object, Promise, TypedArray,
-        context::EvalOptions,
-    };
+    use rquickjs::FromJs;
 
     const ADD: &str = r#"
         (module
@@ -685,36 +682,25 @@ mod tests {
     where
         T: for<'js> FromJs<'js> + Send + Sync + 'static,
     {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        context
-            .async_with(async |ctx| {
-                let run = async {
-                    let (module, evaluated) =
-                        Module::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")?;
-                    evaluated.into_future::<()>().await?;
-                    // The snippets are evaluated as global scripts, which cannot
-                    // `import`, so `den:wasm`'s own exports are hoisted onto the
-                    // global object under the name a script would bind them to.
-                    ctx.globals().set("denWasm", module.namespace()?)?;
-                    if let Some(bytes) = bytes {
-                        // `new_copy` for the same reason as `wat2wasm`: the
-                        // fixture must behave like a buffer script made.
-                        ctx.globals()
-                            .set("WASM", TypedArray::new_copy(ctx.clone(), bytes)?)?;
-                    }
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.promise = true;
-                    options.strict = true;
-                    ctx.eval_with_options::<Promise, _>(source, options)?
-                        .into_future::<Object>()
-                        .await?
-                        .get::<_, T>("value")
-                };
-                run.await.catch(&ctx).map_err(|err| err.to_string())
-            })
+        let prelude = match bytes {
+            Some(bytes) => {
+                format!(
+                    "const denWasm = await import('den:wasm');\nconst WASM = new \
+                     Uint8Array([{}]);\n",
+                    bytes
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+            None => "const denWasm = await import('den:wasm');\n".into(),
+        };
+        den_core::engine::Engine::new()
             .await
+            .eval(&format!("{prelude}{source}"))
+            .await
+            .map_err(|error| error.to_string())
     }
 
     #[tokio::test]

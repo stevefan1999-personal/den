@@ -135,8 +135,6 @@ impl WasiImports {
 
 #[cfg(test)]
 mod tests {
-    use rquickjs::{Context, Module, Runtime};
-
     use super::*;
     use crate::memory::testing::with_wasm_context;
 
@@ -220,26 +218,24 @@ mod tests {
     /// whole namespace each time.
     #[test]
     fn wasi_imports_links_a_preview1_module_that_writes_its_own_memory() {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| {
-            let (_, evaluation) =
-                Module::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")
-                    .expect("den:wasm evaluates");
-            evaluation.finish::<()>().expect("den:wasm finishes");
-
-            let engine = crate::engine::Engine::from_ctx(&ctx).expect("engine");
+        with_wasm_context(|ctx| {
+            let engine = Store::from_ctx(ctx)
+                .expect("store")
+                .inner
+                .borrow()
+                .engine()
+                .clone();
             let mut linker = backend::Linker::new(&engine);
             for _ in 0..2 {
-                WasiImports::link(&ctx, &mut linker, backend::WASI_NAMESPACE)
+                WasiImports::link(ctx, &mut linker, backend::WASI_NAMESPACE)
                     .expect("wasi links, idempotently");
             }
 
             let bytes = wat::parse_str(CALLS_WASI).expect("the fixture assembles");
             let module = backend::compile_module(&engine, &bytes).expect("the fixture compiles");
-            let errno = Store::from_ctx(&ctx)
+            let errno = Store::from_ctx(ctx)
                 .expect("store")
-                .with_mut(&ctx, |backend_store| {
+                .with_mut(ctx, |backend_store| {
                     let instance = linker
                         .instantiate(&mut *backend_store, &module)
                         .expect("the module instantiates against WASI");
@@ -286,26 +282,24 @@ mod tests {
 
     #[test]
     fn a_host_callback_cannot_reach_another_export_of_the_same_store() {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| {
-            let (module, evaluation) =
-                Module::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")
-                    .expect("den:wasm evaluates");
-            evaluation.finish::<()>().expect("den:wasm finishes");
-            ctx.globals()
-                .set("denWasm", module.namespace().expect("den:wasm namespace"))
-                .expect("bind den:wasm exports");
-
-            let caught: Vec<String> = ctx
-                .eval(REENTERS_FROM_A_HOST_CALL)
-                .expect("the module runs");
-            let [name, message] = <[String; 2]>::try_from(caught).expect("name and message");
-            assert_eq!(name, "RuntimeError");
-            assert!(
-                message.contains("called back into JS"),
-                "the refusal does not say what re-entered: {message}"
-            );
-        })
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let engine = den_core::engine::Engine::new().await;
+                let caught: Vec<String> = engine
+                    .eval(&format!(
+                        "const denWasm = await import('den:wasm');\n{REENTERS_FROM_A_HOST_CALL}"
+                    ))
+                    .await
+                    .expect("the module runs");
+                let [name, message] = <[String; 2]>::try_from(caught).expect("name and message");
+                assert_eq!(name, "RuntimeError");
+                assert!(
+                    message.contains("called back into JS"),
+                    "the refusal does not say what re-entered: {message}"
+                );
+            })
     }
 }

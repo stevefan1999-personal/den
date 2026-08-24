@@ -710,26 +710,24 @@ impl<'js> Instance<'js> {
 
 #[cfg(test)]
 mod tests {
-    use rquickjs::{Context, Module as JsModule, Runtime};
-
     use super::*;
 
     /// A context with the whole of `den:wasm` evaluated into it: these two
     /// cross wrappers — `Instance` into `Table`, and `Instance` against
     /// `Module` — so they are written the way JS reaches them.
-    fn with_wasm_namespace<R>(f: impl FnOnce(&Ctx<'_>) -> R) -> R {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| {
-            let (module, evaluation) =
-                JsModule::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")
-                    .expect("den:wasm evaluates");
-            evaluation.finish::<()>().expect("den:wasm finishes");
-            ctx.globals()
-                .set("denWasm", module.namespace().expect("den:wasm namespace"))
-                .expect("bind den:wasm exports");
-            f(&ctx)
-        })
+    fn with_wasm_namespace<R: Send>(f: impl FnOnce(&Ctx<'_>) -> R + Send) -> R {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let engine = den_core::engine::Engine::new().await;
+                let _: () = engine
+                    .eval("globalThis.denWasm = await import('den:wasm')")
+                    .await
+                    .expect("bind den:wasm");
+                engine.context.with(|ctx| f(&ctx)).await
+            })
     }
 
     /// An export read off `instance.exports` is an Exported Function, so it has

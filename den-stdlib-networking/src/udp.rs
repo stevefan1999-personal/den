@@ -85,16 +85,17 @@ impl UdpSocketWrapper {
 
 #[cfg(test)]
 mod tests {
+    use den_core::engine::Engine;
     use either::Either;
-    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, convert::List};
+    use rquickjs::{CatchResultExt, convert::List};
 
     use super::UdpSocketWrapper;
 
     #[tokio::test]
     async fn bind_send_to_self_recv_from_round_trips() {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        let outcome: String = context
+        let engine = Engine::new().await;
+        let outcome: String = engine
+            .context
             .async_with(async |ctx| {
                 let run = async {
                     let socket = UdpSocketWrapper::bind("127.0.0.1:0".into()).await?;

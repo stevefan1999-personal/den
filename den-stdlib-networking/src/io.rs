@@ -246,7 +246,8 @@ pub(crate) use impl_stream_wrapper;
 mod tests {
     use std::{io::Cursor, sync::Arc};
 
-    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt};
+    use den_core::engine::Engine;
+    use rquickjs::CatchResultExt;
     use tokio::sync::RwLock;
 
     use super::AsyncReadWrapper;
@@ -259,9 +260,9 @@ mod tests {
     /// test binary with it.
     #[tokio::test]
     async fn a_read_chunk_survives_transfer_and_detach() {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        let outcome: String = context
+        let engine = Engine::new().await;
+        let outcome: String = engine
+            .context
             .async_with(async |ctx| {
                 // The reader is built inside: `dyn AsyncRead` is not `Send`, and
                 // `async_with` wants a `Send` closure.

@@ -1,7 +1,7 @@
 //! The WebAssembly JS API driven through the real [`Engine`].
 //!
-//! `den-stdlib-wasm` proves the semantics against a bare `AsyncContext`; what
-//! is proved here is that a user who calls `Engine::eval` gets those semantics
+//! `den-stdlib-wasm` proves the JS API; what is proved here is that a user
+//! who calls `Engine::eval` gets those semantics
 //! — module registration, the transpiler in front of the source and the
 //! userdata wiring all included. Every assertion travels back into Rust, so a
 //! JS-side failure cannot pass as green.
@@ -138,7 +138,11 @@ async fn memory_is_shared_with_wasm_and_grow_detaches_the_previous_buffer() -> e
 /// the day that changes, this test says so.
 #[tokio::test(flavor = "multi_thread")]
 async fn table_and_global_are_readable_and_writable_from_js() -> eyre::Result<()> {
-    run(TABLE_AND_GLOBAL, include_str!("webassembly/table_global.js")).await
+    run(
+        TABLE_AND_GLOBAL,
+        include_str!("webassembly/table_global.js"),
+    )
+    .await
 }
 
 /// Each error class must come from the operation the spec assigns it to, and
