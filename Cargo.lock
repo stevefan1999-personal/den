@@ -1225,6 +1225,7 @@ dependencies = [
  "derive_more",
  "either",
  "indexmap",
+ "insta",
  "libtest-mimic",
  "rquickjs",
  "tokio",
