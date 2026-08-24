@@ -5,42 +5,58 @@
 //! `C.__proto__ === Error`, `C.prototype.__proto__ === Error.prototype`,
 //! instances that are `instanceof Error` and carry a `.stack`. rquickjs classes
 //! cannot extend a JS builtin, and `class X extends Error` would break
-//! the call-without-`new` requirement, so the constructors are built in JS-land
-//! once at module evaluation and kept in the context userdata for Rust to throw
-//! with.
+//! the call-without-`new` requirement, so the constructors are ordinary
+//! Functions built once at module evaluation and kept in the context userdata
+//! for Rust to throw with.
 
 use core::fmt::Display;
 
-use rquickjs::{Constructor, Ctx, Exception, JsLifetime, Object, Result, Value};
+use rquickjs::{
+    Constructor, Ctx, Exception, Function, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    function::Opt, object::Property,
+};
 
-/// Builds the three constructors on the namespace object and returns them.
-///
-/// Each is an ordinary function (not a class) so that
-/// `WebAssembly.CompileError("boom")` works without `new`, and `arguments[1]`
-/// is forwarded so the standard `(message, options)` signature is honoured
-/// while `length` stays `1`.
-const DEFINE_ERRORS: &str = r#"
-(namespace) => ["CompileError", "LinkError", "RuntimeError"].map((name) => {
-  const constructor = function (message) {
-    const error = new Error(message, arguments[1]);
-    Object.setPrototypeOf(error, new.target ? new.target.prototype : constructor.prototype);
-    return error;
-  };
-  Object.setPrototypeOf(constructor, Error);
-  constructor.prototype = Object.create(Error.prototype, {
-    constructor: { value: constructor, writable: true, configurable: true },
-    name: { value: name, writable: true, configurable: true },
-    message: { value: "", writable: true, configurable: true },
-  });
-  Object.defineProperty(constructor, "name", { value: name, configurable: true });
-  Object.defineProperty(namespace, name, {
-    value: constructor,
-    writable: true,
-    configurable: true,
-  });
-  return constructor;
-})
-"#;
+/// NativeError `(message, options)` with `length` 1: `options` is
+/// `arguments[1]`.
+fn construct_error<'js>(
+    ctx: Ctx<'js>, message: Opt<Value<'js>>, options: Opt<Value<'js>>,
+) -> Result<Object<'js>> {
+    let message = message
+        .0
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    let options = options
+        .0
+        .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    den_util::construct(&ctx, "Error", (message, options))
+}
+
+/// One NativeError constructor on `namespace`, callable with and without `new`.
+fn native_error<'js>(
+    ctx: &Ctx<'js>, namespace: &Object<'js>, name: &'static str,
+) -> Result<Constructor<'js>> {
+    let error: Function<'js> = ctx.globals().get("Error")?;
+    let error_proto: Object<'js> = error.get(PredefinedAtom::Prototype)?;
+    let proto = Object::new_proto(ctx.clone(), Some(&error_proto))?;
+    let constructor = Constructor::new_prototype(ctx, proto.clone(), construct_error)?;
+    constructor.set_name(name)?;
+    constructor.set_length(1)?;
+    constructor.set_prototype(Some(&*error))?;
+    proto.prop(
+        PredefinedAtom::Constructor,
+        Property::from(constructor.clone())
+            .writable()
+            .configurable(),
+    )?;
+    proto.prop("name", Property::from(name).writable().configurable())?;
+    proto.prop("message", Property::from("").writable().configurable())?;
+    namespace.prop(
+        name,
+        Property::from(constructor.clone())
+            .writable()
+            .configurable(),
+    )?;
+    Ok(constructor)
+}
 
 /// Which of the three error classes to raise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,17 +105,18 @@ impl<'js> WebAssemblyErrors<'js> {
     /// `WebAssembly` namespace object and remember them. Call once, from
     /// the module's `evaluate` hook.
     pub fn install(ctx: &Ctx<'js>, namespace: &Object<'js>) -> Result<()> {
-        let define: rquickjs::Function<'js> = ctx.eval(DEFINE_ERRORS)?;
-        let constructors: Vec<Constructor<'js>> = define.call((namespace.clone(),))?;
-        let [compile, link, runtime] = <[Constructor<'js>; 3]>::try_from(constructors)
-            .map_err(|_| Exception::throw_internal(ctx, "WebAssembly error class setup failed"))?;
+        let compile = native_error(ctx, namespace, "CompileError")?;
+        let link = native_error(ctx, namespace, "LinkError")?;
+        let runtime = native_error(ctx, namespace, "RuntimeError")?;
 
         ctx.store_userdata(Self {
             compile,
             link,
             runtime,
         })
-        .map_err(|_| Exception::throw_internal(ctx, "WebAssembly error classes already in use"))?;
+        .map_err(|_error| {
+            Exception::throw_internal(ctx, "WebAssembly error classes already in use")
+        })?;
         Ok(())
     }
 
