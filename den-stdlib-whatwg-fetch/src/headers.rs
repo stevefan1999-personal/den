@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Exception, Filter, FromJs, Function, IntoJs, Iterable, JsLifetime,
+    Array, Class, Coerced, Ctx, Exception, Filter, Function, IntoJs, Iterable, JsLifetime,
     Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
@@ -177,8 +177,8 @@ impl Headers {
         }
         for name in object.own_keys::<String>(Filter::new().string()) {
             let name = name?;
-            let value = Coerced::<String>::from_js(ctx, object.get(&name)?)?;
-            self.append(ctx.clone(), Coerced(name), value)?;
+            let value = den_util::coerce_string(ctx, object.get(&name)?)?;
+            self.append(ctx.clone(), Coerced(name), Coerced(value))?;
         }
         Ok(())
     }
@@ -200,9 +200,9 @@ impl Headers {
                     &format!("Expected name/value pair to be length 2, found{pair_len}"),
                 ));
             }
-            let name = Coerced::<String>::from_js(ctx, pair.get(0)?)?;
-            let value = Coerced::<String>::from_js(ctx, pair.get(1)?)?;
-            self.append(ctx.clone(), name, value)?;
+            let name = den_util::coerce_string(ctx, pair.get(0)?)?;
+            let value = den_util::coerce_string(ctx, pair.get(1)?)?;
+            self.append(ctx.clone(), Coerced(name), Coerced(value))?;
         }
         Ok(())
     }

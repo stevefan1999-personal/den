@@ -2,7 +2,7 @@
 
 use den_util::BufferSource;
 use rquickjs::{
-    Array, ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
     TypedArray, Value,
     function::{Constructor, This},
     promise::MaybePromise,
@@ -160,7 +160,7 @@ pub(crate) async fn value_to_bytes<'js>(
             return Box::pin(value_to_bytes(ctx, Some(resolved))).await;
         }
     }
-    Ok(Coerced::<String>::from_js(ctx, body)?.0.into_bytes())
+    Ok(den_util::coerce_string(ctx, body)?.into_bytes())
 }
 
 pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<u8>> {
