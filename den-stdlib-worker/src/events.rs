@@ -959,7 +959,7 @@ impl<'js> EventTarget<'js> {
             .unwrap_or_else(|| Value::new_null(ctx.clone())))
     }
 
-    fn set_handler(
+    pub(crate) fn set_handler(
         ctx: &Ctx<'js>, this: &Value<'js>, name: &str, event_type: &str, value: Value<'js>,
         global_on_error: bool,
     ) -> Result<()> {
