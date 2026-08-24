@@ -346,7 +346,7 @@ impl<'js> Response<'js> {
             ResponseBody::None | ResponseBody::Taken => return Ok(None),
             ResponseBody::Failed(message) => {
                 if message == "aborted" {
-                    return Err(Self::throw_aborted(ctx, &self.abort_signal));
+                    return Err(fetch_op::abort_error(ctx, &self.abort_signal));
                 }
                 return Err(Exception::throw_type(ctx, &message));
             }
@@ -370,7 +370,7 @@ impl<'js> Response<'js> {
             match futures::future::select(next, abort).await {
                 futures::future::Either::Left((item, _)) => item,
                 futures::future::Either::Right(_) => {
-                    return Err(Self::throw_aborted(ctx, &self.abort_signal));
+                    return Err(fetch_op::abort_error(ctx, &self.abort_signal));
                 }
             }
         } else {
@@ -423,19 +423,6 @@ impl<'js> Response<'js> {
         {
             let _ = abort.call::<_, ()>((reason,));
         }
-    }
-
-    fn throw_aborted(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
-        if let Some(reason) = Self::aborted_reason(signal, ctx) {
-            return ctx.throw(reason);
-        }
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
-            && let Ok(exc) =
-                ctor.construct::<_, JsValue>(("The operation was aborted.", "AbortError"))
-        {
-            return ctx.throw(exc);
-        }
-        Exception::throw_type(ctx, "The operation was aborted.")
     }
 
     fn aborted_reason(signal: &JsValue<'js>, ctx: &Ctx<'js>) -> Option<JsValue<'js>> {
@@ -510,7 +497,7 @@ async fn consume_response<'js>(
                 match futures::future::select(bytes, abort).await {
                     futures::future::Either::Left((result, _)) => result,
                     futures::future::Either::Right(_) => {
-                        return Err(Response::throw_aborted(ctx, &signal));
+                        return Err(fetch_op::abort_error(ctx, &signal));
                     }
                 }
             } else {
@@ -529,7 +516,7 @@ async fn consume_response<'js>(
         }
         ResponseBody::Failed(message) => {
             if message == "aborted" {
-                return Err(Response::throw_aborted(ctx, &response.borrow().abort_signal));
+                return Err(fetch_op::abort_error(ctx, &response.borrow().abort_signal));
             }
             Err(Exception::throw_type(ctx, &message))
         }
@@ -1503,7 +1490,10 @@ mod tests {
             "#
         ))
         .await;
-        assert_eq!(report, "200|true|200|ping|basic|text/plain");
+        // The bare realm has no `location`, so the origin fallback is
+        // `http://127.0.0.1` without a port — a different origin from the
+        // listener's ported URL, hence a `cors`-typed response.
+        assert_eq!(report, "200|true|200|ping|cors|text/plain");
     }
 
     #[tokio::test]

@@ -29,7 +29,13 @@ impl Outgoing {
     pub fn ok(body: impl Into<Vec<u8>>, content_type: &str) -> Self {
         Self {
             status:  200,
-            headers: vec![("Content-Type".into(), content_type.into())],
+            // The loopback listener is always cross-origin from a bare test
+            // realm (no `location`, so the origin fallback lacks a port);
+            // answer like a CORS-permissive server.
+            headers: vec![
+                ("Content-Type".into(), content_type.into()),
+                ("Access-Control-Allow-Origin".into(), "*".into()),
+            ],
             body:    body.into(),
             hang:    false,
             silent:  false,
