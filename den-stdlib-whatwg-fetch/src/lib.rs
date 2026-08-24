@@ -436,13 +436,7 @@ impl<'js> Response<'js> {
         {
             return Some(reason);
         }
-        ctx.globals()
-            .get::<_, Constructor>("DOMException")
-            .ok()
-            .and_then(|ctor| {
-                ctor.construct::<_, JsValue>(("The operation was aborted.", "AbortError"))
-                    .ok()
-            })
+        den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError").ok()
     }
 }
 
@@ -544,7 +538,7 @@ impl<'js> Response<'js> {
                 }
                 if let Some(value) = object.get::<_, JsValue>("statusText").ok() {
                     if !value.is_undefined() {
-                        status_text = rquickjs::Coerced::<String>::from_js(&ctx, value)?.0;
+                        status_text = den_util::coerce_string(&ctx, value)?;
                         body::validate_status_text(&ctx, &status_text)?;
                     }
                 }
@@ -593,7 +587,7 @@ impl<'js> Response<'js> {
                             ResponseBody::Bytes(body::copy_buffer(&ctx, buffer.as_bytes())?),
                             None,
                         )
-                    } else if body::is_array_buffer_view(&ctx, &extracted)? {
+                    } else if den_util::BufferSource::is_array_buffer_view(&ctx, &extracted)? {
                         (ResponseBody::Bytes(body::copy_view(&ctx, &extracted)?), None)
                     } else {
                         (ResponseBody::Bytes(Vec::new()), Some(extracted))
@@ -679,7 +673,7 @@ impl<'js> Response<'js> {
         if encoded.is_undefined() {
             return Err(Exception::throw_type(&ctx, "JSON data is not serializable"));
         }
-        let text = rquickjs::Coerced::<String>::from_js(&ctx, encoded)?.0;
+        let text = den_util::coerce_string(&ctx, encoded)?;
         let init = init.0.and_then(|value| {
             if value.is_null() || value.is_undefined() {
                 None

@@ -77,10 +77,7 @@ pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
     {
         return ctx.throw(reason);
     }
-    if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
-        && let Ok(exc) =
-            ctor.construct::<_, JsValue>(("The operation was aborted.", "AbortError"))
-    {
+    if let Ok(exc) = den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError") {
         return ctx.throw(exc);
     }
     // Without `DOMException` (realms lacking `den:worker`) keep the spec's
