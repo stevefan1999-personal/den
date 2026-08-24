@@ -74,10 +74,12 @@ impl<'js> Request<'js> {
     fn following_signal(ctx: &Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
         // The arrow *compiles* even in realms without `den:worker`'s
         // `AbortSignal`; only the call throws, so both phases need the
-        // fallback.
+        // fallback. A source that is already an `AbortSignal` is used as-is:
+        // wrapping it in `AbortSignal.any` would pin listener<->source cycles
+        // that QuickJS's refcount GC cannot collect.
         let followed = ctx
             .eval::<Function, _>(
-                "(source) => source == null ? new AbortSignal() : AbortSignal.any([source])",
+                "(source) => source == null ? new AbortSignal() : (source instanceof AbortSignal ? source : AbortSignal.any([source]))",
             )
             .and_then(|follow| follow.call((source.clone(),)));
         match followed {
