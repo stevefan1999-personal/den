@@ -304,12 +304,6 @@ impl Host {
         }
     }
 
-    pub fn json_parse<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
-        let json: Object = ctx.globals().get("JSON")?;
-        let parse: Function = json.get("parse")?;
-        parse.call((text,))
-    }
-
     pub async fn maybe_await<'js>(value: Value<'js>) -> Result<Value<'js>> {
         if value.is_promise() {
             value.into_promise().unwrap().into_future().await
