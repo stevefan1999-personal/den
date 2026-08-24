@@ -1,0 +1,12 @@
+const { assert, assertEquals } = await import("den:assert");
+const original = WASM.buffer;
+const size = original.byteLength;
+const first = new Uint8Array(WASM)[0];
+const moved = original.transfer(4);
+const copy = new Uint8Array(moved).join("-");
+new ArrayBuffer(1024).transfer(2048);
+assert(size >= 8);
+assertEquals(first, 0x00);
+assertEquals(original.detached, true);
+assertEquals(moved.byteLength, 4);
+assertEquals(copy, "0-97-115-109");

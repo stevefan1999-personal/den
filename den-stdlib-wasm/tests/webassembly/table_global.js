@@ -1,0 +1,14 @@
+const { assert, assertEquals, assertThrows } = await import("den:assert");
+const { table, counter } = (await WebAssembly.instantiate(WASM)).instance.exports;
+const lengthBeforeGrow = table.length;
+const previousLength = table.grow(2);
+table.set(0, null);
+assert(table instanceof WebAssembly.Table);
+assertEquals(lengthBeforeGrow, 1);
+assertEquals(previousLength, 1);
+assertEquals(table.length, 3);
+assertEquals(table.get(0), null);
+assertThrows(() => table.get(99), RangeError);
+assert(counter instanceof WebAssembly.Global);
+counter.value = 11;
+assertEquals(counter.value, 11);
