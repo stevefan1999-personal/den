@@ -72,10 +72,16 @@ impl<'js> Request<'js> {
     }
 
     fn following_signal(ctx: &Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
-        match ctx.eval::<Function, _>(
-            "(source) => source == null ? new AbortSignal() : AbortSignal.any([source])",
-        ) {
-            Ok(follow) => follow.call((source,)),
+        // The arrow *compiles* even in realms without `den:worker`'s
+        // `AbortSignal`; only the call throws, so both phases need the
+        // fallback.
+        let followed = ctx
+            .eval::<Function, _>(
+                "(source) => source == null ? new AbortSignal() : AbortSignal.any([source])",
+            )
+            .and_then(|follow| follow.call((source.clone(),)));
+        match followed {
+            Ok(signal) => Ok(signal),
             Err(_) if source.is_null() || source.is_undefined() => {
                 Ok(Value::new_null(ctx.clone()))
             }
