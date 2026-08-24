@@ -113,9 +113,16 @@ impl Host {
     /// Lenient `BufferSource` read: `None` for anything that is not a buffer
     /// source, empty bytes for detached or unusable ones — never throws.
     pub fn buffer_source_bytes<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Option<Vec<u8>>> {
-        if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
+        // SAFETY: `JS_IsArrayBuffer` is a pure class-id check with no side
+        // effects. Unlike `from_js`/`from_value` (both `JS_GetArrayBuffer`,
+        // which refuses detached buffers) it holds for a detached buffer too —
+        // still a buffer source, and it must read as empty instead of leaking
+        // into the string-coercion branch.
+        if unsafe { qjs::JS_IsArrayBuffer(value.as_raw()) } {
             return Ok(Some(
-                buffer.as_bytes().map(<[u8]>::to_vec).unwrap_or_default(),
+                ArrayBuffer::from_value(value.clone())
+                    .and_then(|buffer| buffer.as_bytes().map(<[u8]>::to_vec))
+                    .unwrap_or_default(),
             ));
         }
         let is_view = ctx
