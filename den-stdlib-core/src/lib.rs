@@ -1,57 +1,22 @@
-// `btoa`/`atob` have no implementation without a backend, and the resulting
-// E0308 on the empty function body says nothing about the real cause.
-#[cfg(not(any(feature = "base64", feature = "base64-simd")))]
-compile_error!("den-stdlib-core requires one of the `base64` or `base64-simd` features");
-
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod core {
     use rquickjs::{Coerced, Ctx, Exception, Result, module::Exports};
 
     #[rquickjs::function]
-    pub fn btoa(Coerced(value): Coerced<String>) -> Result<String> {
-        #[cfg(feature = "base64-simd")]
-        {
-            use base64_simd::STANDARD;
-            Ok(STANDARD.encode_to_string(value.as_bytes()))
-        }
-        #[cfg(all(feature = "base64", not(feature = "base64-simd")))]
-        {
-            use base64::prelude::*;
-
-            Ok(BASE64_STANDARD.encode(value.as_bytes()))
-        }
+    pub fn btoa(Coerced(value): Coerced<String>) -> String {
+        base64_simd::STANDARD.encode_to_string(value.as_bytes())
     }
 
     // The macro injects `Ctx` by value, and the body only borrows it; a
     // reference parameter is not an option at this boundary.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     pub fn atob(ctx: Ctx<'_>, Coerced(value): Coerced<String>) -> Result<String> {
-        #[cfg(feature = "base64-simd")]
-        {
-            use base64_simd::STANDARD;
-            match STANDARD.decode_to_vec(value.as_bytes()) {
-                Ok(decoded) => Ok(String::from_utf8(decoded)?),
-                Err(e) => Err(Exception::throw_internal(&ctx, &format!("{e}"))),
-            }
-        }
-        #[cfg(all(feature = "base64", not(feature = "base64-simd")))]
-        {
-            use base64::prelude::*;
-            match BASE64_STANDARD.decode(value.as_bytes()) {
-                Ok(decoded) => Ok(String::from_utf8(decoded)?),
-                Err(e) => Err(Exception::throw_internal(&ctx, &format!("{e}"))),
-            }
+        match base64_simd::STANDARD.decode_to_vec(value.as_bytes()) {
+            Ok(decoded) => Ok(String::from_utf8(decoded)?),
+            Err(error) => Err(Exception::throw_internal(&ctx, &format!("{error}"))),
         }
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     pub fn gc(ctx: Ctx<'_>) { ctx.run_gc(); }
 

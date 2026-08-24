@@ -5,7 +5,6 @@
 
 use std::ffi::CString;
 
-use base64::{engine::Engine as _, prelude::BASE64_STANDARD};
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Constructor, Ctx, Error, Exception, FromJs, Function, Object,
     Result, Value, class::JsClass, function::IntoArgs, object::Filter, qjs,
@@ -133,42 +132,6 @@ impl Probe for Ctx<'_> {
     }
 }
 
-/// Standard-alphabet base64 with padding.
-pub fn base64_encode(bytes: &[u8]) -> String { BASE64_STANDARD.encode(bytes) }
-
-/// WHATWG forgiving-base64 decode: ASCII whitespace stripped, non-zero
-/// trailing bits ignored, and padding dropped only when the spec says so.
-pub fn base64_forgiving_decode(text: &str) -> std::result::Result<Vec<u8>, base64::DecodeError> {
-    use base64::{
-        alphabet,
-        engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
-    };
-
-    const FORGIVING: GeneralPurpose = GeneralPurpose::new(
-        &alphabet::STANDARD,
-        GeneralPurposeConfig::new()
-            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
-            .with_decode_allow_trailing_bits(true),
-    );
-    let mut stripped: String = text
-        .chars()
-        .filter(|char| !char.is_ascii_whitespace())
-        .collect();
-    // Infra only strips one or two trailing `=` when the padded length is a
-    // multiple of four; any other `=` stays and fails the alphabet check.
-    if stripped.len().is_multiple_of(4) {
-        let pads = stripped
-            .bytes()
-            .rev()
-            .take_while(|&byte| byte == b'=')
-            .count();
-        if pads == 1 || pads == 2 {
-            stripped.truncate(stripped.len() - pads);
-        }
-    }
-    FORGIVING.decode(stripped)
-}
-
 /// Construct by calling the global constructor `name` with `args`.
 pub fn construct<'js, A, R>(ctx: &Ctx<'js>, name: &str, args: A) -> Result<R>
 where
@@ -238,9 +201,13 @@ pub fn json_stringify<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Value<'
     stringify.call((value.clone(),))
 }
 
-/// The QuickJS class id of a value (`JS_GetClassID`).
-pub fn class_id(value: &Value<'_>) -> qjs::JSClassID {
-    unsafe { qjs::JS_GetClassID(value.as_raw()) }
+/// QuickJS class id (`JS_GetClassID`).
+pub trait ClassId {
+    fn class_id(&self) -> qjs::JSClassID;
+}
+
+impl ClassId for Value<'_> {
+    fn class_id(&self) -> qjs::JSClassID { unsafe { qjs::JS_GetClassID(self.as_raw()) } }
 }
 
 /// Own-property helpers rquickjs does not ship.
@@ -258,36 +225,5 @@ impl ObjectExt for Object<'_> {
             }
         }
         Ok(false)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::base64_forgiving_decode;
-
-    /// WPT `fetch/data-urls/base64.any.js` cases that a strict standard
-    /// decoder rejects: missing padding and non-zero trailing bits.
-    #[test]
-    fn forgiving_decode_matches_wpt() {
-        assert_eq!(base64_forgiving_decode("ab").unwrap(), [0x69]);
-        assert_eq!(base64_forgiving_decode("ab==").unwrap(), [0x69]);
-        assert_eq!(
-            base64_forgiving_decode("ab\t\n\u{c}\r =\t\n\u{c}\r =").unwrap(),
-            [0x69]
-        );
-        assert_eq!(base64_forgiving_decode("A/").unwrap(), [0x03]);
-        assert_eq!(base64_forgiving_decode("AA/").unwrap(), [0x00, 0x0f]);
-        assert_eq!(base64_forgiving_decode("YR").unwrap(), [0x61]);
-        assert_eq!(base64_forgiving_decode("abc=").unwrap(), [0x69, 0xb7]);
-    }
-
-    #[test]
-    fn forgiving_decode_rejects_garbage() {
-        // Length % 4 == 1 is the one unrecoverable length; `$` is off-alphabet.
-        assert!(base64_forgiving_decode("abcde").is_err());
-        assert!(base64_forgiving_decode("a$").is_err());
-        // Spec strips only one or two `=` on a multiple-of-four length.
-        assert!(base64_forgiving_decode("ab=").is_err());
-        assert!(base64_forgiving_decode("a===").is_err());
     }
 }

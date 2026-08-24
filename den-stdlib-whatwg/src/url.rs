@@ -1834,7 +1834,7 @@ fn percent_encoding_anchor<'js>(ctx: Ctx<'js>, href: Value<'js>) -> Result<Value
     let Some(value) = query_param(&href, "value") else {
         return Ok(Value::new_undefined(ctx));
     };
-    let Ok(bytes) = den_util::base64_forgiving_decode(&value) else {
+    let Ok(bytes) = base64_simd::forgiving_decode_to_vec(value.as_bytes()) else {
         return Ok(Value::new_undefined(ctx));
     };
     let input = recover_percent_input(&bytes);

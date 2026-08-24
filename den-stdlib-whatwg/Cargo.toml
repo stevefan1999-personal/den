@@ -11,6 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+base64-simd.workspace = true
 den-stdlib-networking.workspace = true
 den-util.workspace = true
 flate2.workspace = true

@@ -10,6 +10,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+base64-simd.workspace = true
 den-util.workspace = true
 derive_more.workspace = true
 either.workspace = true

@@ -629,6 +629,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fe5f465a4f6fee88fad41b85d990f84c835335e85b5d9e6e63e0d06d28cba7c"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "console-api"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1046,6 +1057,7 @@ version = "0.4.0"
 dependencies = [
  "cfg-if",
  "color-eyre",
+ "den-stdlib-assert",
  "den-stdlib-console",
  "den-stdlib-core",
  "den-stdlib-crypto",
@@ -1080,6 +1092,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "den-stdlib-assert"
+version = "0.4.0"
+dependencies = [
+ "den-util",
+ "insta",
+ "rquickjs",
+ "tokio",
+]
+
+[[package]]
 name = "den-stdlib-console"
 version = "0.4.0"
 dependencies = [
@@ -1093,7 +1115,6 @@ dependencies = [
 name = "den-stdlib-core"
 version = "0.4.0"
 dependencies = [
- "base64 0.23.1",
  "base64-simd",
  "den-util",
  "rquickjs",
@@ -1217,6 +1238,7 @@ dependencies = [
 name = "den-stdlib-whatwg"
 version = "0.4.0"
 dependencies = [
+ "base64-simd",
  "den-stdlib-networking",
  "den-stdlib-text",
  "den-stdlib-whatwg-fetch",
@@ -1235,6 +1257,7 @@ dependencies = [
 name = "den-stdlib-whatwg-fetch"
 version = "0.4.0"
 dependencies = [
+ "base64-simd",
  "den-stdlib-text",
  "den-stdlib-whatwg",
  "den-stdlib-worker",
@@ -1289,7 +1312,6 @@ dependencies = [
 name = "den-util"
 version = "0.4.0"
 dependencies = [
- "base64 0.23.1",
  "rquickjs",
 ]
 
@@ -1444,6 +1466,12 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -2344,6 +2372,18 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "insta"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
+ "tempfile",
 ]
 
 [[package]]
@@ -4098,6 +4138,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4941,9 +4987,9 @@ checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
 
 [[package]]
 name = "wasip2"
-version = "1.0.4+wasi-0.2.12"
+version = "1.0.3+wasi-0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
+checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
 dependencies = [
  "wit-bindgen",
 ]

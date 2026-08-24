@@ -39,6 +39,7 @@ url.workspace = true
 typed-builder.workspace = true
 
 # Den specific stuff
+den-stdlib-assert = { workspace = true, optional = true }
 den-stdlib-console = { workspace = true, optional = true }
 den-stdlib-core = { workspace = true, optional = true }
 den-stdlib-crypto = { workspace = true, optional = true }
@@ -80,6 +81,7 @@ transpile = [
 ]
 
 stdlib = [
+    "stdlib-assert",
     "stdlib-console",
     "stdlib-core",
     "stdlib-crypto",
@@ -94,6 +96,7 @@ stdlib = [
     "stdlib-whatwg",
     "stdlib-worker",
 ]
+stdlib-assert = ["dep:den-stdlib-assert"]
 stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
 stdlib-crypto = ["dep:den-stdlib-crypto"]

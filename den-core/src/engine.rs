@@ -172,6 +172,10 @@ impl Engine {
                     #[allow(unused_mut)]
                     let mut resolver = BuiltinResolver::default();
 
+                    #[cfg(feature = "stdlib-assert")]
+                    {
+                        resolver = resolver.with_module("den:assert");
+                    }
                     #[cfg(feature = "stdlib-core")]
                     {
                         resolver = resolver.with_module("den:core");
@@ -249,6 +253,11 @@ impl Engine {
                     #[cfg(feature = "stdlib-core")]
                     {
                         loader = loader.with_module("den:core", den_stdlib_core::js_core);
+                    }
+
+                    #[cfg(feature = "stdlib-assert")]
+                    {
+                        loader = loader.with_module("den:assert", den_stdlib_assert::js_assert);
                     }
 
                     #[cfg(feature = "stdlib-console")]
