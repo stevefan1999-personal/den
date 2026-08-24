@@ -339,12 +339,15 @@ impl<'js> ReadableStream<'js> {
         loop {
             {
                 let mut state = state.borrow_mut();
-                if let Some(error) = state.errored.clone() {
-                    return Err(ctx.throw(error));
-                }
+                // Drain buffered chunks before surfacing an error: a chunk
+                // enqueued while this read was pending belongs to this read,
+                // even if the source errored immediately after enqueueing it.
                 if !state.queue.is_empty() {
                     let value = state.queue.remove(0);
                     return Self::result(&ctx, value, false);
+                }
+                if let Some(error) = state.errored.clone() {
+                    return Err(ctx.throw(error));
                 }
                 if state.closed {
                     return Self::result(&ctx, Value::new_undefined(ctx.clone()), true);
