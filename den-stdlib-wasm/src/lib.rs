@@ -1054,7 +1054,9 @@ mod tests {
         )
         .await
         .expect("the snippet evaluates");
-        assert_eq!(shape, ";0;[object WebAssembly];[object WebAssembly.Memory]");
+        // The `"0"` that older quickjs builds leaked onto the namespace is
+        // gone; WebIDL wants nothing enumerable beyond the operations.
+        assert_eq!(shape, ";;[object WebAssembly];[object WebAssembly.Memory]");
 
         let js_tag: String = eval(
             None,
