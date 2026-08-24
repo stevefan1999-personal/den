@@ -23,7 +23,7 @@ urlpattern.workspace = true
 
 [features]
 # Exposes the loopback test listener to other crates' test suites.
-test-support = []
+test = []
 
 [dev-dependencies]
 den-stdlib-text.workspace = true

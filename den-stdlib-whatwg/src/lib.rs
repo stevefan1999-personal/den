@@ -691,5 +691,5 @@ mod tests {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test"))]
 pub mod local_http;

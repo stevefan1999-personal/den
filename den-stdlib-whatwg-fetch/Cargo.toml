@@ -42,7 +42,7 @@ den-stdlib-whatwg.workspace = true
 http.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 den-stdlib-text.workspace = true
-den-stdlib-whatwg = { workspace = true, features = ["test-support"] }
+den-stdlib-whatwg = { workspace = true, features = ["test"] }
 den-stdlib-worker = { workspace = true, features = ["transpile"] }
 
 [lints]
