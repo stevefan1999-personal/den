@@ -10,7 +10,6 @@
 //! These tests churn engines in a loop so that a leak grows and an abort is not
 //! a one-in-a-hundred flake. They assert on a value each time round so the
 //! engine is genuinely used and not optimised into nothing.
-#![cfg(feature = "wasm")]
 
 use color_eyre::eyre;
 use den_core::engine::Engine;
