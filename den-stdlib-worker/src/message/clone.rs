@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use den_util::instance_of_global;
 use rquickjs::{
     Array, Class, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime,
     Object, Result, Symbol, Value,
@@ -55,17 +56,6 @@ fn define_data<'js>(target: &Object<'js>, key: &str, value: Value<'js>) -> Resul
     )
 }
 
-fn instance_of<'js>(ctx: &Ctx<'js>, value: &Value<'js>, name: &str) -> Result<bool> {
-    let Ok(ctor) = ctx.globals().get::<_, Value<'js>>(name) else {
-        return Ok(false);
-    };
-    if !ctor.is_function() {
-        return Ok(false);
-    }
-    let checker: Function<'js> = ctx.eval("(value, Ctor) => value instanceof Ctor")?;
-    checker.call((value.clone(), ctor))
-}
-
 fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
     let ab: Object<'js> = ctx.globals().get("ArrayBuffer")?;
     let is_view: Function<'js> = ab.get("isView")?;
@@ -73,19 +63,19 @@ fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool>
 }
 
 fn is_leaf<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-    if is_array_buffer_view(ctx, value)? && !instance_of(ctx, value, "DataView")? {
+    if is_array_buffer_view(ctx, value)? && !instance_of_global(ctx, value, "DataView")? {
         return Ok(true);
     }
-    Ok(instance_of(ctx, value, "ArrayBuffer")?
-        || instance_of(ctx, value, "Date")?
-        || instance_of(ctx, value, "Number")?
-        || instance_of(ctx, value, "String")?
-        || instance_of(ctx, value, "Boolean")?
-        || instance_of(ctx, value, "BigInt")?)
+    Ok(instance_of_global(ctx, value, "ArrayBuffer")?
+        || instance_of_global(ctx, value, "Date")?
+        || instance_of_global(ctx, value, "Number")?
+        || instance_of_global(ctx, value, "String")?
+        || instance_of_global(ctx, value, "Boolean")?
+        || instance_of_global(ctx, value, "BigInt")?)
 }
 
 fn is_out_of_bounds<'js>(ctx: &Ctx<'js>, view: &Value<'js>) -> Result<bool> {
-    let outcome = if instance_of(ctx, view, "DataView")? {
+    let outcome = if instance_of_global(ctx, view, "DataView")? {
         let proto: Object<'js> = ctx
             .globals()
             .get::<_, Function<'js>>("DataView")?
@@ -128,23 +118,23 @@ fn forbidden_name<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<&'st
     if value.is_promise() {
         return Ok(Some("Promise"));
     }
-    if instance_of(ctx, value, "WeakMap")? {
+    if instance_of_global(ctx, value, "WeakMap")? {
         return Ok(Some("WeakMap"));
     }
-    if instance_of(ctx, value, "WeakSet")? {
+    if instance_of_global(ctx, value, "WeakSet")? {
         return Ok(Some("WeakSet"));
     }
-    if instance_of(ctx, value, "WeakRef")? {
+    if instance_of_global(ctx, value, "WeakRef")? {
         return Ok(Some("WeakRef"));
     }
-    if instance_of(ctx, value, "FinalizationRegistry")? {
+    if instance_of_global(ctx, value, "FinalizationRegistry")? {
         return Ok(Some("FinalizationRegistry"));
     }
     if ctx
         .globals()
         .get::<_, Value<'js>>("SharedArrayBuffer")
         .is_ok_and(|ctor| ctor.is_function())
-        && instance_of(ctx, value, "SharedArrayBuffer")?
+        && instance_of_global(ctx, value, "SharedArrayBuffer")?
     {
         return Ok(Some("SharedArrayBuffer"));
     }
@@ -274,7 +264,7 @@ fn copy<'js>(
         seen.insert(value.clone(), value.clone());
         return Ok(value);
     }
-    if instance_of(ctx, &value, "RegExp")? {
+    if instance_of_global(ctx, &value, "RegExp")? {
         let tagged = tag_object(ctx, "RegExp")?;
         let object = value.as_object().expect("RegExp");
         define_data(&tagged, "source", object.get("source")?)?;
@@ -283,7 +273,7 @@ fn copy<'js>(
         seen.insert(value, out.clone());
         return Ok(out);
     }
-    if instance_of(ctx, &value, "DataView")? {
+    if instance_of_global(ctx, &value, "DataView")? {
         let tagged = tag_object(ctx, "DataView")?;
         let object = value.as_object().expect("DataView");
         define_data(
@@ -304,7 +294,7 @@ fn copy<'js>(
         seen.insert(value, out.clone());
         return Ok(out);
     }
-    if instance_of(ctx, &value, "DOMException")? {
+    if instance_of_global(ctx, &value, "DOMException")? {
         let tagged = tag_object(ctx, "DOMException")?;
         let object = value.as_object().expect("DOMException");
         define_data(&tagged, "name", object.get("name")?)?;
@@ -371,7 +361,7 @@ fn copy<'js>(
         )?;
         return Ok(dest_value);
     }
-    if instance_of(ctx, &value, "Map")? {
+    if instance_of_global(ctx, &value, "Map")? {
         let dest: Object<'js> = construct(ctx, "Map", ())?;
         let dest_value = dest.clone().into_value();
         seen.insert(value.clone(), dest_value.clone());
@@ -406,7 +396,7 @@ fn copy<'js>(
         }
         return Ok(dest_value);
     }
-    if instance_of(ctx, &value, "Set")? {
+    if instance_of_global(ctx, &value, "Set")? {
         let dest: Object<'js> = construct(ctx, "Set", ())?;
         let dest_value = dest.clone().into_value();
         seen.insert(value.clone(), dest_value.clone());
@@ -591,7 +581,7 @@ fn revive<'js>(
             let revived = revive(ctx, object.get(&key)?, ports, seen)?;
             object.set(key, revived)?;
         }
-    } else if instance_of(ctx, &value, "Map")? {
+    } else if instance_of_global(ctx, &value, "Map")? {
         let entries: Array<'js> = ctx
             .globals()
             .get::<_, Object<'js>>("Array")?
@@ -607,7 +597,7 @@ fn revive<'js>(
             let item = revive(ctx, pair.get(1)?, ports, seen)?;
             set.call::<_, ()>((rquickjs::function::This(value.clone()), key, item))?;
         }
-    } else if instance_of(ctx, &value, "Set")? {
+    } else if instance_of_global(ctx, &value, "Set")? {
         let items: Array<'js> = ctx
             .globals()
             .get::<_, Object<'js>>("Array")?
@@ -661,7 +651,7 @@ pub fn split_transfer<'js>(
     };
     for index in 0..list.len() {
         let entry: Value<'js> = list.get(index)?;
-        if instance_of(ctx, &entry, "ArrayBuffer")? {
+        if instance_of_global(ctx, &entry, "ArrayBuffer")? {
             buffers.push(entry);
             continue;
         }
