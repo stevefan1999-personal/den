@@ -1308,7 +1308,6 @@ pub mod whatwg {
     }
 }
 
-#[cfg(test)] mod local_http;
 
 #[cfg(test)]
 mod tests {
@@ -1456,11 +1455,11 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_get_and_post_against_a_local_listener() {
-        let server = super::local_http::serve(|incoming| {
+        let server = den_stdlib_whatwg::local_http::serve(|incoming| {
             if incoming.method == "POST" {
-                super::local_http::Outgoing::ok(incoming.body, "text/plain")
+                den_stdlib_whatwg::local_http::Outgoing::ok(incoming.body, "text/plain")
             } else {
-                super::local_http::Outgoing::ok(b"{\"ok\":true}".to_vec(), "application/json")
+                den_stdlib_whatwg::local_http::Outgoing::ok(b"{\"ok\":true}".to_vec(), "application/json")
             }
         })
         .await;
@@ -1522,8 +1521,8 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_aborts_an_in_flight_request() {
-        let server = super::local_http::serve(|_| {
-            super::local_http::Outgoing {
+        let server = den_stdlib_whatwg::local_http::serve(|_| {
+            den_stdlib_whatwg::local_http::Outgoing {
                 status:  200,
                 headers: vec![],
                 body:    Vec::new(),
