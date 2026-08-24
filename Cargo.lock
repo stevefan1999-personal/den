@@ -629,17 +629,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fe5f465a4f6fee88fad41b85d990f84c835335e85b5d9e6e63e0d06d28cba7c"
-dependencies = [
- "encode_unicode",
- "libc",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "console-api"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1097,7 +1086,6 @@ version = "0.4.0"
 dependencies = [
  "den-core",
  "den-util",
- "insta",
  "rquickjs",
  "tokio",
 ]
@@ -1158,6 +1146,7 @@ dependencies = [
 name = "den-stdlib-networking"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
  "delegate-attr",
  "den-core",
  "derive_more",
@@ -1190,10 +1179,13 @@ dependencies = [
 name = "den-stdlib-sqlite"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "derive_more",
  "either",
  "rquickjs",
  "rusqlite",
+ "tokio",
 ]
 
 [[package]]
@@ -1246,7 +1238,6 @@ dependencies = [
  "derive_more",
  "either",
  "indexmap",
- "insta",
  "libtest-mimic",
  "rquickjs",
  "tokio",
@@ -1492,12 +1483,6 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
-
-[[package]]
-name = "encode_unicode"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -2398,18 +2383,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "insta"
-version = "1.48.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
-dependencies = [
- "console",
- "once_cell",
- "similar",
- "tempfile",
 ]
 
 [[package]]
@@ -4162,12 +4135,6 @@ checksum = "a9e9e0b4211b72e7b8b6e85c807d36c212bdb33ea8587f7569562a84df5465b1"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "similar"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "siphasher"

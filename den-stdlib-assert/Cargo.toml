@@ -16,7 +16,6 @@ rquickjs = { workspace = true, features = ["macro", "futures"] }
 
 [dev-dependencies]
 den-core = { workspace = true, features = ["stdlib"] }
-insta.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

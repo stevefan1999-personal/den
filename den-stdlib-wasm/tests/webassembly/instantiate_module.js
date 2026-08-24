@@ -1,4 +1,6 @@
-const { assert, assertEquals } = await import("den:assert");
+import { assert, assertEquals } from "den:assert";
+import { WASM } from "./add.js";
+
 const instance = await WebAssembly.instantiate(await WebAssembly.compile(WASM));
 assert(instance instanceof WebAssembly.Instance);
 assertEquals(instance.module, undefined);

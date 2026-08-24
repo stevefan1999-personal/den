@@ -1,4 +1,4 @@
-const { assertEquals } = await import("den:assert");
+import { assertEquals } from "den:assert";
 let fired = false;
 const pending = setTimeout(() => {
   fired = true;

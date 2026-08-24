@@ -81,9 +81,7 @@ impl std::fmt::Display for NativeWsError {
 impl std::error::Error for NativeWsError {}
 
 impl From<std::io::Error> for NativeWsError {
-    fn from(error: std::io::Error) -> Self {
-        Self::Io(error.to_string())
-    }
+    fn from(error: std::io::Error) -> Self { Self::Io(error.to_string()) }
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for NativeWsError {
@@ -96,15 +94,15 @@ impl From<tokio_tungstenite::tungstenite::Error> for NativeWsError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeWsEvent {
     Open {
-        protocol: String,
+        protocol:   String,
         extensions: String,
     },
     Text(String),
     Binary(Vec<u8>),
     Error(String),
     Close {
-        code: u16,
-        reason: String,
+        code:      u16,
+        reason:    String,
         was_clean: bool,
     },
 }
@@ -112,8 +110,8 @@ pub enum NativeWsEvent {
 /// Extra knobs for [`NativeWebSocket::connect_with`] (custom CA, SNI).
 #[derive(Debug, Clone, Default)]
 pub struct NativeWsConnectOptions {
-    pub protocols: Vec<String>,
-    pub ca_pem: Option<String>,
+    pub protocols:  Vec<String>,
+    pub ca_pem:     Option<String>,
     pub tls_domain: Option<String>,
 }
 
@@ -166,12 +164,12 @@ impl AsyncWrite for Transport {
 
 /// Background client (or accepted server session) with command/event channels.
 pub struct NativeWebSocket {
-    commands: mpsc::UnboundedSender<Command>,
-    events: tokio::sync::Mutex<mpsc::UnboundedReceiver<NativeWsEvent>>,
-    buffered: Arc<AtomicUsize>,
-    protocol: Arc<Mutex<String>>,
+    commands:   mpsc::UnboundedSender<Command>,
+    events:     tokio::sync::Mutex<mpsc::UnboundedReceiver<NativeWsEvent>>,
+    buffered:   Arc<AtomicUsize>,
+    protocol:   Arc<Mutex<String>>,
     extensions: Arc<Mutex<String>>,
-    url: String,
+    url:        String,
 }
 
 impl NativeWebSocket {
@@ -201,7 +199,8 @@ impl NativeWebSocket {
         Ok(parsed)
     }
 
-    /// RFC 6455 / HTTP token: one or more `tchar`, unique ASCII-case-insensitively.
+    /// RFC 6455 / HTTP token: one or more `tchar`, unique
+    /// ASCII-case-insensitively.
     pub fn validate_protocols(protocols: &[String]) -> Result<(), NativeWsError> {
         for (index, protocol) in protocols.iter().enumerate() {
             if !is_valid_subprotocol(protocol) {
@@ -223,14 +222,11 @@ impl NativeWebSocket {
     }
 
     pub fn connect(url: &str, protocols: &[String]) -> Result<Self, NativeWsError> {
-        Self::connect_with(
-            url,
-            NativeWsConnectOptions {
-                protocols: protocols.to_vec(),
-                ca_pem: None,
-                tls_domain: None,
-            },
-        )
+        Self::connect_with(url, NativeWsConnectOptions {
+            protocols:  protocols.to_vec(),
+            ca_pem:     None,
+            tls_domain: None,
+        })
     }
 
     pub fn connect_with(url: &str, options: NativeWsConnectOptions) -> Result<Self, NativeWsError> {
@@ -340,7 +336,7 @@ impl NativeWebSocket {
                         store_string(&protocol, selected.clone());
                         store_string(&extensions, negotiated_ext.clone());
                         let _ = event_tx.send(NativeWsEvent::Open {
-                            protocol: selected.clone(),
+                            protocol:   selected.clone(),
                             extensions: negotiated_ext,
                         });
                         // WPT `/protocol_array` replies with the chosen subprotocol
@@ -354,8 +350,8 @@ impl NativeWebSocket {
                     Err(error) => {
                         let _ = event_tx.send(NativeWsEvent::Error(error.to_string()));
                         let _ = event_tx.send(NativeWsEvent::Close {
-                            code: 1006,
-                            reason: String::new(),
+                            code:      1006,
+                            reason:    String::new(),
                             was_clean: false,
                         });
                     }
@@ -420,12 +416,12 @@ impl NativeWebSocket {
             Arc::new(AtomicUsize::new(0)),
         ));
         Ok(Self {
-            commands: command_tx,
-            events: tokio::sync::Mutex::new(event_rx),
-            buffered: Arc::new(AtomicUsize::new(0)),
-            protocol: Arc::new(Mutex::new(protocol)),
+            commands:   command_tx,
+            events:     tokio::sync::Mutex::new(event_rx),
+            buffered:   Arc::new(AtomicUsize::new(0)),
+            protocol:   Arc::new(Mutex::new(protocol)),
             extensions: Arc::new(Mutex::new(String::new())),
-            url: String::new(),
+            url:        String::new(),
         })
     }
 
@@ -437,9 +433,7 @@ impl NativeWebSocket {
         self.enqueue(bytes.len(), Command::SendBinary(bytes))
     }
 
-    pub fn close(&self, code: u16, reason: String) {
-        self.close_opt(Some(code), reason);
-    }
+    pub fn close(&self, code: u16, reason: String) { self.close_opt(Some(code), reason); }
 
     pub fn close_opt(&self, code: Option<u16>, reason: String) {
         let _ = self.commands.send(Command::Close { code, reason });
@@ -449,21 +443,13 @@ impl NativeWebSocket {
         self.events.lock().await.recv().await
     }
 
-    pub fn url(&self) -> &str {
-        &self.url
-    }
+    pub fn url(&self) -> &str { &self.url }
 
-    pub fn protocol(&self) -> String {
-        lock_string(&self.protocol)
-    }
+    pub fn protocol(&self) -> String { lock_string(&self.protocol) }
 
-    pub fn extensions(&self) -> String {
-        lock_string(&self.extensions)
-    }
+    pub fn extensions(&self) -> String { lock_string(&self.extensions) }
 
-    pub fn buffered_amount(&self) -> usize {
-        self.buffered.load(Ordering::Relaxed)
-    }
+    pub fn buffered_amount(&self) -> usize { self.buffered.load(Ordering::Relaxed) }
 
     fn enqueue(&self, amount: usize, command: Command) -> Result<(), NativeWsError> {
         self.buffered.fetch_add(amount, Ordering::Relaxed);
@@ -496,9 +482,7 @@ pub fn is_valid_subprotocol(name: &str) -> bool {
         })
 }
 
-fn discard_error(error: impl std::fmt::Display) {
-    let _ = error.to_string();
-}
+fn discard_error(error: impl std::fmt::Display) { let _ = error.to_string(); }
 
 fn lock_string(lock: &Mutex<String>) -> String {
     lock.lock()
@@ -644,8 +628,8 @@ where
         Err(error) => {
             let _ = events.send(NativeWsEvent::Error(error.to_string()));
             let _ = events.send(NativeWsEvent::Close {
-                code: 1006,
-                reason: String::new(),
+                code:      1006,
+                reason:    String::new(),
                 was_clean: false,
             });
             Err(error)
@@ -707,19 +691,13 @@ impl WebSocketWrapper {
     }
 
     #[qjs(get)]
-    pub fn url(&self) -> String {
-        self.inner.url().to_owned()
-    }
+    pub fn url(&self) -> String { self.inner.url().to_owned() }
 
     #[qjs(get)]
-    pub fn protocol(&self) -> String {
-        self.inner.protocol()
-    }
+    pub fn protocol(&self) -> String { self.inner.protocol() }
 
     #[qjs(get)]
-    pub fn extensions(&self) -> String {
-        self.inner.extensions()
-    }
+    pub fn extensions(&self) -> String { self.inner.extensions() }
 
     #[qjs(get)]
     pub fn buffered_amount(&self) -> i32 {
@@ -751,8 +729,8 @@ impl WebSocketWrapper {
             .next_event()
             .await
             .unwrap_or(NativeWsEvent::Close {
-                code: 1006,
-                reason: String::new(),
+                code:      1006,
+                reason:    String::new(),
                 was_clean: false,
             });
         let object = Object::new(ctx.clone())?;
@@ -987,14 +965,11 @@ mod tests {
             }
         });
         let url = format!("wss://127.0.0.1:{port}/");
-        let socket = NativeWebSocket::connect_with(
-            &url,
-            NativeWsConnectOptions {
-                protocols: Vec::new(),
-                ca_pem: Some(cert_pem),
-                tls_domain: Some("localhost".into()),
-            },
-        )
+        let socket = NativeWebSocket::connect_with(&url, NativeWsConnectOptions {
+            protocols:  Vec::new(),
+            ca_pem:     Some(cert_pem),
+            tls_domain: Some("localhost".into()),
+        })
         .expect("wss connect");
         assert!(matches!(
             expect_open(&socket).await,

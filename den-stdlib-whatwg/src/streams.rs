@@ -17,17 +17,17 @@ use crate::host::Host;
 
 #[derive(Trace, JsLifetime)]
 pub(crate) struct ReadableState<'js> {
-    source:     Value<'js>,
-    controller: Object<'js>,
-    queue:      Vec<Value<'js>>,
-    waiters:    Vec<Function<'js>>,
-    errored:    Option<Value<'js>>,
-    closed:          bool,
-    locked:          bool,
-    pulling:         bool,
-    disturbed:       bool,
-    closed_resolve:  Option<Function<'js>>,
-    closed_reject:   Option<Function<'js>>,
+    source:         Value<'js>,
+    controller:     Object<'js>,
+    queue:          Vec<Value<'js>>,
+    waiters:        Vec<Function<'js>>,
+    errored:        Option<Value<'js>>,
+    closed:         bool,
+    locked:         bool,
+    pulling:        bool,
+    disturbed:      bool,
+    closed_resolve: Option<Function<'js>>,
+    closed_reject:  Option<Function<'js>>,
 }
 
 #[derive(JsLifetime)]
@@ -227,17 +227,17 @@ impl<'js> ReadableStream<'js> {
 
     pub fn from_queue(ctx: &Ctx<'js>, queue: Vec<Value<'js>>) -> Result<Class<'js, Self>> {
         let state = Rc::new(RefCell::new(ReadableState {
-            source:          Object::new(ctx.clone())?.into_value(),
-            controller:      Object::new(ctx.clone())?,
+            source: Object::new(ctx.clone())?.into_value(),
+            controller: Object::new(ctx.clone())?,
             queue,
-            waiters:         Vec::new(),
-            errored:         None,
-            closed:          true,
-            locked:          false,
-            pulling:         false,
-            disturbed:       false,
-            closed_resolve:  None,
-            closed_reject:   None,
+            waiters: Vec::new(),
+            errored: None,
+            closed: true,
+            locked: false,
+            pulling: false,
+            disturbed: false,
+            closed_resolve: None,
+            closed_reject: None,
         }));
         Class::instance(ctx.clone(), Self { state })
     }
@@ -329,7 +329,10 @@ impl<'js> ReadableStream<'js> {
                     .filter(|is_view| *is_view)?;
                 BufferSource::view_bytes(&ctx, &value).ok()
             }) else {
-                return Err(Host::throw_type(&ctx, "ReadableStream chunk must be a Uint8Array"));
+                return Err(Host::throw_type(
+                    &ctx,
+                    "ReadableStream chunk must be a Uint8Array",
+                ));
             };
             out.extend(bytes);
         }
@@ -401,17 +404,17 @@ impl<'js> ReadableStream<'js> {
         };
         let placeholder = Object::new(ctx.clone())?;
         let state = Rc::new(RefCell::new(ReadableState {
-            source:     source.clone(),
-            controller: placeholder,
-            queue:      Vec::new(),
-            waiters:    Vec::new(),
-            errored:    None,
-            closed:          false,
-            locked:          false,
-            pulling:         false,
-            disturbed:       false,
-            closed_resolve:  None,
-            closed_reject:   None,
+            source:         source.clone(),
+            controller:     placeholder,
+            queue:          Vec::new(),
+            waiters:        Vec::new(),
+            errored:        None,
+            closed:         false,
+            locked:         false,
+            pulling:        false,
+            disturbed:      false,
+            closed_resolve: None,
+            closed_reject:  None,
         }));
         let controller = Self::controller_for(&ctx, &state)?;
         state.borrow_mut().controller = controller.clone();
@@ -456,15 +459,18 @@ impl<'js> ReadableStream<'js> {
             .and_then(|object| object.get::<_, String>("mode").ok())
             .is_some_and(|mode| mode == "byob");
         let reader = Object::new(ctx.clone())?;
-        let state = Rc::clone(&self.state);
+        let weak = Rc::downgrade(&self.state);
         reader.prop(
             "closed",
             Accessor::from({
-                let state = Rc::clone(&state);
+                let weak = weak.clone();
                 move |this: This<Object<'js>>, ctx: Ctx<'js>| -> Result<Promise<'js>> {
                     if let Ok(existing) = this.0.get::<_, Promise<'_>>("_denClosed") {
                         return Ok(existing);
                     }
+                    let Some(state) = weak.upgrade() else {
+                        return Err(Host::throw_type(&ctx, "ReadableStream is detached"));
+                    };
                     let (closed, resolve, reject) = ctx.promise()?;
                     {
                         let mut state = state.borrow_mut();
@@ -486,11 +492,16 @@ impl<'js> ReadableStream<'js> {
         reader.set(
             "read",
             Function::new(ctx.clone(), {
-                let state = Rc::clone(&state);
-                move |ctx: Ctx<'js>, _this: This<Value<'js>>, view: Opt<Value<'js>>| -> Result<Promise<'js>> {
+                let weak = weak.clone();
+                move |ctx: Ctx<'js>,
+                      _this: This<Value<'js>>,
+                      view: Opt<Value<'js>>|
+                      -> Result<Promise<'js>> {
+                    let Some(state) = weak.upgrade() else {
+                        return Err(Host::throw_type(&ctx, "ReadableStream is detached"));
+                    };
                     state.borrow_mut().disturbed = true;
                     let (promise, resolve, reject) = ctx.promise()?;
-                    let state = Rc::clone(&state);
                     let ctx_err = ctx.clone();
                     let view = view.0;
                     ctx.spawn(async move {
@@ -525,10 +536,13 @@ impl<'js> ReadableStream<'js> {
             Function::new(
                 ctx.clone(),
                 Async({
-                    let state = Rc::clone(&state);
+                    let weak = weak.clone();
                     move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| {
-                        let state = Rc::clone(&state);
+                        let weak = weak.clone();
                         async move {
+                            let Some(state) = weak.upgrade() else {
+                                return Ok(Value::new_undefined(ctx.clone()));
+                            };
                             {
                                 let mut state = state.borrow_mut();
                                 state.disturbed = true;
@@ -553,9 +567,11 @@ impl<'js> ReadableStream<'js> {
         reader.set(
             "releaseLock",
             Function::new(ctx.clone(), {
-                let state = Rc::clone(&state);
+                let weak = weak.clone();
                 move || -> Result<()> {
-                    state.borrow_mut().locked = false;
+                    if let Some(state) = weak.upgrade() {
+                        state.borrow_mut().locked = false;
+                    }
                     Ok(())
                 }
             })?,
@@ -603,13 +619,12 @@ impl<'js> ReadableStream<'js> {
                             if let Some(sink) = sink.as_object()
                                 && let Ok(write) = sink.get::<_, Function>("write")
                             {
-                                match rquickjs::TypedArray::<u8>::new_copy(
-                                    ctx_err.clone(),
-                                    bytes,
-                                ) {
-                                    Ok(chunk) => write
-                                        .call::<_, Value>((This(sink.clone()), chunk))
-                                        .map(|_| ()),
+                                match rquickjs::TypedArray::<u8>::new_copy(ctx_err.clone(), bytes) {
+                                    Ok(chunk) => {
+                                        write
+                                            .call::<_, Value>((This(sink.clone()), chunk))
+                                            .map(|_| ())
+                                    }
                                     Err(error) => Err(error),
                                 }
                             } else {
@@ -727,12 +742,15 @@ impl<'js> WritableStream<'js> {
 
     pub fn get_writer(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
         let writer = Object::new(ctx.clone())?;
-        let state = Rc::clone(&self.state);
+        let weak = Rc::downgrade(&self.state);
         writer.set(
             "write",
             Function::new(ctx.clone(), {
-                let state = Rc::clone(&state);
+                let weak = weak.clone();
                 move |ctx: Ctx<'js>, chunk: Value<'js>| -> Result<Value<'js>> {
+                    let Some(state) = weak.upgrade() else {
+                        return Err(Host::throw_type(&ctx, "WritableStream is detached"));
+                    };
                     let (errored, closed, sink) = {
                         let state = state.borrow();
                         (state.errored.clone(), state.closed, state.sink.clone())
@@ -768,8 +786,11 @@ impl<'js> WritableStream<'js> {
         writer.set(
             "close",
             Function::new(ctx.clone(), {
-                let state = Rc::clone(&state);
+                let weak = weak.clone();
                 move |ctx: Ctx<'js>| -> Result<Value<'js>> {
+                    let Some(state) = weak.upgrade() else {
+                        return Err(Host::throw_type(&ctx, "WritableStream is detached"));
+                    };
                     let sink = {
                         let mut state = state.borrow_mut();
                         if let Some(error) = state.errored.clone() {
@@ -803,8 +824,11 @@ impl<'js> WritableStream<'js> {
         writer.set(
             "abort",
             Function::new(ctx.clone(), {
-                let state = Rc::clone(&state);
+                let weak = weak.clone();
                 move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Value<'js>> {
+                    let Some(state) = weak.upgrade() else {
+                        return Ok(Value::new_undefined(ctx.clone()));
+                    };
                     state.borrow_mut().closed = true;
                     let sink = state.borrow().sink.clone();
                     if let Some(obj) = sink.as_object() {

@@ -98,9 +98,7 @@ pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
     }
 }
 
-fn network_error(ctx: &Ctx<'_>, message: &str) -> Error {
-    Exception::throw_type(ctx, message)
-}
+fn network_error(ctx: &Ctx<'_>, message: &str) -> Error { Exception::throw_type(ctx, message) }
 
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -123,17 +121,17 @@ struct Cookie {
 
 #[derive(Clone)]
 struct CacheEntry {
-    status:         u16,
-    status_text:    String,
-    headers:        Vec<(String, String)>,
-    body:           Vec<u8>,
-    stored_at:      Instant,
-    max_age:        Option<Duration>,
-    expires:        Option<SystemTime>,
-    etag:           Option<String>,
-    last_modified:  Option<String>,
-    vary:           Option<String>,
-    vary_values:    Vec<(String, String)>,
+    status:        u16,
+    status_text:   String,
+    headers:       Vec<(String, String)>,
+    body:          Vec<u8>,
+    stored_at:     Instant,
+    max_age:       Option<Duration>,
+    expires:       Option<SystemTime>,
+    etag:          Option<String>,
+    last_modified: Option<String>,
+    vary:          Option<String>,
+    vary_values:   Vec<(String, String)>,
 }
 
 fn cookies() -> &'static Mutex<Vec<Cookie>> {
@@ -156,9 +154,7 @@ fn origin_of(ctx: &Ctx<'_>) -> String {
     "http://127.0.0.1".to_string()
 }
 
-fn url_origin(url: &reqwest::Url) -> String {
-    format!("{}://{}", url.scheme(), url.authority())
-}
+fn url_origin(url: &reqwest::Url) -> String { format!("{}://{}", url.scheme(), url.authority()) }
 
 fn same_origin(a: &str, b: &str) -> bool { a.eq_ignore_ascii_case(b) }
 
@@ -222,9 +218,7 @@ fn cors_safelisted_request_header(name: &str, value: &str) -> bool {
     }
 }
 
-fn is_simple_method(method: &str) -> bool {
-    matches!(method, "GET" | "HEAD" | "POST")
-}
+fn is_simple_method(method: &str) -> bool { matches!(method, "GET" | "HEAD" | "POST") }
 
 fn needs_preflight(method: &str, headers: &[(String, String)]) -> bool {
     if !is_simple_method(method) {
@@ -324,7 +318,11 @@ fn cookie_header(url: &reqwest::Url) -> Option<String> {
     let Ok(mut jar) = cookies().lock() else {
         return None;
     };
-    jar.retain(|cookie| cookie.expires.is_none_or(|expires| expires > Instant::now()));
+    jar.retain(|cookie| {
+        cookie
+            .expires
+            .is_none_or(|expires| expires > Instant::now())
+    });
     let mut pairs = Vec::new();
     for cookie in jar.iter() {
         if cookie.host != host {
@@ -402,8 +400,13 @@ fn cache_fresh(entry: &CacheEntry) -> bool {
     let age_header = header_value(&entry.headers, "age")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
-    let elapsed = entry.stored_at.elapsed().as_secs().saturating_add(age_header);
-    if cache_directive(&entry.headers, "no-cache") || cache_directive(&entry.headers, "must-revalidate")
+    let elapsed = entry
+        .stored_at
+        .elapsed()
+        .as_secs()
+        .saturating_add(age_header);
+    if cache_directive(&entry.headers, "no-cache")
+        || cache_directive(&entry.headers, "must-revalidate")
     {
         return false;
     }
@@ -449,18 +452,12 @@ fn user_has_conditional(headers: &[(String, String)]) -> bool {
     headers.iter().any(|(name, _)| {
         matches!(
             name.as_str(),
-            "if-match"
-                | "if-none-match"
-                | "if-modified-since"
-                | "if-unmodified-since"
-                | "if-range"
+            "if-match" | "if-none-match" | "if-modified-since" | "if-unmodified-since" | "if-range"
         )
     })
 }
 
-fn is_redirect_status(status: u16) -> bool {
-    matches!(status, 301 | 302 | 303 | 307 | 308)
-}
+fn is_redirect_status(status: u16) -> bool { matches!(status, 301 | 302 | 303 | 307 | 308) }
 
 fn is_unsafe_method(method: &str) -> bool {
     !matches!(method, "GET" | "HEAD" | "OPTIONS" | "TRACE")
@@ -513,8 +510,12 @@ fn request_max_stale(headers: &[(String, String)]) -> Option<u64> {
 }
 
 fn request_no_store(headers: &[(String, String)]) -> bool {
-    header_value(headers, "cache-control")
-        .is_some_and(|value| value.to_ascii_lowercase().split(',').any(|part| part.trim() == "no-store"))
+    header_value(headers, "cache-control").is_some_and(|value| {
+        value
+            .to_ascii_lowercase()
+            .split(',')
+            .any(|part| part.trim() == "no-store")
+    })
 }
 
 fn is_http_token(name: &str) -> bool {
@@ -574,9 +575,7 @@ fn cache_no_store(headers: &[(String, String)]) -> bool {
         .is_some_and(|value| value.to_ascii_lowercase().contains("no-store"))
 }
 
-fn cache_key(url: &str, credentials: &str) -> String {
-    format!("{credentials}\0{url}")
-}
+fn cache_key(url: &str, credentials: &str) -> String { format!("{credentials}\0{url}") }
 
 fn lookup_cache(
     url: &str, credentials: &str, request_headers: &[(String, String)],
@@ -585,20 +584,24 @@ fn lookup_cache(
         return None;
     };
     let entries = map.get(&cache_key(url, credentials))?;
-    entries.iter().rev().find(|entry| {
-        if let Some(vary) = &entry.vary {
-            if vary.split(',').any(|name| name.trim() == "*") {
-                return false;
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            if let Some(vary) = &entry.vary {
+                if vary.split(',').any(|name| name.trim() == "*") {
+                    return false;
+                }
+                vary.split(',').all(|name| {
+                    let name = name.trim();
+                    header_value(&entry.vary_values, name).unwrap_or("")
+                        == header_value(request_headers, name).unwrap_or("")
+                })
+            } else {
+                true
             }
-            vary.split(',').all(|name| {
-                let name = name.trim();
-                header_value(&entry.vary_values, name).unwrap_or("")
-                    == header_value(request_headers, name).unwrap_or("")
-            })
-        } else {
-            true
-        }
-    }).cloned()
+        })
+        .cloned()
 }
 
 fn invalidate_cache(url: &str) {
@@ -609,8 +612,8 @@ fn invalidate_cache(url: &str) {
 }
 
 fn store_cache(
-    url: String, credentials: &str, status: u16, status_text: String, headers: Vec<(String, String)>,
-    body: Vec<u8>, request_headers: &[(String, String)],
+    url: String, credentials: &str, status: u16, status_text: String,
+    headers: Vec<(String, String)>, body: Vec<u8>, request_headers: &[(String, String)],
 ) {
     if cache_no_store(&headers) {
         return;
@@ -629,7 +632,9 @@ fn store_cache(
         stored_at: Instant::now(),
     };
     if let Ok(mut map) = cache().lock() {
-        map.entry(cache_key(&url, credentials)).or_default().push(entry);
+        map.entry(cache_key(&url, credentials))
+            .or_default()
+            .push(entry);
     }
 }
 
@@ -702,7 +707,7 @@ fn orb_blocks(content_type: Option<&str>, _nosniff: bool, status: u16) -> bool {
             | "text/xml"
             | "font/ttf"
             | "font/woff"
-            |             "font/woff2"
+            | "font/woff2"
             | "application/gzip"
     ) {
         return true;
@@ -732,10 +737,12 @@ fn normalize_sri_b64(input: &str) -> String {
     let mut filtered: String = input
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace())
-        .map(|ch| match ch {
-            '-' => '+',
-            '_' => '/',
-            other => other,
+        .map(|ch| {
+            match ch {
+                '-' => '+',
+                '_' => '/',
+                other => other,
+            }
         })
         .collect();
     while filtered.len() % 4 != 0 {
@@ -849,9 +856,10 @@ async fn send_http<'js>(
 fn response_header_pairs(response: &reqwest::Response) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for (name, value) in response.headers() {
-        let text = value.to_str().map(ToString::to_string).unwrap_or_else(|_| {
-            value.as_bytes().iter().map(|byte| *byte as char).collect()
-        });
+        let text = value
+            .to_str()
+            .map(ToString::to_string)
+            .unwrap_or_else(|_| value.as_bytes().iter().map(|byte| *byte as char).collect());
         if name.as_str() == "set-cookie" {
             pairs.push(("set-cookie".to_string(), text));
         } else {
@@ -946,7 +954,9 @@ fn preflight_cached(origin: &str, url: &str, method: &str, extra: &[String]) -> 
     })
 }
 
-fn store_preflight(origin: String, url: String, method: String, headers: Vec<String>, max_age: u64) {
+fn store_preflight(
+    origin: String, url: String, method: String, headers: Vec<String>, max_age: u64,
+) {
     if max_age == 0 {
         return;
     }
@@ -962,8 +972,8 @@ fn store_preflight(origin: String, url: String, method: String, headers: Vec<Str
 }
 
 async fn preflight<'js>(
-    ctx: &Ctx<'js>, url: &reqwest::Url, method: &str, headers: &[(String, String)],
-    origin: &str, credentials: &str, watch: Option<&AbortWatch>,
+    ctx: &Ctx<'js>, url: &reqwest::Url, method: &str, headers: &[(String, String)], origin: &str,
+    credentials: &str, watch: Option<&AbortWatch>,
 ) -> Result<()> {
     let mut extra: Vec<String> = headers
         .iter()
@@ -980,7 +990,10 @@ async fn preflight<'js>(
     }
     let mut preflight_headers = vec![
         ("origin".to_string(), origin.to_string()),
-        ("access-control-request-method".to_string(), method.to_string()),
+        (
+            "access-control-request-method".to_string(),
+            method.to_string(),
+        ),
         ("accept".to_string(), "*/*".to_string()),
         ("user-agent".to_string(), "den/0.4".to_string()),
         ("referer".to_string(), origin.to_string()),
@@ -1009,8 +1022,11 @@ async fn preflight<'js>(
     }
     let pairs = response_header_pairs(&response);
     let include = credentials == "include";
-    if !check_acao(header_value(&pairs, "access-control-allow-origin"), origin, include)
-    {
+    if !check_acao(
+        header_value(&pairs, "access-control-allow-origin"),
+        origin,
+        include,
+    ) {
         return Err(network_error(ctx, "CORS preflight failed"));
     }
     if include
@@ -1052,7 +1068,10 @@ async fn preflight<'js>(
                 }
             }
             Some("*") => {
-                if extra.iter().any(|name| name.eq_ignore_ascii_case("authorization")) {
+                if extra
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case("authorization"))
+                {
                     return Err(network_error(ctx, "CORS header not allowed"));
                 }
             }
@@ -1108,8 +1127,18 @@ pub(crate) async fn run<'js>(
             request.body.is_some() || request.body_stream.is_some(),
         )
     };
-    let (url, method, mode, credentials, redirect, cache_mode, integrity, referrer, headers, has_body) =
-        snapshot;
+    let (
+        url,
+        method,
+        mode,
+        credentials,
+        redirect,
+        cache_mode,
+        integrity,
+        referrer,
+        headers,
+        has_body,
+    ) = snapshot;
     let parsed = reqwest::Url::parse(&url)
         .map_err(|error| Exception::throw_type(&ctx, &format!("Invalid URL: {error}")))?;
     if let Some(port) = parsed.port_or_known_default()
@@ -1123,20 +1152,14 @@ pub(crate) async fn run<'js>(
                 return Err(network_error(&ctx, "Invalid data URL"));
             };
             let mut header_obj = Headers::empty_with(headers::Guard::Immutable);
-            header_obj
-                .map
-                .insert("content-type".to_string(), data.mime);
+            header_obj.map.insert("content-type".to_string(), data.mime);
             let headers = Class::instance(ctx.clone(), header_obj)?;
-            let body = if method == "HEAD" { None } else { Some(data.body) };
-            return Response::from_bytes(
-                &ctx,
-                200,
-                "OK".to_string(),
-                url,
-                "basic",
-                headers,
-                body,
-            );
+            let body = if method == "HEAD" {
+                None
+            } else {
+                Some(data.body)
+            };
+            return Response::from_bytes(&ctx, 200, "OK".to_string(), url, "basic", headers, body);
         }
         "about" | "blob" | "javascript" | "file" => {
             return Err(network_error(&ctx, "Scheme is not supported"));
@@ -1219,10 +1242,16 @@ async fn http_fetch<'js>(
         saw_cross = true;
     }
     if mode == "same-origin" && cross_origin {
-        return Err(network_error(ctx, "same-origin mode cannot fetch cross-origin"));
+        return Err(network_error(
+            ctx,
+            "same-origin mode cannot fetch cross-origin",
+        ));
     }
     if mode == "no-cors" && redirect != "follow" && cross_origin {
-        return Err(network_error(ctx, "no-cors non-follow redirect is cross-origin"));
+        return Err(network_error(
+            ctx,
+            "no-cors non-follow redirect is cross-origin",
+        ));
     }
     if cache_mode == "only-if-cached" && cross_origin {
         return Err(network_error(ctx, "only-if-cached requires same-origin"));
@@ -1248,9 +1277,8 @@ async fn http_fetch<'js>(
     }
 
     let cors_mode = mode == "cors";
-    let preflighted = cors_mode
-        && needs_preflight(&method, &request_headers)
-        && (cross_origin || saw_cross);
+    let preflighted =
+        cors_mode && needs_preflight(&method, &request_headers) && (cross_origin || saw_cross);
     let user_conditional = user_has_conditional(&headers);
     let cacheable_method = matches!(method.as_str(), "GET" | "HEAD");
     let skip_reuse = user_conditional
@@ -1279,7 +1307,9 @@ async fn http_fetch<'js>(
             && request_max_age(&request_headers).is_none_or(|max| age <= max);
         if is_redirect_status(cached.status)
             && redirect == "follow"
-            && (cache_mode == "only-if-cached" || cache_mode == "force-cache" || (cache_mode == "default" && reuse && (fresh || stale_ok)))
+            && (cache_mode == "only-if-cached"
+                || cache_mode == "force-cache"
+                || (cache_mode == "default" && reuse && (fresh || stale_ok)))
             && let Some(location) = header_value(&cached.headers, "location")
         {
             let next = url
@@ -1309,10 +1339,26 @@ async fn http_fetch<'js>(
         }
         match cache_mode.as_str() {
             "only-if-cached" | "force-cache" => {
-                return cached_response(ctx, &url, cached, redirected, &mode, &origin, &credentials);
+                return cached_response(
+                    ctx,
+                    &url,
+                    cached,
+                    redirected,
+                    &mode,
+                    &origin,
+                    &credentials,
+                );
             }
             "default" if reuse && (fresh || stale_ok) => {
-                return cached_response(ctx, &url, cached, redirected, &mode, &origin, &credentials);
+                return cached_response(
+                    ctx,
+                    &url,
+                    cached,
+                    redirected,
+                    &mode,
+                    &origin,
+                    &credentials,
+                );
             }
             "no-cache" | "default" if !fresh && !user_conditional => {
                 if let Some(etag) = &cached.etag {
@@ -1327,10 +1373,7 @@ async fn http_fetch<'js>(
     } else if cache_mode == "only-if-cached" {
         return Err(network_error(ctx, "only-if-cached miss"));
     } else if request_only_if_cached(&request_headers) {
-        let headers = Class::instance(
-            ctx.clone(),
-            Headers::empty_with(headers::Guard::Immutable),
-        )?;
+        let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
         return Response::from_bytes(
             ctx,
             504,
@@ -1344,7 +1387,10 @@ async fn http_fetch<'js>(
 
     match cache_mode.as_str() {
         "no-cache" => {
-            if !request_headers.iter().any(|(name, _)| name == "cache-control") {
+            if !request_headers
+                .iter()
+                .any(|(name, _)| name == "cache-control")
+            {
                 request_headers.push(("cache-control".to_string(), "max-age=0".to_string()));
             }
         }
@@ -1352,7 +1398,10 @@ async fn http_fetch<'js>(
             if !request_headers.iter().any(|(name, _)| name == "pragma") {
                 request_headers.push(("pragma".to_string(), "no-cache".to_string()));
             }
-            if !request_headers.iter().any(|(name, _)| name == "cache-control") {
+            if !request_headers
+                .iter()
+                .any(|(name, _)| name == "cache-control")
+            {
                 request_headers.push(("cache-control".to_string(), "no-cache".to_string()));
             }
         }
@@ -1360,7 +1409,10 @@ async fn http_fetch<'js>(
             if !request_headers.iter().any(|(name, _)| name == "pragma") {
                 request_headers.push(("pragma".to_string(), "no-cache".to_string()));
             }
-            if !request_headers.iter().any(|(name, _)| name == "cache-control") {
+            if !request_headers
+                .iter()
+                .any(|(name, _)| name == "cache-control")
+            {
                 request_headers.push(("cache-control".to_string(), "no-cache".to_string()));
             }
         }
@@ -1368,7 +1420,16 @@ async fn http_fetch<'js>(
     }
 
     if preflighted {
-        preflight(ctx, &url, &method, &request_headers, &origin, &credentials, watch).await?;
+        preflight(
+            ctx,
+            &url,
+            &method,
+            &request_headers,
+            &origin,
+            &credentials,
+            watch,
+        )
+        .await?;
     }
 
     let http_method = reqwest::Method::from_bytes(method.as_bytes())
@@ -1410,10 +1471,8 @@ async fn http_fetch<'js>(
                     return Err(network_error(ctx, "CORS failed"));
                 }
             }
-            let headers = Class::instance(
-                ctx.clone(),
-                Headers::empty_with(headers::Guard::Immutable),
-            )?;
+            let headers =
+                Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
             return Response::from_bytes(
                 ctx,
                 0,
@@ -1450,7 +1509,11 @@ async fn http_fetch<'js>(
                         url.to_string(),
                         &credentials,
                         status,
-                        response.status().canonical_reason().unwrap_or("").to_string(),
+                        response
+                            .status()
+                            .canonical_reason()
+                            .unwrap_or("")
+                            .to_string(),
                         redirect_pairs.clone(),
                         Vec::new(),
                         &request_headers,
@@ -1548,7 +1611,10 @@ async fn http_fetch<'js>(
 
     if mode == "no-cors" && (cross_origin || saw_cross) {
         if !integrity.is_empty() {
-            return Err(network_error(ctx, "Integrity cannot be used with opaque response"));
+            return Err(network_error(
+                ctx,
+                "Integrity cannot be used with opaque response",
+            ));
         }
         if corp_blocks(
             header_value(&pairs, "cross-origin-resource-policy"),
@@ -1566,7 +1632,15 @@ async fn http_fetch<'js>(
             return Err(network_error(ctx, "ORB blocked"));
         }
         let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        return Response::from_bytes(ctx, 0, String::new(), String::new(), "opaque", headers, None);
+        return Response::from_bytes(
+            ctx,
+            0,
+            String::new(),
+            String::new(),
+            "opaque",
+            headers,
+            None,
+        );
     }
 
     if mode != "no-cors"
@@ -1764,7 +1838,15 @@ fn cached_response<'js>(
     let cross_origin = !same_origin(origin, &url_origin(url));
     if mode == "no-cors" && cross_origin {
         let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        return Response::from_bytes(ctx, 0, String::new(), String::new(), "opaque", headers, None);
+        return Response::from_bytes(
+            ctx,
+            0,
+            String::new(),
+            String::new(),
+            "opaque",
+            headers,
+            None,
+        );
     }
     let kind = if cross_origin && mode == "cors" {
         "cors"
@@ -1774,8 +1856,11 @@ fn cached_response<'js>(
     let mut pairs = entry.headers;
     if mode == "cors" && cross_origin {
         let include = credentials == "include";
-        if !check_acao(header_value(&pairs, "access-control-allow-origin"), origin, include)
-        {
+        if !check_acao(
+            header_value(&pairs, "access-control-allow-origin"),
+            origin,
+            include,
+        ) {
             return Err(network_error(ctx, "CORS failed"));
         }
         let expose = header_value(&pairs, "access-control-expose-headers").map(str::to_owned);

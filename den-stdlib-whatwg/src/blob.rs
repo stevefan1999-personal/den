@@ -46,17 +46,11 @@ impl BlobInner {
         Self::from_bytes(bytes, type_)
     }
 
-    pub fn bytes(&self) -> &[u8] {
-        &self.bytes
-    }
+    pub fn bytes(&self) -> &[u8] { &self.bytes }
 
-    pub fn mime_type(&self) -> &str {
-        &self.type_
-    }
+    pub fn mime_type(&self) -> &str { &self.type_ }
 
-    pub fn size(&self) -> usize {
-        self.bytes.len()
-    }
+    pub fn size(&self) -> usize { self.bytes.len() }
 
     pub fn slice(&self, start: f64, end: f64, type_: String) -> Self {
         let size = self.bytes.len() as f64;
@@ -117,21 +111,13 @@ pub struct Blob {
 }
 
 impl Blob {
-    pub fn from_inner(inner: BlobInner) -> Self {
-        Self { inner }
-    }
+    pub fn from_inner(inner: BlobInner) -> Self { Self { inner } }
 
-    pub fn bytes(&self) -> &[u8] {
-        self.inner.bytes()
-    }
+    pub fn bytes(&self) -> &[u8] { self.inner.bytes() }
 
-    pub fn mime_type(&self) -> &str {
-        self.inner.mime_type()
-    }
+    pub fn mime_type(&self) -> &str { self.inner.mime_type() }
 
-    pub fn inner(&self) -> &BlobInner {
-        &self.inner
-    }
+    pub fn inner(&self) -> &BlobInner { &self.inner }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -153,18 +139,12 @@ impl Blob {
     }
 
     #[qjs(get, enumerable)]
-    pub fn size(&self) -> usize {
-        self.inner.size()
-    }
+    pub fn size(&self) -> usize { self.inner.size() }
 
     #[qjs(get, enumerable, rename = "type")]
-    pub fn mime_type_js(&self) -> String {
-        self.inner.mime_type().to_string()
-    }
+    pub fn mime_type_js(&self) -> String { self.inner.mime_type().to_string() }
 
-    pub async fn text(&self) -> String {
-        String::from_utf8_lossy(self.inner.bytes()).into_owned()
-    }
+    pub async fn text(&self) -> String { String::from_utf8_lossy(self.inner.bytes()).into_owned() }
 
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
         ArrayBuffer::new_copy(ctx, self.inner.bytes())
@@ -188,18 +168,16 @@ impl Blob {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Blob"
-    }
+    pub fn to_string_tag() -> &'static str { "Blob" }
 }
 
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class]
 pub struct File {
     #[qjs(skip_trace)]
-    inner: BlobInner,
+    inner:         BlobInner,
     #[qjs(skip_trace)]
-    name: String,
+    name:          String,
     last_modified: f64,
 }
 
@@ -212,21 +190,13 @@ impl File {
         }
     }
 
-    pub fn bytes(&self) -> &[u8] {
-        self.inner.bytes()
-    }
+    pub fn bytes(&self) -> &[u8] { self.inner.bytes() }
 
-    pub fn mime_type(&self) -> &str {
-        self.inner.mime_type()
-    }
+    pub fn mime_type(&self) -> &str { self.inner.mime_type() }
 
-    pub fn file_name(&self) -> &str {
-        &self.name
-    }
+    pub fn file_name(&self) -> &str { &self.name }
 
-    pub fn inner(&self) -> &BlobInner {
-        &self.inner
-    }
+    pub fn inner(&self) -> &BlobInner { &self.inner }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -267,28 +237,18 @@ impl File {
     }
 
     #[qjs(get, enumerable)]
-    pub fn name(&self) -> String {
-        self.name.clone()
-    }
+    pub fn name(&self) -> String { self.name.clone() }
 
     #[qjs(get, enumerable)]
-    pub fn last_modified(&self) -> f64 {
-        self.last_modified
-    }
+    pub fn last_modified(&self) -> f64 { self.last_modified }
 
     #[qjs(get, enumerable)]
-    pub fn size(&self) -> usize {
-        self.inner.size()
-    }
+    pub fn size(&self) -> usize { self.inner.size() }
 
     #[qjs(get, enumerable, rename = "type")]
-    pub fn mime_type_js(&self) -> String {
-        self.inner.mime_type().to_string()
-    }
+    pub fn mime_type_js(&self) -> String { self.inner.mime_type().to_string() }
 
-    pub async fn text(&self) -> String {
-        String::from_utf8_lossy(self.inner.bytes()).into_owned()
-    }
+    pub async fn text(&self) -> String { String::from_utf8_lossy(self.inner.bytes()).into_owned() }
 
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
         ArrayBuffer::new_copy(ctx, self.inner.bytes())
@@ -316,9 +276,7 @@ impl File {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "File"
-    }
+    pub fn to_string_tag() -> &'static str { "File" }
 }
 
 enum Part {
@@ -327,7 +285,7 @@ enum Part {
 }
 
 struct BlobBag {
-    type_: String,
+    type_:  String,
     native: bool,
 }
 
@@ -362,7 +320,7 @@ fn parse_blob_bag<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<Bl
     let object = dictionary_object(ctx, options)?;
     let Some(object) = object else {
         return Ok(BlobBag {
-            type_: String::new(),
+            type_:  String::new(),
             native: false,
         });
     };
@@ -378,7 +336,7 @@ fn parse_file_bag<'js>(
     let Some(object) = object else {
         return Ok((
             BlobBag {
-                type_: String::new(),
+                type_:  String::new(),
                 native: false,
             },
             None,
@@ -416,10 +374,13 @@ fn read_endings<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool> {
     match coerce_string(ctx, value)?.as_str() {
         "transparent" => Ok(false),
         "native" => Ok(true),
-        _ => Err(Host::throw_type(
-            ctx,
-            "Failed to construct 'Blob': The provided value is not a valid enum value of type EndingType.",
-        )),
+        _ => {
+            Err(Host::throw_type(
+                ctx,
+                "Failed to construct 'Blob': The provided value is not a valid enum value of type \
+                 EndingType.",
+            ))
+        }
     }
 }
 

@@ -83,7 +83,8 @@ impl Host {
         Exception::throw_message(ctx, message)
     }
 
-    /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with U+FFFD.
+    /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with
+    /// U+FFFD.
     pub fn coerce_usv_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
         let value = if value.is_string() {
             value
@@ -321,7 +322,8 @@ impl Host {
     }
 
     /// Install `document` after testharness chooses its environment.
-    /// `'document' in globalThis` at testharness load would select WindowTestEnvironment.
+    /// `'document' in globalThis` at testharness load would select
+    /// WindowTestEnvironment.
     pub fn install_fileapi_document<'js>(ctx: &Ctx<'js>) -> Result<()> {
         let globals = ctx.globals();
         let hooked: Value = globals.get("__denFileapiDocHook")?;

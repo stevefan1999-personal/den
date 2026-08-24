@@ -18,41 +18,41 @@ use crate::{
 #[rquickjs::class]
 pub struct Request<'js> {
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) url:                  String,
+    pub(crate) url:                   String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) method:               String,
+    pub(crate) method:                String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) credentials:          String,
+    pub(crate) credentials:           String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) redirect:             String,
+    pub(crate) redirect:              String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) mode:                 String,
+    pub(crate) mode:                  String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) cache:                String,
+    pub(crate) cache:                 String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) integrity:            String,
+    pub(crate) integrity:             String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) destination:          String,
+    pub(crate) destination:           String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) referrer:             String,
+    pub(crate) referrer:              String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) referrer_policy:      String,
+    pub(crate) referrer_policy:       String,
     #[qjs(get, enumerable, skip_trace)]
-    pub(crate) duplex:               String,
+    pub(crate) duplex:                String,
     #[qjs(get, enumerable)]
-    pub(crate) keepalive:            bool,
+    pub(crate) keepalive:             bool,
     #[qjs(get, enumerable)]
-    pub(crate) is_reload_navigation: bool,
+    pub(crate) is_reload_navigation:  bool,
     #[qjs(get, enumerable)]
     pub(crate) is_history_navigation: bool,
     #[qjs(get, enumerable)]
-    pub(crate) signal:               Value<'js>,
+    pub(crate) signal:                Value<'js>,
     follow_source:                    Value<'js>,
     #[qjs(get, enumerable)]
-    pub(crate) headers:              Class<'js, Headers>,
-    pub(crate) body:                 Option<Value<'js>>,
-    pub(crate) body_stream:          Option<Value<'js>>,
-    pub(crate) body_used:            bool,
+    pub(crate) headers:               Class<'js, Headers>,
+    pub(crate) body:                  Option<Value<'js>>,
+    pub(crate) body_stream:           Option<Value<'js>>,
+    pub(crate) body_used:             bool,
 }
 
 impl<'js> Request<'js> {
@@ -95,9 +95,7 @@ impl<'js> Request<'js> {
         })();
         match followed {
             Ok(signal) => Ok(signal),
-            Err(_) if source.is_null() || source.is_undefined() => {
-                Ok(Value::new_null(ctx.clone()))
-            }
+            Err(_) if source.is_null() || source.is_undefined() => Ok(Value::new_null(ctx.clone())),
             Err(_) => Ok(source),
         }
     }
@@ -133,15 +131,17 @@ impl<'js> Request<'js> {
         let ctx_err = ctx.clone();
         ctx.spawn(async move {
             match value_to_bytes(&ctx_err, taken).await {
-                Ok(bytes) => match map(bytes, ctx_err.clone()) {
-                    Ok(value) => {
-                        let _ = resolve.call::<_, ()>((value,));
+                Ok(bytes) => {
+                    match map(bytes, ctx_err.clone()) {
+                        Ok(value) => {
+                            let _ = resolve.call::<_, ()>((value,));
+                        }
+                        Err(_) => {
+                            let thrown = ctx_err.catch();
+                            let _ = reject.call::<_, ()>((thrown,));
+                        }
                     }
-                    Err(_) => {
-                        let thrown = ctx_err.catch();
-                        let _ = reject.call::<_, ()>((thrown,));
-                    }
-                },
+                }
                 Err(_) => {
                     let thrown = ctx_err.catch();
                     let _ = reject.call::<_, ()>((thrown,));
@@ -227,9 +227,7 @@ impl<'js> Request<'js> {
         Ok(url.to_string())
     }
 
-    fn parse_enum(
-        ctx: &Ctx<'js>, value: &str, allowed: &[&str], name: &str,
-    ) -> Result<String> {
+    fn parse_enum(ctx: &Ctx<'js>, value: &str, allowed: &[&str], name: &str) -> Result<String> {
         if allowed.contains(&value) {
             Ok(value.to_string())
         } else {
@@ -249,7 +247,10 @@ impl<'js> Request<'js> {
         if let Some(object) = options.as_ref() {
             let window: Value = object.get("window")?;
             if !window.is_undefined() && !window.is_null() {
-                return Err(Exception::throw_type(&ctx, "RequestInit.window is not null"));
+                return Err(Exception::throw_type(
+                    &ctx,
+                    "RequestInit.window is not null",
+                ));
             }
         }
 
@@ -335,7 +336,10 @@ impl<'js> Request<'js> {
             }
             if let Some(value) = Self::optional_string(&ctx, object, "mode")? {
                 if value == "navigate" {
-                    return Err(Exception::throw_type(&ctx, "Request mode navigate is invalid"));
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "Request mode navigate is invalid",
+                    ));
                 }
                 mode = Self::parse_enum(&ctx, &value, &["same-origin", "no-cors", "cors"], "mode")?;
             }
@@ -565,16 +569,16 @@ impl<'js> Request<'js> {
         Self::consume_promise(this.0, ctx, |bytes, ctx| ArrayBuffer::new_copy(ctx, bytes))
     }
 
-    pub fn bytes(
-        this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<Promise<'js>> {
+    pub fn bytes(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         Self::consume_promise(this.0, ctx, |bytes, ctx| {
             rquickjs::TypedArray::new_copy(ctx, bytes)
         })
     }
 
     pub fn text(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
-        Self::consume_promise(this.0, ctx, |bytes, _ctx| Ok(crate::body::utf8_text(&bytes)))
+        Self::consume_promise(this.0, ctx, |bytes, _ctx| {
+            Ok(crate::body::utf8_text(&bytes))
+        })
     }
 
     pub fn json(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
@@ -583,9 +587,7 @@ impl<'js> Request<'js> {
         })
     }
 
-    pub fn text_stream(
-        this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<Value<'js>> {
+    pub fn text_stream(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let mut request = this.0.borrow_mut();
         if request.body_used {
             return Err(Exception::throw_type(&ctx, "Already read"));
@@ -616,9 +618,7 @@ impl<'js> Request<'js> {
         })
     }
 
-    pub fn form_data(
-        this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<Promise<'js>> {
+    pub fn form_data(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         let (no_body, mime) = {
             let request = this.0.borrow();
             (
@@ -656,9 +656,7 @@ impl<'js> Request<'js> {
     }
 
     #[qjs(rename = "clone")]
-    pub fn clone_request(
-        this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<Self> {
+    pub fn clone_request(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Self> {
         let mut request = this.0.borrow_mut();
         if request.body_used {
             return Err(Exception::throw_type(&ctx, "Already read"));
@@ -670,37 +668,36 @@ impl<'js> Request<'js> {
         } else {
             (request.body.clone(), None)
         };
-        let follow_source = if request.follow_source.is_null()
-            || request.follow_source.is_undefined()
-        {
-            request.signal.clone()
-        } else {
-            request.follow_source.clone()
-        };
+        let follow_source =
+            if request.follow_source.is_null() || request.follow_source.is_undefined() {
+                request.signal.clone()
+            } else {
+                request.follow_source.clone()
+            };
         Ok(Self {
-            url:                   request.url.clone(),
-            method:                request.method.clone(),
-            credentials:           request.credentials.clone(),
-            redirect:              request.redirect.clone(),
-            mode:                  request.mode.clone(),
-            cache:                 request.cache.clone(),
-            integrity:             request.integrity.clone(),
-            destination:           request.destination.clone(),
-            referrer:              request.referrer.clone(),
-            referrer_policy:       request.referrer_policy.clone(),
-            duplex:                request.duplex.clone(),
-            keepalive:             request.keepalive,
-            is_reload_navigation:  request.is_reload_navigation,
+            url: request.url.clone(),
+            method: request.method.clone(),
+            credentials: request.credentials.clone(),
+            redirect: request.redirect.clone(),
+            mode: request.mode.clone(),
+            cache: request.cache.clone(),
+            integrity: request.integrity.clone(),
+            destination: request.destination.clone(),
+            referrer: request.referrer.clone(),
+            referrer_policy: request.referrer_policy.clone(),
+            duplex: request.duplex.clone(),
+            keepalive: request.keepalive,
+            is_reload_navigation: request.is_reload_navigation,
             is_history_navigation: request.is_history_navigation,
-            follow_source:         follow_source.clone(),
-            signal:                Self::following_signal(&ctx, follow_source)?,
-            headers:               Class::instance(
+            follow_source: follow_source.clone(),
+            signal: Self::following_signal(&ctx, follow_source)?,
+            headers: Class::instance(
                 ctx.clone(),
                 Headers::new(ctx.clone(), Opt(Some(request.headers.clone().into_value())))?,
             )?,
             body,
             body_stream,
-            body_used:             false,
+            body_used: false,
         })
     }
 

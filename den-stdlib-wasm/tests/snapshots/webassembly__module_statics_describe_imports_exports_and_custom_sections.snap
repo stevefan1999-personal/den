@@ -1,5 +1,0 @@
----
-source: den-stdlib-wasm/tests/webassembly.rs
-expression: described
----
-{"imports":[],"exports":[{"name":"add","kind":"function"},{"name":"boom","kind":"function"}],"greeting":"hello","greetingIsArrayBuffer":true,"absent":0}

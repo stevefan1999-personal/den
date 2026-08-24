@@ -1,4 +1,11 @@
-const { assertEquals } = await import("den:assert");
+import { assertEquals } from "den:assert";
+import { wat2wasm } from "den:wasm";
+
+const WASM = wat2wasm(`
+    (module
+      (import "env" "reenter" (func $reenter))
+      (func (export "run") call $reenter))
+`);
 const caught = async (thunk) => {
   try {
     await thunk();

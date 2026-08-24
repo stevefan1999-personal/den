@@ -11,12 +11,20 @@
 //! a one-in-a-hundred flake. They assert on a value each time round so the
 //! engine is genuinely used and not optimised into nothing.
 
+use std::path::PathBuf;
+
 use color_eyre::eyre;
 use den_core::engine::Engine;
 
 /// Enough repetitions that a per-engine leak is visible in RSS and a teardown
 /// abort is certain rather than lucky; still under a second in total.
 const ENGINE_CHURN: usize = 25;
+
+fn case(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/webassembly")
+        .join(name)
+}
 
 /// Control: `Engine::new` evaluates `den:wasm` (and so installs the store, the
 /// engine and the error classes) even when no script touches `WebAssembly`. If
@@ -40,25 +48,11 @@ async fn engines_that_never_touch_webassembly_survive_repeated_teardown() -> eyr
 #[tokio::test(flavor = "multi_thread")]
 async fn engines_that_instantiate_and_touch_memory_survive_repeated_teardown() -> eyre::Result<()> {
     for round in 0..ENGINE_CHURN {
-        let engine = Engine::new().await;
-        let echoed: usize = engine
-            .eval(
-                r#"
-                  const { wat2wasm } = await import('den:wasm');
-                  const WASM = wat2wasm(`
-                    (module
-                      (memory (export "mem") 1)
-                      (func (export "peek") (param i32) (result i32) local.get 0 i32.load8_u))
-                  `);
-                  const { mem, peek } = (await WebAssembly.instantiate(WASM)).instance.exports;
-                  new Uint8Array(mem.buffer)[0] = 7;
-                  mem.grow(1);
-                  peek(0)
-                "#,
-            )
-            .await?;
-        assert_eq!(echoed, 7, "round {round}");
-        drop(engine);
+        Engine::new()
+            .await
+            .run_file::<()>(case("lifetime_memory.js"))
+            .await
+            .map_err(|error| eyre::eyre!("round {round}: {error}"))?;
     }
     Ok(())
 }
@@ -69,25 +63,11 @@ async fn engines_that_instantiate_and_touch_memory_survive_repeated_teardown() -
 #[tokio::test(flavor = "multi_thread")]
 async fn engines_holding_an_imported_js_closure_survive_repeated_teardown() -> eyre::Result<()> {
     for round in 0..ENGINE_CHURN {
-        let engine = Engine::new().await;
-        let doubled: usize = engine
-            .eval(
-                r#"
-                  const { wat2wasm } = await import('den:wasm');
-                  const WASM = wat2wasm(`
-                    (module
-                      (import "env" "twice" (func $twice (param i32) (result i32)))
-                      (func (export "run") (param i32) (result i32) local.get 0 call $twice))
-                  `);
-                  const { instance } = await WebAssembly.instantiate(WASM, {
-                    env: { twice: (value) => value * 2 },
-                  });
-                  instance.exports.run(21)
-                "#,
-            )
-            .await?;
-        assert_eq!(doubled, 42, "round {round}");
-        drop(engine);
+        Engine::new()
+            .await
+            .run_file::<()>(case("lifetime_import.js"))
+            .await
+            .map_err(|error| eyre::eyre!("round {round}: {error}"))?;
     }
     Ok(())
 }

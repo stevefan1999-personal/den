@@ -1,4 +1,4 @@
-const { assertThrows, assertRejects, AssertionError } = await import("den:assert");
+import { assertThrows, assertRejects, AssertionError } from "den:assert";
 
 const thrown = assertThrows(() => {
   throw new TypeError("boom");

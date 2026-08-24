@@ -1,4 +1,6 @@
-const { assert, assertEquals } = await import("den:assert");
+import { assert, assertEquals } from "den:assert";
+import { WASM } from "./add.js";
+
 const original = WASM.buffer;
 const size = original.byteLength;
 const first = new Uint8Array(WASM)[0];

@@ -674,13 +674,18 @@ now covers numeric ids, and den-core pins `Engine::stop()` releasing `idle()`
 from a long timer.
 
 JS that a script would run is tested on the crate that owns the API
-(`den-stdlib-*/tests`), through `Engine::new` + `Engine::eval` (a `den-core`
-dev-dependency with `features = ["stdlib"]`). den-core does not host a
-stdlib smoke suite. Official harnesses (test262, spec_core, WPT) use the
-same `Engine` realm. Unit tests that call native wrappers with a `Ctx`
-(wasm `Memory::new`, worker `NativePort`) stay in `src` on a same-crate
-realm: `den-core`'s `Engine` installs a differently-compiled copy of the
-crate, so userdata/`Class<T>` TypeIds do not match.
+(`den-stdlib-*/tests/js` or `tests/webassembly`, static
+`import { … } from "den:assert"`), through `Engine::run_file` (a `den-core`
+dev-dependency with `features = ["stdlib"]`). `Engine::eval` is a global
+script, so a static `import` is a SyntaxError there; `run_file` wraps the
+path in `await import(path)` and sets `BaseUrl` from the file's parent.
+`den-core/tests/e2e/stdlib.js` is the one file that reaches every stdlib
+module from a single engine. Official harnesses (test262, spec_core, WPT)
+use the same `Engine` realm. Unit tests that call native wrappers with a
+`Ctx` (wasm `Memory::new`, worker `NativePort`, fetch `Response::from_reqwest`)
+stay in `src` on a same-crate realm: `den-core`'s `Engine` installs a
+differently-compiled copy of the crate, so userdata/`Class<T>` TypeIds do
+not match.
 
 `den-stdlib-worker/tests/workers.rs` is the layer that proves a *user* gets the worker
 semantics: it writes its fixtures under `std::env::temp_dir()` at test time and

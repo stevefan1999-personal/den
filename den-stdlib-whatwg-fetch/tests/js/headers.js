@@ -1,4 +1,4 @@
-const { assertEquals } = await import("den:assert");
+import { assertEquals } from "den:assert";
 const headers = new Headers({ "X-A": "b" });
 headers.append("X-A", "c");
 const request = new Request("http://127.0.0.1/post", {
