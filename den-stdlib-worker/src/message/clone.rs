@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use den_util::{ObjectExt, construct, instance_of_global};
+use den_util::{ObjectExt, class_id, construct, instance_of_global};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
     Symbol, Value,
@@ -45,8 +45,6 @@ impl<'js> CloneState<'js> {
 fn fail(ctx: &Ctx<'_>, what: &str) -> rquickjs::Error {
     throw_data_clone(ctx, &format!("{what} could not be cloned."))
 }
-
-fn class_id(value: &Value<'_>) -> qjs::JSClassID { unsafe { qjs::JS_GetClassID(value.as_raw()) } }
 
 fn define_data<'js>(target: &Object<'js>, key: &str, value: Value<'js>) -> Result<()> {
     target.prop(
