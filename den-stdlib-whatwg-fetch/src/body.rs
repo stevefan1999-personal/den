@@ -73,14 +73,8 @@ pub(crate) fn apply_body_types<'js>(
     if let Some(object) = body.as_object()
         && is_instance_of_global(ctx, object, "URLSearchParams")?
     {
-        ctx.globals().set("__denUsp", object.clone())?;
-        let text: String = ctx.eval(
-            r#"(function () {
-              var object = globalThis.__denUsp;
-              delete globalThis.__denUsp;
-              return "" + object;
-            })()"#,
-        )?;
+        // ToString(URLSearchParams) is the urlencoded serialization.
+        let text = den_util::coerce_string(ctx, object.clone().into_value())?;
         body = text.into_js(ctx)?;
         set_content_type_if_missing(
             headers,
