@@ -6,8 +6,8 @@ use std::cell::RefCell;
 
 use indexmap::indexmap;
 use rquickjs::{
-    ArrayBuffer, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
-    Value, class::Trace, qjs,
+    ArrayBuffer, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime,
+    Object, Result, Value, class::Trace, qjs,
 };
 use wasmtime::{AsContext, Memory as WasmMemory, ValType};
 
@@ -311,9 +311,12 @@ impl<'js> MemoryBuffers<'js> {
     fn resizable_alias(
         ctx: &Ctx<'js>, byte_length: usize, max_byte_length: usize,
     ) -> Result<ArrayBuffer<'js>> {
-        let make: Function =
-            ctx.eval("(length, maxByteLength) => new ArrayBuffer(length, { maxByteLength })")?;
-        let value: Value = make.call((byte_length as u64, max_byte_length as u64))?;
+        let options = Object::new(ctx.clone())?;
+        options.set("maxByteLength", max_byte_length as u64)?;
+        let value = ctx
+            .globals()
+            .get::<_, Constructor>("ArrayBuffer")?
+            .construct::<_, Value>((byte_length as u64, options))?;
         let buffer = ArrayBuffer::from_value(value).ok_or_else(|| {
             Exception::throw_type(ctx, "cannot create a resizable WebAssembly memory buffer")
         })?;
