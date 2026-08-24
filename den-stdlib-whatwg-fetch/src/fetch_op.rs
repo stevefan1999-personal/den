@@ -69,7 +69,7 @@ impl AbortWatch {
     }
 }
 
-fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
+pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
     if let Some(object) = signal.as_object()
         && let Ok(reason) = object.get::<_, JsValue>("reason")
         && !reason.is_undefined()
@@ -83,7 +83,22 @@ fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
     {
         return ctx.throw(exc);
     }
-    Exception::throw_type(ctx, "The operation was aborted.")
+    // Without `DOMException` (realms lacking `den:worker`) keep the spec's
+    // error name on a plain `Error` instead of degrading to `TypeError`.
+    let plain = ctx
+        .globals()
+        .get::<_, Constructor>("Error")
+        .and_then(|ctor| ctor.construct::<_, JsValue>(("The operation was aborted.",)))
+        .and_then(|exc| {
+            if let Some(object) = exc.as_object() {
+                object.set("name", "AbortError")?;
+            }
+            Ok(exc)
+        });
+    match plain {
+        Ok(exc) => ctx.throw(exc),
+        Err(_) => Exception::throw_type(ctx, "The operation was aborted."),
+    }
 }
 
 fn network_error(ctx: &Ctx<'_>, message: &str) -> Error {
