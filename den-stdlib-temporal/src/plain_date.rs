@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    Ctx, Exception, Function, JsLifetime, Object, Result, Value,
+    Coerced, Ctx, Exception, FromJs, Function, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     prelude::{Opt, This},
@@ -64,8 +64,7 @@ fn option_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
         return Ok(number.to_string());
     }
     if value.is_big_int() {
-        let to_string: Function = ctx.eval("(value) => value.toString()")?;
-        return to_string.call((value.clone(),));
+        return Ok(Coerced::<String>::from_js(ctx, value.clone())?.0);
     }
     if value.is_object() {
         let primitive = to_primitive_prefer_string(ctx, value)?;

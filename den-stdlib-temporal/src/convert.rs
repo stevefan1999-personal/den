@@ -381,8 +381,7 @@ pub fn to_big_int_i128<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i128> 
 }
 
 pub fn bigint_to_i128<'js>(ctx: &Ctx<'js>, big_int: BigInt<'js>) -> Result<i128> {
-    let to_string: Function = ctx.eval("(value) => value.toString()")?;
-    let digits: String = to_string.call((big_int,))?;
+    let digits: String = Coerced::<String>::from_js(ctx, big_int.into_value())?.0;
     digits
         .parse::<i128>()
         .map_err(|_| Exception::throw_range(ctx, "BigInt is out of range"))
