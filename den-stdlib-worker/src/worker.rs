@@ -24,7 +24,7 @@ use std::{
 use den_stdlib_core::exceptions::print_exception;
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{EasyOxcTranspiler, IsModule, infer_transpile_syntax_by_extension};
-use den_util::inherit;
+use den_util::{coerce_string, inherit};
 use rquickjs::{
     AsyncContext, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime,
     Object, Persistent, Promise, Result, Value,
@@ -344,7 +344,7 @@ fn worker_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<(S
             if value.is_undefined() {
                 "classic".to_owned()
             } else {
-                Coerced::<String>::from_js(ctx, value)?.0
+                coerce_string(ctx, value)?
             }
         }
         None => "classic".to_owned(),
@@ -361,7 +361,7 @@ fn worker_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<(S
             if value.is_undefined() {
                 String::new()
             } else {
-                Coerced::<String>::from_js(ctx, value)?.0
+                coerce_string(ctx, value)?
             }
         }
         None => String::new(),
@@ -954,7 +954,7 @@ impl<'js> Worker<'js> {
                 "Worker constructor: at least 1 argument required",
             ));
         };
-        let url = Coerced::<String>::from_js(&ctx, script_url)?.0;
+        let url = coerce_string(&ctx, script_url)?;
         let (kind, name) = worker_options(&ctx, options.0)?;
         let ports = pair(ctx.clone())?;
         let outside = ports[0].clone();
@@ -1059,7 +1059,7 @@ fn install_worker_scope<'js>(
             let hook: Function<'js> = function.0.get("_import")?;
             let mut strings = Vec::with_capacity(urls.0.len());
             for url in urls.0 {
-                strings.push(Coerced::<String>::from_js(&ctx, url)?.0);
+                strings.push(coerce_string(&ctx, url)?);
             }
             hook.call::<_, ()>((strings,))
         },

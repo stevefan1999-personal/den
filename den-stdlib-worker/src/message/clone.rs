@@ -4,7 +4,9 @@
 
 use std::collections::HashMap;
 
-use den_util::{BufferSource, ObjectExt, class_id, construct, instance_of_global};
+use den_util::{
+    BufferSource, ObjectExt, class_id, coerce_string, construct, instance_of_global,
+};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
     Symbol, Value,
@@ -292,11 +294,7 @@ fn copy<'js>(
         define_data(&tagged, "name", error_name(&name).into_js(ctx)?)?;
         if object.has_own("message")? {
             let message: Value<'js> = object.get("message")?;
-            define_data(
-                &tagged,
-                "message",
-                Coerced::<String>::from_js(ctx, message)?.0.into_js(ctx)?,
-            )?;
+            define_data(&tagged, "message", coerce_string(ctx, message)?.into_js(ctx)?)?;
         }
         if let Ok(stack) = object.get::<_, Value<'js>>("stack")
             && stack.is_string()
@@ -603,7 +601,7 @@ impl<'js> rquickjs::FromJs<'js> for OptMessage {
         if value.is_undefined() {
             Ok(Self(None))
         } else {
-            Ok(Self(Some(Coerced::<String>::from_js(ctx, value)?.0)))
+            Ok(Self(Some(coerce_string(ctx, value)?)))
         }
     }
 }
