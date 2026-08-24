@@ -38,10 +38,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use den_core::engine::Engine;
 use libtest_mimic::{Arguments, Failed, Trial};
-use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, Module, TypedArray, context::EvalOptions,
-};
 
 fn workspace_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -106,39 +104,22 @@ fn run_wast_file(wast_path: &Path, relative: &str) -> Result<(), Failed> {
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let js = AsyncRuntime::new().map_err(|error| error.to_string())?;
-        let context = AsyncContext::full(&js)
-            .await
-            .map_err(|error| error.to_string())?;
-        context
-            .async_with(async |ctx| {
-                let run = async {
-                    let (_, evaluated) = Module::evaluate_def::<den_stdlib_wasm::js_wasm, _>(
-                        ctx.clone(),
-                        "den:wasm",
-                    )?;
-                    evaluated.into_future::<()>().await?;
-                    for bytes in &outcome.compiled {
-                        ctx.globals()
-                            .set("WASM", TypedArray::new_copy(ctx.clone(), bytes.clone())?)?;
-                        let mut options = EvalOptions::default();
-                        options.global = true;
-                        options.promise = false;
-                        options.strict = true;
-                        ctx.eval_with_options::<(), _>(
-                            r#"
-                              if (!WebAssembly.validate(WASM)) {
-                                throw new Error("WebAssembly.validate returned false");
-                              }
-                            "#,
-                            options,
-                        )?;
-                    }
-                    Ok::<_, rquickjs::Error>(())
-                };
-                run.await.catch(&ctx).map_err(|error| error.to_string())
-            })
-            .await
+        let engine = Engine::new().await;
+        for bytes in &outcome.compiled {
+            let literal = bytes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            engine
+                .eval::<()>(&format!(
+                    "const WASM = new Uint8Array([{literal}]); if (!WebAssembly.validate(WASM)) \
+                     throw new Error('WebAssembly.validate returned false');"
+                ))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok::<_, String>(())
     })?;
     Ok(())
 }

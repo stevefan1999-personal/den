@@ -104,51 +104,16 @@ pub mod whatwg {
 
 #[cfg(test)]
 mod tests {
-    use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module, Promise};
-
-    /// A realm with text, fetch, worker and whatwg evaluated, in that order:
-    /// Blob uses TextEncoder, XHR uses fetch, FileReader extends EventTarget.
-    async fn realm() -> (AsyncRuntime, AsyncContext) {
-        let runtime = AsyncRuntime::new().expect("runtime");
-        let context = AsyncContext::full(&runtime).await.expect("context");
-        context
-            .with(|ctx| {
-                let install = || -> rquickjs::Result<()> {
-                    Module::evaluate_def::<den_stdlib_text::js_text, _>(ctx.clone(), "den:text")?
-                        .1
-                        .finish::<()>()?;
-                    Module::evaluate_def::<den_stdlib_whatwg_fetch::js_whatwg, _>(
-                        ctx.clone(),
-                        "den:whatwg-fetch",
-                    )?
-                    .1
-                    .finish::<()>()?;
-                    Module::evaluate_def::<den_stdlib_worker::js_worker, _>(
-                        ctx.clone(),
-                        "den:worker",
-                    )?
-                    .1
-                    .finish::<()>()?;
-                    Module::evaluate_def::<crate::js_whatwg, _>(ctx.clone(), "den:whatwg")?
-                        .1
-                        .finish::<()>()?;
-                    Ok(())
-                };
-                install()
-                    .catch(&ctx)
-                    .map_err(|error| error.to_string())
-                    .expect("den:whatwg evaluates");
-            })
-            .await;
-        (runtime, context)
-    }
+    use den_core::engine::Engine;
+    use rquickjs::{CatchResultExt, FromJs, Promise};
 
     async fn eval<T>(source: &str) -> T
     where
         T: for<'js> FromJs<'js> + Send + 'static,
     {
-        let (_runtime, context) = realm().await;
-        context
+        let engine = Engine::new().await;
+        engine
+            .context
             .with(|ctx| {
                 ctx.eval::<T, _>(source)
                     .catch(&ctx)
@@ -161,8 +126,9 @@ mod tests {
     async fn text(source: &str) -> String { eval::<String>(source).await }
 
     async fn text_async(source: &str) -> String {
-        let (_runtime, context) = realm().await;
-        context
+        let engine = Engine::new().await;
+        engine
+            .context
             .async_with(async |ctx| {
                 let run = async {
                     let promise: Promise<'_> = ctx.eval(source)?;
@@ -645,28 +611,31 @@ mod tests {
 
     #[tokio::test]
     async fn readable_stream_read_all_bytes_drains_enqueued_chunks() {
-        let (_runtime, context) = realm().await;
-        let bytes: Vec<u8> = context
-            .async_with(async |ctx| {
-                let run = async {
-                    let stream: rquickjs::Class<crate::streams::ReadableStream> = ctx.eval(
-                        r#"
-                          new ReadableStream({
-                            start(controller) {
-                              controller.enqueue(new Uint8Array([1, 2]));
-                              controller.enqueue(new Uint8Array([3]));
-                              controller.close();
-                            }
-                          })
-                        "#,
-                    )?;
-                    crate::streams::ReadableStream::read_all_bytes(&stream, ctx.clone()).await
-                };
-                run.await.catch(&ctx).map_err(|error| error.to_string())
-            })
-            .await
-            .expect("drain");
-        assert_eq!(bytes, vec![1, 2, 3]);
+        assert_eq!(
+            text_async(
+                r#"
+                  (async () => {
+                    const stream = new ReadableStream({
+                      start(controller) {
+                        controller.enqueue(new Uint8Array([1, 2]));
+                        controller.enqueue(new Uint8Array([3]));
+                        controller.close();
+                      }
+                    });
+                    const reader = stream.getReader();
+                    const out = [];
+                    for (;;) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+                      out.push(...value);
+                    }
+                    return out.join(",");
+                  })()
+                "#,
+            )
+            .await,
+            "1,2,3"
+        );
     }
 
     #[tokio::test]

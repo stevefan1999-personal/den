@@ -1095,6 +1095,7 @@ dependencies = [
 name = "den-stdlib-assert"
 version = "0.4.0"
 dependencies = [
+ "den-core",
  "den-util",
  "insta",
  "rquickjs",
@@ -1105,9 +1106,12 @@ dependencies = [
 name = "den-stdlib-console"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
  "colored",
+ "den-core",
  "indexmap",
  "rquickjs",
+ "tokio",
  "tracing",
 ]
 
@@ -1116,14 +1120,19 @@ name = "den-stdlib-core"
 version = "0.4.0"
 dependencies = [
  "base64-simd",
+ "color-eyre",
+ "den-core",
  "den-util",
  "rquickjs",
+ "tokio",
 ]
 
 [[package]]
 name = "den-stdlib-crypto"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "den-util",
  "indexmap",
  "rand 0.10.2",
@@ -1138,6 +1147,8 @@ dependencies = [
 name = "den-stdlib-fs"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "rquickjs",
  "tempfile",
  "tokio",
@@ -1148,6 +1159,7 @@ name = "den-stdlib-networking"
 version = "0.4.0"
 dependencies = [
  "delegate-attr",
+ "den-core",
  "derive_more",
  "either",
  "futures",
@@ -1164,6 +1176,8 @@ dependencies = [
 name = "den-stdlib-process"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "either",
  "indexmap",
  "libc",
@@ -1186,6 +1200,8 @@ dependencies = [
 name = "den-stdlib-temporal"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "den-util",
  "indexmap",
  "libtest-mimic",
@@ -1198,17 +1214,22 @@ dependencies = [
 name = "den-stdlib-text"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "derive_more",
  "either",
  "encoding_rs",
  "indexmap",
  "rquickjs",
+ "tokio",
 ]
 
 [[package]]
 name = "den-stdlib-timer"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "den-stdlib-core",
  "rquickjs",
  "tokio",
@@ -1240,6 +1261,8 @@ name = "den-stdlib-whatwg"
 version = "0.4.0"
 dependencies = [
  "base64-simd",
+ "color-eyre",
+ "den-core",
  "den-stdlib-networking",
  "den-stdlib-text",
  "den-stdlib-whatwg-fetch",
@@ -1259,6 +1282,8 @@ name = "den-stdlib-whatwg-fetch"
 version = "0.4.0"
 dependencies = [
  "base64-simd",
+ "color-eyre",
+ "den-core",
  "den-stdlib-text",
  "den-stdlib-whatwg",
  "den-stdlib-worker",

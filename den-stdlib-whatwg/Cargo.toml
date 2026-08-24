@@ -27,6 +27,8 @@ urlpattern.workspace = true
 test = []
 
 [dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
 den-stdlib-text.workspace = true
 den-stdlib-whatwg-fetch.workspace = true
 den-stdlib-worker = { workspace = true, features = ["transpile"] }

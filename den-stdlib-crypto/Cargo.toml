@@ -20,6 +20,8 @@ sha2.workspace = true
 uuid = { workspace = true, features = ["fast-rng", "v4"] }
 
 [dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

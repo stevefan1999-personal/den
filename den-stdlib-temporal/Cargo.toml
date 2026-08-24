@@ -17,6 +17,8 @@ rquickjs = { workspace = true, features = ["macro", "futures"] }
 temporal_rs = { workspace = true, features = ["sys", "compiled_data", "sys-local"] }
 
 [dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
 libtest-mimic.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

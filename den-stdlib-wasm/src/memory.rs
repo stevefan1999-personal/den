@@ -737,8 +737,6 @@ mod tests {
 /// them.
 #[cfg(test)]
 mod javascript_tests {
-    use rquickjs::{Context, Module, Runtime};
-
     const EXERCISE: &str = r#"
       const assert = (holds, what) => { if (!holds) throw new Error(what); };
 
@@ -777,16 +775,18 @@ mod javascript_tests {
 
     #[test]
     fn the_wasm_objects_behave_the_way_scripts_expect() {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| {
-            let (_, evaluation) =
-                Module::evaluate_def::<crate::js_wasm, _>(ctx.clone(), "den:wasm")
-                    .expect("den:wasm evaluates");
-            evaluation.finish::<()>().expect("den:wasm finishes");
-            let held: bool = ctx.eval(EXERCISE).expect("every assertion holds");
-            assert!(held);
-        })
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let held: bool = den_core::engine::Engine::new()
+                    .await
+                    .eval(EXERCISE)
+                    .await
+                    .expect("every assertion holds");
+                assert!(held);
+            })
     }
 }
 

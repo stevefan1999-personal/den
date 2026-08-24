@@ -638,7 +638,7 @@ at `vendor/test262` (not a second vendored copy). Temporal tests are
 every official `.js` file there as its own nextest test
 (`cargo nextest run -p den-stdlib-temporal --test test262`): it concatenates
 `harness/assert.js`, `harness/sta.js` and any frontmatter `$INCLUDE`s, then
-evals the official file body raw with `den:temporal` installed. Tests whose
+evals the official file body through `Engine` with `den:temporal` installed. Tests whose
 `features` we cannot execute yet (`Intl*`, `module`, `async`, negative) are
 registered and ignored, not hidden. The WebAssembly core `.wast` tree and the
 WPT testharness trees use the same per-file nextest shape
@@ -673,7 +673,16 @@ networking, and den-core import-map/attribute suites on top. The timer crate
 now covers numeric ids, and den-core pins `Engine::stop()` releasing `idle()`
 from a long timer.
 
-`den-core/tests/workers.rs` is the layer that proves a *user* gets the worker
+JS that a script would run is tested on the crate that owns the API
+(`den-stdlib-*/tests`), through `Engine::new` + `Engine::eval` (a `den-core`
+dev-dependency with `features = ["stdlib"]`). den-core does not host a
+stdlib smoke suite. Official harnesses (test262, spec_core, WPT) use the
+same `Engine` realm. Unit tests that call native wrappers with a `Ctx`
+(wasm `Memory::new`, worker `NativePort`) stay in `src` on a same-crate
+realm: `den-core`'s `Engine` installs a differently-compiled copy of the
+crate, so userdata/`Class<T>` TypeIds do not match.
+
+`den-stdlib-worker/tests/workers.rs` is the layer that proves a *user* gets the worker
 semantics: it writes its fixtures under `std::env::temp_dir()` at test time and
 drives them through `Engine::run_file`, so the loaders, the transpiler, the
 `BaseUrl` and `Engine::shutdown`'s thread reaping are all in the path. Every
