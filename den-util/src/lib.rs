@@ -136,18 +136,66 @@ impl Probe for Ctx<'_> {
 /// Standard-alphabet base64 with padding.
 pub fn base64_encode(bytes: &[u8]) -> String { BASE64_STANDARD.encode(bytes) }
 
-/// WHATWG forgiving-base64 decode: ASCII whitespace stripped, padding optional.
+/// WHATWG forgiving-base64 decode: ASCII whitespace stripped, non-zero
+/// trailing bits ignored, and padding dropped only when the spec says so.
 pub fn base64_forgiving_decode(text: &str) -> std::result::Result<Vec<u8>, base64::DecodeError> {
     use base64::{
         alphabet,
-        engine::{GeneralPurpose, general_purpose},
+        engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
     };
 
-    const FORGIVING: GeneralPurpose =
-        GeneralPurpose::new(&alphabet::STANDARD, general_purpose::PAD_INDIFFERENT);
-    let stripped: String = text
+    const FORGIVING: GeneralPurpose = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+            .with_decode_allow_trailing_bits(true),
+    );
+    let mut stripped: String = text
         .chars()
         .filter(|char| !char.is_ascii_whitespace())
         .collect();
+    // Infra only strips one or two trailing `=` when the padded length is a
+    // multiple of four; any other `=` stays and fails the alphabet check.
+    if stripped.len() % 4 == 0 {
+        let pads = stripped
+            .bytes()
+            .rev()
+            .take_while(|&byte| byte == b'=')
+            .count();
+        if pads == 1 || pads == 2 {
+            stripped.truncate(stripped.len() - pads);
+        }
+    }
     FORGIVING.decode(stripped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_forgiving_decode;
+
+    /// WPT `fetch/data-urls/base64.any.js` cases that a strict standard
+    /// decoder rejects: missing padding and non-zero trailing bits.
+    #[test]
+    fn forgiving_decode_matches_wpt() {
+        assert_eq!(base64_forgiving_decode("ab").unwrap(), [0x69]);
+        assert_eq!(base64_forgiving_decode("ab==").unwrap(), [0x69]);
+        assert_eq!(
+            base64_forgiving_decode("ab\t\n\u{c}\r =\t\n\u{c}\r =").unwrap(),
+            [0x69]
+        );
+        assert_eq!(base64_forgiving_decode("A/").unwrap(), [0x03]);
+        assert_eq!(base64_forgiving_decode("AA/").unwrap(), [0x00, 0x0f]);
+        assert_eq!(base64_forgiving_decode("YR").unwrap(), [0x61]);
+        assert_eq!(base64_forgiving_decode("abc=").unwrap(), [0x69, 0xb7]);
+    }
+
+    #[test]
+    fn forgiving_decode_rejects_garbage() {
+        // Length % 4 == 1 is the one unrecoverable length; `$` is off-alphabet.
+        assert!(base64_forgiving_decode("abcde").is_err());
+        assert!(base64_forgiving_decode("a$").is_err());
+        // Spec strips only one or two `=` on a multiple-of-four length.
+        assert!(base64_forgiving_decode("ab=").is_err());
+        assert!(base64_forgiving_decode("a===").is_err());
+    }
 }
