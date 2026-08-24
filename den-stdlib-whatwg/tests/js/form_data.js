@@ -1,0 +1,16 @@
+import { assert, assertEquals } from "den:assert";
+const form = new FormData();
+form.append("a", "1");
+form.append("a", "2");
+form.set("b", "3");
+form.append("c", new Blob(["x"], { type: "text/plain" }), "x.txt");
+const file = form.get("c");
+const multipart = form[Symbol.for("den.toMultipartBlob")]();
+assertEquals(form.get("a"), "1");
+assertEquals(form.getAll("a").join(","), "1,2");
+assert(form.has("b"));
+assertEquals([...form.keys()].join(","), "a,a,b,c");
+assert(file instanceof File);
+assertEquals(file.name, "x.txt");
+assert(multipart.type.startsWith("multipart/form-data; boundary="));
+assert(multipart.size > 0);

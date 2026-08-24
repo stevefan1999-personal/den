@@ -1,5 +1,0 @@
----
-source: den-stdlib-assert/tests/assert.rs
-expression: names
----
-AssertionError,assert,assertAlmostEquals,assertArrayIncludes,assertEquals,assertExists,assertFalse,assertGreater,assertGreaterOrEqual,assertInstanceOf,assertIsError,assertLess,assertLessOrEqual,assertMatch,assertNotEquals,assertNotInstanceOf,assertNotMatch,assertNotStrictEquals,assertObjectMatch,assertRejects,assertStrictEquals,assertStringIncludes,assertThrows,equal,fail,unimplemented,unreachable

@@ -1,15 +1,18 @@
+use std::path::PathBuf;
+
 use color_eyre::eyre;
 use den_core::engine::Engine;
 
-async fn run(source: &str) -> eyre::Result<()> {
-    let _: String = Engine::new()
-        .await
-        .eval(&format!("{source}\n\"ok\""))
-        .await?;
+fn case(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/js").join(name)
+}
+
+async fn run(name: &str) -> eyre::Result<()> {
+    Engine::new().await.run_file::<()>(case(name)).await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn base64_round_trips_through_btoa_and_atob() -> eyre::Result<()> {
-    run(include_str!("js/base64.js")).await
+    run("base64.js").await
 }

@@ -578,9 +578,18 @@ enum OutKind {
     Bytes,
     Raw,
     Huge,
-    Trickle { delay_ms: u64, count: u32 },
-    Infinite { state_key: String, abort_key: String },
-    BadChunk { delay_ms: u64, count: u32 },
+    Trickle {
+        delay_ms: u64,
+        count:    u32,
+    },
+    Infinite {
+        state_key: String,
+        abort_key: String,
+    },
+    BadChunk {
+        delay_ms: u64,
+        count:    u32,
+    },
 }
 
 impl HttpOut {
@@ -632,14 +641,20 @@ fn percent_decode(input: &str) -> String {
                 continue;
             }
         }
-        out.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
+        out.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
         index += 1;
     }
     out.into_iter().map(char::from).collect()
 }
 
 fn latin1_bytes(text: &str) -> Vec<u8> {
-    text.chars().map(|ch| u32::from(ch).min(0xff) as u8).collect()
+    text.chars()
+        .map(|ch| u32::from(ch).min(0xff) as u8)
+        .collect()
 }
 
 fn header_get<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
@@ -689,7 +704,11 @@ fn apply_pipes(query: &str, headers: &mut Vec<(String, String)>) {
             break;
         }
         let inside: String = chars[..end].iter().collect();
-        rest = &rest[rest.char_indices().nth(end).map(|(i, _)| i + 1).unwrap_or(rest.len())..];
+        rest = &rest[rest
+            .char_indices()
+            .nth(end)
+            .map(|(i, _)| i + 1)
+            .unwrap_or(rest.len())..];
         let (value, append) = if let Some(stripped) = inside.strip_suffix(",True") {
             (stripped.trim().to_string(), true)
         } else {
@@ -708,10 +727,12 @@ fn b64decode(input: &str) -> Option<Vec<u8>> {
     let mut filtered: Vec<u8> = input
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
-        .map(|byte| match byte {
-            b'-' => b'+',
-            b'_' => b'/',
-            other => other,
+        .map(|byte| {
+            match byte {
+                b'-' => b'+',
+                b'_' => b'/',
+                other => other,
+            }
         })
         .collect();
     while filtered.len() % 4 != 0 {
@@ -807,7 +828,10 @@ fn handle_py(
             if q.contains_key("cors") {
                 cors_echo(headers, &mut out);
                 out.push(("Access-Control-Allow-Credentials".into(), "true".into()));
-                out.push(("Access-Control-Allow-Methods".into(), "GET, POST, HEAD, OPTIONS".into()));
+                out.push((
+                    "Access-Control-Allow-Methods".into(),
+                    "GET, POST, HEAD, OPTIONS".into(),
+                ));
                 if let Some(list) = q.get("headers") {
                     let exposed = list
                         .split('|')
@@ -836,9 +860,7 @@ fn handle_py(
                 ("X-Request-Method".into(), method.into()),
                 (
                     "X-Request-Content-Length".into(),
-                    header_get(headers, "content-length")
-                        .unwrap_or("NO")
-                        .into(),
+                    header_get(headers, "content-length").unwrap_or("NO").into(),
                 ),
                 (
                     "X-Request-Content-Type".into(),
@@ -866,9 +888,7 @@ fn handle_py(
                 ),
                 (
                     "x-request-content-length".into(),
-                    header_get(headers, "content-length")
-                        .unwrap_or("NO")
-                        .into(),
+                    header_get(headers, "content-length").unwrap_or("NO").into(),
                 ),
                 (
                     "x-request-content-encoding".into(),
@@ -891,9 +911,18 @@ fn handle_py(
             ];
             if q.contains_key("cors") {
                 cors_echo(headers, &mut out);
-                out.push(("Access-Control-Allow-Methods".into(), "GET, POST, PUT, FOO".into()));
-                out.push(("Access-Control-Allow-Headers".into(), "x-test, x-foo".into()));
-                out.push(("Access-Control-Expose-Headers".into(), "x-request-method".into()));
+                out.push((
+                    "Access-Control-Allow-Methods".into(),
+                    "GET, POST, PUT, FOO".into(),
+                ));
+                out.push((
+                    "Access-Control-Allow-Headers".into(),
+                    "x-test, x-foo".into(),
+                ));
+                out.push((
+                    "Access-Control-Expose-Headers".into(),
+                    "x-request-method".into(),
+                ));
             }
             Some(HttpOut {
                 status:      200,
@@ -920,46 +949,50 @@ fn handle_py(
             })
         }
         "redirect.py" | "redirect.h2.py" => Some(handle_redirect(state, method, path, &q, headers)),
-        "redirect-empty-location.py" => Some(HttpOut {
-            status:      302,
-            status_text: "Found".into(),
-            headers:     vec![("Location".into(), String::new())],
-            body:        Vec::new(),
-            kind:        OutKind::Bytes,
-        }),
+        "redirect-empty-location.py" => {
+            Some(HttpOut {
+                status:      302,
+                status_text: "Found".into(),
+                headers:     vec![("Location".into(), String::new())],
+                body:        Vec::new(),
+                kind:        OutKind::Bytes,
+            })
+        }
         "preflight.py" => Some(handle_preflight(state, method, path, &q, headers)),
         "cache.py" if path.contains("/request/resources/") => {
             Some(handle_request_cache(state, path, &q, headers))
         }
-        "cache.py" => Some(HttpOut {
-            status:      if header_get(headers, "if-none-match") == Some("\"123abc\"") {
-                304
-            } else {
-                200
-            },
-            status_text: if header_get(headers, "if-none-match") == Some("\"123abc\"") {
-                "Not Modified".into()
-            } else {
-                "OK".into()
-            },
-            headers:     {
-                let not_modified = header_get(headers, "if-none-match") == Some("\"123abc\"");
-                let mut outgoing = vec![
-                    ("ETag".into(), "\"123abc\"".into()),
-                    ("Content-Type".into(), "text/plain".into()),
-                ];
-                if not_modified {
-                    outgoing.push(("X-HTTP-STATUS".into(), "304".into()));
-                }
-                outgoing
-            },
-            body:        if header_get(headers, "if-none-match") == Some("\"123abc\"") {
-                Vec::new()
-            } else {
-                b"lorem ipsum dolor sit amet".to_vec()
-            },
-            kind:        OutKind::Bytes,
-        }),
+        "cache.py" => {
+            Some(HttpOut {
+                status:      if header_get(headers, "if-none-match") == Some("\"123abc\"") {
+                    304
+                } else {
+                    200
+                },
+                status_text: if header_get(headers, "if-none-match") == Some("\"123abc\"") {
+                    "Not Modified".into()
+                } else {
+                    "OK".into()
+                },
+                headers:     {
+                    let not_modified = header_get(headers, "if-none-match") == Some("\"123abc\"");
+                    let mut outgoing = vec![
+                        ("ETag".into(), "\"123abc\"".into()),
+                        ("Content-Type".into(), "text/plain".into()),
+                    ];
+                    if not_modified {
+                        outgoing.push(("X-HTTP-STATUS".into(), "304".into()));
+                    }
+                    outgoing
+                },
+                body:        if header_get(headers, "if-none-match") == Some("\"123abc\"") {
+                    Vec::new()
+                } else {
+                    b"lorem ipsum dolor sit amet".to_vec()
+                },
+                kind:        OutKind::Bytes,
+            })
+        }
         "authentication.py" => {
             let auth = header_get(headers, "authorization").unwrap_or("");
             if auth == "Basic dXNlcjpwYXNzd29yZA==" {
@@ -982,7 +1015,10 @@ fn handle_py(
             let mut out = vec![
                 ("Content-Type".into(), "text/html".into()),
                 ("Cache-Control".into(), "no-cache".into()),
-                ("Access-Control-Allow-Headers".into(), "Authorization".into()),
+                (
+                    "Access-Control-Allow-Headers".into(),
+                    "Authorization".into(),
+                ),
             ];
             cors_echo(headers, &mut out);
             let body = header_get(headers, "authorization").unwrap_or("none");
@@ -1051,63 +1087,79 @@ fn handle_py(
                 .ok()
                 .and_then(|mut stash| stash.remove(&stash_key(path, &token)))
                 .is_some();
-            Some(HttpOut::ok(if found { b"1".to_vec() } else { b"0".to_vec() }, "text/plain"))
+            Some(HttpOut::ok(
+                if found { b"1".to_vec() } else { b"0".to_vec() },
+                "text/plain",
+            ))
         }
-        "trickle.py" => Some(HttpOut {
-            status:      200,
-            status_text: "OK".into(),
-            headers:     if q.contains_key("notype") {
-                vec![("Transfer-Encoding".into(), "chunked".into())]
-            } else {
-                vec![
+        "trickle.py" => {
+            Some(HttpOut {
+                status:      200,
+                status_text: "OK".into(),
+                headers:     if q.contains_key("notype") {
+                    vec![("Transfer-Encoding".into(), "chunked".into())]
+                } else {
+                    vec![
+                        ("Content-Type".into(), "text/plain".into()),
+                        ("Transfer-Encoding".into(), "chunked".into()),
+                    ]
+                },
+                body:        Vec::new(),
+                kind:        OutKind::Trickle {
+                    delay_ms: q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(500),
+                    count:    q.get("count").and_then(|v| v.parse().ok()).unwrap_or(50),
+                },
+            })
+        }
+        "huge-response.py" => {
+            Some(HttpOut {
+                status:      200,
+                status_text: "OK".into(),
+                headers:     vec![
                     ("Content-Type".into(), "text/plain".into()),
-                    ("Transfer-Encoding".into(), "chunked".into()),
-                ]
-            },
-            body:        Vec::new(),
-            kind:        OutKind::Trickle {
-                delay_ms: q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(500),
-                count:    q.get("count").and_then(|v| v.parse().ok()).unwrap_or(50),
-            },
-        }),
-        "huge-response.py" => Some(HttpOut {
-            status:      200,
-            status_text: "OK".into(),
-            headers:     vec![
-                ("Content-Type".into(), "text/plain".into()),
-                ("Content-Length".into(), (8u64 * 1024 * 1024 * 1024).to_string()),
-                ("Cache-Control".into(), "max-age=86400".into()),
-            ],
-            body:        Vec::new(),
-            kind:        OutKind::Huge,
-        }),
-        "infinite-slow-response.py" => Some(HttpOut {
-            status:      200,
-            status_text: "OK".into(),
-            headers:     vec![("Content-Type".into(), "text/plain".into())],
-            body:        Vec::new(),
-            kind:        OutKind::Infinite {
-                state_key: q.get("stateKey").cloned().unwrap_or_default(),
-                abort_key: q.get("abortKey").cloned().unwrap_or_default(),
-            },
-        }),
-        "bad-chunk-encoding.py" => Some(HttpOut {
-            status:      200,
-            status_text: "OK".into(),
-            headers:     vec![("Transfer-Encoding".into(), "chunked".into())],
-            body:        Vec::new(),
-            kind:        OutKind::BadChunk {
-                delay_ms: q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(1000),
-                count:    q.get("count").and_then(|v| v.parse().ok()).unwrap_or(50),
-            },
-        }),
-        "bad-gzip-body.py" => Some(HttpOut {
-            status:      200,
-            status_text: "OK".into(),
-            headers:     vec![("Content-Encoding".into(), "gzip".into())],
-            body:        b"not actually gzip".to_vec(),
-            kind:        OutKind::Bytes,
-        }),
+                    (
+                        "Content-Length".into(),
+                        (8u64 * 1024 * 1024 * 1024).to_string(),
+                    ),
+                    ("Cache-Control".into(), "max-age=86400".into()),
+                ],
+                body:        Vec::new(),
+                kind:        OutKind::Huge,
+            })
+        }
+        "infinite-slow-response.py" => {
+            Some(HttpOut {
+                status:      200,
+                status_text: "OK".into(),
+                headers:     vec![("Content-Type".into(), "text/plain".into())],
+                body:        Vec::new(),
+                kind:        OutKind::Infinite {
+                    state_key: q.get("stateKey").cloned().unwrap_or_default(),
+                    abort_key: q.get("abortKey").cloned().unwrap_or_default(),
+                },
+            })
+        }
+        "bad-chunk-encoding.py" => {
+            Some(HttpOut {
+                status:      200,
+                status_text: "OK".into(),
+                headers:     vec![("Transfer-Encoding".into(), "chunked".into())],
+                body:        Vec::new(),
+                kind:        OutKind::BadChunk {
+                    delay_ms: q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(1000),
+                    count:    q.get("count").and_then(|v| v.parse().ok()).unwrap_or(50),
+                },
+            })
+        }
+        "bad-gzip-body.py" => {
+            Some(HttpOut {
+                status:      200,
+                status_text: "OK".into(),
+                headers:     vec![("Content-Encoding".into(), "gzip".into())],
+                body:        b"not actually gzip".to_vec(),
+                kind:        OutKind::Bytes,
+            })
+        }
         "hello.py" => {
             let mut out = Vec::new();
             if let Some(corp) = q.get("corp") {
@@ -1128,7 +1180,8 @@ fn handle_py(
         "content-length.py" => {
             let extra = q.get("length").cloned().unwrap_or_default();
             let mut raw = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain;charset=UTF-8\r\nConnection: close\r\n{extra}\r\n\r\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain;charset=UTF-8\r\nConnection: \
+                 close\r\n{extra}\r\n\r\n"
             )
             .into_bytes();
             raw.extend_from_slice(b"Fact: this is really forty-two bytes long.");
@@ -1165,13 +1218,15 @@ fn handle_py(
                 kind:        OutKind::Bytes,
             })
         }
-        "network-partition-key.py" => Some(HttpOut {
-            status:      q.get("status").and_then(|v| v.parse().ok()).unwrap_or(421),
-            status_text: "Misdirected Request".into(),
-            headers:     vec![("Content-Type".into(), "text/plain".into())],
-            body:        b"ok. Request was sent 1 times. 1 connections were created.".to_vec(),
-            kind:        OutKind::Bytes,
-        }),
+        "network-partition-key.py" => {
+            Some(HttpOut {
+                status:      q.get("status").and_then(|v| v.parse().ok()).unwrap_or(421),
+                status_text: "Misdirected Request".into(),
+                headers:     vec![("Content-Type".into(), "text/plain".into())],
+                body:        b"ok. Request was sent 1 times. 1 connections were created.".to_vec(),
+                kind:        OutKind::Bytes,
+            })
+        }
         _ => None,
     }
 }
@@ -1308,7 +1363,10 @@ fn handle_preflight(
             }
             stash.insert(key.clone(), stored);
         }
-        let status = q.get("preflight_status").and_then(|v| v.parse().ok()).unwrap_or(200);
+        let status = q
+            .get("preflight_status")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200);
         return HttpOut {
             status,
             status_text: "OK".into(),
@@ -1322,8 +1380,7 @@ fn handle_preflight(
         .and_then(|key| state.stash.lock().ok()?.get(key).cloned())
         .unwrap_or(serde_json::json!({}));
     if q.contains_key("checkUserAgentHeaderInPreflight")
-        && header_get(headers, "user-agent")
-            != stored.get("user_agent").and_then(|v| v.as_str())
+        && header_get(headers, "user-agent") != stored.get("user_agent").and_then(|v| v.as_str())
     {
         return HttpOut {
             status:      400,
@@ -1340,14 +1397,22 @@ fn handle_preflight(
     ));
     out.push((
         "x-did-preflight".into(),
-        stored.get("preflight").and_then(|v| v.as_str()).unwrap_or("0").into(),
+        stored
+            .get("preflight")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0")
+            .into(),
     ));
     if let Some(acrh) = stored.get("acrh").and_then(|v| v.as_str()) {
         out.push(("x-control-request-headers".into(), acrh.into()));
     }
     out.push((
         "x-preflight-referrer".into(),
-        stored.get("referrer").and_then(|v| v.as_str()).unwrap_or("").into(),
+        stored
+            .get("referrer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into(),
     ));
     out.push((
         "x-referrer".into(),
@@ -1386,7 +1451,10 @@ fn handle_request_cache(
     let mut state_entry = serde_json::Map::new();
     if !q.contains_key("ignore") {
         if let Some(value) = header_get(headers, "if-none-match") {
-            state_entry.insert("If-None-Match".into(), serde_json::Value::String(value.into()));
+            state_entry.insert(
+                "If-None-Match".into(),
+                serde_json::Value::String(value.into()),
+            );
         }
         if let Some(value) = header_get(headers, "if-modified-since") {
             state_entry.insert(
@@ -1398,7 +1466,10 @@ fn handle_request_cache(
             state_entry.insert("Pragma".into(), serde_json::Value::String(value.into()));
         }
         if let Some(value) = header_get(headers, "cache-control") {
-            state_entry.insert("Cache-Control".into(), serde_json::Value::String(value.into()));
+            state_entry.insert(
+                "Cache-Control".into(),
+                serde_json::Value::String(value.into()),
+            );
         }
     }
     if let Ok(mut stash) = state.stash.lock() {
@@ -1437,9 +1508,8 @@ fn handle_request_cache(
     let not_modified = tag
         .as_deref()
         .is_some_and(|tag| header_get(headers, "if-none-match") == Some(tag))
-        || q.get("date").is_some_and(|date| {
-            header_get(headers, "if-modified-since") == Some(date.as_str())
-        });
+        || q.get("date")
+            .is_some_and(|date| header_get(headers, "if-modified-since") == Some(date.as_str()));
     if not_modified {
         return HttpOut {
             status:      304,
@@ -1533,13 +1603,14 @@ fn handle_http_cache(
             };
             let name = pair.first().and_then(|v| v.as_str()).unwrap_or("");
             let mut value = match pair.get(1) {
-                Some(serde_json::Value::Number(number)) => {
-                    http_date(number.as_i64().unwrap_or(0))
-                }
+                Some(serde_json::Value::Number(number)) => http_date(number.as_i64().unwrap_or(0)),
                 Some(serde_json::Value::String(text)) => text.clone(),
                 _ => String::new(),
             };
-            if matches!(name.to_ascii_lowercase().as_str(), "location" | "content-location") {
+            if matches!(
+                name.to_ascii_lowercase().as_str(),
+                "location" | "content-location"
+            ) {
                 let host = header_get(headers, "host").unwrap_or("localhost");
                 let request_url = if query.is_empty() {
                     format!("http://{host}{path}")
@@ -1569,14 +1640,20 @@ fn handle_http_cache(
     }
     let mut req_headers = serde_json::Map::new();
     for (name, value) in headers {
-        req_headers.insert(name.to_ascii_lowercase(), serde_json::Value::String(value.clone()));
+        req_headers.insert(
+            name.to_ascii_lowercase(),
+            serde_json::Value::String(value.clone()),
+        );
     }
     server_state.push(serde_json::json!({
         "request_method": method,
         "request_headers": req_headers,
         "response_headers": noted,
     }));
-    out.push(("Server-Request-Count".into(), server_state.len().to_string()));
+    out.push((
+        "Server-Request-Count".into(),
+        server_state.len().to_string(),
+    ));
     if let Ok(mut stash) = state.stash.lock() {
         stash.insert(key, serde_json::Value::Array(server_state));
     }
@@ -1604,11 +1681,11 @@ fn handle_http_cache(
             .to_vec()
     };
     HttpOut {
-        status:      code,
+        status: code,
         status_text: phrase,
-        headers:     out,
+        headers: out,
         body,
-        kind:        OutKind::Bytes,
+        kind: OutKind::Bytes,
     }
 }
 
@@ -1629,12 +1706,10 @@ fn guess_type(path: &str) -> &'static str {
 }
 
 fn load_sidecar(path: &Path) -> Vec<(String, String)> {
-    let Some(text) = fs::read_to_string(path.with_extension(
-        format!(
-            "{}.headers",
-            path.extension().and_then(|e| e.to_str()).unwrap_or("")
-        ),
-    ))
+    let Some(text) = fs::read_to_string(path.with_extension(format!(
+        "{}.headers",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("")
+    )))
     .ok()
     .or_else(|| {
         let name = path.file_name()?.to_str()?;
@@ -1653,40 +1728,51 @@ fn synthetic_xhr(path: &str) -> Option<HttpOut> {
         "/xhr/resources/header-content-length.asis" => {
             vec![("Content-Length".into(), "0".into())]
         }
-        "/xhr/resources/header-content-length-twice.asis" => vec![
-            ("Content-Length".into(), "0".into()),
-            ("Content-Length".into(), "0".into()),
-        ],
-        "/xhr/resources/headers-double-empty.asis" => {
-            vec![("double-trouble".into(), String::new()), ("double-trouble".into(), String::new())]
+        "/xhr/resources/header-content-length-twice.asis" => {
+            vec![
+                ("Content-Length".into(), "0".into()),
+                ("Content-Length".into(), "0".into()),
+            ]
         }
-        "/xhr/resources/headers-basic.asis" => vec![
-            ("foo-test".into(), "1".into()),
-            ("foo-test".into(), "2".into()),
-            ("foo-test".into(), "3".into()),
-        ],
-        "/xhr/resources/headers-some-are-empty.asis" => vec![
-            ("heya".into(), String::new()),
-            ("heya".into(), "\u{000B}\u{000C}".into()),
-            ("heya".into(), "1".into()),
-            ("heya".into(), String::new()),
-            ("heya".into(), String::new()),
-            ("heya".into(), "2".into()),
-        ],
-        "/xhr/resources/headers-www-authenticate.asis" => vec![
-            ("www-authenticate".into(), "1".into()),
-            ("www-authenticate".into(), "2".into()),
-            ("www-authenticate".into(), "3".into()),
-            ("www-authenticate".into(), "4".into()),
-        ],
+        "/xhr/resources/headers-double-empty.asis" => {
+            vec![
+                ("double-trouble".into(), String::new()),
+                ("double-trouble".into(), String::new()),
+            ]
+        }
+        "/xhr/resources/headers-basic.asis" => {
+            vec![
+                ("foo-test".into(), "1".into()),
+                ("foo-test".into(), "2".into()),
+                ("foo-test".into(), "3".into()),
+            ]
+        }
+        "/xhr/resources/headers-some-are-empty.asis" => {
+            vec![
+                ("heya".into(), String::new()),
+                ("heya".into(), "\u{000B}\u{000C}".into()),
+                ("heya".into(), "1".into()),
+                ("heya".into(), String::new()),
+                ("heya".into(), String::new()),
+                ("heya".into(), "2".into()),
+            ]
+        }
+        "/xhr/resources/headers-www-authenticate.asis" => {
+            vec![
+                ("www-authenticate".into(), "1".into()),
+                ("www-authenticate".into(), "2".into()),
+                ("www-authenticate".into(), "3".into()),
+                ("www-authenticate".into(), "4".into()),
+            ]
+        }
         _ => return None,
     };
     Some(HttpOut {
-        status:      200,
+        status: 200,
         status_text: "OK".into(),
         headers,
-        body:        Vec::new(),
-        kind:        OutKind::Bytes,
+        body: Vec::new(),
+        kind: OutKind::Bytes,
     })
 }
 
@@ -1699,7 +1785,10 @@ fn handle_static(state: &HttpState, path: &str) -> Option<HttpOut> {
                 status:      200,
                 status_text: "OK".into(),
                 headers:     vec![("Content-Type".into(), "application/json".into())],
-                body:        [0xff, 0xfe].into_iter().chain("{\"a\":1}".encode_utf16().flat_map(|u| u.to_le_bytes())).collect(),
+                body:        [0xff, 0xfe]
+                    .into_iter()
+                    .chain("{\"a\":1}".encode_utf16().flat_map(|u| u.to_le_bytes()))
+                    .collect(),
                 kind:        OutKind::Bytes,
             });
         }
@@ -1722,11 +1811,11 @@ fn handle_static(state: &HttpState, path: &str) -> Option<HttpOut> {
         headers.push(("Content-Type".into(), guess_type(path).into()));
     }
     Some(HttpOut {
-        status:      200,
+        status: 200,
         status_text: "OK".into(),
         headers,
-        body:        fs::read(&file).ok()?,
-        kind:        OutKind::Bytes,
+        body: fs::read(&file).ok()?,
+        kind: OutKind::Bytes,
     })
 }
 
@@ -1736,18 +1825,22 @@ fn dispatch(
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut outgoing = handle_py(state, method, path, query, headers, body)
         .or_else(|| handle_static(state, path))
-        .unwrap_or_else(|| HttpOut {
-            status:      404,
-            status_text: "Not Found".into(),
-            headers:     vec![("Content-Type".into(), "text/plain".into())],
-            body:        format!("missing {path}").into_bytes(),
-            kind:        OutKind::Bytes,
+        .unwrap_or_else(|| {
+            HttpOut {
+                status:      404,
+                status_text: "Not Found".into(),
+                headers:     vec![("Content-Type".into(), "text/plain".into())],
+                body:        format!("missing {path}").into_bytes(),
+                kind:        OutKind::Bytes,
+            }
         });
     apply_pipes(query, &mut outgoing.headers);
     outgoing
 }
 
-async fn read_more(stream: &mut tokio::net::TcpStream, buf: &mut Vec<u8>, need: usize) -> io::Result<()> {
+async fn read_more(
+    stream: &mut tokio::net::TcpStream, buf: &mut Vec<u8>, need: usize,
+) -> io::Result<()> {
     let mut tmp = [0u8; 4096];
     while buf.len() < need {
         stream.readable().await?;
@@ -1831,15 +1924,15 @@ async fn read_http(
             break;
         }
     }
-    Err(io::Error::new(ErrorKind::UnexpectedEof, "incomplete HTTP request"))
+    Err(io::Error::new(
+        ErrorKind::UnexpectedEof,
+        "incomplete HTTP request",
+    ))
 }
 
 fn format_status(outgoing: &HttpOut) -> Vec<u8> {
-    let mut bytes = format!(
-        "HTTP/1.1 {} {}\r\n",
-        outgoing.status, outgoing.status_text
-    )
-    .into_bytes();
+    let mut bytes =
+        format!("HTTP/1.1 {} {}\r\n", outgoing.status, outgoing.status_text).into_bytes();
     let mut has_length = false;
     for (name, value) in &outgoing.headers {
         if name.eq_ignore_ascii_case("content-length") {
@@ -1950,7 +2043,9 @@ async fn serve_http(listener: tokio::net::TcpListener, state: Arc<HttpState>) {
                 return;
             };
             let outgoing = dispatch(&state, &method, &target, &headers, &body);
-            let path = target.split_once('?').map_or(target.as_str(), |(path, _)| path);
+            let path = target
+                .split_once('?')
+                .map_or(target.as_str(), |(path, _)| path);
             let _ = write_outgoing(&mut stream, outgoing, &state, path).await;
         });
     }
@@ -1996,11 +2091,7 @@ async fn run_case(
         (0, 0)
     };
     let ports = WptPorts { http0, http1, ws };
-    let host = if needs_http {
-        "localhost"
-    } else {
-        "127.0.0.1"
-    };
+    let host = if needs_http { "localhost" } else { "127.0.0.1" };
     let body =
         fs::read_to_string(case_path).map_err(|error| format!("{relative}: read: {error}"))?;
     let expanded = rewrite_tokens(&expand_source(wpt, case_path, &body), ports, host);

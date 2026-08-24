@@ -162,10 +162,8 @@ fn stringify<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
     {
         return text;
     }
-    Coerced::<String>::from_js(ctx, value.clone()).map_or_else(
-        |_| value.type_of().as_str().to_owned(),
-        |coerced| coerced.0,
-    )
+    Coerced::<String>::from_js(ctx, value.clone())
+        .map_or_else(|_| value.type_of().as_str().to_owned(), |coerced| coerced.0)
 }
 
 fn message_or(msg: Opt<String>, fallback: String) -> String { msg.0.unwrap_or(fallback) }
@@ -258,7 +256,10 @@ fn split_error_args<'js>(
 
 #[rquickjs::module]
 pub mod assert {
-    #![expect(non_snake_case, reason = "JSR export names; rquickjs 0.12 exports the rust ident")]
+    #![expect(
+        non_snake_case,
+        reason = "JSR export names; rquickjs 0.12 exports the rust ident"
+    )]
     use rquickjs::{
         Class, Ctx, Error, Function, Object, Result, Value, function::Opt, module::Exports,
         prelude::This,

@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Exception, Filter, Function, IntoJs, Iterable, JsLifetime,
-    Object, Result, Value,
+    Array, Class, Coerced, Ctx, Exception, Filter, Function, IntoJs, Iterable, JsLifetime, Object,
+    Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
@@ -20,11 +20,11 @@ pub(crate) enum Guard {
 #[rquickjs::class]
 pub struct Headers {
     #[qjs(skip_trace)]
-    pub(crate) map: IndexMap<String, String>,
+    pub(crate) map:     IndexMap<String, String>,
     #[qjs(skip_trace)]
     pub(crate) cookies: Vec<String>,
     #[qjs(skip_trace)]
-    pub(crate) guard: u8,
+    pub(crate) guard:   u8,
 }
 
 impl Headers {
@@ -436,7 +436,9 @@ pub(crate) fn is_forbidden_request_header(name: &str, value: &str) -> bool {
         name,
         "x-http-method" | "x-http-method-override" | "x-method-override"
     ) {
-        return value.split(',').any(|part| is_forbidden_method(part.trim()));
+        return value
+            .split(',')
+            .any(|part| is_forbidden_method(part.trim()));
     }
     false
 }
@@ -463,9 +465,7 @@ fn is_cors_unsafe_byte(byte: u8) -> bool {
     )
 }
 
-fn is_forbidden_response_header(name: &str) -> bool {
-    matches!(name, "set-cookie" | "set-cookie2")
-}
+fn is_forbidden_response_header(name: &str) -> bool { matches!(name, "set-cookie" | "set-cookie2") }
 
 fn is_no_cors_safelisted(name: &str, value: &str, existing: Option<&String>) -> bool {
     let combined = match existing {
@@ -477,7 +477,12 @@ fn is_no_cors_safelisted(name: &str, value: &str, existing: Option<&String>) -> 
             combined.len() <= 128 && !combined.bytes().any(is_cors_unsafe_byte)
         }
         "content-type" => {
-            let mime = combined.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+            let mime = combined
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
             matches!(
                 mime.as_str(),
                 "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"

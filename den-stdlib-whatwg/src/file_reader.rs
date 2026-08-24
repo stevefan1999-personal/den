@@ -25,12 +25,12 @@ const DONE: i32 = 2;
 #[derive(JsLifetime)]
 #[rquickjs::class]
 pub struct FileReader<'js> {
-    events: SharedEvents<'js>,
+    events:      SharedEvents<'js>,
     ready_state: i32,
-    result: Value<'js>,
-    error: Value<'js>,
+    result:      Value<'js>,
+    error:       Value<'js>,
     #[qjs(skip_trace)]
-    aborted: Rc<Cell<bool>>,
+    aborted:     Rc<Cell<bool>>,
 }
 
 impl<'js> Trace<'js> for FileReader<'js> {
@@ -95,43 +95,31 @@ impl<'js> FileReader<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>) -> Self {
         Self {
-            events: HostEventTarget::share(),
+            events:      HostEventTarget::share(),
             ready_state: EMPTY,
-            result: Value::new_null(ctx.clone()),
-            error: Value::new_null(ctx),
-            aborted: Rc::new(Cell::new(false)),
+            result:      Value::new_null(ctx.clone()),
+            error:       Value::new_null(ctx),
+            aborted:     Rc::new(Cell::new(false)),
         }
     }
 
     #[qjs(static, get, rename = "EMPTY")]
-    pub fn empty_const() -> i32 {
-        EMPTY
-    }
+    pub fn empty_const() -> i32 { EMPTY }
 
     #[qjs(static, get, rename = "LOADING")]
-    pub fn loading_const() -> i32 {
-        LOADING
-    }
+    pub fn loading_const() -> i32 { LOADING }
 
     #[qjs(static, get, rename = "DONE")]
-    pub fn done_const() -> i32 {
-        DONE
-    }
+    pub fn done_const() -> i32 { DONE }
 
     #[qjs(get)]
-    pub fn ready_state(&self) -> i32 {
-        self.ready_state
-    }
+    pub fn ready_state(&self) -> i32 { self.ready_state }
 
     #[qjs(get)]
-    pub fn result(&self) -> Value<'js> {
-        self.result.clone()
-    }
+    pub fn result(&self) -> Value<'js> { self.result.clone() }
 
     #[qjs(get)]
-    pub fn error(&self) -> Value<'js> {
-        self.error.clone()
-    }
+    pub fn error(&self) -> Value<'js> { self.error.clone() }
 
     pub fn add_event_listener(
         this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: String, callback: Value<'js>,
@@ -290,9 +278,7 @@ impl<'js> FileReader<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "FileReader"
-    }
+    pub fn to_string_tag() -> &'static str { "FileReader" }
 }
 
 #[derive(Clone, Copy)]
@@ -419,9 +405,11 @@ impl<'js> FileReader<'js> {
         }
         let size = bytes.len() as f64;
         let result = match kind {
-            ReadKind::ArrayBuffer => ArrayBuffer::new_copy(ctx.clone(), &bytes)
-                .map(|buffer| buffer.into_value())
-                .unwrap_or_else(|_| Value::new_null(ctx.clone())),
+            ReadKind::ArrayBuffer => {
+                ArrayBuffer::new_copy(ctx.clone(), &bytes)
+                    .map(|buffer| buffer.into_value())
+                    .unwrap_or_else(|_| Value::new_null(ctx.clone()))
+            }
             ReadKind::Text => {
                 let label = FileReader::resolve_encoding(encoding.as_deref(), &mime);
                 let text = FileReader::decode(&ctx, &bytes, &label);
@@ -532,7 +520,6 @@ impl<'js> FileReader<'js> {
         }
         "utf-8".to_string()
     }
-
 }
 
 fn charset_from_type(mime: &str) -> Option<String> {

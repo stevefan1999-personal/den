@@ -1,10 +1,10 @@
-const {
+import {
   assertEquals,
   assertNotEquals,
   assertStrictEquals,
   assertNotStrictEquals,
   equal,
-} = await import("den:assert");
+} from "den:assert";
 
 assertEquals(1, 1);
 assertEquals("a", "a");

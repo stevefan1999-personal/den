@@ -322,9 +322,7 @@ pub(crate) fn validate_status_text(ctx: &Ctx<'_>, text: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn null_body_status(status: u16) -> bool {
-    matches!(status, 204 | 205 | 304)
-}
+pub(crate) fn null_body_status(status: u16) -> bool { matches!(status, 204 | 205 | 304) }
 
 pub(crate) fn is_valid_method(method: &str) -> bool {
     !method.is_empty()
@@ -361,9 +359,7 @@ pub(crate) const BLOCKED_PORTS: &[u16] = &[
     6669, 6697, 10080,
 ];
 
-pub(crate) fn is_blocked_port(port: u16) -> bool {
-    BLOCKED_PORTS.contains(&port)
-}
+pub(crate) fn is_blocked_port(port: u16) -> bool { BLOCKED_PORTS.contains(&port) }
 
 pub(crate) fn utf8_text(bytes: &[u8]) -> String {
     let mut text = String::from_utf8_lossy(bytes).into_owned();

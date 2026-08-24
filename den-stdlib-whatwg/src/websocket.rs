@@ -26,14 +26,14 @@ const CLOSED: i32 = 3;
 #[derive(JsLifetime)]
 #[rquickjs::class]
 pub struct WebSocket<'js> {
-    events: SharedEvents<'js>,
+    events:      SharedEvents<'js>,
     #[qjs(skip_trace)]
-    native: Rc<NativeWebSocket>,
+    native:      Rc<NativeWebSocket>,
     binary_type: String,
-    protocol: String,
-    extensions: String,
-    origin: String,
-    url: String,
+    protocol:    String,
+    extensions:  String,
+    origin:      String,
+    url:         String,
     ready_state: i32,
 }
 
@@ -283,19 +283,16 @@ impl<'js> WebSocket<'js> {
             .map_err(|error| Self::throw_native(&ctx, error))?;
         let native = NativeWebSocket::connect(&url, &protocols)
             .map_err(|error| Self::throw_native(&ctx, error))?;
-        let class = Class::instance(
-            ctx.clone(),
-            Self {
-                events: HostEventTarget::share(),
-                native: Rc::new(native),
-                binary_type: "blob".to_owned(),
-                protocol: String::new(),
-                extensions: String::new(),
-                origin,
-                url,
-                ready_state: CONNECTING,
-            },
-        )?;
+        let class = Class::instance(ctx.clone(), Self {
+            events: HostEventTarget::share(),
+            native: Rc::new(native),
+            binary_type: "blob".to_owned(),
+            protocol: String::new(),
+            extensions: String::new(),
+            origin,
+            url,
+            ready_state: CONNECTING,
+        })?;
         Self::install_idl_constants(&ctx)?;
         let start = Function::new(ctx.clone(), {
             let this = class.clone();
@@ -309,29 +306,19 @@ impl<'js> WebSocket<'js> {
     }
 
     #[qjs(static, get, rename = "CONNECTING")]
-    pub fn connecting_const() -> i32 {
-        CONNECTING
-    }
+    pub fn connecting_const() -> i32 { CONNECTING }
 
     #[qjs(static, get, rename = "OPEN")]
-    pub fn open_const() -> i32 {
-        OPEN
-    }
+    pub fn open_const() -> i32 { OPEN }
 
     #[qjs(static, get, rename = "CLOSING")]
-    pub fn closing_const() -> i32 {
-        CLOSING
-    }
+    pub fn closing_const() -> i32 { CLOSING }
 
     #[qjs(static, get, rename = "CLOSED")]
-    pub fn closed_const() -> i32 {
-        CLOSED
-    }
+    pub fn closed_const() -> i32 { CLOSED }
 
     #[qjs(get)]
-    pub fn binary_type(&self) -> String {
-        self.binary_type.clone()
-    }
+    pub fn binary_type(&self) -> String { self.binary_type.clone() }
 
     #[qjs(set, rename = "binaryType")]
     pub fn set_binary_type(&mut self, value: String) {
@@ -341,19 +328,13 @@ impl<'js> WebSocket<'js> {
     }
 
     #[qjs(get)]
-    pub fn protocol(&self) -> String {
-        self.protocol.clone()
-    }
+    pub fn protocol(&self) -> String { self.protocol.clone() }
 
     #[qjs(get)]
-    pub fn ready_state(&self) -> i32 {
-        self.ready_state
-    }
+    pub fn ready_state(&self) -> i32 { self.ready_state }
 
     #[qjs(get)]
-    pub fn url(&self) -> String {
-        self.url.clone()
-    }
+    pub fn url(&self) -> String { self.url.clone() }
 
     #[qjs(get)]
     pub fn buffered_amount(&self) -> i32 {
@@ -361,9 +342,7 @@ impl<'js> WebSocket<'js> {
     }
 
     #[qjs(get)]
-    pub fn extensions(&self) -> String {
-        self.extensions.clone()
-    }
+    pub fn extensions(&self) -> String { self.extensions.clone() }
 
     pub fn send(this: This<Class<'js, Self>>, ctx: Ctx<'js>, data: Value<'js>) -> Result<()> {
         let ready = this.0.borrow().ready_state;
@@ -502,7 +481,5 @@ impl<'js> WebSocket<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "WebSocket"
-    }
+    pub fn to_string_tag() -> &'static str { "WebSocket" }
 }

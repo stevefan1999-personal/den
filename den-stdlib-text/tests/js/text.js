@@ -1,4 +1,4 @@
-const { assertEquals, assert } = await import("den:assert");
+import { assertEquals, assert } from "den:assert";
 const encoded = new TextEncoder().encode("héllo €");
 const decoded = new TextDecoder().decode(encoded);
 assert(encoded instanceof Uint8Array);

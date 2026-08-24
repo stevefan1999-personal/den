@@ -1,8 +1,8 @@
+use std::path::PathBuf;
+
 use color_eyre::eyre;
 use den_core::engine::Engine;
-use rquickjs::FromJs;
 
-/// A temp tree with a file, a directory, and (on Unix) a symlink to the file.
 struct Tree {
     _dir: tempfile::TempDir,
     dir:  String,
@@ -31,86 +31,26 @@ impl Tree {
     }
 }
 
-async fn eval<T>(tree: &Tree, source: &str) -> eyre::Result<T>
-where
-    T: for<'js> FromJs<'js> + Send + Sync + 'static,
-{
-    Ok(Engine::new()
+fn case(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/js")
+        .join(name)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn metadata_read_dir_and_set_permissions() -> eyre::Result<()> {
+    let tree = Tree::new();
+    // SAFETY: test-only keys, set before the engine starts.
+    unsafe {
+        std::env::set_var("DEN_TEST_DIR", &tree.dir);
+        std::env::set_var("DEN_TEST_FILE", &tree.file);
+        std::env::set_var("DEN_TEST_SUB", &tree.sub);
+        std::env::set_var("DEN_TEST_LINK", &tree.link);
+        std::env::set_var("DEN_TEST_UNIX", if cfg!(unix) { "1" } else { "0" });
+    }
+    Engine::new()
         .await
-        .eval(&format!(
-            "const fs = await import('den:fs');\nconst DIR = {dir:?};\nconst FILE = \
-             {file:?};\nconst SUB = {sub:?};\nconst LINK = {link:?};\nconst UNIX = \
-             {unix};\n{source}",
-            dir = tree.dir,
-            file = tree.file,
-            sub = tree.sub,
-            link = tree.link,
-            unix = cfg!(unix),
-        ))
-        .await?)
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn den_fs_metadata_reports_a_regular_file() -> eyre::Result<()> {
-    let tree = Tree::new();
-    let failures: String = eval(
-        &tree,
-        r#"
-          const { assertEquals } = await import("den:assert");
-          const meta = await fs.metadata(FILE);
-          assertEquals(meta.len, 5);
-          assertEquals(meta.isFile, true);
-          assertEquals(meta.isDir, false);
-          assertEquals(meta.isSymlink, false);
-          ""
-        "#,
-    )
-    .await?;
-    assert_eq!(failures, "");
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn metadata_read_dir_read_link_and_set_permissions() -> eyre::Result<()> {
-    let tree = Tree::new();
-    let failures: String = eval(
-        &tree,
-        r#"
-          const meta = await fs.metadata(FILE);
-          const dirMeta = await fs.metadata(SUB);
-          const entries = await fs.readDir(DIR);
-          const byName = Object.fromEntries(entries.map((entry) => [entry.name, entry]));
-          const checks = {
-            fileLen: meta.len === 5,
-            isFile: meta.isFile === true,
-            fileNotDir: meta.isDir === false,
-            fileNotLink: meta.isSymlink === false,
-            isDir: dirMeta.isDir === true,
-            dirNotFile: dirMeta.isFile === false,
-            readDirFile: byName["hello.txt"]?.isFile === true,
-            readDirDir: byName["sub"]?.isDir === true,
-          };
-          if (UNIX) {
-            const linked = await fs.readLink(LINK);
-            const linkMeta = await fs.symlinkMetadata(LINK);
-            const followed = await fs.metadata(LINK);
-            await fs.setPermissions(FILE, 0o600);
-            const chmodded = await fs.metadata(FILE);
-            checks.readLink = linked === "hello.txt";
-            checks.symlinkIsLink = linkMeta.isSymlink === true;
-            checks.symlinkNotFile = linkMeta.isFile === false;
-            checks.metadataFollows = followed.isFile === true;
-            checks.metadataFollowsNotLink = followed.isSymlink === false;
-            checks.mode = (chmodded.mode & 0o777) === 0o600;
-            checks.readDirLink = byName["hello.link"]?.isSymlink === true;
-          }
-          Object.entries(checks)
-            .filter(([, held]) => !held)
-            .map(([name]) => name)
-            .join(",")
-        "#,
-    )
-    .await?;
-    assert_eq!(failures, "");
+        .run_file::<()>(case("metadata.js"))
+        .await?;
     Ok(())
 }

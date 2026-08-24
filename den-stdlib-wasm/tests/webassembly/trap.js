@@ -1,4 +1,6 @@
-const { assertEquals } = await import("den:assert");
+import { assertEquals } from "den:assert";
+import { WASM } from "./add.js";
+
 const { boom } = (await WebAssembly.instantiate(WASM)).instance.exports;
 let thrown = "nothing thrown";
 try {

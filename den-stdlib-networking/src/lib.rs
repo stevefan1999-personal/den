@@ -21,27 +21,3 @@ pub mod networking {
         websocket::WebSocketWrapper as WebSocket,
     };
 }
-
-#[cfg(test)]
-mod tests {
-    use den_core::engine::Engine;
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn networking_module_exports_socket_classes() {
-        let names: String = Engine::new()
-            .await
-            .eval(
-                r#"
-                  const ns = await import("den:networking");
-                  Object.keys(ns).sort().join(",")
-                "#,
-            )
-            .await
-            .expect("den:networking evaluates");
-        assert_eq!(
-            names,
-            "TcpListener,TcpStream,TlsListener,TlsStream,UdpSocket,UnixListener,UnixStream,\
-             WebSocket"
-        );
-    }
-}

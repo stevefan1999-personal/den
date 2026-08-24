@@ -1,4 +1,4 @@
-const {
+import {
   assert,
   assertFalse,
   assertExists,
@@ -14,7 +14,7 @@ const {
   assertLess,
   assertLessOrEqual,
   assertAlmostEquals,
-} = await import("den:assert");
+} from "den:assert";
 
 assert(1);
 assertFalse(0);

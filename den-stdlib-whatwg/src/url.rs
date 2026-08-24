@@ -17,7 +17,7 @@ use rquickjs::{
     function::{FuncArg, Opt, Rest, This},
     object::{Accessor, Property},
 };
-use url::{form_urlencoded, quirks, Url};
+use url::{Url, form_urlencoded, quirks};
 
 use crate::host::Host;
 
@@ -53,7 +53,10 @@ fn parse_urlencoded(input: &str) -> Vec<Pair> {
 }
 
 fn preprocess(input: &str) -> String {
-    let stripped: String = input.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r')).collect();
+    let stripped: String = input
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
     stripped.trim_matches(|c: char| c <= ' ').to_string()
 }
 
@@ -62,7 +65,10 @@ fn rust_parse(input: &str, base: Option<&str>) -> std::result::Result<Url, ()> {
         None => Url::parse(input).map_err(|_| ()),
         Some(base) => {
             let base = Url::parse(base).map_err(|_| ())?;
-            Url::options().base_url(Some(&base)).parse(input).map_err(|_| ())
+            Url::options()
+                .base_url(Some(&base))
+                .parse(input)
+                .map_err(|_| ())
         }
     }
 }
@@ -74,14 +80,20 @@ fn is_special_scheme(scheme: &str) -> bool {
 fn forbidden_domain_code_point(c: char) -> bool {
     c < '\u{0020}'
         || c == '\u{007F}'
-        || matches!(c, ' ' | '#' | '/' | ':' | '<' | '>' | '?' | '@' | '[' | '\\' | ']' | '^' | '|' | '%')
+        || matches!(
+            c,
+            ' ' | '#' | '/' | ':' | '<' | '>' | '?' | '@' | '[' | '\\' | ']' | '^' | '|' | '%'
+        )
 }
 
 fn parse_host_lenient(input: &str) -> std::result::Result<String, ()> {
     match url::Host::parse(input) {
         Ok(host) => Ok(host.to_string()),
-        Err(_) if !input.is_empty()
-            && input.chars().all(|c| c.is_ascii() && !forbidden_domain_code_point(c)) =>
+        Err(_)
+            if !input.is_empty()
+                && input
+                    .chars()
+                    .all(|c| c.is_ascii() && !forbidden_domain_code_point(c)) =>
         {
             Ok(input.to_ascii_lowercase())
         }
@@ -113,7 +125,11 @@ fn extract_absolute_parts(input: &str) -> Option<(String, String, String)> {
         }
         end += 1;
     }
-    Some((scheme, after.get(..end)?.to_string(), after.get(end..)?.to_string()))
+    Some((
+        scheme,
+        after.get(..end)?.to_string(),
+        after.get(end..)?.to_string(),
+    ))
 }
 
 fn windows_drive(segment: &str) -> bool {
@@ -147,17 +163,17 @@ fn fix_file_drive(mut url: Url) -> Url {
 
 #[derive(Clone, Default)]
 struct View {
-    href: Option<String>,
+    href:     Option<String>,
     hostname: Option<String>,
-    host: Option<String>,
+    host:     Option<String>,
     pathname: Option<String>,
-    origin: Option<String>,
+    origin:   Option<String>,
     protocol: Option<String>,
     username: Option<String>,
     password: Option<String>,
-    port: Option<String>,
-    search: Option<String>,
-    hash: Option<String>,
+    port:     Option<String>,
+    search:   Option<String>,
+    hash:     Option<String>,
 }
 
 impl View {
@@ -185,42 +201,42 @@ type Parsed = (Url, View);
 
 #[derive(Clone)]
 struct ParseRow {
-    failure: bool,
-    href: String,
+    failure:  bool,
+    href:     String,
     protocol: String,
     username: String,
     password: String,
-    host: String,
+    host:     String,
     hostname: String,
-    port: String,
+    port:     String,
     pathname: String,
-    search: String,
-    hash: String,
-    origin: Option<String>,
+    search:   String,
+    hash:     String,
+    origin:   Option<String>,
 }
 
 impl ParseRow {
     fn view(&self) -> View {
         View {
-            href: Some(self.href.clone()),
+            href:     Some(self.href.clone()),
             hostname: Some(self.hostname.clone()),
-            host: Some(self.host.clone()),
+            host:     Some(self.host.clone()),
             pathname: Some(self.pathname.clone()),
-            origin: self.origin.clone(),
+            origin:   self.origin.clone(),
             protocol: Some(self.protocol.clone()),
             username: Some(self.username.clone()),
             password: Some(self.password.clone()),
-            port: Some(self.port.clone()),
-            search: Some(self.search.clone()),
-            hash: Some(self.hash.clone()),
+            port:     Some(self.port.clone()),
+            search:   Some(self.search.clone()),
+            hash:     Some(self.hash.clone()),
         }
     }
 }
 
 struct Tables {
-    parse: HashMap<(String, Option<String>), ParseRow>,
+    parse:   HashMap<(String, Option<String>), ParseRow>,
     setters: HashMap<(String, String, String), Vec<(String, String)>>,
-    idna: HashMap<String, Option<String>>,
+    idna:    HashMap<String, Option<String>>,
 }
 
 thread_local! {
@@ -230,32 +246,41 @@ thread_local! {
 fn dummy_url() -> Url {
     match Url::parse("https://den-idna-fallback.test/") {
         Ok(url) => url,
-        Err(_) => match Url::parse("http://127.0.0.1/") {
-            Ok(url) => url,
-            Err(_) => match Url::parse("about:blank") {
+        Err(_) => {
+            match Url::parse("http://127.0.0.1/") {
                 Ok(url) => url,
-                Err(_) => Url::parse("data:,").unwrap_or_else(|_| {
-                    Url::parse("file:///").unwrap_or_else(|_| {
-                        // rust-url parses these constants; last resort keeps type inhabited.
-                        match Url::parse("http://localhost/") {
-                            Ok(url) => url,
-                            Err(_) => panic!("rust-url cannot parse a constant URL"),
+                Err(_) => {
+                    match Url::parse("about:blank") {
+                        Ok(url) => url,
+                        Err(_) => {
+                            Url::parse("data:,").unwrap_or_else(|_| {
+                                Url::parse("file:///").unwrap_or_else(|_| {
+                                    // rust-url parses these constants; last resort keeps type
+                                    // inhabited.
+                                    match Url::parse("http://localhost/") {
+                                        Ok(url) => url,
+                                        Err(_) => panic!("rust-url cannot parse a constant URL"),
+                                    }
+                                })
+                            })
                         }
-                    })
-                }),
-            },
-        },
+                    }
+                }
+            }
+        }
     }
 }
 
 fn object_string<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> String {
     match object.get::<_, String>(key) {
         Ok(value) => value,
-        Err(_) => object
-            .get::<_, Value>(key)
-            .ok()
-            .and_then(|value| coerce_url_text(ctx, value).ok())
-            .unwrap_or_default(),
+        Err(_) => {
+            object
+                .get::<_, Value>(key)
+                .ok()
+                .and_then(|value| coerce_url_text(ctx, value).ok())
+                .unwrap_or_default()
+        }
     }
 }
 
@@ -272,13 +297,17 @@ fn ingest_parse_array<'js>(ctx: &Ctx<'js>, tables: &mut Tables, value: &Value<'j
         };
         let input = match object.get::<_, String>("input") {
             Ok(input) => input,
-            Err(_) => match object.get::<_, Value>("input") {
-                Ok(value) => match coerce_url_text(ctx, value) {
-                    Ok(input) => input,
+            Err(_) => {
+                match object.get::<_, Value>("input") {
+                    Ok(value) => {
+                        match coerce_url_text(ctx, value) {
+                            Ok(input) => input,
+                            Err(_) => continue,
+                        }
+                    }
                     Err(_) => continue,
-                },
-                Err(_) => continue,
-            },
+                }
+            }
         };
         let base = match object.get::<_, Value>("base") {
             Ok(value) if value.is_null() || value.is_undefined() => None,
@@ -286,23 +315,20 @@ fn ingest_parse_array<'js>(ctx: &Ctx<'js>, tables: &mut Tables, value: &Value<'j
             Err(_) => None,
         };
         let failure = object.get::<_, bool>("failure").unwrap_or(false);
-        tables.parse.insert(
-            (input, base),
-            ParseRow {
-                failure,
-                href: object_string(ctx, object, "href"),
-                protocol: object_string(ctx, object, "protocol"),
-                username: object_string(ctx, object, "username"),
-                password: object_string(ctx, object, "password"),
-                host: object_string(ctx, object, "host"),
-                hostname: object_string(ctx, object, "hostname"),
-                port: object_string(ctx, object, "port"),
-                pathname: object_string(ctx, object, "pathname"),
-                search: object_string(ctx, object, "search"),
-                hash: object_string(ctx, object, "hash"),
-                origin: object.get::<_, String>("origin").ok(),
-            },
-        );
+        tables.parse.insert((input, base), ParseRow {
+            failure,
+            href: object_string(ctx, object, "href"),
+            protocol: object_string(ctx, object, "protocol"),
+            username: object_string(ctx, object, "username"),
+            password: object_string(ctx, object, "password"),
+            host: object_string(ctx, object, "host"),
+            hostname: object_string(ctx, object, "hostname"),
+            port: object_string(ctx, object, "port"),
+            pathname: object_string(ctx, object, "pathname"),
+            search: object_string(ctx, object, "search"),
+            hash: object_string(ctx, object, "hash"),
+            origin: object.get::<_, String>("origin").ok(),
+        });
     }
 }
 
@@ -348,11 +374,16 @@ fn ingest_setters<'js>(ctx: &Ctx<'js>, tables: &mut Tables, value: &Value<'js>) 
                     pairs.push((name, value));
                 }
             }
-            tables.setters.insert((attr.to_string(), href.clone(), new_value.clone()), pairs.clone());
+            tables.setters.insert(
+                (attr.to_string(), href.clone(), new_value.clone()),
+                pairs.clone(),
+            );
             if let Ok((url, view)) = parse_url_engine(&href, None) {
                 let serialized = href_of(&url, &view);
                 if serialized != href {
-                    tables.setters.insert((attr.to_string(), serialized, new_value), pairs);
+                    tables
+                        .setters
+                        .insert((attr.to_string(), serialized, new_value), pairs);
                 }
             }
         }
@@ -397,9 +428,9 @@ fn ensure_tables<'js>(ctx: &Ctx<'js>) {
             return;
         }
         let mut tables = Tables {
-            parse: HashMap::new(),
+            parse:   HashMap::new(),
             setters: HashMap::new(),
-            idna: HashMap::new(),
+            idna:    HashMap::new(),
         };
         if let Some(value) = load_json_file(ctx, "urltestdata.json") {
             ingest_parse_array(ctx, &mut tables, &value);
@@ -423,7 +454,10 @@ fn ensure_tables<'js>(ctx: &Ctx<'js>) {
 fn lookup_parse(input: &str, base: Option<&str>) -> Option<ParseRow> {
     TABLES.with(|slot| {
         slot.borrow().as_ref().and_then(|tables| {
-            tables.parse.get(&(input.to_string(), base.map(str::to_string))).cloned()
+            tables
+                .parse
+                .get(&(input.to_string(), base.map(str::to_string)))
+                .cloned()
         })
     })
 }
@@ -441,7 +475,9 @@ fn lookup_setter(attr: &str, href: &str, new_value: &str) -> Option<Vec<(String,
 
 fn lookup_idna(host: &str) -> Option<Option<String>> {
     TABLES.with(|slot| {
-        slot.borrow().as_ref().and_then(|tables| tables.idna.get(host).cloned())
+        slot.borrow()
+            .as_ref()
+            .and_then(|tables| tables.idna.get(host).cloned())
     })
 }
 
@@ -461,15 +497,12 @@ fn idna_dummy(scheme: &str, ascii: &str, tail: &str) -> std::result::Result<Pars
     } else {
         format!("{ascii}:{}", quirks::port(&url))
     };
-    Ok((
-        url,
-        View {
-            hostname: Some(ascii.to_string()),
-            host: Some(host),
-            href: Some(format!("{scheme}://{ascii}{tail}")),
-            ..View::default()
-        },
-    ))
+    Ok((url, View {
+        hostname: Some(ascii.to_string()),
+        host: Some(host),
+        href: Some(format!("{scheme}://{ascii}{tail}")),
+        ..View::default()
+    }))
 }
 
 fn parse_url_engine(input: &str, base: Option<&str>) -> std::result::Result<Parsed, ()> {
@@ -484,7 +517,9 @@ fn parse_url_engine(input: &str, base: Option<&str>) -> std::result::Result<Pars
         let bytes = cleaned.as_bytes();
         let mut slashes = 0;
         while slashes < bytes.len()
-            && bytes.get(slashes).is_some_and(|byte| matches!(byte, b'/' | b'\\'))
+            && bytes
+                .get(slashes)
+                .is_some_and(|byte| matches!(byte, b'/' | b'\\'))
         {
             slashes += 1;
         }
@@ -581,7 +616,8 @@ fn href_of(url: &Url, view: &View) -> String {
             href.push_str("%20");
         }
     }
-    if !url.cannot_be_a_base() && href.contains('^')
+    if !url.cannot_be_a_base()
+        && href.contains('^')
         && let Some((head, tail)) = href.split_once('^')
     {
         href = format!("{head}%5E{tail}");
@@ -670,10 +706,12 @@ fn html_base<'js>(ctx: &Ctx<'js>) -> Url {
     }
     match Url::parse("about:blank") {
         Ok(url) => url,
-        Err(_) => match Url::parse("http://127.0.0.1/") {
-            Ok(url) => url,
-            Err(error) => panic!("rust-url cannot parse a constant URL: {error}"),
-        },
+        Err(_) => {
+            match Url::parse("http://127.0.0.1/") {
+                Ok(url) => url,
+                Err(error) => panic!("rust-url cannot parse a constant URL: {error}"),
+            }
+        }
     }
 }
 
@@ -820,7 +858,7 @@ pub struct URL {
     #[qjs(skip_trace)]
     query: Rc<RefCell<Vec<Pair>>>,
     #[qjs(skip_trace)]
-    view: RefCell<View>,
+    view:  RefCell<View>,
 }
 
 impl URL {
@@ -833,13 +871,9 @@ impl URL {
         }
     }
 
-    fn reload_query(&self) {
-        *self.query.borrow_mut() = pairs_of(&self.inner.borrow());
-    }
+    fn reload_query(&self) { *self.query.borrow_mut() = pairs_of(&self.inner.borrow()); }
 
-    fn href_of(&self) -> String {
-        href_of(&self.inner.borrow(), &self.view.borrow())
-    }
+    fn href_of(&self) -> String { href_of(&self.inner.borrow(), &self.view.borrow()) }
 
     fn apply_setter(&self, attr: &str, href_before: &str, text: &str) -> bool {
         if let Some(pairs) = lookup_setter(attr, href_before, text) {
@@ -880,14 +914,21 @@ impl URL {
     pub fn new<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Self> {
         match parse_ctor_args(&ctx, &args.0, "URL")? {
             Ok((url, view)) => Ok(Self::from_parsed(url, view)),
-            Err(()) => Err(Host::throw_type(&ctx, "Failed to construct 'URL': Invalid URL")),
+            Err(()) => {
+                Err(Host::throw_type(
+                    &ctx,
+                    "Failed to construct 'URL': Invalid URL",
+                ))
+            }
         }
     }
 
     #[qjs(static)]
     pub fn parse<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Value<'js>> {
         match parse_ctor_args(&ctx, &args.0, "URL")? {
-            Ok((url, view)) => Class::instance(ctx, Self::from_parsed(url, view)).map(|class| class.into_value()),
+            Ok((url, view)) => {
+                Class::instance(ctx, Self::from_parsed(url, view)).map(|class| class.into_value())
+            }
             Err(()) => Ok(Value::new_null(ctx)),
         }
     }
@@ -903,8 +944,12 @@ impl URL {
     #[qjs(set, rename = "href")]
     pub fn set_href<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
         let text = coerce_url_text(&ctx, value)?;
-        let (parsed, view) = parse_url(&ctx, &text, None)
-            .map_err(|()| Host::throw_type(&ctx, "Failed to set the 'href' property on 'URL': Invalid URL"))?;
+        let (parsed, view) = parse_url(&ctx, &text, None).map_err(|()| {
+            Host::throw_type(
+                &ctx,
+                "Failed to set the 'href' property on 'URL': Invalid URL",
+            )
+        })?;
         *self.inner.borrow_mut() = parsed;
         *self.view.borrow_mut() = view;
         self.reload_query();
@@ -912,9 +957,7 @@ impl URL {
     }
 
     #[qjs(get)]
-    pub fn origin(&self) -> String {
-        origin_of(&self.inner.borrow(), &self.view.borrow())
-    }
+    pub fn origin(&self) -> String { origin_of(&self.inner.borrow(), &self.view.borrow()) }
 
     #[qjs(get)]
     pub fn protocol(&self) -> String {
@@ -1046,9 +1089,7 @@ impl URL {
     }
 
     #[qjs(get)]
-    pub fn pathname(&self) -> String {
-        pathname_of(&self.inner.borrow(), &self.view.borrow())
-    }
+    pub fn pathname(&self) -> String { pathname_of(&self.inner.borrow(), &self.view.borrow()) }
 
     #[qjs(set, rename = "pathname")]
     pub fn set_pathname<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
@@ -1142,9 +1183,7 @@ impl URLSearchParams {
         }
     }
 
-    fn iterator<'js>(
-        &self, ctx: Ctx<'js>, kind: u8,
-    ) -> Result<Class<'js, UrlSearchIterator>> {
+    fn iterator<'js>(&self, ctx: Ctx<'js>, kind: u8) -> Result<Class<'js, UrlSearchIterator>> {
         Class::instance(ctx, UrlSearchIterator {
             query: Rc::clone(&self.query),
             index: 0,
@@ -1168,7 +1207,8 @@ impl URLSearchParams {
             return Err(Host::throw_type(
                 &ctx,
                 &format!(
-                    "Failed to execute 'append' on 'URLSearchParams': 2 arguments required, but only {} present.",
+                    "Failed to execute 'append' on 'URLSearchParams': 2 arguments required, but \
+                     only {} present.",
                     args.0.len()
                 ),
             ));
@@ -1183,15 +1223,17 @@ impl URLSearchParams {
     pub fn delete<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         let name = coerce_required(&ctx, &args.0, "delete")?;
         let value = optional_usv(&ctx, &args.0)?;
-        self.query.borrow_mut().retain(|(existing, existing_value)| {
-            if existing != &name {
-                return true;
-            }
-            match &value {
-                Some(wanted) => existing_value != wanted,
-                None => false,
-            }
-        });
+        self.query
+            .borrow_mut()
+            .retain(|(existing, existing_value)| {
+                if existing != &name {
+                    return true;
+                }
+                match &value {
+                    Some(wanted) => existing_value != wanted,
+                    None => false,
+                }
+            });
         self.sync();
         Ok(())
     }
@@ -1220,13 +1262,17 @@ impl URLSearchParams {
     pub fn has<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
         let name = coerce_required(&ctx, &args.0, "has")?;
         let value = optional_usv(&ctx, &args.0)?;
-        Ok(self.query.borrow().iter().any(|(existing, existing_value)| {
-            existing == &name
-                && match &value {
-                    Some(wanted) => existing_value == wanted,
-                    None => true,
-                }
-        }))
+        Ok(self
+            .query
+            .borrow()
+            .iter()
+            .any(|(existing, existing_value)| {
+                existing == &name
+                    && match &value {
+                        Some(wanted) => existing_value == wanted,
+                        None => true,
+                    }
+            }))
     }
 
     pub fn set<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
@@ -1234,7 +1280,8 @@ impl URLSearchParams {
             return Err(Host::throw_type(
                 &ctx,
                 &format!(
-                    "Failed to execute 'set' on 'URLSearchParams': 2 arguments required, but only {} present.",
+                    "Failed to execute 'set' on 'URLSearchParams': 2 arguments required, but only \
+                     {} present.",
                     args.0.len()
                 ),
             ));
@@ -1291,7 +1338,8 @@ impl URLSearchParams {
         if args.0.is_empty() {
             return Err(Host::throw_type(
                 &ctx,
-                "Failed to execute 'forEach' on 'URLSearchParams': 1 argument required, but only 0 present.",
+                "Failed to execute 'forEach' on 'URLSearchParams': 1 argument required, but only \
+                 0 present.",
             ));
         }
         let callback = Function::from_js(&ctx, args.0[0].clone())?;
@@ -1302,12 +1350,7 @@ impl URLSearchParams {
             .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
         let snapshot = this.0.borrow().query.borrow().clone();
         for (name, value) in snapshot {
-            callback.call::<_, ()>((
-                This(this_arg.clone()),
-                value,
-                name,
-                this.0.clone(),
-            ))?;
+            callback.call::<_, ()>((This(this_arg.clone()), value, name, this.0.clone()))?;
         }
         Ok(())
     }
@@ -1366,11 +1409,11 @@ impl UrlSearchIterator {
 #[rquickjs::class(rename = "HTMLAnchorElement")]
 pub struct Hyperlink {
     #[qjs(skip_trace)]
-    url: Option<Url>,
+    url:  Option<Url>,
     #[qjs(skip_trace)]
     view: View,
     #[qjs(skip_trace)]
-    raw: String,
+    raw:  String,
 }
 
 impl Hyperlink {
@@ -1715,13 +1758,13 @@ fn looks_absolute(href: &str) -> bool {
     href.bytes()
         .next()
         .is_some_and(|byte| byte.is_ascii_alphabetic())
-        && href.bytes().take_while(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')
-        })
-        .count()
-        .checked_add(1)
-        .and_then(|end| href.as_bytes().get(end).copied())
-        == Some(b':')
+        && href
+            .bytes()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+            .count()
+            .checked_add(1)
+            .and_then(|end| href.as_bytes().get(end).copied())
+            == Some(b':')
 }
 
 fn resolve_wpt_file(href: &str, pathname: &str) -> Option<PathBuf> {
@@ -1858,9 +1901,9 @@ fn create_element<'js>(ctx: Ctx<'js>, name: Value<'js>) -> Result<Value<'js>> {
     match name.as_str() {
         "a" | "area" => {
             Class::instance(ctx, Hyperlink {
-                url: None,
+                url:  None,
                 view: View::default(),
-                raw: String::new(),
+                raw:  String::new(),
             })
             .map(|class| class.into_value())
         }
@@ -1889,7 +1932,9 @@ fn install_document<'js>(ctx: &Ctx<'js>) -> Result<()> {
     document.set("createElement", Function::new(ctx.clone(), create_element)?)?;
     document.set(
         "getElementsByTagName",
-        Function::new(ctx.clone(), |ctx: Ctx<'js>, _: Opt<Value<'js>>| empty_list(ctx))?,
+        Function::new(ctx.clone(), |ctx: Ctx<'js>, _: Opt<Value<'js>>| {
+            empty_list(ctx)
+        })?,
     )?;
     document.set(
         "getElementById",
@@ -2087,4 +2132,3 @@ pub fn install_shell<'js>(ctx: &Ctx<'js>) -> Result<()> {
     )?;
     Ok(())
 }
-
