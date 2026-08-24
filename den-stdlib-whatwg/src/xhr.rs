@@ -268,7 +268,7 @@ impl<'js> XMLHttpRequest<'js> {
             }
             "json" => {
                 let text = Self::decode(&this.0, &ctx);
-                match Host::json_parse(&ctx, &text) {
+                match den_util::json_parse(&ctx, &text) {
                     Ok(value) => Ok(value),
                     Err(_) => Ok(Value::new_null(ctx)),
                 }

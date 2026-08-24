@@ -36,9 +36,7 @@ impl Host {
         if CString::new(name).is_ok() && CString::new(message).is_ok() {
             return den_util::throw_dom_exception(ctx, name, message);
         }
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
-            && let Ok(exc) = ctor.construct::<_, Value>((message, name))
-        {
+        if let Ok(exc) = den_util::new_dom_exception(ctx, message, name) {
             return ctx.throw(exc);
         }
         let code: i32 = match name {
@@ -179,15 +177,6 @@ impl Host {
         }
     }
 
-    pub fn construct<'js, A, R>(ctx: &Ctx<'js>, name: &str, args: A) -> Result<R>
-    where
-        A: rquickjs::function::IntoArgs<'js>,
-        R: FromJs<'js>,
-    {
-        let ctor: Constructor<'js> = ctx.globals().get(name)?;
-        ctor.construct(args)
-    }
-
     pub fn event<'js>(ctx: &Ctx<'js>, type_: &str) -> Result<Value<'js>> {
         match ctx.globals().get::<_, Constructor<'js>>("Event") {
             Ok(ctor) => ctor.construct((type_,)),
@@ -313,12 +302,6 @@ impl Host {
             }
             _ => {}
         }
-    }
-
-    pub fn json_parse<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
-        let json: Object = ctx.globals().get("JSON")?;
-        let parse: Function = json.get("parse")?;
-        parse.call((text,))
     }
 
     pub async fn maybe_await<'js>(value: Value<'js>) -> Result<Value<'js>> {

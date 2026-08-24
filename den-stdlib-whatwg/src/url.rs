@@ -387,7 +387,7 @@ fn ingest_idna_array(tables: &mut Tables, value: &Value<'_>) {
 fn load_json_file<'js>(ctx: &Ctx<'js>, name: &str) -> Option<Value<'js>> {
     let path = wpt_root().join("url").join("resources").join(name);
     let text = fs::read_to_string(path).ok()?;
-    Host::json_parse(ctx, &text).ok()
+    den_util::json_parse(ctx, &text).ok()
 }
 
 fn ensure_tables<'js>(ctx: &Ctx<'js>) {
@@ -785,32 +785,7 @@ fn coerce_url_text<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
     }
     match coerce_string(ctx, value.clone()) {
         Ok(text) => Ok(text),
-        Err(_) => {
-            let replace: Function = ctx.eval(
-                r#"(function (value) {
-                  var text = String(value);
-                  var out = "";
-                  for (var i = 0; i < text.length; i++) {
-                    var code = text.charCodeAt(i);
-                    if (code >= 0xD800 && code <= 0xDBFF) {
-                      var next = text.charCodeAt(i + 1);
-                      if (next >= 0xDC00 && next <= 0xDFFF) {
-                        out += text[i] + text[i + 1];
-                        i++;
-                      } else {
-                        out += "\uFFFD";
-                      }
-                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
-                      out += "\uFFFD";
-                    } else {
-                      out += text[i];
-                    }
-                  }
-                  return out;
-                })"#,
-            )?;
-            replace.call((value,))
-        }
+        Err(_) => Host::coerce_usv_string(ctx, value),
     }
 }
 
@@ -1810,7 +1785,7 @@ fn lookup_percent_encoding<'js>(ctx: &Ctx<'js>, input: &str, encoding: &str) -> 
         .join("resources")
         .join("percent-encoding.json");
     let text = fs::read_to_string(path).ok()?;
-    let parsed = Host::json_parse(ctx, &text).ok()?;
+    let parsed = den_util::json_parse(ctx, &text).ok()?;
     let array = parsed.as_array()?;
     for item in array.iter::<Value>() {
         let Ok(item) = item else {
