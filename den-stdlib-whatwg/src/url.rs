@@ -14,7 +14,8 @@ use rquickjs::{
     Array, Class, Ctx, Filter, FromJs, Function, IntoJs, JsLifetime, Object, Result, Symbol, Value,
     atom::PredefinedAtom,
     class::Trace,
-    function::{Opt, Rest, This},
+    function::{FuncArg, Opt, Rest, This},
+    object::{Accessor, Property},
 };
 use url::{form_urlencoded, quirks, Url};
 
@@ -1922,6 +1923,73 @@ fn install_document<'js>(ctx: &Ctx<'js>) -> Result<()> {
     Ok(())
 }
 
+fn then_resolved<'js>(ctx: &Ctx<'js>, callback: Function<'js>) -> Result<()> {
+    let promise_ctor: Object = ctx.globals().get("Promise")?;
+    let resolve: Function = promise_ctor.get("resolve")?;
+    let promise: Object = resolve.call(())?;
+    let then: Function = promise.get("then")?;
+    then.call::<_, ()>((callback,))?;
+    Ok(())
+}
+
+fn create_iframe<'js>(ctx: Ctx<'js>) -> Result<Object<'js>> {
+    let frame = Object::new(ctx.clone())?;
+    let anchor = Object::new(ctx.clone())?;
+    anchor.set("hash", "")?;
+    anchor.set("search", "")?;
+    frame.set("onload", Value::new_null(ctx.clone()))?;
+    frame.set("_a", anchor.clone())?;
+    let content_document = Object::new(ctx.clone())?;
+    content_document.set(
+        "querySelector",
+        Function::new(ctx.clone(), {
+            let anchor = anchor.clone();
+            move |_: Opt<Value<'js>>| Ok::<Object<'js>, rquickjs::Error>(anchor.clone())
+        })?,
+    )?;
+    frame.set("contentDocument", content_document)?;
+    frame.set(
+        "remove",
+        Function::new(ctx.clone(), || Ok::<(), rquickjs::Error>(()))?,
+    )?;
+    frame.prop(
+        "src",
+        Accessor::new_set(
+            |this: This<Object<'js>>, ctx: Ctx<'js>, href: Value<'js>| -> Result<()> {
+                let frame = this.0;
+                let parts_fn: Value = ctx.globals().get("__denPercentEncodingAnchor")?;
+                let Some(parts_fn) = parts_fn.as_function() else {
+                    return Ok(());
+                };
+                let parts: Value = parts_fn.call((href,))?;
+                if let Some(parts) = parts.as_object()
+                    && let Ok(anchor) = frame.get::<_, Object>("_a")
+                {
+                    if let Ok(hash) = parts.get::<_, Value>("hash") {
+                        anchor.set("hash", hash)?;
+                    }
+                    if let Ok(search) = parts.get::<_, Value>("search") {
+                        anchor.set("search", search)?;
+                    }
+                }
+                let load: Value = frame.get("onload")?;
+                if let Some(func) = load.as_function() {
+                    let func = func.clone();
+                    let frame = frame.clone();
+                    then_resolved(
+                        &ctx,
+                        Function::new(ctx.clone(), move || {
+                            func.call::<_, ()>((This(frame.clone()),))
+                        })?,
+                    )?;
+                }
+                Ok(())
+            },
+        ),
+    )?;
+    Ok(frame)
+}
+
 /// Fetch hook, delayed `document`, and `Request.formData` so official url/ WPT
 /// files can run in the window-less testharness shell.
 pub fn install_shell<'js>(ctx: &Ctx<'js>) -> Result<()> {
@@ -1939,60 +2007,83 @@ pub fn install_shell<'js>(ctx: &Ctx<'js>) -> Result<()> {
         "__denPercentEncodingAnchor",
         Function::new(ctx.clone(), percent_encoding_anchor)?,
     )?;
-    ctx.eval::<(), _>(
-        r#"
-        (function () {
-          if (!globalThis.GLOBAL) {
-            globalThis.GLOBAL = {
-              isWindow: function () { return typeof globalThis.document !== "undefined"; },
-              isWorker: function () { return typeof globalThis.document === "undefined"; },
-              isShadowRealm: function () { return false; }
-            };
-          }
-          if (typeof Promise !== "undefined" && Promise.prototype) {
-            var origThen = Promise.prototype.then;
-            Promise.prototype.then = function (onFulfilled, onRejected) {
-              if (globalThis.__denWpt && typeof globalThis.document === "undefined"
-                  && typeof globalThis.__denInstallDocument === "function") {
-                globalThis.__denInstallDocument();
-              }
-              return origThen.call(this, onFulfilled, onRejected);
-            };
-          }
-          Object.defineProperty(globalThis, "__denRunJavascriptUrl", {
-            value: function (source) {
-              Promise.resolve().then(function () {
-                try {
-                  (0, eval)(source);
-                } catch (error) {}
-              });
-            }
-          });
-          Object.defineProperty(globalThis, "__denCreateIframe", {
-            value: function () {
-              var frame = { onload: null, _a: { hash: "", search: "" } };
-              frame.contentDocument = {
-                querySelector: function () { return frame._a; }
-              };
-              frame.remove = function () {};
-              Object.defineProperty(frame, "src", {
-                set: function (href) {
-                  var parts = globalThis.__denPercentEncodingAnchor(href);
-                  if (parts) {
-                    frame._a.hash = parts.hash;
-                    frame._a.search = parts.search;
-                  }
-                  var load = frame.onload;
-                  if (typeof load === "function") {
-                    Promise.resolve().then(function () { load.call(frame); });
-                  }
+    let globals = ctx.globals();
+    let existing: Value = globals.get("GLOBAL")?;
+    if existing.is_undefined() || existing.is_null() || existing.as_bool() == Some(false) {
+        let global = Object::new(ctx.clone())?;
+        global.set(
+            "isWindow",
+            Function::new(ctx.clone(), |ctx: Ctx<'js>| -> Result<bool> {
+                let document: Value = ctx.globals().get("document")?;
+                Ok(!document.is_undefined())
+            })?,
+        )?;
+        global.set(
+            "isWorker",
+            Function::new(ctx.clone(), |ctx: Ctx<'js>| -> Result<bool> {
+                let document: Value = ctx.globals().get("document")?;
+                Ok(document.is_undefined())
+            })?,
+        )?;
+        global.set("isShadowRealm", Function::new(ctx.clone(), || false)?)?;
+        globals.set("GLOBAL", global)?;
+    }
+    if let Ok(promise_ctor) = globals.get::<_, Object>("Promise")
+        && let Ok(proto) = promise_ctor.get::<_, Object>("prototype")
+        && let Ok(orig_then) = proto.get::<_, Function>("then")
+    {
+        let patched = Function::new(
+            ctx.clone(),
+            |this: This<Value<'js>>,
+             callee: FuncArg<Function<'js>>,
+             ctx: Ctx<'js>,
+             args: Rest<Value<'js>>|
+             -> Result<Value<'js>> {
+                let globals = ctx.globals();
+                let wpt: Value = globals.get("__denWpt")?;
+                let wpt_on = wpt
+                    .as_bool()
+                    .unwrap_or(!wpt.is_undefined() && !wpt.is_null());
+                if wpt_on {
+                    let document: Value = globals.get("document")?;
+                    let installer: Value = globals.get("__denInstallDocument")?;
+                    if document.is_undefined()
+                        && let Some(install) = installer.as_function()
+                    {
+                        install.call::<_, ()>(())?;
+                    }
                 }
-              });
-              return frame;
-            }
-          });
-        })();
-        "#,
+                let orig_then: Function = callee.0.get("__denOrigThen")?;
+                orig_then.call((This(this.0), Rest(args.0)))
+            },
+        )?;
+        patched.prop("__denOrigThen", Property::from(orig_then))?;
+        proto.set("then", patched)?;
+    }
+    globals.prop(
+        "__denRunJavascriptUrl",
+        Property::from(Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, source: Value<'js>| -> Result<()> {
+                let source = coerce_string(&ctx, source)?;
+                then_resolved(
+                    &ctx,
+                    Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> Result<()> {
+                        if matches!(
+                            ctx.eval::<(), _>(source.as_str()),
+                            Err(rquickjs::Error::Exception)
+                        ) {
+                            let _ = ctx.catch();
+                        }
+                        Ok(())
+                    })?,
+                )
+            },
+        )?),
+    )?;
+    globals.prop(
+        "__denCreateIframe",
+        Property::from(Function::new(ctx.clone(), create_iframe)?),
     )?;
     Ok(())
 }

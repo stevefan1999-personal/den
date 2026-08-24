@@ -1,11 +1,19 @@
 //! Shared host helpers: exceptions, buffer sources, events, prototype wiring.
 
-use std::ffi::CString;
+use std::{
+    cell::{Cell, RefCell},
+    ffi::CString,
+    rc::Rc,
+};
 
-use den_util::{BufferSource, Probe as _};
+use den_util::{BufferSource, ObjectExt as _, Probe as _};
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol, Value,
-    class::JsClass, function::Constructor, qjs,
+    atom::PredefinedAtom,
+    class::JsClass,
+    function::{Constructor, FuncArg, Opt, Rest, This},
+    object::{Accessor, Property},
+    qjs,
 };
 
 use crate::{
@@ -314,131 +322,291 @@ impl Host {
 
     /// Install `document` after testharness chooses its environment.
     /// `'document' in globalThis` at testharness load would select WindowTestEnvironment.
-    pub fn install_fileapi_document(ctx: &Ctx<'_>) -> Result<()> {
-        ctx.eval::<(), _>(FILEAPI_DOCUMENT_HOOK)
+    pub fn install_fileapi_document<'js>(ctx: &Ctx<'js>) -> Result<()> {
+        let globals = ctx.globals();
+        let hooked: Value = globals.get("__denFileapiDocHook")?;
+        if hooked.as_bool().unwrap_or(false) {
+            return Ok(());
+        }
+        globals.set("__denFileapiDocHook", true)?;
+
+        let object_ctor: Object = globals.get("Object")?;
+        let get_desc: Function = object_ctor.get("getOwnPropertyDescriptor")?;
+        let existing: Value = get_desc.call((globals.clone(), "setup"))?;
+        if let Some(desc) = existing.as_object()
+            && let Ok(value) = desc.get::<_, Value>("value")
+            && value.as_function().is_some()
+        {
+            globals.set("setup", wrap_setup(ctx, value)?)?;
+            return Ok(());
+        }
+        globals.prop(
+            "setup",
+            Accessor::new(
+                || Ok::<(), rquickjs::Error>(()),
+                |ctx: Ctx<'js>, fn_: Value<'js>| -> Result<()> {
+                    ctx.globals().prop(
+                        "setup",
+                        Property::from(wrap_setup(&ctx, fn_)?)
+                            .configurable()
+                            .enumerable()
+                            .writable(),
+                    )
+                },
+            )
+            .configurable(),
+        )?;
+        Ok(())
     }
 }
 
-const FILEAPI_DOCUMENT_HOOK: &str = r#"
-(function () {
-  if (globalThis.__denFileapiDocHook) return;
-  globalThis.__denFileapiDocHook = true;
+fn wrap_setup<'js>(ctx: &Ctx<'js>, func: Value<'js>) -> Result<Function<'js>> {
+    let wrapped = Function::new(
+        ctx.clone(),
+        |this: This<Value<'js>>,
+         callee: FuncArg<Function<'js>>,
+         ctx: Ctx<'js>,
+         args: Rest<Value<'js>>|
+         -> Result<Value<'js>> {
+            install_html_document(&ctx)?;
+            let orig: Value = callee.0.get("__denOrigSetup")?;
+            let Some(func) = orig.as_function() else {
+                return Err(Exception::throw_type(&ctx, "fn.apply is not a function"));
+            };
+            func.call((This(this.0), Rest(args.0)))
+        },
+    )?;
+    wrapped.prop("__denOrigSetup", Property::from(func))?;
+    Ok(wrapped)
+}
 
-  function installDocument() {
-  if (Object.getOwnPropertyDescriptor(globalThis, "document")) return;
-  if (globalThis.parent == null) globalThis.parent = globalThis;
-  if (globalThis.top == null) globalThis.top = globalThis;
-
-  function tagged(name) {
-    var object = {};
-    Object.defineProperty(object, Symbol.toStringTag, { value: name });
-    return object;
-  }
-
-  function collection(items, tag) {
-    var col = tagged(tag || "HTMLCollection");
-    var list = items;
-    for (var i = 0; i < list.length; i++) col[i] = list[i];
-    Object.defineProperty(col, "length", {
-      configurable: true,
-      enumerable: true,
-      get: function () { return list.length; },
-      set: function (n) { list.length = Number(n); }
-    });
-    col[Symbol.iterator] = function () {
-      var index = 0;
-      var self = this;
-      return {
-        next: function () {
-          var len = self.length;
-          if (index >= len) return { done: true, value: undefined };
-          return { done: false, value: self[index++] };
+fn install_html_document<'js>(ctx: &Ctx<'js>) -> Result<()> {
+    let globals = ctx.globals();
+    if globals.has_own("document")? {
+        return Ok(());
+    }
+    for key in ["parent", "top"] {
+        let value: Value = globals.get(key)?;
+        if value.is_null() || value.is_undefined() {
+            globals.set(key, globals.clone())?;
         }
-      };
-    };
-    return col;
-  }
-
-  function createElement(name) {
-    var tag = String(name).toLowerCase();
-    var typeName =
-      tag === "select" ? "HTMLSelectElement" :
-      tag === "option" ? "HTMLOptionElement" :
-      tag === "p" ? "HTMLParagraphElement" :
-      tag === "body" ? "HTMLBodyElement" :
-      tag === "div" ? "HTMLDivElement" :
-      "HTMLElement";
-    var el = tagged(typeName);
-    var kids = [];
-    var attrs = [];
-    el.tagName = tag.toUpperCase();
-    el.localName = tag;
-    el.namespaceURI = "http://www.w3.org/1999/xhtml";
-    function syncSelect() {
-      if (tag !== "select") return;
-      for (var i = 0; i < kids.length; i++) el[i] = kids[i];
-      Object.defineProperty(el, "length", {
-        configurable: true,
-        enumerable: true,
-        get: function () { return kids.length; }
-      });
-      el[Symbol.iterator] = collection(kids, "HTMLOptionsCollection")[Symbol.iterator];
     }
-    el.children = collection(kids, "HTMLCollection");
-    el.attributes = collection(attrs, "NamedNodeMap");
-    el.appendChild = function (child) {
-      kids.push(child);
-      el.children = collection(kids, "HTMLCollection");
-      syncSelect();
-      return child;
-    };
-    el.setAttribute = function (attrName, value) {
-      var attr = tagged("Attr");
-      attr.name = attrName;
-      attr.value = String(value);
-      attrs.push(attr);
-      el.attributes = collection(attrs, "NamedNodeMap");
-    };
-    syncSelect();
-    return el;
-  }
+    let document = tagged(ctx, "HTMLDocument")?;
+    document.set("readyState", "complete")?;
+    document.set(
+        "body",
+        fileapi_create_element(ctx, Some(js_string(ctx, "body")?))?,
+    )?;
+    document.set(
+        "documentElement",
+        fileapi_create_element(ctx, Some(js_string(ctx, "html")?))?,
+    )?;
+    document.set("defaultView", globals.clone())?;
+    document.set(
+        "createElement",
+        Function::new(ctx.clone(), |ctx: Ctx<'js>, name: Opt<Value<'js>>| {
+            fileapi_create_element(&ctx, name.0)
+        })?,
+    )?;
+    document.set(
+        "createElementNS",
+        Function::new(
+            ctx.clone(),
+            |ctx: Ctx<'js>, _ns: Opt<Value<'js>>, name: Opt<Value<'js>>| {
+                fileapi_create_element(&ctx, name.0)
+            },
+        )?,
+    )?;
+    document.set(
+        "getElementsByTagName",
+        Function::new(ctx.clone(), |ctx: Ctx<'js>, _: Opt<Value<'js>>| {
+            collection(&ctx, Rc::new(RefCell::new(Vec::new())), "HTMLCollection")
+        })?,
+    )?;
+    document.set(
+        "getElementById",
+        Function::new(ctx.clone(), |ctx: Ctx<'js>, _: Opt<Value<'js>>| {
+            Ok::<Value<'js>, rquickjs::Error>(Value::new_null(ctx))
+        })?,
+    )?;
+    globals.set("document", document)?;
+    Ok(())
+}
 
-  var document = tagged("HTMLDocument");
-  document.readyState = "complete";
-  document.body = createElement("body");
-  document.documentElement = createElement("html");
-  document.defaultView = globalThis;
-  document.createElement = createElement;
-  document.createElementNS = function (_ns, name) { return createElement(name); };
-  document.getElementsByTagName = function () { return collection([], "HTMLCollection"); };
-  document.getElementById = function () { return null; };
-  globalThis.document = document;
-  }
+fn js_string<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
+    rquickjs::String::from_str(ctx.clone(), text).map(rquickjs::String::into_value)
+}
 
-  function wrapSetup(fn) {
-    return function () {
-      installDocument();
-      return fn.apply(this, arguments);
-    };
-  }
+fn tagged<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Object<'js>> {
+    let object = Object::new(ctx.clone())?;
+    object.prop(PredefinedAtom::SymbolToStringTag, Property::from(name))?;
+    Ok(object)
+}
 
-  var existing = Object.getOwnPropertyDescriptor(globalThis, "setup");
-  if (existing && typeof existing.value === "function") {
-    globalThis.setup = wrapSetup(existing.value);
-    return;
-  }
-  Object.defineProperty(globalThis, "setup", {
-    configurable: true,
-    enumerable: false,
-    get: function () { return undefined; },
-    set: function (fn) {
-      Object.defineProperty(globalThis, "setup", {
-        configurable: true,
-        enumerable: true,
-        writable: true,
-        value: wrapSetup(fn)
-      });
+fn collection_iter<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>> {
+    Function::new(
+        ctx.clone(),
+        |this: This<Object<'js>>, ctx: Ctx<'js>| -> Result<Object<'js>> {
+            let collection = this.0;
+            let index = Rc::new(Cell::new(0_u32));
+            let iter = Object::new(ctx.clone())?;
+            iter.set(
+                "next",
+                Function::new(ctx.clone(), {
+                    let collection = collection.clone();
+                    move |ctx: Ctx<'js>| -> Result<Object<'js>> {
+                        let len = collection.get::<_, u32>("length").unwrap_or(0);
+                        let at = index.get();
+                        let result = Object::new(ctx.clone())?;
+                        if at >= len {
+                            result.set("done", true)?;
+                            result.set("value", Value::new_undefined(ctx))?;
+                        } else {
+                            index.set(at + 1);
+                            let value = collection
+                                .get::<_, Value>(at)
+                                .unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
+                            result.set("done", false)?;
+                            result.set("value", value)?;
+                        }
+                        Ok(result)
+                    }
+                })?,
+            )?;
+            Ok(iter)
+        },
+    )
+}
+
+fn collection<'js>(
+    ctx: &Ctx<'js>, items: Rc<RefCell<Vec<Value<'js>>>>, tag: &'static str,
+) -> Result<Object<'js>> {
+    let col = tagged(ctx, tag)?;
+    for (index, item) in items.borrow().iter().enumerate() {
+        col.set(index as u32, item.clone())?;
     }
-  });
-})();
-"#;
+    col.prop(
+        "length",
+        Accessor::new(
+            {
+                let items = Rc::clone(&items);
+                move || items.borrow().len() as u32
+            },
+            {
+                let items = Rc::clone(&items);
+                move |ctx: Ctx<'js>, n: Value<'js>| -> Result<()> {
+                    let n = Coerced::<f64>::from_js(&ctx, n)?.0.max(0.0) as usize;
+                    let mut list = items.borrow_mut();
+                    if n < list.len() {
+                        list.truncate(n);
+                    } else {
+                        list.resize(n, Value::new_undefined(ctx.clone()));
+                    }
+                    Ok(())
+                }
+            },
+        )
+        .configurable()
+        .enumerable(),
+    )?;
+    col.set(PredefinedAtom::SymbolIterator, collection_iter(ctx)?)?;
+    Ok(col)
+}
+
+fn sync_select<'js>(
+    ctx: &Ctx<'js>, el: &Object<'js>, tag: &str, kids: &Rc<RefCell<Vec<Value<'js>>>>,
+) -> Result<()> {
+    if tag != "select" {
+        return Ok(());
+    }
+    for (index, child) in kids.borrow().iter().enumerate() {
+        el.set(index as u32, child.clone())?;
+    }
+    let kids = Rc::clone(kids);
+    el.prop(
+        "length",
+        Accessor::from(move || kids.borrow().len() as u32)
+            .configurable()
+            .enumerable(),
+    )?;
+    el.set(PredefinedAtom::SymbolIterator, collection_iter(ctx)?)?;
+    Ok(())
+}
+
+fn fileapi_create_element<'js>(ctx: &Ctx<'js>, name: Option<Value<'js>>) -> Result<Object<'js>> {
+    let name = name.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+    let tag = Coerced::<String>::from_js(ctx, name)?
+        .0
+        .to_ascii_lowercase();
+    let type_name = match tag.as_str() {
+        "select" => "HTMLSelectElement",
+        "option" => "HTMLOptionElement",
+        "p" => "HTMLParagraphElement",
+        "body" => "HTMLBodyElement",
+        "div" => "HTMLDivElement",
+        _ => "HTMLElement",
+    };
+    let el = tagged(ctx, type_name)?;
+    let kids = Rc::new(RefCell::new(Vec::new()));
+    let attrs = Rc::new(RefCell::new(Vec::new()));
+    el.set("tagName", tag.to_ascii_uppercase())?;
+    el.set("localName", tag.clone())?;
+    el.set("namespaceURI", "http://www.w3.org/1999/xhtml")?;
+    el.set(
+        "children",
+        collection(ctx, Rc::clone(&kids), "HTMLCollection")?,
+    )?;
+    el.set(
+        "attributes",
+        collection(ctx, Rc::clone(&attrs), "NamedNodeMap")?,
+    )?;
+    el.set(
+        "appendChild",
+        Function::new(ctx.clone(), {
+            let kids = Rc::clone(&kids);
+            let tag = tag.clone();
+            move |this: This<Object<'js>>,
+                  ctx: Ctx<'js>,
+                  child: Opt<Value<'js>>|
+                  -> Result<Value<'js>> {
+                let child = child.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+                kids.borrow_mut().push(child.clone());
+                this.0.set(
+                    "children",
+                    collection(&ctx, Rc::clone(&kids), "HTMLCollection")?,
+                )?;
+                sync_select(&ctx, &this.0, &tag, &kids)?;
+                Ok(child)
+            }
+        })?,
+    )?;
+    el.set(
+        "setAttribute",
+        Function::new(ctx.clone(), {
+            let attrs = Rc::clone(&attrs);
+            move |this: This<Object<'js>>,
+                  ctx: Ctx<'js>,
+                  attr_name: Opt<Value<'js>>,
+                  value: Opt<Value<'js>>|
+                  -> Result<()> {
+                let attr = tagged(&ctx, "Attr")?;
+                attr.set(
+                    "name",
+                    attr_name
+                        .0
+                        .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+                )?;
+                let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+                attr.set("value", Coerced::<String>::from_js(&ctx, value)?.0)?;
+                attrs.borrow_mut().push(attr.clone().into_value());
+                this.0.set(
+                    "attributes",
+                    collection(&ctx, Rc::clone(&attrs), "NamedNodeMap")?,
+                )?;
+                Ok(())
+            }
+        })?,
+    )?;
+    sync_select(ctx, &el, &tag, &kids)?;
+    Ok(el)
+}
