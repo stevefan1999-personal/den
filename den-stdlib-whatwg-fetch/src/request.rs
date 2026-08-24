@@ -1,5 +1,5 @@
 use rquickjs::{
-    ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Promise, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
@@ -72,16 +72,27 @@ impl<'js> Request<'js> {
     }
 
     fn following_signal(ctx: &Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
-        // The arrow *compiles* even in realms without `den:worker`'s
-        // `AbortSignal`; only the call throws, so both phases need the
-        // fallback. A source that is already an `AbortSignal` is used as-is:
-        // wrapping it in `AbortSignal.any` would pin listener<->source cycles
-        // that QuickJS's refcount GC cannot collect.
-        let followed = ctx
-            .eval::<Function, _>(
-                "(source) => source == null ? new AbortSignal() : (source instanceof AbortSignal ? source : AbortSignal.any([source]))",
-            )
-            .and_then(|follow| follow.call((source.clone(),)));
+        // Realms without `den:worker`'s `AbortSignal` fail the global lookup
+        // or the construct, so both phases need the fallback. A source that
+        // is already an `AbortSignal` is used as-is: wrapping it in
+        // `AbortSignal.any` would pin listener<->source cycles that QuickJS's
+        // refcount GC cannot collect.
+        let followed = (|| -> Result<Value<'js>> {
+            let ctor: Function = ctx.globals().get("AbortSignal")?;
+            if source.is_null() || source.is_undefined() {
+                return ctor
+                    .as_constructor()
+                    .ok_or_else(|| Exception::throw_type(ctx, "AbortSignal is not a constructor"))?
+                    .construct(());
+            }
+            if den_util::instance_of_global(ctx, &source, "AbortSignal")? {
+                return Ok(source.clone());
+            }
+            let any: Function = ctor.get("any")?;
+            let sources = Array::new(ctx.clone())?;
+            sources.set(0, source.clone())?;
+            any.call((This(ctor.into_value()), sources))
+        })();
         match followed {
             Ok(signal) => Ok(signal),
             Err(_) if source.is_null() || source.is_undefined() => {
