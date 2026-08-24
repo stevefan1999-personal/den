@@ -4,11 +4,10 @@
 
 use std::collections::HashMap;
 
-use den_util::instance_of_global;
+use den_util::{construct, instance_of_global};
 use rquickjs::{
-    Array, Class, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime,
-    Object, Result, Symbol, Value,
-    function::IntoArgs,
+    Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
+    Symbol, Value,
     object::{Filter, Property},
     qjs,
 };
@@ -145,15 +144,6 @@ fn tag_object<'js>(ctx: &Ctx<'js>, kind: &str) -> Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
     define_data(&object, TAG, kind.into_js(ctx)?)?;
     Ok(object)
-}
-
-fn construct<'js, A, R>(ctx: &Ctx<'js>, name: &str, args: A) -> Result<R>
-where
-    A: IntoArgs<'js>,
-    R: FromJs<'js>,
-{
-    let ctor: Constructor<'js> = ctx.globals().get(name)?;
-    ctor.construct(args)
 }
 
 fn with_stack<'js>(error: Object<'js>, stack: Option<Value<'js>>) -> Result<Object<'js>> {
