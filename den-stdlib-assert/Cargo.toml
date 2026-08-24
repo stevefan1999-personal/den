@@ -1,6 +1,6 @@
 [package]
-name = "den-stdlib-core"
-description = "Core API for den"
+name = "den-stdlib-assert"
+description = "JSR @std/assert for den"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,9 +11,12 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-base64-simd.workspace = true
 den-util.workspace = true
-rquickjs = { workspace = true, features = ["macro"] }
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+
+[dev-dependencies]
+insta.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

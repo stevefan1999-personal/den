@@ -1,0 +1,5 @@
+---
+source: den-stdlib-assert/tests/assert.rs
+expression: message
+---
+Values are not equal: 1 !== 2

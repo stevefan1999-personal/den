@@ -5,13 +5,11 @@
 use std::collections::HashMap;
 
 use den_util::{
-    BufferSource, ObjectExt, class_id, coerce_string, construct, instance_of_global,
+    BufferSource, ClassId as _, ObjectExt, coerce_string, construct, instance_of_global,
 };
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
-    Symbol, Value,
-    object::Property,
-    qjs,
+    Symbol, Value, object::Property, qjs,
 };
 
 use crate::{
@@ -156,7 +154,7 @@ pub fn prepare<'js>(
     ctx: &Ctx<'js>, value: Value<'js>, ports: &[Class<'js, NativePort>],
 ) -> Result<Value<'js>> {
     let port_handle = CloneState::port_handle(ctx)?;
-    let plain_object_class = class_id(&Object::new(ctx.clone())?.into_value());
+    let plain_object_class = Object::new(ctx.clone())?.into_value().class_id();
     let mut transferred = HashMap::new();
     for (index, port) in ports.iter().enumerate() {
         transferred.insert(port.as_inner().as_value().clone(), index);
@@ -294,7 +292,11 @@ fn copy<'js>(
         define_data(&tagged, "name", error_name(&name).into_js(ctx)?)?;
         if object.has_own("message")? {
             let message: Value<'js> = object.get("message")?;
-            define_data(&tagged, "message", coerce_string(ctx, message)?.into_js(ctx)?)?;
+            define_data(
+                &tagged,
+                "message",
+                coerce_string(ctx, message)?.into_js(ctx)?,
+            )?;
         }
         if let Ok(stack) = object.get::<_, Value<'js>>("stack")
             && stack.is_string()
@@ -392,7 +394,7 @@ fn copy<'js>(
         }
         return Ok(dest_value);
     }
-    if class_id(&value) == plain_object_class {
+    if value.class_id() == plain_object_class {
         let dest = Object::new(ctx.clone())?;
         let dest_value = dest.clone().into_value();
         seen.insert(value.clone(), dest_value.clone());
@@ -584,7 +586,7 @@ fn revive<'js>(
             let item = revive(ctx, items.get(index)?, ports, seen)?;
             add.call::<_, ()>((rquickjs::function::This(value.clone()), item))?;
         }
-    } else if class_id(&value) == class_id(&Object::new(ctx.clone())?.into_value()) {
+    } else if value.class_id() == Object::new(ctx.clone())?.into_value().class_id() {
         let keys: Vec<String> = object.keys().collect::<Result<Vec<_>>>()?;
         for key in keys {
             let revived = revive(ctx, object.get(&key)?, ports, seen)?;

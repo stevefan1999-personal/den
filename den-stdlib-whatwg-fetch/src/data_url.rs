@@ -25,7 +25,7 @@ pub(crate) fn parse(input: &str) -> Option<DataUrl> {
     if let Some(stripped) = strip_base64_flag(&mime_type) {
         mime_type = stripped;
         let text: String = body.iter().map(|byte| char::from(*byte)).collect();
-        body = den_util::base64_forgiving_decode(&text).ok()?;
+        body = base64_simd::forgiving_decode_to_vec(text.as_bytes()).ok()?;
     }
     if mime_type.starts_with(';') {
         mime_type.insert_str(0, "text/plain");
@@ -79,17 +79,11 @@ fn is_http_quoted_string_token(ch: char) -> bool {
     matches!(ch, '\t' | '\u{20}'..='\u{7e}' | '\u{80}'..='\u{ff}')
 }
 
-fn is_http_whitespace(ch: char) -> bool {
-    matches!(ch, '\t' | '\n' | '\r' | ' ')
-}
+fn is_http_whitespace(ch: char) -> bool { matches!(ch, '\t' | '\n' | '\r' | ' ') }
 
-fn tokens_only(input: &str) -> bool {
-    !input.is_empty() && input.chars().all(is_http_token)
-}
+fn tokens_only(input: &str) -> bool { !input.is_empty() && input.chars().all(is_http_token) }
 
-fn quoted_string_tokens_only(input: &str) -> bool {
-    input.chars().all(is_http_quoted_string_token)
-}
+fn quoted_string_tokens_only(input: &str) -> bool { input.chars().all(is_http_quoted_string_token) }
 
 fn parse_mime(input: &str) -> Option<MimeType> {
     let input = input.trim_matches(is_http_whitespace);
@@ -243,8 +237,8 @@ fn percent_decode(input: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_http_quoted_string, parse, parse_mime, percent_decode,
-        quoted_string_tokens_only, serialize_mime, skip_http_whitespace, strip_base64_flag,
+        collect_http_quoted_string, parse, parse_mime, percent_decode, quoted_string_tokens_only,
+        serialize_mime, skip_http_whitespace, strip_base64_flag,
     };
 
     #[test]
@@ -295,12 +289,27 @@ mod tests {
             serialize_mime(&parse_mime("text/plain;charset =x").expect("name space")),
             "text/plain"
         );
-        assert_eq!(strip_base64_flag(";charset=x;base64").as_deref(), Some(";charset=x"));
+        assert_eq!(
+            strip_base64_flag(";charset=x;base64").as_deref(),
+            Some(";charset=x")
+        );
         assert_eq!(strip_base64_flag(";base64;").as_deref(), None);
         assert_eq!(percent_decode(b"%FF"), vec![255]);
         assert_eq!(percent_decode(b"X"), vec![b'X']);
-        assert_eq!(den_util::base64_forgiving_decode("WA").ok().as_deref(), Some(b"X" as &[u8]));
-        assert_eq!(den_util::base64_forgiving_decode("W A").ok().as_deref(), Some(b"X" as &[u8]));
+        assert_eq!(
+            base64_simd::forgiving_decode_to_vec(b"WA").ok().as_deref(),
+            Some(b"X" as &[u8])
+        );
+        assert_eq!(
+            base64_simd::forgiving_decode_to_vec(b"W A").ok().as_deref(),
+            Some(b"X" as &[u8])
+        );
+        assert_eq!(base64_simd::forgiving_decode_to_vec(b"ab").unwrap(), [0x69]);
+        assert_eq!(base64_simd::forgiving_decode_to_vec(b"ab==").unwrap(), [
+            0x69
+        ]);
+        assert!(base64_simd::forgiving_decode_to_vec(b"abcde").is_err());
+        assert!(base64_simd::forgiving_decode_to_vec(b"a$").is_err());
         assert!(quoted_string_tokens_only(" x"));
         assert!(!quoted_string_tokens_only("\u{0008}"));
         assert_eq!(skip_http_whitespace("  x", 0), 2);

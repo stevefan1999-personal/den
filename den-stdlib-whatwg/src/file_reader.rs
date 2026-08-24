@@ -439,7 +439,10 @@ impl<'js> FileReader<'js> {
                 } else {
                     mime.as_str()
                 };
-                let url = format!("data:{media};base64,{}", den_util::base64_encode(&bytes));
+                let url = format!(
+                    "data:{media};base64,{}",
+                    base64_simd::STANDARD.encode_to_string(&bytes)
+                );
                 rquickjs::IntoJs::into_js(url, &ctx)
                     .unwrap_or_else(|_| Value::new_null(ctx.clone()))
             }

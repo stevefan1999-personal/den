@@ -756,7 +756,7 @@ async fn digest_b64<'js>(ctx: &Ctx<'js>, algorithm: &str, bytes: &[u8]) -> Resul
     let resolved = MaybePromise::from_value(produced)
         .into_future::<ArrayBuffer>()
         .await?;
-    Ok(den_util::base64_encode(resolved.as_bytes().unwrap_or(&[])))
+    Ok(base64_simd::STANDARD.encode_to_string(resolved.as_bytes().unwrap_or(&[])))
 }
 
 async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> Result<()> {

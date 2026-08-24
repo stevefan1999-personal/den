@@ -13,6 +13,7 @@ snapshots rather than living docs) lives in [`docs/research/`](docs/research/).
 den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
  └── den-core                   the embeddable runtime: Engine, loaders, resolvers
       ├── den-transpiler-oxc    TS/JSX → JS  (optional, `transpile`)
+      ├── den-stdlib-assert     den:assert (`@std/assert`); import-only
       ├── den-stdlib-console    globalThis.console → tracing
       ├── den-stdlib-core       atob/btoa/gc
       ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
@@ -95,9 +96,9 @@ builds the whole `WebAssembly` namespace object and installs it;
 all three lists must stay in lockstep — a module registered in one list and not
 the others is the failure mode to watch for.
 
-`den:fs`, `den:networking` and `den:sqlite` are import-only: they appear in the
-resolver and loader lists but are not `evaluate_def`'d, so they contribute no
-globals. The ones that are — `den:console`, `den:core`, `den:text`,
+`den:fs`, `den:networking`, `den:sqlite` and `den:assert` are import-only: they
+appear in the resolver and loader lists but are not `evaluate_def`'d, so they
+contribute no globals. The ones that are — `den:console`, `den:core`, `den:text`,
 `den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:process`, `den:temporal`,
 `den:wasm`, `den:worker`, `den:whatwg` — are exactly the ones whose APIs a
 script expects to find without importing anything. `den:whatwg` is

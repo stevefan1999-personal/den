@@ -2,6 +2,7 @@
 
 members = [
     "den-core",
+    "den-stdlib-assert",
     "den-stdlib-console",
     "den-stdlib-core",
     "den-stdlib-crypto",
@@ -35,6 +36,7 @@ keywords = ["javascript", "quickjs", "tokio", "typescript", "oxc"]
 [workspace.dependencies]
 # Workspace members (call sites keep optional / default-features / extra features).
 den-core = { version = "0.4.0", path = "den-core", default-features = false }
+den-stdlib-assert = { version = "0.4.0", path = "den-stdlib-assert" }
 den-stdlib-console = { version = "0.4.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "0.4.0", path = "den-stdlib-core" }
 den-stdlib-crypto = { version = "0.4.0", path = "den-stdlib-crypto" }
@@ -54,7 +56,6 @@ den-util = { version = "0.4.0", path = "den-util" }
 
 # Shared third-party. Versions stay pinned to what the tree already declared;
 # members name features (and optional / default-features) at the call site.
-base64 = "0.23.1"
 base64-simd = "0.8.0"
 cfg-if = "1.0.4"
 clap = "4.6.6"
@@ -79,6 +80,7 @@ fmmap = "0.5.0"
 futures = "0.3.34"
 http = "1.5.0"
 indexmap = "2.14.0"
+insta = "1.43.2"
 libc = "0.2"
 libtest-mimic = "0.8.2"
 matchit = "0.9.2"
@@ -414,7 +416,6 @@ needless_option_as_deref = "deny"
 needless_option_take = "deny"
 needless_parens_on_range_literals = "deny"
 needless_pass_by_ref_mut = "deny"
-needless_pass_by_value = "deny"
 needless_pub_self = "deny"
 needless_question_mark = "deny"
 needless_range_loop = "deny"
@@ -467,7 +468,6 @@ ptr_eq = "deny"
 ptr_offset_by_literal = "deny"
 ptr_offset_with_cast = "deny"
 pub_underscore_fields = "deny"
-pub_use = "forbid"
 question_mark = "deny"
 range_minus_one = "deny"
 range_plus_one = "deny"
@@ -531,7 +531,6 @@ should_panic_without_expect = "deny"
 significant_drop_in_scrutinee = "deny"
 significant_drop_tightening = "deny"
 similar_names = "deny"
-single_call_fn = "forbid"
 single_char_add_str = "deny"
 single_char_pattern = "deny"
 single_component_path_imports = "deny"
@@ -702,6 +701,7 @@ transpile = ["den-core/transpile"]
 tokio-console = ["console-subscriber"]
 
 stdlib = ["den-core/stdlib"]
+stdlib-assert = ["den-core/stdlib-assert"]
 stdlib-console = ["den-core/stdlib-console"]
 stdlib-core = ["den-core/stdlib-core"]
 stdlib-crypto = ["den-core/stdlib-crypto"]
@@ -720,10 +720,6 @@ wasm = ["den-core/wasm"]
 jit = ["den-core/jit"]
 
 mimalloc = ["dep:mimalloc"]
-
-
-[profile.dev.package.backtrace]
-opt-level = 3
 
 [profile.release]
 incremental = true
