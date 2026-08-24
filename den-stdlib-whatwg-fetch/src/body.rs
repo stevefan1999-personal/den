@@ -482,10 +482,7 @@ pub(crate) fn parse_json_js<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'
     if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         return Err(Exception::throw_syntax(ctx, "UTF-16 JSON is not supported"));
     }
-    let text = utf8_text(bytes);
-    let json: Object = ctx.globals().get("JSON")?;
-    let parse: Function = json.get("parse")?;
-    parse.call((text,))
+    den_util::json_parse(ctx, &utf8_text(bytes))
 }
 
 pub(crate) fn text_to_stream<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
