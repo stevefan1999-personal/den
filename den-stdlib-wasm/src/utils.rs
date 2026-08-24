@@ -11,8 +11,8 @@ use std::cell::RefCell;
 
 use derive_more::derive::{Display as DisplayDerive, Error, From, Into};
 use rquickjs::{
-    Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Result, Value,
-    function::Rest,
+    Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Result, Symbol,
+    Value, function::Rest,
 };
 use wasmtime::{Func, Val, ValType};
 
@@ -317,7 +317,8 @@ impl<'js> HostReferences<'js> {
     /// A `Symbol.for` key so an Exported Function can be recognised after
     /// passing through JS, even when `Value` identity comparison misses.
     fn function_address_key(ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        ctx.eval("Symbol.for('den.WebAssembly.[[FunctionAddress]]')")
+        Symbol::new_global(ctx.clone(), "den.WebAssembly.[[FunctionAddress]]")
+            .map(Symbol::into_value)
     }
 
     /// `ToWebAssemblyValue(v, funcref)`: a `funcref` is a function *address*,
