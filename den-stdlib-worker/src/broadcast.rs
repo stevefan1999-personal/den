@@ -17,9 +17,9 @@ use std::{
     },
 };
 
-use den_util::{inherit, throw_dom_exception};
+use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
-    Class, Coerced, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result, Value,
+    Class, Ctx, Function, IntoJs, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{FuncArg, Opt},
@@ -214,7 +214,7 @@ impl<'js> BroadcastChannel<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, name: Opt<Value<'js>>) -> Result<Class<'js, Self>> {
         let name = match name.0 {
-            Some(value) => Coerced::<String>::from_js(&ctx, value)?.0,
+            Some(value) => coerce_string(&ctx, value)?,
             None => "undefined".to_owned(),
         };
         let native = Class::instance(ctx.clone(), NativeBroadcast::new(name.clone()))?;
