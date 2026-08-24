@@ -28,7 +28,7 @@ pub use zoned_date_time::ZonedDateTime;
 
 #[rquickjs::module(rename_types = "PascalCase")]
 pub mod temporal {
-    use rquickjs::{Ctx, Exception, Function, Object, Result, class::JsClass, module::Exports};
+    use rquickjs::{Ctx, Exception, Object, Result, class::JsClass as _, module::Exports};
 
     pub use crate::{
         Duration, Instant, PlainDate, PlainDateTime, PlainMonthDay, PlainTime, PlainYearMonth,
@@ -48,7 +48,6 @@ pub mod temporal {
             ("PlainMonthDay", PlainMonthDay::constructor(ctx)?),
             ("ZonedDateTime", ZonedDateTime::constructor(ctx)?),
         ];
-        let interface_names = Vec::from_iter(interfaces.iter().map(|(name, _)| *name));
         for (name, constructor) in interfaces {
             let constructor = constructor.ok_or_else(|| {
                 Exception::throw_internal(ctx, &format!("Temporal.{name} has no constructor"))
@@ -64,8 +63,7 @@ pub mod temporal {
         now.set("plainDateTimeISO", crate::now::js_plain_date_time_iso)?;
         now.set("zonedDateTimeISO", crate::now::js_zoned_date_time_iso)?;
 
-        ctx.eval::<Function, _>(crate::shape::DEFINE_INTERFACE_SHAPE)?
-            .call::<_, ()>((namespace.clone(), now, interface_names, ctx.globals()))?;
+        crate::shape::define_interface_shape(ctx, namespace, now)?;
         Ok(())
     }
 }

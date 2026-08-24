@@ -1,14 +1,15 @@
 use std::str::FromStr;
 
+use den_util::ObjectExt as _;
 use rquickjs::{
-    Ctx, Exception, Function, JsLifetime, Object, Result, Value,
+    Ctx, Exception, Filter, Function, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::{
         Trace,
         impl_::{ConstructorCreate, ConstructorCreator},
     },
-    function::Constructor,
-    object::Property,
+    function::{Constructor, This},
+    object::{Accessor, Property},
     prelude::Opt,
 };
 use temporal_rs::{
@@ -37,7 +38,9 @@ pub struct PlainMonthDay {
 }
 
 impl PlainMonthDay {
-    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self { Self { inner } }
+    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self {
+        Self { inner }
+    }
 
     pub fn new<'js>(
         iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
@@ -80,107 +83,164 @@ impl<'js> ConstructorCreator<'js, PlainMonthDay> for ConstructorCreate<PlainMont
         // lib.rs replaces the constructor with a NewTarget wrapper whose
         // [[Prototype]] is this original. Copy own statics onto that wrapper
         // and restore Function.prototype when it writes `.constructor`.
-        let install: Function = ctx.eval(
-            r#"(original) => {
-  const proto = original.prototype;
-  const copyStatics = (wrapped) => {
-    for (const name of Object.getOwnPropertyNames(original)) {
-      if (name === "prototype") continue;
-      if (Object.prototype.hasOwnProperty.call(wrapped, name)) continue;
-      const desc = Object.getOwnPropertyDescriptor(original, name);
-      if (desc) Object.defineProperty(wrapped, name, desc);
-    }
-  };
-  Object.defineProperty(proto, "constructor", {
-    configurable: true,
-    enumerable: false,
-    get() { return original; },
-    set(wrapped) {
-      copyStatics(wrapped);
-      Object.defineProperty(proto, "constructor", {
-        value: wrapped,
-        writable: true,
-        enumerable: false,
-        configurable: true,
-      });
-    },
-  });
-  const finish = (ctor) => {
-    if (!ctor) return;
-    copyStatics(ctor);
-    Object.setPrototypeOf(ctor, Function.prototype);
-    const fixName = (fn, name) => {
-      if (typeof fn !== "function") return;
-      Object.defineProperty(fn, "name", {
-        value: name,
-        writable: false,
-        enumerable: false,
-        configurable: true,
-      });
-    };
-    const proto = ctor.prototype;
-    for (const name of Object.getOwnPropertyNames(proto)) {
-      if (name === "constructor") continue;
-      const desc = Object.getOwnPropertyDescriptor(proto, name);
-      if (!desc) continue;
-      if (typeof desc.value === "function") {
-        fixName(desc.value, name);
-      }
-      if (typeof desc.get === "function") {
-        fixName(desc.get, "get " + name);
-        Object.defineProperty(proto, name, {
-          get: desc.get,
-          enumerable: false,
-          configurable: true,
-        });
-      }
-    }
-    for (const name of Object.getOwnPropertyNames(ctor)) {
-      if (name === "prototype" || name === "length" || name === "name") continue;
-      const desc = Object.getOwnPropertyDescriptor(ctor, name);
-      if (desc && typeof desc.value === "function") {
-        fixName(desc.value, name);
-      }
-    }
-    Object.defineProperty(ctor, "prototype", {
-      value: proto,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-  };
-  const existing = Object.getOwnPropertyDescriptor(globalThis, "Temporal");
-  Object.defineProperty(globalThis, "Temporal", {
-    configurable: true,
-    enumerable: false,
-    get() { return existing && existing.get ? existing.get.call(globalThis) : existing && existing.value; },
-    set(ns) {
-      finish(ns && ns.PlainMonthDay);
-      Object.defineProperty(globalThis, "Temporal", {
-        value: ns,
-        writable: true,
-        enumerable: false,
-        configurable: true,
-      });
-    },
-  });
-}"#,
-        )?;
-        install.call::<_, ()>((constr.clone(),))?;
+        install_new_target_trap(ctx, &constr)?;
         Ok(Some(constr))
     }
+}
+
+fn install_new_target_trap<'js>(ctx: &Ctx<'js>, original: &Constructor<'js>) -> Result<()> {
+    let proto: Object = original.get(PredefinedAtom::Prototype)?;
+    proto.prop(
+        PredefinedAtom::Constructor,
+        Accessor::new(
+            move |ctx: Ctx<'js>| rust_plain_month_day(&ctx),
+            move |ctx: Ctx<'js>, wrapped: Value<'js>| -> Result<()> {
+                let original = rust_plain_month_day(&ctx)?;
+                if let Some(object) = as_object_like(&wrapped) {
+                    copy_statics(&original, &object)?;
+                }
+                let proto: Object = original.get(PredefinedAtom::Prototype)?;
+                proto.prop(
+                    PredefinedAtom::Constructor,
+                    Property::from(wrapped).writable().configurable(),
+                )?;
+                Ok(())
+            },
+        )
+        .configurable(),
+    )?;
+
+    let globals = ctx.globals();
+    let existing = crate::shape::get_own_descriptor(&globals, "Temporal")?;
+    let existing_get = existing
+        .as_ref()
+        .and_then(|desc| desc.get::<_, Function>("get").ok());
+    let existing_value: Option<Value> = existing.as_ref().and_then(|desc| desc.get("value").ok());
+    globals.prop(
+        "Temporal",
+        Accessor::new(
+            move |ctx: Ctx<'js>| -> Result<Value<'js>> {
+                if let Some(get) = existing_get.clone() {
+                    return get.call((This(ctx.globals()),));
+                }
+                Ok(existing_value
+                    .clone()
+                    .unwrap_or_else(|| Value::new_undefined(ctx.clone())))
+            },
+            move |ctx: Ctx<'js>, ns: Value<'js>| -> Result<()> {
+                let ctor = match as_object_like(&ns) {
+                    Some(object) => object.get("PlainMonthDay")?,
+                    None => Value::new_undefined(ctx.clone()),
+                };
+                let original = rust_plain_month_day(&ctx)?;
+                finish_plain_month_day(&ctx, &original, ctor)?;
+                ctx.globals()
+                    .prop("Temporal", Property::from(ns).writable().configurable())?;
+                Ok(())
+            },
+        )
+        .configurable(),
+    )?;
+    Ok(())
+}
+
+fn rust_plain_month_day<'js>(ctx: &Ctx<'js>) -> Result<Constructor<'js>> {
+    crate::shape::original_constructor(ctx, "PlainMonthDay")
+}
+
+fn finish_plain_month_day<'js>(
+    ctx: &Ctx<'js>, original: &Constructor<'js>, ctor: Value<'js>,
+) -> Result<()> {
+    let Some(ctor_obj) = as_object_like(&ctor) else {
+        return Ok(());
+    };
+    copy_statics(original, &ctor_obj)?;
+    ctor_obj.set_prototype(Some(&Function::prototype(ctx.clone())))?;
+    let proto: Object = ctor_obj.get(PredefinedAtom::Prototype)?;
+    let proto_names: Vec<String> = proto
+        .own_keys::<String>(Filter::new().string())
+        .collect::<Result<_>>()?;
+    for name in proto_names {
+        if name == "constructor" {
+            continue;
+        }
+        let Some(desc) = crate::shape::get_own_descriptor(&proto, &name)? else {
+            continue;
+        };
+        let value: Value = desc.get("value")?;
+        if let Some(func) = value.as_function() {
+            func.set_name(name.as_str())?;
+        }
+        let get: Value = desc.get("get")?;
+        if let Some(func) = get.into_function() {
+            func.set_name(format!("get {name}"))?;
+            let getter_desc = Object::new(ctx.clone())?;
+            getter_desc.set("get", func)?;
+            getter_desc.set("enumerable", false)?;
+            getter_desc.set("configurable", true)?;
+            crate::shape::define_property(&proto, &name, getter_desc)?;
+        }
+    }
+    let ctor_names: Vec<String> = ctor_obj
+        .own_keys::<String>(Filter::new().string())
+        .collect::<Result<_>>()?;
+    for name in ctor_names {
+        if name == "prototype" || name == "length" || name == "name" {
+            continue;
+        }
+        let Some(desc) = crate::shape::get_own_descriptor(&ctor_obj, &name)? else {
+            continue;
+        };
+        let value: Value = desc.get("value")?;
+        if let Some(func) = value.as_function() {
+            func.set_name(name)?;
+        }
+    }
+    ctor_obj.prop(PredefinedAtom::Prototype, Property::from(proto))?;
+    Ok(())
+}
+
+fn copy_statics<'js>(original: &Constructor<'js>, wrapped: &Object<'js>) -> Result<()> {
+    let names: Vec<String> = original
+        .own_keys::<String>(Filter::new().string())
+        .collect::<Result<_>>()?;
+    for name in names {
+        if name == "prototype" {
+            continue;
+        }
+        if wrapped.has_own(&name)? {
+            continue;
+        }
+        if let Some(desc) = crate::shape::get_own_descriptor(original, &name)? {
+            crate::shape::define_property(wrapped, &name, desc)?;
+        }
+    }
+    Ok(())
+}
+
+fn as_object_like<'js>(value: &Value<'js>) -> Option<Object<'js>> {
+    value
+        .as_function()
+        .map(|func| func.clone().into_inner())
+        .or_else(|| value.as_object().cloned())
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl PlainMonthDay {
     #[qjs(get, configurable)]
-    pub fn calendar_id(&self) -> &'static str { self.inner.calendar_id() }
+    pub fn calendar_id(&self) -> &'static str {
+        self.inner.calendar_id()
+    }
 
     #[qjs(get, configurable)]
-    pub fn month_code(&self) -> String { self.inner.month_code().as_str().to_string() }
+    pub fn month_code(&self) -> String {
+        self.inner.month_code().as_str().to_string()
+    }
 
     #[qjs(get, configurable)]
-    pub fn day(&self) -> u8 { self.inner.day() }
+    pub fn day(&self) -> u8 {
+        self.inner.day()
+    }
 
     pub fn with<'js>(
         &self, item: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
@@ -221,34 +281,38 @@ impl PlainMonthDay {
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => {
-                match get_defined(&object, "calendarName")? {
-                    None => DisplayCalendar::Auto,
-                    Some(value) => option_display_calendar(&ctx, &value)?,
-                }
-            }
+            Some(object) => match get_defined(&object, "calendarName")? {
+                None => DisplayCalendar::Auto,
+                Some(value) => option_display_calendar(&ctx, &value)?,
+            },
         };
         Ok(self.inner.to_ixdtf_string(display))
     }
 
-    pub fn to_locale_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
+    pub fn to_locale_string(&self) -> String {
+        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
+    }
 
     #[qjs(rename = "toJSON")]
-    pub fn to_json(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
+    pub fn to_json(&self) -> String {
+        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
+    }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainMonthDay"))
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.PlainMonthDay" }
+    pub fn to_string_tag() -> &'static str {
+        "Temporal.PlainMonthDay"
+    }
 }
 
 struct MonthDayBag {
-    day:        Option<u8>,
-    month:      Option<u8>,
+    day: Option<u8>,
+    month: Option<u8>,
     month_code: Option<String>,
-    year:       Option<i32>,
+    year: Option<i32>,
 }
 
 impl MonthDayBag {
