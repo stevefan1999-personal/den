@@ -2,7 +2,7 @@
 
 use den_util::BufferSource;
 use rquickjs::{
-    Array, ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
     TypedArray, Value,
     function::{Constructor, This},
     promise::MaybePromise,
@@ -53,10 +53,6 @@ pub(crate) fn set_content_type_if_missing(
     Ok(())
 }
 
-pub(crate) fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-    BufferSource::is_array_buffer_view(ctx, value)
-}
-
 pub(crate) fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>> {
     bytes
         .map(<[u8]>::to_vec)
@@ -73,14 +69,8 @@ pub(crate) fn apply_body_types<'js>(
     if let Some(object) = body.as_object()
         && is_instance_of_global(ctx, object, "URLSearchParams")?
     {
-        ctx.globals().set("__denUsp", object.clone())?;
-        let text: String = ctx.eval(
-            r#"(function () {
-              var object = globalThis.__denUsp;
-              delete globalThis.__denUsp;
-              return "" + object;
-            })()"#,
-        )?;
+        // ToString(URLSearchParams) is the urlencoded serialization.
+        let text = den_util::coerce_string(ctx, object.clone().into_value())?;
         body = text.into_js(ctx)?;
         set_content_type_if_missing(
             headers,
@@ -157,7 +147,7 @@ pub(crate) async fn value_to_bytes<'js>(
     if let Ok(buffer) = ArrayBuffer::from_js(ctx, body.clone()) {
         return copy_buffer(ctx, buffer.as_bytes());
     }
-    if is_array_buffer_view(ctx, &body)? {
+    if BufferSource::is_array_buffer_view(ctx, &body)? {
         return copy_view(ctx, &body);
     }
     if let Some(object) = body.as_object() {
@@ -170,7 +160,7 @@ pub(crate) async fn value_to_bytes<'js>(
             return Box::pin(value_to_bytes(ctx, Some(resolved))).await;
         }
     }
-    Ok(Coerced::<String>::from_js(ctx, body)?.0.into_bytes())
+    Ok(den_util::coerce_string(ctx, body)?.into_bytes())
 }
 
 pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<u8>> {
@@ -227,7 +217,7 @@ pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Resu
             out.extend(copy_buffer(ctx, buffer.as_bytes())?);
             continue;
         }
-        if is_array_buffer_view(ctx, &value)? {
+        if BufferSource::is_array_buffer_view(ctx, &value)? {
             out.extend(copy_view(ctx, &value)?);
             continue;
         }
@@ -492,30 +482,17 @@ pub(crate) fn parse_json_js<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'
     if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         return Err(Exception::throw_syntax(ctx, "UTF-16 JSON is not supported"));
     }
-    let text = utf8_text(bytes);
-    let json: Object = ctx.globals().get("JSON")?;
-    let parse: Function = json.get("parse")?;
-    parse.call((text,))
+    den_util::json_parse(ctx, &utf8_text(bytes))
 }
 
 pub(crate) fn text_to_stream<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
-    ctx.globals().set("__denStreamText", text)?;
-    ctx.eval(
-        r#"
-          (function () {
-            var text = globalThis.__denStreamText;
-            delete globalThis.__denStreamText;
-            var source = Object.create(null);
-            source.start = function (controller) {
-              if (text) {
-                controller.enqueue(text);
-              }
-              controller.close();
-            };
-            return new ReadableStream(source);
-          })()
-        "#,
-    )
+    let queue = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![text.into_js(ctx)?]
+    };
+    den_stdlib_whatwg::streams::ReadableStream::from_queue(ctx, queue)
+        .map(|stream| stream.into_value())
 }
 
 pub(crate) fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
