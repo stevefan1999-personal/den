@@ -1529,8 +1529,14 @@ async fn http_fetch<'js>(
 
     if cors_mode && cross_origin {
         let include = credentials == "include";
-        if !check_acao(header_value(&pairs, "access-control-allow-origin"), &origin, include)
-        {
+        // Validate against the origin that was actually sent: a cross-origin
+        // redirect taints it to "null", and the server opts back in with
+        // `Access-Control-Allow-Origin: null`.
+        if !check_acao(
+            header_value(&pairs, "access-control-allow-origin"),
+            &origin_header,
+            include,
+        ) {
             return Err(network_error(ctx, "CORS failed"));
         }
         if include
