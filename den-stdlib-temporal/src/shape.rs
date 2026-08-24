@@ -29,11 +29,11 @@ const INTERFACES: [&str; 8] = [
 ];
 
 struct Brand<'js> {
-    name: &'static str,
-    original: Constructor<'js>,
-    wrapped: Constructor<'js>,
+    name:           &'static str,
+    original:       Constructor<'js>,
+    wrapped:        Constructor<'js>,
     original_proto: Object<'js>,
-    proto: Object<'js>,
+    proto:          Object<'js>,
 }
 
 /// WebIDL-shaped Temporal namespace plus per-interface method metadata.
@@ -128,124 +128,140 @@ fn rename(key: &str) -> &str {
 
 fn required_methods(type_name: &str) -> &'static [&'static str] {
     match type_name {
-        "Instant" => &[
-            "add",
-            "equals",
-            "round",
-            "since",
-            "subtract",
-            "toJSON",
-            "toLocaleString",
-            "toString",
-            "toZonedDateTimeISO",
-            "until",
-            "valueOf",
-        ],
-        "Duration" => &[
-            "abs",
-            "add",
-            "negated",
-            "round",
-            "subtract",
-            "toJSON",
-            "toLocaleString",
-            "toString",
-            "total",
-            "valueOf",
-            "with",
-        ],
-        "PlainDate" => &[
-            "add",
-            "equals",
-            "since",
-            "subtract",
-            "toJSON",
-            "toLocaleString",
-            "toPlainDateTime",
-            "toPlainMonthDay",
-            "toPlainYearMonth",
-            "toString",
-            "toZonedDateTime",
-            "until",
-            "valueOf",
-            "with",
-            "withCalendar",
-        ],
-        "PlainTime" => &[
-            "add",
-            "equals",
-            "round",
-            "since",
-            "subtract",
-            "toJSON",
-            "toLocaleString",
-            "toString",
-            "until",
-            "valueOf",
-            "with",
-        ],
-        "PlainDateTime" => &[
-            "add",
-            "equals",
-            "round",
-            "since",
-            "subtract",
-            "toJSON",
-            "toLocaleString",
-            "toPlainDate",
-            "toPlainTime",
-            "toString",
-            "toZonedDateTime",
-            "until",
-            "valueOf",
-            "with",
-            "withCalendar",
-            "withPlainTime",
-        ],
-        "PlainYearMonth" => &[
-            "add",
-            "equals",
-            "since",
-            "subtract",
-            "toJSON",
-            "toLocaleString",
-            "toPlainDate",
-            "toString",
-            "until",
-            "valueOf",
-            "with",
-        ],
-        "PlainMonthDay" => &[
-            "equals",
-            "toJSON",
-            "toLocaleString",
-            "toPlainDate",
-            "toString",
-            "valueOf",
-            "with",
-        ],
-        "ZonedDateTime" => &[
-            "add",
-            "equals",
-            "getTimeZoneTransition",
-            "round",
-            "since",
-            "startOfDay",
-            "subtract",
-            "toInstant",
-            "toJSON",
-            "toLocaleString",
-            "toPlainDate",
-            "toPlainDateTime",
-            "toPlainTime",
-            "toString",
-            "until",
-            "valueOf",
-            "with",
-            "withCalendar",
-            "withPlainTime",
-            "withTimeZone",
-        ],
+        "Instant" => {
+            &[
+                "add",
+                "equals",
+                "round",
+                "since",
+                "subtract",
+                "toJSON",
+                "toLocaleString",
+                "toString",
+                "toZonedDateTimeISO",
+                "until",
+                "valueOf",
+            ]
+        }
+        "Duration" => {
+            &[
+                "abs",
+                "add",
+                "negated",
+                "round",
+                "subtract",
+                "toJSON",
+                "toLocaleString",
+                "toString",
+                "total",
+                "valueOf",
+                "with",
+            ]
+        }
+        "PlainDate" => {
+            &[
+                "add",
+                "equals",
+                "since",
+                "subtract",
+                "toJSON",
+                "toLocaleString",
+                "toPlainDateTime",
+                "toPlainMonthDay",
+                "toPlainYearMonth",
+                "toString",
+                "toZonedDateTime",
+                "until",
+                "valueOf",
+                "with",
+                "withCalendar",
+            ]
+        }
+        "PlainTime" => {
+            &[
+                "add",
+                "equals",
+                "round",
+                "since",
+                "subtract",
+                "toJSON",
+                "toLocaleString",
+                "toString",
+                "until",
+                "valueOf",
+                "with",
+            ]
+        }
+        "PlainDateTime" => {
+            &[
+                "add",
+                "equals",
+                "round",
+                "since",
+                "subtract",
+                "toJSON",
+                "toLocaleString",
+                "toPlainDate",
+                "toPlainTime",
+                "toString",
+                "toZonedDateTime",
+                "until",
+                "valueOf",
+                "with",
+                "withCalendar",
+                "withPlainTime",
+            ]
+        }
+        "PlainYearMonth" => {
+            &[
+                "add",
+                "equals",
+                "since",
+                "subtract",
+                "toJSON",
+                "toLocaleString",
+                "toPlainDate",
+                "toString",
+                "until",
+                "valueOf",
+                "with",
+            ]
+        }
+        "PlainMonthDay" => {
+            &[
+                "equals",
+                "toJSON",
+                "toLocaleString",
+                "toPlainDate",
+                "toString",
+                "valueOf",
+                "with",
+            ]
+        }
+        "ZonedDateTime" => {
+            &[
+                "add",
+                "equals",
+                "getTimeZoneTransition",
+                "round",
+                "since",
+                "startOfDay",
+                "subtract",
+                "toInstant",
+                "toJSON",
+                "toLocaleString",
+                "toPlainDate",
+                "toPlainDateTime",
+                "toPlainTime",
+                "toString",
+                "until",
+                "valueOf",
+                "with",
+                "withCalendar",
+                "withPlainTime",
+                "withTimeZone",
+            ]
+        }
         _ => &[],
     }
 }
@@ -253,125 +269,139 @@ fn required_methods(type_name: &str) -> &'static [&'static str] {
 fn required_getters(type_name: &str) -> &'static [&'static str] {
     match type_name {
         "Instant" => &["epochNanoseconds", "epochMilliseconds"],
-        "Duration" => &[
-            "years",
-            "months",
-            "weeks",
-            "days",
-            "hours",
-            "minutes",
-            "seconds",
-            "milliseconds",
-            "microseconds",
-            "nanoseconds",
-            "sign",
-            "blank",
-        ],
-        "PlainDate" => &[
-            "calendarId",
-            "era",
-            "eraYear",
-            "year",
-            "month",
-            "monthCode",
-            "day",
-            "dayOfWeek",
-            "dayOfYear",
-            "weekOfYear",
-            "yearOfWeek",
-            "daysInWeek",
-            "daysInMonth",
-            "daysInYear",
-            "monthsInYear",
-            "inLeapYear",
-        ],
-        "PlainTime" => &[
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-        ],
-        "PlainDateTime" => &[
-            "calendarId",
-            "era",
-            "eraYear",
-            "year",
-            "month",
-            "monthCode",
-            "day",
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-            "dayOfWeek",
-            "dayOfYear",
-            "weekOfYear",
-            "yearOfWeek",
-            "daysInWeek",
-            "daysInMonth",
-            "daysInYear",
-            "monthsInYear",
-            "inLeapYear",
-        ],
-        "PlainYearMonth" => &[
-            "calendarId",
-            "era",
-            "eraYear",
-            "year",
-            "month",
-            "monthCode",
-            "daysInYear",
-            "daysInMonth",
-            "monthsInYear",
-            "inLeapYear",
-        ],
+        "Duration" => {
+            &[
+                "years",
+                "months",
+                "weeks",
+                "days",
+                "hours",
+                "minutes",
+                "seconds",
+                "milliseconds",
+                "microseconds",
+                "nanoseconds",
+                "sign",
+                "blank",
+            ]
+        }
+        "PlainDate" => {
+            &[
+                "calendarId",
+                "era",
+                "eraYear",
+                "year",
+                "month",
+                "monthCode",
+                "day",
+                "dayOfWeek",
+                "dayOfYear",
+                "weekOfYear",
+                "yearOfWeek",
+                "daysInWeek",
+                "daysInMonth",
+                "daysInYear",
+                "monthsInYear",
+                "inLeapYear",
+            ]
+        }
+        "PlainTime" => {
+            &[
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+                "microsecond",
+                "nanosecond",
+            ]
+        }
+        "PlainDateTime" => {
+            &[
+                "calendarId",
+                "era",
+                "eraYear",
+                "year",
+                "month",
+                "monthCode",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+                "microsecond",
+                "nanosecond",
+                "dayOfWeek",
+                "dayOfYear",
+                "weekOfYear",
+                "yearOfWeek",
+                "daysInWeek",
+                "daysInMonth",
+                "daysInYear",
+                "monthsInYear",
+                "inLeapYear",
+            ]
+        }
+        "PlainYearMonth" => {
+            &[
+                "calendarId",
+                "era",
+                "eraYear",
+                "year",
+                "month",
+                "monthCode",
+                "daysInYear",
+                "daysInMonth",
+                "monthsInYear",
+                "inLeapYear",
+            ]
+        }
         "PlainMonthDay" => &["calendarId", "monthCode", "day"],
-        "ZonedDateTime" => &[
-            "calendarId",
-            "timeZoneId",
-            "era",
-            "eraYear",
-            "year",
-            "month",
-            "monthCode",
-            "day",
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-            "epochNanoseconds",
-            "epochMilliseconds",
-            "dayOfWeek",
-            "dayOfYear",
-            "weekOfYear",
-            "yearOfWeek",
-            "daysInWeek",
-            "daysInMonth",
-            "daysInYear",
-            "monthsInYear",
-            "inLeapYear",
-            "offset",
-            "offsetNanoseconds",
-            "hoursInDay",
-        ],
+        "ZonedDateTime" => {
+            &[
+                "calendarId",
+                "timeZoneId",
+                "era",
+                "eraYear",
+                "year",
+                "month",
+                "monthCode",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+                "microsecond",
+                "nanosecond",
+                "epochNanoseconds",
+                "epochMilliseconds",
+                "dayOfWeek",
+                "dayOfYear",
+                "weekOfYear",
+                "yearOfWeek",
+                "daysInWeek",
+                "daysInMonth",
+                "daysInYear",
+                "monthsInYear",
+                "inLeapYear",
+                "offset",
+                "offsetNanoseconds",
+                "hoursInDay",
+            ]
+        }
         _ => &[],
     }
 }
 
 fn required_statics(type_name: &str) -> &'static [&'static str] {
     match type_name {
-        "Instant" => &[
-            "from",
-            "compare",
-            "fromEpochNanoseconds",
-            "fromEpochMilliseconds",
-        ],
+        "Instant" => {
+            &[
+                "from",
+                "compare",
+                "fromEpochNanoseconds",
+                "fromEpochMilliseconds",
+            ]
+        }
         "PlainMonthDay" => &["from"],
         "Duration" | "PlainDate" | "PlainTime" | "PlainDateTime" | "PlainYearMonth"
         | "ZonedDateTime" => &["from", "compare"],
@@ -381,53 +411,61 @@ fn required_statics(type_name: &str) -> &'static [&'static str] {
 
 fn with_fields(type_name: &str) -> Option<&'static [&'static str]> {
     match type_name {
-        "Duration" => Some(&[
-            "years",
-            "months",
-            "weeks",
-            "days",
-            "hours",
-            "minutes",
-            "seconds",
-            "milliseconds",
-            "microseconds",
-            "nanoseconds",
-        ]),
+        "Duration" => {
+            Some(&[
+                "years",
+                "months",
+                "weeks",
+                "days",
+                "hours",
+                "minutes",
+                "seconds",
+                "milliseconds",
+                "microseconds",
+                "nanoseconds",
+            ])
+        }
         "PlainDate" | "PlainMonthDay" => Some(&["year", "month", "monthCode", "day"]),
-        "PlainTime" => Some(&[
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-        ]),
-        "PlainDateTime" => Some(&[
-            "year",
-            "month",
-            "monthCode",
-            "day",
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-        ]),
+        "PlainTime" => {
+            Some(&[
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+                "microsecond",
+                "nanosecond",
+            ])
+        }
+        "PlainDateTime" => {
+            Some(&[
+                "year",
+                "month",
+                "monthCode",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+                "microsecond",
+                "nanosecond",
+            ])
+        }
         "PlainYearMonth" => Some(&["year", "month", "monthCode"]),
-        "ZonedDateTime" => Some(&[
-            "year",
-            "month",
-            "monthCode",
-            "day",
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-            "offset",
-        ]),
+        "ZonedDateTime" => {
+            Some(&[
+                "year",
+                "month",
+                "monthCode",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "millisecond",
+                "microsecond",
+                "nanosecond",
+                "offset",
+            ])
+        }
         _ => None,
     }
 }
@@ -642,11 +680,9 @@ fn make_from<'js>(ctx: &Ctx<'js>, type_name: &'static str) -> Result<Function<'j
             .ok_or_else(|| Exception::throw_type(&ctx, "from is not implemented"))?;
         rehome(
             &ctx,
-            call_this(
-                &original_from,
-                original.as_value().clone(),
-                &[first, second],
-            )?,
+            call_this(&original_from, original.as_value().clone(), &[
+                first, second,
+            ])?,
         )
     })
 }
@@ -848,15 +884,12 @@ fn install_to_plain_date(brand: &Brand<'_>) -> Result<()> {
                 let truncated = to_integer_with_truncation(&ctx, &day)? as f64;
                 return rehome(
                     &ctx,
-                    construct(
-                        &plain_date,
-                        [
-                            self_obj.get("year")?,
-                            self_obj.get("month")?,
-                            truncated.into_js(&ctx)?,
-                            self_obj.get("calendarId")?,
-                        ],
-                    )?,
+                    construct(&plain_date, [
+                        self_obj.get("year")?,
+                        self_obj.get("month")?,
+                        truncated.into_js(&ctx)?,
+                        self_obj.get("calendarId")?,
+                    ])?,
                 );
             }
             let Some(year) = get_defined(&item_obj, "year")? else {
@@ -865,15 +898,12 @@ fn install_to_plain_date(brand: &Brand<'_>) -> Result<()> {
             let month = parse_month_code(&ctx, &self_obj.get("monthCode")?)?;
             rehome(
                 &ctx,
-                construct(
-                    &plain_date,
-                    [
-                        (to_integer_with_truncation(&ctx, &year)? as f64).into_js(&ctx)?,
-                        month.into_js(&ctx)?,
-                        self_obj.get("day")?,
-                        self_obj.get("calendarId")?,
-                    ],
-                )?,
+                construct(&plain_date, [
+                    (to_integer_with_truncation(&ctx, &year)? as f64).into_js(&ctx)?,
+                    month.into_js(&ctx)?,
+                    self_obj.get("day")?,
+                    self_obj.get("calendarId")?,
+                ])?,
             )
         },
     )?;
@@ -912,11 +942,9 @@ fn install_iso_round(brand: &Brand<'_>) -> Result<()> {
             let to_zoned: Function = rounded.get("toZonedDateTimeISO")?;
             return rehome(
                 &ctx,
-                call_this(
-                    &to_zoned,
-                    rounded.into_value(),
-                    &[self_obj.get("timeZoneId")?],
-                )?,
+                call_this(&to_zoned, rounded.into_value(), &[
+                    self_obj.get("timeZoneId")?
+                ])?,
             );
         }
         if type_name == "PlainDateTime" {
@@ -972,17 +1000,14 @@ fn install_iso_round(brand: &Brand<'_>) -> Result<()> {
             .ok_or_else(|| Exception::throw_type(&ctx, "expected ZonedDateTime"))?;
         rehome(
             &ctx,
-            construct(
-                &plain_time,
-                [
-                    out.get("hour")?,
-                    out.get("minute")?,
-                    out.get("second")?,
-                    out.get("millisecond")?,
-                    out.get("microsecond")?,
-                    out.get("nanosecond")?,
-                ],
-            )?,
+            construct(&plain_time, [
+                out.get("hour")?,
+                out.get("minute")?,
+                out.get("second")?,
+                out.get("millisecond")?,
+                out.get("microsecond")?,
+                out.get("nanosecond")?,
+            ])?,
         )
     })?;
     define_data(&brand.proto, "round", fn_)
@@ -994,11 +1019,10 @@ fn construct_with<'js>(
     let self_obj = js_object(self_value)?;
     let wrapped = wrapped_constructor(ctx, type_name)?;
     match type_name {
-        "Duration" => rehome(
-            ctx,
-            construct(
-                &wrapped,
-                [
+        "Duration" => {
+            rehome(
+                ctx,
+                construct(&wrapped, [
                     or_self(partial, &self_obj, "years")?,
                     or_self(partial, &self_obj, "months")?,
                     or_self(partial, &self_obj, "weeks")?,
@@ -1009,40 +1033,37 @@ fn construct_with<'js>(
                     or_self(partial, &self_obj, "milliseconds")?,
                     or_self(partial, &self_obj, "microseconds")?,
                     or_self(partial, &self_obj, "nanoseconds")?,
-                ],
-            )?,
-        ),
-        "PlainDate" => rehome(
-            ctx,
-            construct(
-                &wrapped,
-                [
+                ])?,
+            )
+        }
+        "PlainDate" => {
+            rehome(
+                ctx,
+                construct(&wrapped, [
                     or_self(partial, &self_obj, "year")?,
                     month_from_partial(ctx, partial, self_obj.get("month")?)?,
                     or_self(partial, &self_obj, "day")?,
                     self_obj.get("calendarId")?,
-                ],
-            )?,
-        ),
-        "PlainTime" => rehome(
-            ctx,
-            construct(
-                &wrapped,
-                [
+                ])?,
+            )
+        }
+        "PlainTime" => {
+            rehome(
+                ctx,
+                construct(&wrapped, [
                     or_self(partial, &self_obj, "hour")?,
                     or_self(partial, &self_obj, "minute")?,
                     or_self(partial, &self_obj, "second")?,
                     or_self(partial, &self_obj, "millisecond")?,
                     or_self(partial, &self_obj, "microsecond")?,
                     or_self(partial, &self_obj, "nanosecond")?,
-                ],
-            )?,
-        ),
-        "PlainDateTime" => rehome(
-            ctx,
-            construct(
-                &wrapped,
-                [
+                ])?,
+            )
+        }
+        "PlainDateTime" => {
+            rehome(
+                ctx,
+                construct(&wrapped, [
                     or_self(partial, &self_obj, "year")?,
                     month_from_partial(ctx, partial, self_obj.get("month")?)?,
                     or_self(partial, &self_obj, "day")?,
@@ -1053,32 +1074,28 @@ fn construct_with<'js>(
                     or_self(partial, &self_obj, "microsecond")?,
                     or_self(partial, &self_obj, "nanosecond")?,
                     self_obj.get("calendarId")?,
-                ],
-            )?,
-        ),
-        "PlainYearMonth" => rehome(
-            ctx,
-            construct(
-                &wrapped,
-                [
+                ])?,
+            )
+        }
+        "PlainYearMonth" => {
+            rehome(
+                ctx,
+                construct(&wrapped, [
                     or_self(partial, &self_obj, "year")?,
                     month_from_partial(ctx, partial, self_obj.get("month")?)?,
                     self_obj.get("calendarId")?,
-                ],
-            )?,
-        ),
+                ])?,
+            )
+        }
         "PlainMonthDay" => {
             let fallback = parse_month_code(ctx, &self_obj.get("monthCode")?)?;
             rehome(
                 ctx,
-                construct(
-                    &wrapped,
-                    [
-                        month_from_partial(ctx, partial, fallback.into_js(ctx)?)?,
-                        or_self(partial, &self_obj, "day")?,
-                        self_obj.get("calendarId")?,
-                    ],
-                )?,
+                construct(&wrapped, [
+                    month_from_partial(ctx, partial, fallback.into_js(ctx)?)?,
+                    or_self(partial, &self_obj, "day")?,
+                    self_obj.get("calendarId")?,
+                ])?,
             )
         }
         "ZonedDateTime" => {
@@ -1101,10 +1118,12 @@ fn construct_with<'js>(
             let from: Function = wrapped.get("from")?;
             rehome(ctx, from.call::<_, Value>((bag,))?)
         }
-        _ => Err(Exception::throw_type(
-            ctx,
-            &format!("{type_name}.with is not implemented"),
-        )),
+        _ => {
+            Err(Exception::throw_type(
+                ctx,
+                &format!("{type_name}.with is not implemented"),
+            ))
+        }
     }
 }
 

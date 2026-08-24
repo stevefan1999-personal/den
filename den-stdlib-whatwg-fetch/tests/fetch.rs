@@ -24,7 +24,7 @@ async fn headers_and_request_are_globals_and_constructible() -> eyre::Result<()>
 #[tokio::test(flavor = "multi_thread")]
 async fn fetch_get_and_post_against_a_local_listener() -> eyre::Result<()> {
     let server = den_stdlib_whatwg::local_http::serve(|incoming| {
-        if incoming.method == "POST" {
+        if incoming.path.ends_with("/post") {
             den_stdlib_whatwg::local_http::Outgoing::ok(incoming.body, "text/plain")
         } else {
             den_stdlib_whatwg::local_http::Outgoing::ok(

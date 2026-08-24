@@ -133,7 +133,7 @@ mod tests {
     async fn xhr_get_and_post_against_a_local_listener() {
         let _guard = ENV.lock().await;
         let server = super::local_http::serve(|incoming| {
-            if incoming.method == "POST" {
+            if incoming.path.ends_with("/post") {
                 super::local_http::Outgoing::ok(incoming.body, "text/plain")
             } else {
                 super::local_http::Outgoing {
