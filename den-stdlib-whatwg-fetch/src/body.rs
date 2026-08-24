@@ -486,23 +486,13 @@ pub(crate) fn parse_json_js<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'
 }
 
 pub(crate) fn text_to_stream<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
-    ctx.globals().set("__denStreamText", text)?;
-    ctx.eval(
-        r#"
-          (function () {
-            var text = globalThis.__denStreamText;
-            delete globalThis.__denStreamText;
-            var source = Object.create(null);
-            source.start = function (controller) {
-              if (text) {
-                controller.enqueue(text);
-              }
-              controller.close();
-            };
-            return new ReadableStream(source);
-          })()
-        "#,
-    )
+    let queue = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![text.into_js(ctx)?]
+    };
+    den_stdlib_whatwg::streams::ReadableStream::from_queue(ctx, queue)
+        .map(|stream| stream.into_value())
 }
 
 pub(crate) fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
