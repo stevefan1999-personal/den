@@ -593,7 +593,7 @@ impl<'js> Response<'js> {
                             ResponseBody::Bytes(body::copy_buffer(&ctx, buffer.as_bytes())?),
                             None,
                         )
-                    } else if body::is_array_buffer_view(&ctx, &extracted)? {
+                    } else if den_util::BufferSource::is_array_buffer_view(&ctx, &extracted)? {
                         (ResponseBody::Bytes(body::copy_view(&ctx, &extracted)?), None)
                     } else {
                         (ResponseBody::Bytes(Vec::new()), Some(extracted))
