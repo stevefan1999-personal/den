@@ -71,6 +71,23 @@ async fn handle(
     mut stream: TcpStream, handler: Arc<dyn Fn(Incoming) -> Outgoing + Send + Sync>,
 ) -> std::io::Result<()> {
     let incoming = read_request(&mut stream).await?;
+    if incoming.method == "OPTIONS" {
+        // Automatic CORS preflight: the fixture answers like a permissive
+        // server, so non-safelisted request headers (Cache-Control,
+        // Last-Event-ID) never reach the test handler as a failure.
+        let preflight = Outgoing {
+            status:  200,
+            headers: vec![
+                ("Access-Control-Allow-Origin".into(), "*".into()),
+                ("Access-Control-Allow-Methods".into(), "*".into()),
+                ("Access-Control-Allow-Headers".into(), "*".into()),
+            ],
+            body:    Vec::new(),
+            hang:    false,
+            silent:  false,
+        };
+        return write_response(&mut stream, &preflight).await;
+    }
     let outgoing = handler(incoming);
     if outgoing.silent {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -159,9 +176,13 @@ async fn write_response(stream: &mut TcpStream, outgoing: &Outgoing) -> std::io:
     };
     let mut head = format!("HTTP/1.1 {} {reason}\r\n", outgoing.status);
     let mut has_length = false;
+    let mut has_acao = false;
     for (name, value) in &outgoing.headers {
         if name.eq_ignore_ascii_case("content-length") {
             has_length = true;
+        }
+        if name.eq_ignore_ascii_case("access-control-allow-origin") {
+            has_acao = true;
         }
         head.push_str(name);
         head.push_str(": ");
@@ -170,6 +191,13 @@ async fn write_response(stream: &mut TcpStream, outgoing: &Outgoing) -> std::io:
     }
     if !has_length {
         head.push_str(&format!("Content-Length: {}\r\n", outgoing.body.len()));
+    }
+    // The loopback listener is always cross-origin from a bare test realm
+    // (no `location`, so the origin fallback lacks a port); answer like a
+    // CORS-permissive server even when the caller built headers by hand.
+    if !has_acao {
+        head.push_str("Access-Control-Allow-Origin: *\r\n");
+        head.push_str("Access-Control-Expose-Headers: *\r\n");
     }
     head.push_str("Connection: close\r\n\r\n");
     stream.write_all(head.as_bytes()).await?;

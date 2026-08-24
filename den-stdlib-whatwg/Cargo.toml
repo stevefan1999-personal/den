@@ -21,6 +21,10 @@ tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 url.workspace = true
 urlpattern.workspace = true
 
+[features]
+# Exposes the loopback test listener to other crates' test suites.
+test-support = []
+
 [dev-dependencies]
 den-stdlib-text.workspace = true
 den-stdlib-whatwg-fetch.workspace = true
