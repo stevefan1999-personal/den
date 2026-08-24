@@ -5,8 +5,8 @@ use std::{cell::RefCell, rc::Rc};
 use den_util::{BufferSource, Probe as _};
 use indexmap::indexmap;
 use rquickjs::{
-    ArrayBuffer, Class, Ctx, FromJs, Function, JsLifetime, Object, Promise, Result, TypedArray,
-    Value,
+    ArrayBuffer, Class, Constructor, Ctx, Exception, FromJs, Function, JsLifetime, Object, Promise,
+    Result, TypedArray, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Async, Opt, This},
@@ -273,38 +273,42 @@ impl<'js> ReadableStream<'js> {
             .and_then(|object| object.get("byteLength").ok())
             .unwrap_or(0);
         let n = src.len().min(view_len);
-        if src.len() > n {
-            state
-                .borrow_mut()
-                .queue
-                .insert(0, TypedArray::<u8>::new_copy(ctx.clone(), &src[n..])?.into_value());
+        if let Some(leftover) = src.get(n..)
+            && !leftover.is_empty()
+        {
+            state.borrow_mut().queue.insert(
+                0,
+                TypedArray::<u8>::new_copy(ctx.clone(), leftover)?.into_value(),
+            );
         }
-        ctx.globals().set("__denByobView", view)?;
-        ctx.globals().set("__denByobResult", result)?;
-        ctx.eval(
-            r#"
-              (function () {
-                var result = globalThis.__denByobResult;
-                var view = globalThis.__denByobView;
-                delete globalThis.__denByobResult;
-                delete globalThis.__denByobView;
-                var chunk = result && result.value;
-                if (!view || chunk == null) {
-                  return result;
-                }
-                var src = chunk;
-                if (!(src instanceof Uint8Array) && src && src.buffer) {
-                  src = new Uint8Array(src.buffer, src.byteOffset || 0, src.byteLength || 0);
-                }
-                if (!(src instanceof Uint8Array)) {
-                  return result;
-                }
-                var n = Math.min(view.byteLength, src.byteLength);
-                new Uint8Array(view.buffer, view.byteOffset, n).set(src.subarray(0, n));
-                return { done: false, value: new Uint8Array(view.buffer, view.byteOffset, n) };
-              })()
-            "#,
-        )
+        let Some(view_obj) = view.as_object() else {
+            return Ok(result);
+        };
+        let buffer: ArrayBuffer = view_obj.get("buffer")?;
+        let offset = view_obj.get::<_, usize>("byteOffset").unwrap_or(0);
+        let Some(raw) = buffer.as_raw() else {
+            return Err(Exception::throw_type(ctx, "array buffer is detached"));
+        };
+        // SAFETY: `raw` is QuickJS's own live allocation for this buffer. Nothing else
+        // aliases it here — no JS runs between `as_raw` and the end of the
+        // copy, so the buffer cannot be detached or resized underneath us.
+        let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
+        let Some(dest) = dest.get_mut(offset..offset + n) else {
+            return Err(Exception::throw_range(
+                ctx,
+                "the view is out of bounds of its buffer",
+            ));
+        };
+        let Some(src) = src.get(..n) else {
+            return Ok(result);
+        };
+        dest.copy_from_slice(src);
+        let ctor: Constructor = ctx.globals().get("Uint8Array")?;
+        let value: TypedArray<u8> = ctor.construct((buffer, offset, n))?;
+        let filled = Object::new(ctx.clone())?;
+        filled.set("done", false)?;
+        filled.set("value", value)?;
+        Ok(filled.into_value())
     }
 
     pub async fn read_all_bytes(stream: &Class<'js, Self>, ctx: Ctx<'js>) -> Result<Vec<u8>> {
