@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
-use den_util::{construct, instance_of_global};
+use den_util::{ObjectExt, construct, instance_of_global};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
     Symbol, Value,
-    object::{Filter, Property},
+    object::Property,
     qjs,
 };
 
@@ -102,15 +102,6 @@ fn is_out_of_bounds<'js>(ctx: &Ctx<'js>, view: &Value<'js>) -> Result<bool> {
             .map(|_| ())
     };
     Ok(outcome.is_err())
-}
-
-fn has_own(object: &Object<'_>, key: &str) -> Result<bool> {
-    for name in object.own_keys::<String>(Filter::new().string()) {
-        if name? == key {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn forbidden_name<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<&'static str>> {
@@ -305,7 +296,7 @@ fn copy<'js>(
             .unwrap_or_else(|_| "Error".to_owned());
         let tagged = tag_object(ctx, "Error")?;
         define_data(&tagged, "name", error_name(&name).into_js(ctx)?)?;
-        if has_own(object, "message")? {
+        if object.has_own("message")? {
             let message: Value<'js> = object.get("message")?;
             define_data(
                 &tagged,
@@ -320,7 +311,7 @@ fn copy<'js>(
         }
         let out = tagged.into_value();
         seen.insert(value.clone(), out.clone());
-        if has_own(object, "cause")? {
+        if object.has_own("cause")? {
             let cause = copy(
                 ctx,
                 object.get("cause")?,
@@ -553,7 +544,7 @@ fn revive<'js>(
                 )?;
                 let revived = stacked.into_value();
                 seen.insert(value.clone(), revived.clone());
-                if object.contains_key("cause")? {
+                if object.has_own("cause")? {
                     let cause = revive(ctx, object.get("cause")?, ports, seen)?;
                     define_data(revived.as_object().expect("Error"), "cause", cause)?;
                 }
