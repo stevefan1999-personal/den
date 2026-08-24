@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use den_util::{ObjectExt, class_id, construct, instance_of_global};
+use den_util::{BufferSource, ObjectExt, class_id, construct, instance_of_global};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
     Symbol, Value,
@@ -53,14 +53,10 @@ fn define_data<'js>(target: &Object<'js>, key: &str, value: Value<'js>) -> Resul
     )
 }
 
-fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-    let ab: Object<'js> = ctx.globals().get("ArrayBuffer")?;
-    let is_view: Function<'js> = ab.get("isView")?;
-    is_view.call((value.clone(),))
-}
-
 fn is_leaf<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-    if is_array_buffer_view(ctx, value)? && !instance_of_global(ctx, value, "DataView")? {
+    if BufferSource::is_array_buffer_view(ctx, value)?
+        && !instance_of_global(ctx, value, "DataView")?
+    {
         return Ok(true);
     }
     Ok(instance_of_global(ctx, value, "ArrayBuffer")?
@@ -233,7 +229,7 @@ fn copy<'js>(
         seen.insert(value, out.clone());
         return Ok(out);
     }
-    if is_array_buffer_view(ctx, &value)? && is_out_of_bounds(ctx, &value)? {
+    if BufferSource::is_array_buffer_view(ctx, &value)? && is_out_of_bounds(ctx, &value)? {
         return Err(fail(
             ctx,
             "an ArrayBufferView over a detached or resized buffer",
