@@ -177,15 +177,6 @@ impl Host {
         }
     }
 
-    pub fn construct<'js, A, R>(ctx: &Ctx<'js>, name: &str, args: A) -> Result<R>
-    where
-        A: rquickjs::function::IntoArgs<'js>,
-        R: FromJs<'js>,
-    {
-        let ctor: Constructor<'js> = ctx.globals().get(name)?;
-        ctor.construct(args)
-    }
-
     pub fn event<'js>(ctx: &Ctx<'js>, type_: &str) -> Result<Value<'js>> {
         match ctx.globals().get::<_, Constructor<'js>>("Event") {
             Ok(ctor) => ctor.construct((type_,)),
