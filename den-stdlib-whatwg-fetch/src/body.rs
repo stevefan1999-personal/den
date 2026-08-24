@@ -53,10 +53,6 @@ pub(crate) fn set_content_type_if_missing(
     Ok(())
 }
 
-pub(crate) fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-    BufferSource::is_array_buffer_view(ctx, value)
-}
-
 pub(crate) fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>> {
     bytes
         .map(<[u8]>::to_vec)
@@ -151,7 +147,7 @@ pub(crate) async fn value_to_bytes<'js>(
     if let Ok(buffer) = ArrayBuffer::from_js(ctx, body.clone()) {
         return copy_buffer(ctx, buffer.as_bytes());
     }
-    if is_array_buffer_view(ctx, &body)? {
+    if BufferSource::is_array_buffer_view(ctx, &body)? {
         return copy_view(ctx, &body);
     }
     if let Some(object) = body.as_object() {
@@ -221,7 +217,7 @@ pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Resu
             out.extend(copy_buffer(ctx, buffer.as_bytes())?);
             continue;
         }
-        if is_array_buffer_view(ctx, &value)? {
+        if BufferSource::is_array_buffer_view(ctx, &value)? {
             out.extend(copy_view(ctx, &value)?);
             continue;
         }
