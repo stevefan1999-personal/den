@@ -5,14 +5,14 @@ use std::{
     sync::Arc,
 };
 
+use den_stdlib_whatwg::streams::ReadableStream;
 use derive_more::derive::{From, Into};
 use futures::{Stream, StreamExt};
-use den_stdlib_whatwg::streams::ReadableStream;
 use rquickjs::{
     Array, ArrayBuffer, Class, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Promise, Result, TypedArray, Value as JsValue,
     class::Trace,
-    function::{Constructor, This},
+    function::{Constructor, FuncArg, Opt as JsOpt, Rest, This},
 };
 use serde_json::Value;
 use tokio::sync::Notify;
@@ -123,20 +123,20 @@ enum ResponseBody {
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response<'js> {
-    pub(crate) status:      u16,
-    pub(crate) redirected:  bool,
+    pub(crate) status: u16,
+    pub(crate) redirected: bool,
     #[qjs(skip_trace)]
     pub(crate) status_text: String,
     #[qjs(skip_trace)]
-    pub(crate) url:         String,
+    pub(crate) url: String,
     #[qjs(skip_trace)]
-    pub(crate) kind:        String,
-    pub(crate) headers:     Class<'js, Headers>,
-    body_stream:            Option<JsValue<'js>>,
+    pub(crate) kind: String,
+    pub(crate) headers: Class<'js, Headers>,
+    body_stream: Option<JsValue<'js>>,
     #[qjs(skip_trace)]
-    inner:                  Rc<RefCell<ResponseBody>>,
+    inner: Rc<RefCell<ResponseBody>>,
     #[qjs(skip_trace)]
-    consume_started:        Cell<bool>,
+    consume_started: Cell<bool>,
     pub(crate) abort_signal: JsValue<'js>,
     #[qjs(skip_trace)]
     pub(crate) abort_notify: Option<Arc<Notify>>,
@@ -151,29 +151,26 @@ impl<'js> Response<'js> {
             .headers()
             .iter()
             .map(|(name, value)| {
-                let text = value
-                    .to_str()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|_| {
-                        value.as_bytes().iter().map(|byte| *byte as char).collect()
-                    });
+                let text = value.to_str().map(ToString::to_string).unwrap_or_else(|_| {
+                    value.as_bytes().iter().map(|byte| *byte as char).collect()
+                });
                 (name.as_str().to_string(), text)
             })
             .collect::<Vec<_>>();
         let mut header_obj = Headers::from_pairs(headers);
         header_obj.set_guard(headers::Guard::Immutable);
         Ok(Self {
-            status:      status.as_u16(),
-            redirected:  false,
+            status: status.as_u16(),
+            redirected: false,
             status_text: status.canonical_reason().unwrap_or("").to_string(),
-            url:         response.url().to_string(),
-            kind:        kind.to_string(),
-            headers:     Class::instance(ctx.clone(), header_obj)?,
+            url: response.url().to_string(),
+            kind: kind.to_string(),
+            headers: Class::instance(ctx.clone(), header_obj)?,
             body_stream: None,
-            inner:            Rc::new(RefCell::new(ResponseBody::Live(response))),
-            consume_started:  Cell::new(false),
-            abort_signal:     JsValue::new_null(ctx.clone()),
-            abort_notify:     None,
+            inner: Rc::new(RefCell::new(ResponseBody::Live(response))),
+            consume_started: Cell::new(false),
+            abort_signal: JsValue::new_null(ctx.clone()),
+            abort_notify: None,
         })
     }
 
@@ -193,10 +190,10 @@ impl<'js> Response<'js> {
             kind: kind.to_string(),
             headers,
             body_stream: None,
-            inner:           Rc::new(RefCell::new(inner)),
+            inner: Rc::new(RefCell::new(inner)),
             consume_started: Cell::new(false),
-            abort_signal:    JsValue::new_null(ctx.clone()),
-            abort_notify:    None,
+            abort_signal: JsValue::new_null(ctx.clone()),
+            abort_notify: None,
         })
     }
 
@@ -209,7 +206,9 @@ impl<'js> Response<'js> {
             .unwrap_or_default()
     }
 
-    fn mark_used(&self) { *self.inner.borrow_mut() = ResponseBody::Taken; }
+    fn mark_used(&self) {
+        *self.inner.borrow_mut() = ResponseBody::Taken;
+    }
 
     async fn take_bytes(&self, ctx: &Ctx<'_>) -> Result<Vec<u8>> {
         let taken = {
@@ -408,10 +407,10 @@ impl<'js> Response<'js> {
             kind: kind.to_string(),
             headers,
             body_stream: None,
-            inner:           Rc::new(RefCell::new(ResponseBody::Failed(message))),
+            inner: Rc::new(RefCell::new(ResponseBody::Failed(message))),
             consume_started: Cell::new(false),
-            abort_signal:    JsValue::new_null(ctx.clone()),
-            abort_notify:    None,
+            abort_signal: JsValue::new_null(ctx.clone()),
+            abort_notify: None,
         })
     }
 
@@ -421,7 +420,7 @@ impl<'js> Response<'js> {
             && let Some(object) = stream.as_object()
             && let Ok(abort) = object.get::<_, Function>("_denAbort")
         {
-            let _ = abort.call::<_, ()>((reason,));
+            let _ = abort.call::<_, ()>((This(object.clone()), reason));
         }
     }
 
@@ -532,7 +531,9 @@ impl<'js> Response<'js> {
             Some(object) => {
                 if let Some(value) = object.get::<_, JsValue>("status").ok() {
                     if !value.is_undefined() {
-                        let number = value.as_number().unwrap_or(value.as_int().unwrap_or(0) as f64);
+                        let number = value
+                            .as_number()
+                            .unwrap_or(value.as_int().unwrap_or(0) as f64);
                         status = body::validate_status(&ctx, number as i32)?;
                     }
                 }
@@ -588,7 +589,10 @@ impl<'js> Response<'js> {
                             None,
                         )
                     } else if den_util::BufferSource::is_array_buffer_view(&ctx, &extracted)? {
-                        (ResponseBody::Bytes(body::copy_view(&ctx, &extracted)?), None)
+                        (
+                            ResponseBody::Bytes(body::copy_view(&ctx, &extracted)?),
+                            None,
+                        )
                     } else {
                         (ResponseBody::Bytes(Vec::new()), Some(extracted))
                     }
@@ -603,10 +607,10 @@ impl<'js> Response<'js> {
             kind: "default".to_string(),
             headers,
             body_stream,
-            inner:           Rc::new(RefCell::new(inner)),
+            inner: Rc::new(RefCell::new(inner)),
             consume_started: Cell::new(false),
-            abort_signal:    JsValue::new_null(ctx.clone()),
-            abort_notify:    None,
+            abort_signal: JsValue::new_null(ctx.clone()),
+            abort_notify: None,
         })
     }
 
@@ -614,17 +618,17 @@ impl<'js> Response<'js> {
     pub fn error(ctx: Ctx<'js>) -> Result<Self> {
         let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
         Ok(Self {
-            status:      0,
-            redirected:  false,
+            status: 0,
+            redirected: false,
             status_text: String::new(),
-            url:         String::new(),
-            kind:        "error".to_string(),
+            url: String::new(),
+            kind: "error".to_string(),
             headers,
             body_stream: None,
-            inner:            Rc::new(RefCell::new(ResponseBody::None)),
-            consume_started:  Cell::new(false),
-            abort_signal:     JsValue::new_null(ctx.clone()),
-            abort_notify:     None,
+            inner: Rc::new(RefCell::new(ResponseBody::None)),
+            consume_started: Cell::new(false),
+            abort_signal: JsValue::new_null(ctx.clone()),
+            abort_notify: None,
         })
     }
 
@@ -649,17 +653,17 @@ impl<'js> Response<'js> {
             .insert("location".to_string(), parsed.to_string());
         let headers = Class::instance(ctx.clone(), headers)?;
         Ok(Self {
-            status:      status as u16,
-            redirected:  false,
+            status: status as u16,
+            redirected: false,
             status_text: String::new(),
-            url:         String::new(),
-            kind:        "default".to_string(),
+            url: String::new(),
+            kind: "default".to_string(),
             headers,
             body_stream: None,
-            inner:            Rc::new(RefCell::new(ResponseBody::None)),
-            consume_started:  Cell::new(false),
-            abort_signal:     JsValue::new_null(ctx.clone()),
-            abort_notify:     None,
+            inner: Rc::new(RefCell::new(ResponseBody::None)),
+            consume_started: Cell::new(false),
+            abort_signal: JsValue::new_null(ctx.clone()),
+            abort_notify: None,
         })
     }
 
@@ -717,9 +721,7 @@ impl<'js> Response<'js> {
         Self::consume_promise(this.0, ctx, |bytes, ctx| TypedArray::new_copy(ctx, bytes))
     }
 
-    pub fn form_data(
-        this: This<Class<'js, Response<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<Promise<'js>> {
+    pub fn form_data(this: This<Class<'js, Response<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         let (no_body, content_type) = {
             let response = this.0.borrow();
             (
@@ -759,7 +761,10 @@ impl<'js> Response<'js> {
 
     pub fn text_stream(&mut self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
         if matches!(*self.inner.borrow(), ResponseBody::Taken)
-            || self.body_stream.as_ref().is_some_and(body::stream_is_locked)
+            || self
+                .body_stream
+                .as_ref()
+                .is_some_and(body::stream_is_locked)
         {
             return Err(Exception::throw_type(&ctx, "Already read"));
         }
@@ -775,30 +780,7 @@ impl<'js> Response<'js> {
         }
         let host = Class::instance(ctx.clone(), self.clone())?.into_value();
         self.mark_used();
-        ctx.globals().set("__denStreamHost", host)?;
-        ctx.eval(
-            r#"
-              (function () {
-                var host = globalThis.__denStreamHost;
-                delete globalThis.__denStreamHost;
-                var decoder = new TextDecoder();
-                var source = Object.create(null);
-                source.pull = function (controller) {
-                  return host._readChunk().then(function (chunk) {
-                    if (chunk == null) {
-                      controller.close();
-                    } else {
-                      controller.enqueue(decoder.decode(chunk, { stream: true }));
-                    }
-                  });
-                };
-                source.cancel = function () {
-                  host._cancelBody();
-                };
-                return new ReadableStream(source);
-              })()
-            "#,
-        )
+        body::text_chunks_to_stream(&ctx, host)
     }
 
     #[qjs(rename = "_readChunk")]
@@ -844,34 +826,53 @@ impl<'js> Response<'js> {
     }
 
     #[qjs(rename = "_cancelBody")]
-    pub fn cancel_body(&self) { self.mark_used(); }
+    pub fn cancel_body(&self) {
+        self.mark_used();
+    }
 
     #[qjs(enumerable, get)]
     pub fn body_used(&self) -> bool {
         matches!(*self.inner.borrow(), ResponseBody::Taken)
-            || self.body_stream.as_ref().is_some_and(Self::stream_disturbed)
+            || self
+                .body_stream
+                .as_ref()
+                .is_some_and(Self::stream_disturbed)
     }
 
     #[qjs(enumerable, get)]
-    pub fn ok(&self) -> bool { (200..300).contains(&self.status) }
+    pub fn ok(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
 
     #[qjs(enumerable, get)]
-    pub fn redirected(&self) -> bool { self.redirected }
+    pub fn redirected(&self) -> bool {
+        self.redirected
+    }
 
     #[qjs(enumerable, get)]
-    pub fn status(&self) -> u16 { self.status }
+    pub fn status(&self) -> u16 {
+        self.status
+    }
 
     #[qjs(enumerable, get)]
-    pub fn status_text(&self) -> String { self.status_text.clone() }
+    pub fn status_text(&self) -> String {
+        self.status_text.clone()
+    }
 
     #[qjs(enumerable, get)]
-    pub fn url(&self) -> String { self.url.clone() }
+    pub fn url(&self) -> String {
+        self.url.clone()
+    }
 
     #[qjs(enumerable, get, rename = "type")]
-    pub fn type_(&self) -> String { self.kind.clone() }
+    pub fn type_(&self) -> String {
+        self.kind.clone()
+    }
 
     #[qjs(enumerable, get)]
-    pub fn headers(&self) -> Class<'js, Headers> { self.headers.clone() }
+    pub fn headers(&self) -> Class<'js, Headers> {
+        self.headers.clone()
+    }
 
     #[qjs(enumerable, get)]
     pub fn body(&mut self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
@@ -938,21 +939,20 @@ impl<'js> Response<'js> {
                 )?,
             )?;
             return Ok(Self {
-                status:      response.status,
-                redirected:  response.redirected,
+                status: response.status,
+                redirected: response.redirected,
                 status_text: response.status_text.clone(),
-                url:         response.url.clone(),
-                kind:        response.kind.clone(),
+                url: response.url.clone(),
+                kind: response.kind.clone(),
                 headers,
                 body_stream: None,
-                inner:            Rc::new(RefCell::new(ResponseBody::Bytes(bytes.clone()))),
-                consume_started:  Cell::new(false),
-                abort_signal:     response.abort_signal.clone(),
-                abort_notify:     response.abort_notify.clone(),
+                inner: Rc::new(RefCell::new(ResponseBody::Bytes(bytes.clone()))),
+                consume_started: Cell::new(false),
+                abort_signal: response.abort_signal.clone(),
+                abort_notify: response.abort_notify.clone(),
             });
         }
-        if response.body_stream.is_none()
-            && !matches!(*response.inner.borrow(), ResponseBody::None)
+        if response.body_stream.is_none() && !matches!(*response.inner.borrow(), ResponseBody::None)
         {
             let host = Class::instance(ctx.clone(), response.clone())?.into_value();
             response.body_stream = Some(body::http_chunks_to_stream(&ctx, host)?);
@@ -968,17 +968,17 @@ impl<'js> Response<'js> {
                 )?,
             )?;
             return Ok(Self {
-                status:      response.status,
-                redirected:  response.redirected,
+                status: response.status,
+                redirected: response.redirected,
                 status_text: response.status_text.clone(),
-                url:         response.url.clone(),
-                kind:        response.kind.clone(),
+                url: response.url.clone(),
+                kind: response.kind.clone(),
                 headers,
                 body_stream: Some(right),
-                inner:            Rc::new(RefCell::new(ResponseBody::Bytes(Vec::new()))),
-                consume_started:  Cell::new(false),
-                abort_signal:     response.abort_signal.clone(),
-                abort_notify:     response.abort_notify.clone(),
+                inner: Rc::new(RefCell::new(ResponseBody::Bytes(Vec::new()))),
+                consume_started: Cell::new(false),
+                abort_signal: response.abort_signal.clone(),
+                abort_notify: response.abort_notify.clone(),
             });
         }
         let cloned_inner = match &*response.inner.borrow() {
@@ -1002,22 +1002,24 @@ impl<'js> Response<'js> {
             )?,
         )?;
         Ok(Self {
-            status:      response.status,
-            redirected:  response.redirected,
+            status: response.status,
+            redirected: response.redirected,
             status_text: response.status_text.clone(),
-            url:         response.url.clone(),
-            kind:        response.kind.clone(),
+            url: response.url.clone(),
+            kind: response.kind.clone(),
             headers,
             body_stream: None,
-            inner:            Rc::new(RefCell::new(cloned_inner)),
-            consume_started:  Cell::new(false),
-            abort_signal:     response.abort_signal.clone(),
-            abort_notify:     response.abort_notify.clone(),
+            inner: Rc::new(RefCell::new(cloned_inner)),
+            consume_started: Cell::new(false),
+            abort_signal: response.abort_signal.clone(),
+            abort_notify: response.abort_notify.clone(),
         })
     }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Response" }
+    pub fn to_string_tag() -> &'static str {
+        "Response"
+    }
 }
 
 struct FormBody;
@@ -1238,9 +1240,145 @@ pub async fn fetch<'js>(
     fetch_op::run(ctx, input, init).await
 }
 
+fn wrap_global_fetch<'js>(ctx: &Ctx<'js>, inner: Function<'js>) -> Result<Function<'js>> {
+    let wrapped = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>,
+              func: FuncArg<Function<'js>>,
+              input: JsOpt<JsValue<'js>>,
+              init: JsOpt<JsValue<'js>>| {
+            let inner: Function = func.0.get("_inner")?;
+            wrapped_fetch(ctx, inner, input, init)
+        },
+    )?;
+    wrapped.set("_inner", inner)?;
+    Ok(wrapped)
+}
+
+fn wrapped_fetch<'js>(
+    ctx: Ctx<'js>, inner: Function<'js>, input: JsOpt<JsValue<'js>>, init: JsOpt<JsValue<'js>>,
+) -> Result<JsValue<'js>> {
+    let input = input
+        .0
+        .unwrap_or_else(|| JsValue::new_undefined(ctx.clone()));
+    let request = match init.0 {
+        None => den_util::construct(&ctx, "Request", (input,)),
+        Some(value) if value.is_undefined() => den_util::construct(&ctx, "Request", (input,)),
+        Some(value) => den_util::construct(&ctx, "Request", (input, value)),
+    };
+    let request: JsValue = match request {
+        Ok(value) => value,
+        Err(_) => {
+            let thrown = ctx.catch();
+            return body::promise_reject(&ctx, thrown);
+        }
+    };
+    if let Some(reason) = aborted_fetch_reason(&ctx, &request)? {
+        cancel_request_body(&ctx, &request, reason.clone());
+        return body::promise_reject(&ctx, reason);
+    }
+    inner.call((request,))
+}
+
+fn aborted_fetch_reason<'js>(
+    ctx: &Ctx<'js>, request: &JsValue<'js>,
+) -> Result<Option<JsValue<'js>>> {
+    let Some(request) = request.as_object() else {
+        return Ok(None);
+    };
+    let signal: JsValue = request.get("signal")?;
+    if signal.is_null() || signal.is_undefined() || signal.as_bool() == Some(false) {
+        return Ok(None);
+    }
+    let Some(signal) = signal.as_object() else {
+        return Ok(None);
+    };
+    let aborted = signal
+        .get::<_, JsValue>("aborted")
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !aborted {
+        return Ok(None);
+    }
+    let reason: JsValue = signal
+        .get("reason")
+        .unwrap_or_else(|_| JsValue::new_undefined(ctx.clone()));
+    if !reason.is_undefined() && !reason.is_null() {
+        return Ok(Some(reason));
+    }
+    Ok(Some(abort_error_reason(ctx)?))
+}
+
+fn abort_error_reason<'js>(ctx: &Ctx<'js>) -> Result<JsValue<'js>> {
+    match den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError") {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            if ctx.has_exception() {
+                drop(ctx.catch());
+            }
+            let error: Object = den_util::construct(ctx, "Error", ("The operation was aborted.",))?;
+            error.set("name", "AbortError")?;
+            Ok(error.into_value())
+        }
+    }
+}
+
+fn cancel_request_body<'js>(ctx: &Ctx<'js>, request: &JsValue<'js>, reason: JsValue<'js>) {
+    let Some(request) = request.as_object() else {
+        return;
+    };
+    let Ok(body) = request.get::<_, JsValue>("body") else {
+        if ctx.has_exception() {
+            drop(ctx.catch());
+        }
+        return;
+    };
+    let Some(body_obj) = body.as_object() else {
+        return;
+    };
+    let Ok(cancel) = body_obj.get::<_, Function>("cancel") else {
+        return;
+    };
+    let _ = cancel.call::<_, JsValue>((This(body), reason));
+    if ctx.has_exception() {
+        drop(ctx.catch());
+    }
+}
+
+fn wrap_readable_stream_cancel<'js>(ctx: &Ctx<'js>) -> Result<()> {
+    let globals = ctx.globals();
+    let Ok(ctor) = globals.get::<_, Function>("ReadableStream") else {
+        return Ok(());
+    };
+    let Ok(proto) = ctor.get::<_, Object>("prototype") else {
+        return Ok(());
+    };
+    let Ok(inner_cancel) = proto.get::<_, Function>("cancel") else {
+        return Ok(());
+    };
+    let wrapped = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'js>,
+              func: FuncArg<Function<'js>>,
+              this: This<JsValue<'js>>,
+              args: Rest<JsValue<'js>>| {
+            let inner_cancel: Function = func.0.get("_inner")?;
+            let result: JsValue = inner_cancel.call((This(this.0), Rest(args.0)))?;
+            if result.is_null() || result.is_undefined() {
+                body::promise_resolve(&ctx, JsValue::new_undefined(ctx.clone()))
+            } else {
+                body::promise_resolve(&ctx, result)
+            }
+        },
+    )?;
+    wrapped.set("_inner", inner_cancel)?;
+    proto.set("cancel", wrapped)
+}
+
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
-    use rquickjs::{Ctx, Result, Value, function::Opt, module::Exports};
+    use rquickjs::{Ctx, Function, Result, Value, function::Opt, module::Exports};
 
     use crate::body;
 
@@ -1260,48 +1398,14 @@ pub mod whatwg {
         for name in ["fetch", "Headers", "Request", "Response"] {
             globals.set(name, exports.module().get::<_, Value>(name)?)?;
         }
-        ctx.eval::<(), _>(
-            r#"
-              (function () {
-                var inner = globalThis.fetch;
-                globalThis.fetch = function (input, init) {
-                  var request;
-                  try {
-                    request = init === undefined ? new Request(input) : new Request(input, init);
-                  } catch (error) {
-                    return Promise.reject(error);
-                  }
-                  if (request.signal && request.signal.aborted) {
-                    var reason = request.signal.reason;
-                    if (reason === undefined || reason === null) {
-                      try {
-                        reason = new DOMException("The operation was aborted.", "AbortError");
-                      } catch (error) {
-                        reason = new Error("The operation was aborted.");
-                        reason.name = "AbortError";
-                      }
-                    }
-                    if (request.body && typeof request.body.cancel === "function") {
-                      try { request.body.cancel(reason); } catch (error) {}
-                    }
-                    return Promise.reject(reason);
-                  }
-                  return inner(request);
-                };
-                if (typeof ReadableStream === "function" && ReadableStream.prototype.cancel) {
-                  var innerCancel = ReadableStream.prototype.cancel;
-                  ReadableStream.prototype.cancel = function () {
-                    var result = innerCancel.apply(this, arguments);
-                    return result == null ? Promise.resolve() : Promise.resolve(result);
-                  };
-                }
-              })()
-            "#,
-        )?;
+        let inner: Function = globals.get("fetch")?;
+        let wrapped = super::wrap_global_fetch(ctx, inner)?;
+        wrapped.set_name("fetch")?;
+        globals.set("fetch", wrapped)?;
+        super::wrap_readable_stream_cancel(ctx)?;
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1419,12 +1523,15 @@ mod tests {
             "#,
         )
         .await;
-        assert_eq!(report, vec![
-            "Headers: ok".to_string(),
-            "Request: ok".to_string(),
-            "fetch: ok".to_string(),
-            "Response: ok".to_string(),
-        ]);
+        assert_eq!(
+            report,
+            vec![
+                "Headers: ok".to_string(),
+                "Request: ok".to_string(),
+                "fetch: ok".to_string(),
+                "Response: ok".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1453,7 +1560,10 @@ mod tests {
             if incoming.method == "POST" {
                 den_stdlib_whatwg::local_http::Outgoing::ok(incoming.body, "text/plain")
             } else {
-                den_stdlib_whatwg::local_http::Outgoing::ok(b"{\"ok\":true}".to_vec(), "application/json")
+                den_stdlib_whatwg::local_http::Outgoing::ok(
+                    b"{\"ok\":true}".to_vec(),
+                    "application/json",
+                )
             }
         })
         .await;
@@ -1515,16 +1625,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_aborts_an_in_flight_request() {
-        let server = den_stdlib_whatwg::local_http::serve(|_| {
-            den_stdlib_whatwg::local_http::Outgoing {
-                status:  200,
+        let server =
+            den_stdlib_whatwg::local_http::serve(|_| den_stdlib_whatwg::local_http::Outgoing {
+                status: 200,
                 headers: vec![],
-                body:    Vec::new(),
-                hang:    false,
-                silent:  true,
-            }
-        })
-        .await;
+                body: Vec::new(),
+                hang: false,
+                silent: true,
+            })
+            .await;
         let url = server.url("/hang");
         let report = text_async(&format!(
             r#"
@@ -1600,12 +1709,10 @@ mod tests {
                         "basic",
                     )
                     .expect("from_reqwest");
-                    let blob = Response::blob(
-                        This(Class::instance(ctx.clone(), response)?),
-                        ctx.clone(),
-                    )?
-                    .into_future::<Value>()
-                    .await?;
+                    let blob =
+                        Response::blob(This(Class::instance(ctx.clone(), response)?), ctx.clone())?
+                            .into_future::<Value>()
+                            .await?;
                     ctx.globals().set("blob", blob)?;
                     ctx.eval::<Promise, _>(
                         r#"

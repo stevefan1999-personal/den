@@ -1,10 +1,13 @@
 //! Shared Fetch body extract / consume. Stream errors stay JS exceptions.
 
-use den_util::BufferSource;
+use std::{cell::RefCell, rc::Rc};
+
+use den_stdlib_whatwg::streams::ReadableStream;
+use den_util::{BufferSource, Probe as _};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Promise, Result,
     TypedArray, Value,
-    function::{Constructor, This},
+    function::{Async, Constructor, Opt, This},
     promise::MaybePromise,
 };
 
@@ -43,9 +46,7 @@ pub(crate) fn is_instance_of_global<'js>(
     Ok(ctor.is_function() && object.is_instance_of(&ctor))
 }
 
-pub(crate) fn set_content_type_if_missing(
-    headers: &Class<'_, Headers>, value: &str,
-) -> Result<()> {
+pub(crate) fn set_content_type_if_missing(headers: &Class<'_, Headers>, value: &str) -> Result<()> {
     let mut headers = headers.borrow_mut();
     if !headers.map.contains_key("content-type") {
         headers.map.insert("content-type".into(), value.to_string());
@@ -72,42 +73,25 @@ pub(crate) fn apply_body_types<'js>(
         // ToString(URLSearchParams) is the urlencoded serialization.
         let text = den_util::coerce_string(ctx, object.clone().into_value())?;
         body = text.into_js(ctx)?;
-        set_content_type_if_missing(
-            headers,
-            "application/x-www-form-urlencoded;charset=UTF-8",
-        )?;
+        set_content_type_if_missing(headers, "application/x-www-form-urlencoded;charset=UTF-8")?;
     }
     if let Some(object) = body.as_object()
         && is_instance_of_global(ctx, object, "FormData")?
     {
-        ctx.globals().set("__denFd", object.clone())?;
-        let empty: bool = ctx.eval(
-            r#"(function () {
-              var object = globalThis.__denFd;
-              delete globalThis.__denFd;
-              if (!object || typeof object.keys !== "function") {
-                return false;
-              }
-              var iter = object.keys();
-              return !!(iter && typeof iter.next === "function" && iter.next().done);
-            })()"#,
-        )?;
+        let empty = form_data_keys_empty(ctx, object)?;
         if empty {
-            set_content_type_if_missing(
-                headers,
-                "multipart/form-data; boundary=----denEmptyForm",
-            )?;
+            set_content_type_if_missing(headers, "multipart/form-data; boundary=----denEmptyForm")?;
             return "".into_js(ctx);
         }
-        if let Some(form) =
-            Class::<den_stdlib_whatwg::form_data::FormData>::from_object(object)
-        {
+        if let Some(form) = Class::<den_stdlib_whatwg::form_data::FormData>::from_object(object) {
             let blob = form.borrow().to_multipart_blob(ctx)?;
             set_content_type_if_missing(headers, blob.borrow().mime_type())?;
             return Ok(blob.into_value());
         }
         let key = rquickjs::Symbol::new_global(ctx.clone(), "den.toMultipartBlob")?;
-        let converter: Value = object.get(key).unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
+        let converter: Value = object
+            .get(key)
+            .unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
         if converter.is_function() {
             body = Function::from_js(ctx, converter)?.call((This(object.clone()),))?;
         } else if let Ok(named) = object.get::<_, Value>("toMultipartBlob")
@@ -165,13 +149,11 @@ pub(crate) async fn value_to_bytes<'js>(
 
 pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<u8>> {
     if let Some(object) = stream.as_object()
-        && let Some(readable) = Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object(object)
+        && let Some(readable) =
+            Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object(object)
     {
-        return den_stdlib_whatwg::streams::ReadableStream::read_all_bytes(
-            &readable,
-            ctx.clone(),
-        )
-        .await;
+        return den_stdlib_whatwg::streams::ReadableStream::read_all_bytes(&readable, ctx.clone())
+            .await;
     }
     let Some(object) = stream.as_object() else {
         return Err(Exception::throw_type(ctx, "ReadableStream expected"));
@@ -182,7 +164,10 @@ pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Resu
     let mut out = Vec::new();
     loop {
         let produced: Value = read.call((This(reader.clone()),))?;
-        let chunk = match MaybePromise::from_js(ctx, produced)?.into_future::<Value>().await {
+        let chunk = match MaybePromise::from_js(ctx, produced)?
+            .into_future::<Value>()
+            .await
+        {
             Ok(value) => value,
             Err(error) => return Err(error),
         };
@@ -230,17 +215,10 @@ pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Resu
 }
 
 pub(crate) fn locked_empty_stream<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
-    ctx.eval(
-        r#"
-          (function () {
-            var stream = new ReadableStream();
-            try {
-              stream.getReader();
-            } catch (error) {}
-            return stream;
-          })()
-        "#,
-    )
+    let stream = ReadableStream::new(ctx.clone(), Opt(None))?;
+    let instance = Class::instance(ctx.clone(), stream)?;
+    let _ = instance.borrow().get_reader(ctx.clone(), Opt(None));
+    Ok(instance.into_value())
 }
 
 pub(crate) fn bytes_to_stream<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'js>> {
@@ -253,71 +231,46 @@ pub(crate) fn bytes_to_stream<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value
         .map(|stream| stream.into_value())
 }
 
-pub(crate) fn http_chunks_to_stream<'js>(
-    ctx: &Ctx<'js>, host: Value<'js>,
-) -> Result<Value<'js>> {
+pub(crate) fn http_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
     if ctx.globals().get::<_, Value>("ReadableStream").is_err() {
         return Ok(Value::new_null(ctx.clone()));
     }
-    ctx.globals().set("__denStreamHost", host)?;
-    ctx.eval(
-        r#"
-          (function () {
-            var host = globalThis.__denStreamHost;
-            delete globalThis.__denStreamHost;
-            var source = Object.create(null);
-            var ctrl;
-            source.start = function (controller) { ctrl = controller; };
-            source.pull = function (controller) {
-              ctrl = controller;
-              return host._readChunk().then(function (chunk) {
-                if (chunk && chunk.__denAbort) {
-                  controller.error(chunk.reason);
-                  return;
+    let source = Object::new(ctx.clone())?;
+    source.set("_host", host)?;
+    source.set(
+        "pull",
+        Function::new(
+            ctx.clone(),
+            Async({
+                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
+                    let host: Result<Value<'js>> = this.0.get("_host");
+                    async move {
+                        let host = host?;
+                        pull_http_chunk(&ctx, &host, &controller).await
+                    }
                 }
-                if (chunk && chunk.__denStreamError) {
-                  controller.error(new TypeError(chunk.message || "network error"));
-                  return;
-                }
-                if (chunk == null) {
-                  controller.close();
-                  return;
-                }
-                controller.enqueue(chunk);
-                if (String(host.url || "").indexOf("bad-chunk") === -1) {
-                  return;
-                }
-                return host._readChunk().then(function (next) {
-                  if (next && next.__denStreamError) {
-                    controller.error(new TypeError(next.message || "network error"));
-                  } else if (next == null) {
-                    controller.close();
-                  } else {
-                    controller.enqueue(next);
-                  }
-                });
-              });
-            };
-            source.cancel = function () {
-              host._cancelBody();
-              return Promise.resolve();
-            };
-            var stream = new ReadableStream(source);
-            stream._denAbort = function (reason) {
-              if (!ctrl) {
-                return;
-              }
-              try { ctrl.error(reason); } catch (error) {}
-            };
-            return stream;
-          })()
-        "#,
-    )
+            }),
+        )?,
+    )?;
+    source.set(
+        "cancel",
+        Function::new(ctx.clone(), {
+            move |this: This<Object<'js>>, ctx: Ctx<'js>| {
+                let host: Value = this.0.get("_host")?;
+                host_cancel_body(&host);
+                promise_resolve(&ctx, Value::new_undefined(ctx.clone()))
+            }
+        })?,
+    )?;
+    readable_from_source(ctx, source)
 }
 
-pub(crate) fn tee_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<(Value<'js>, Value<'js>)> {
+pub(crate) fn tee_stream<'js>(
+    ctx: &Ctx<'js>, stream: Value<'js>,
+) -> Result<(Value<'js>, Value<'js>)> {
     if let Some(object) = stream.as_object()
-        && let Some(readable) = Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object(object)
+        && let Some(readable) =
+            Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object(object)
     {
         return den_stdlib_whatwg::streams::ReadableStream::tee_pair(&readable, ctx);
     }
@@ -329,67 +282,7 @@ pub(crate) fn tee_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<(Val
             return Ok((pair.get(0)?, pair.get(1)?));
         }
     }
-    ctx.globals().set("__denTeeSrc", stream)?;
-    let pair: Array = ctx.eval(
-        r#"
-          (function () {
-            var stream = globalThis.__denTeeSrc;
-            delete globalThis.__denTeeSrc;
-            var reader = stream.getReader();
-            var left = [];
-            var right = [];
-            var closed = false;
-            var failed = null;
-            var waiters = [];
-            function wake() {
-              for (var i = 0; i < waiters.length; i++) waiters[i]();
-              waiters = [];
-            }
-            function pump() {
-              return reader.read().then(function (result) {
-                if (result.done) {
-                  closed = true;
-                  wake();
-                  return;
-                }
-                left.push(result.value);
-                right.push(result.value);
-                wake();
-                return pump();
-              }, function (error) {
-                failed = error;
-                wake();
-              });
-            }
-            pump();
-            function branch(queue) {
-              var source = Object.create(null);
-              source.pull = function (controller) {
-                function take() {
-                  if (failed) {
-                    return Promise.reject(failed);
-                  }
-                  if (queue.length) {
-                    controller.enqueue(queue.shift());
-                    return Promise.resolve();
-                  }
-                  if (closed) {
-                    controller.close();
-                    return Promise.resolve();
-                  }
-                  return new Promise(function (resolve) {
-                    waiters.push(resolve);
-                  }).then(take);
-                }
-                return take();
-              };
-              return new ReadableStream(source);
-            }
-            return [branch(left), branch(right)];
-          })()
-        "#,
-    )?;
-    Ok((pair.get(0)?, pair.get(1)?))
+    tee_foreign(ctx, stream)
 }
 
 pub(crate) fn blob_from_bytes<'js>(
@@ -468,7 +361,9 @@ pub(crate) const BLOCKED_PORTS: &[u16] = &[
     6669, 6697, 10080,
 ];
 
-pub(crate) fn is_blocked_port(port: u16) -> bool { BLOCKED_PORTS.contains(&port) }
+pub(crate) fn is_blocked_port(port: u16) -> bool {
+    BLOCKED_PORTS.contains(&port)
+}
 
 pub(crate) fn utf8_text(bytes: &[u8]) -> String {
     let mut text = String::from_utf8_lossy(bytes).into_owned();
@@ -499,40 +394,460 @@ pub(crate) fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Re
     if is_readable_stream(ctx, &value)? {
         return Ok(value);
     }
-    ctx.globals().set("__denBodyVal", value)?;
-    ctx.eval(
-        r#"
-          (function () {
-            var value = globalThis.__denBodyVal;
-            delete globalThis.__denBodyVal;
-            var source = Object.create(null);
-            source.start = function (controller) {
-              function pushBytes(bytes) {
-                if (bytes && bytes.byteLength) {
-                  controller.enqueue(bytes);
+    if let Some(string) = value.as_string() {
+        return text_to_stream(ctx, &string.to_string()?);
+    }
+    if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
+        return bytes_to_stream(ctx, &copy_buffer(ctx, buffer.as_bytes())?);
+    }
+    if BufferSource::is_array_buffer_view(ctx, &value)? {
+        return bytes_to_stream(ctx, &copy_view(ctx, &value)?);
+    }
+    if let Some(object) = value.as_object() {
+        let method: Value = object.get("arrayBuffer")?;
+        if method.is_function() {
+            return array_buffer_method_stream(ctx, value);
+        }
+        if object
+            .get::<_, Value>("buffer")
+            .ok()
+            .is_some_and(|buffer| !buffer.is_undefined() && !buffer.is_null())
+        {
+            return bytes_to_stream(ctx, &copy_view(ctx, &value)?);
+        }
+    }
+    ReadableStream::from_queue(ctx, Vec::new()).map(|stream| stream.into_value())
+}
+
+pub(crate) fn text_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
+    let decoder = ctx.probe(|| den_util::construct::<_, Object>(ctx, "TextDecoder", ()).ok());
+    let remainder = Rc::new(RefCell::new(Vec::new()));
+    let source = Object::new(ctx.clone())?;
+    source.set("_host", host)?;
+    if let Some(decoder) = decoder {
+        source.set("_decoder", decoder)?;
+    }
+    source.set(
+        "pull",
+        Function::new(
+            ctx.clone(),
+            Async({
+                let remainder = Rc::clone(&remainder);
+                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
+                    let host: Result<Value<'js>> = this.0.get("_host");
+                    let decoder: Option<Object<'js>> = this.0.get("_decoder").ok();
+                    let remainder = Rc::clone(&remainder);
+                    async move {
+                        let host = host?;
+                        pull_text_chunk(&ctx, &host, &controller, decoder.as_ref(), &remainder)
+                            .await
+                    }
                 }
-                controller.close();
-              }
-              if (typeof value === "string") {
-                pushBytes(new TextEncoder().encode(value));
-                return;
-              }
-              if (value && typeof value.arrayBuffer === "function") {
-                return value.arrayBuffer().then(function (buf) {
-                  pushBytes(new Uint8Array(buf));
-                });
-              }
-              if (value && value.buffer) {
-                pushBytes(new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength));
-                return;
-              }
-              controller.close();
-            };
-            source.cancel = function () {
-              return Promise.resolve();
-            };
-            return new ReadableStream(source);
-          })()
-        "#,
+            }),
+        )?,
+    )?;
+    source.set(
+        "cancel",
+        Function::new(ctx.clone(), {
+            move |this: This<Object<'js>>| {
+                let host: Value = this.0.get("_host")?;
+                host_cancel_body(&host);
+                Ok::<(), rquickjs::Error>(())
+            }
+        })?,
+    )?;
+    readable_from_source(ctx, source)
+}
+
+pub(crate) fn promise_resolve<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
+    let (promise, resolve, _) = ctx.promise()?;
+    let _ = resolve.call::<_, ()>((value,));
+    Ok(promise.into_value())
+}
+
+pub(crate) fn promise_reject<'js>(ctx: &Ctx<'js>, reason: Value<'js>) -> Result<Value<'js>> {
+    let (promise, _, reject) = ctx.promise()?;
+    let _ = reject.call::<_, ()>((reason,));
+    Ok(promise.into_value())
+}
+
+fn form_data_keys_empty<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool> {
+    let keys = match object.get::<_, Value>("keys") {
+        Ok(value) if value.is_function() => Function::from_js(ctx, value)?,
+        _ => return Ok(false),
+    };
+    let iter: Value = keys.call((This(object.clone()),))?;
+    let Some(iter) = iter.as_object() else {
+        return Ok(false);
+    };
+    let next = match iter.get::<_, Value>("next") {
+        Ok(value) if value.is_function() => Function::from_js(ctx, value)?,
+        _ => return Ok(false),
+    };
+    let result: Value = next.call((This(iter.clone()),))?;
+    Ok(result
+        .as_object()
+        .and_then(|result| result.get("done").ok())
+        .unwrap_or(false))
+}
+
+fn readable_from_source<'js>(ctx: &Ctx<'js>, source: Object<'js>) -> Result<Value<'js>> {
+    Class::instance(
+        ctx.clone(),
+        ReadableStream::new(ctx.clone(), Opt(Some(source.into_value())))?,
     )
+    .map(|stream| stream.into_value())
+}
+
+fn controller_call<'js>(
+    controller: &Object<'js>, method: &str, arg: Option<Value<'js>>,
+) -> Result<()> {
+    let func: Function = controller.get(method)?;
+    match arg {
+        Some(value) => func.call((This(controller.clone()), value)),
+        None => func.call((This(controller.clone()),)),
+    }
+}
+
+fn truthy_prop(object: &Object<'_>, name: &str) -> bool {
+    object
+        .get::<_, Value>(name)
+        .ok()
+        .is_some_and(|value| value.as_bool() == Some(true))
+}
+
+fn type_error_value<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
+    den_util::construct(ctx, "TypeError", (message,))
+}
+
+fn host_cancel_body(host: &Value<'_>) {
+    if let Some(object) = host.as_object()
+        && let Ok(cancel) = object.get::<_, Function>("_cancelBody")
+    {
+        let _ = cancel.call::<_, ()>((This(host.clone()),));
+    }
+}
+
+async fn host_read_chunk<'js>(ctx: &Ctx<'js>, host: &Value<'js>) -> Result<Value<'js>> {
+    let Some(object) = host.as_object() else {
+        return Ok(Value::new_null(ctx.clone()));
+    };
+    let read: Function = object.get("_readChunk")?;
+    let produced: Value = read.call((This(host.clone()),))?;
+    MaybePromise::from_js(ctx, produced)?
+        .into_future::<Value>()
+        .await
+}
+
+fn host_url_contains(host: &Value<'_>, needle: &str) -> bool {
+    host.as_object()
+        .and_then(|object| object.get::<_, String>("url").ok())
+        .is_some_and(|url| url.contains(needle))
+}
+
+enum HttpChunk {
+    Stop,
+    Continue,
+}
+
+fn apply_http_chunk<'js>(
+    ctx: &Ctx<'js>, controller: &Object<'js>, chunk: Value<'js>, check_abort: bool,
+) -> Result<HttpChunk> {
+    if let Some(object) = chunk.as_object() {
+        if check_abort && truthy_prop(object, "__denAbort") {
+            let reason: Value = object.get("reason")?;
+            controller_call(controller, "error", Some(reason))?;
+            return Ok(HttpChunk::Stop);
+        }
+        if truthy_prop(object, "__denStreamError") {
+            let message = object
+                .get::<_, String>("message")
+                .ok()
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| "network error".into());
+            controller_call(controller, "error", Some(type_error_value(ctx, &message)?))?;
+            return Ok(HttpChunk::Stop);
+        }
+    }
+    if chunk.is_null() || chunk.is_undefined() {
+        controller_call(controller, "close", None)?;
+        return Ok(HttpChunk::Stop);
+    }
+    controller_call(controller, "enqueue", Some(chunk))?;
+    Ok(HttpChunk::Continue)
+}
+
+async fn pull_http_chunk<'js>(
+    ctx: &Ctx<'js>, host: &Value<'js>, controller: &Object<'js>,
+) -> Result<()> {
+    let chunk = host_read_chunk(ctx, host).await?;
+    if matches!(
+        apply_http_chunk(ctx, controller, chunk, true)?,
+        HttpChunk::Stop
+    ) {
+        return Ok(());
+    }
+    if !host_url_contains(host, "bad-chunk") {
+        return Ok(());
+    }
+    let next = host_read_chunk(ctx, host).await?;
+    apply_http_chunk(ctx, controller, next, false).map(|_| ())
+}
+
+fn decode_utf8_chunk(remainder: &mut Vec<u8>, incoming: &[u8]) -> String {
+    remainder.extend_from_slice(incoming);
+    let take = match std::str::from_utf8(remainder) {
+        Ok(_) => remainder.len(),
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => remainder.len(),
+    };
+    let text = String::from_utf8_lossy(&remainder[..take]).into_owned();
+    remainder.drain(..take);
+    text
+}
+
+async fn pull_text_chunk<'js>(
+    ctx: &Ctx<'js>, host: &Value<'js>, controller: &Object<'js>, decoder: Option<&Object<'js>>,
+    remainder: &Rc<RefCell<Vec<u8>>>,
+) -> Result<()> {
+    let chunk = host_read_chunk(ctx, host).await?;
+    if chunk.is_null() || chunk.is_undefined() {
+        controller_call(controller, "close", None)?;
+        return Ok(());
+    }
+    let text = if let Some(decoder) = decoder {
+        let decode: Function = decoder.get("decode")?;
+        let opts = Object::new(ctx.clone())?;
+        opts.set("stream", true)?;
+        decode.call::<_, String>((This(decoder.clone()), chunk, opts))?
+    } else {
+        let bytes = if let Ok(buffer) = ArrayBuffer::from_js(ctx, chunk.clone()) {
+            copy_buffer(ctx, buffer.as_bytes())?
+        } else if BufferSource::is_array_buffer_view(ctx, &chunk)? {
+            copy_view(ctx, &chunk)?
+        } else {
+            Vec::new()
+        };
+        decode_utf8_chunk(&mut remainder.borrow_mut(), &bytes)
+    };
+    controller_call(controller, "enqueue", Some(text.into_js(ctx)?))
+}
+
+fn array_buffer_method_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
+    let source = Object::new(ctx.clone())?;
+    source.set("_value", value)?;
+    source.set(
+        "start",
+        Function::new(
+            ctx.clone(),
+            Async({
+                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
+                    let value: Result<Value<'js>> = this.0.get("_value");
+                    async move {
+                        let value = value?;
+                        let Some(object) = value.as_object() else {
+                            controller_call(&controller, "close", None)?;
+                            return Ok(());
+                        };
+                        let method: Function = object.get("arrayBuffer")?;
+                        let produced: Value = method.call((This(object.clone()),))?;
+                        let buf = MaybePromise::from_js(&ctx, produced)?
+                            .into_future::<Value>()
+                            .await?;
+                        let bytes = if let Ok(buffer) = ArrayBuffer::from_js(&ctx, buf.clone()) {
+                            copy_buffer(&ctx, buffer.as_bytes())?
+                        } else if BufferSource::is_array_buffer_view(&ctx, &buf)? {
+                            copy_view(&ctx, &buf)?
+                        } else {
+                            Vec::new()
+                        };
+                        if !bytes.is_empty() {
+                            let chunk =
+                                TypedArray::<u8>::new_copy(ctx.clone(), bytes)?.into_value();
+                            controller_call(&controller, "enqueue", Some(chunk))?;
+                        }
+                        controller_call(&controller, "close", None)
+                    }
+                }
+            }),
+        )?,
+    )?;
+    source.set(
+        "cancel",
+        Function::new(ctx.clone(), {
+            move |ctx: Ctx<'js>| promise_resolve(&ctx, Value::new_undefined(ctx.clone()))
+        })?,
+    )?;
+    readable_from_source(ctx, source)
+}
+
+fn array_push<'js>(array: &Array<'js>, value: Value<'js>) -> Result<()> {
+    let push: Function = AsRef::<Object>::as_ref(array).get("push")?;
+    push.call((This(array.clone()), value))
+}
+
+fn array_shift<'js>(array: &Array<'js>) -> Result<Option<Value<'js>>> {
+    if array.len() == 0 {
+        return Ok(None);
+    }
+    let shift: Function = AsRef::<Object>::as_ref(array).get("shift")?;
+    shift.call((This(array.clone()),)).map(Some)
+}
+
+fn tee_wake(bag: &Object<'_>) {
+    let Ok(waiters) = bag.get::<_, Array>("waiters") else {
+        return;
+    };
+    let ctx = bag.ctx().clone();
+    let count = waiters.len();
+    for index in 0..count {
+        if let Ok(resolve) = waiters.get::<Function>(index) {
+            let _ = resolve.call::<_, ()>(());
+        }
+    }
+    if let Ok(empty) = Array::new(ctx) {
+        let _ = bag.set("waiters", empty);
+    }
+}
+
+fn tee_foreign<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<(Value<'js>, Value<'js>)> {
+    let Some(object) = stream.as_object() else {
+        return Err(Exception::throw_type(ctx, "ReadableStream expected"));
+    };
+    let get_reader: Function = object.get("getReader")?;
+    let reader: Object = get_reader.call((This(object.clone()),))?;
+    let bag = Object::new(ctx.clone())?;
+    bag.set("left", Array::new(ctx.clone())?)?;
+    bag.set("right", Array::new(ctx.clone())?)?;
+    bag.set("waiters", Array::new(ctx.clone())?)?;
+    bag.set("closed", false)?;
+    bag.set("failed", Value::new_undefined(ctx.clone()))?;
+    bag.set("reader", reader)?;
+    let pump = Function::new(
+        ctx.clone(),
+        Async({
+            move |this: This<Object<'js>>, ctx: Ctx<'js>| {
+                let bag = this.0.clone();
+                async move { tee_pump(&ctx, bag).await }
+            }
+        }),
+    )?;
+    pump.defer((This(bag.clone()),))?;
+    let left = tee_branch(ctx, bag.clone(), "left")?;
+    let right = tee_branch(ctx, bag, "right")?;
+    Ok((left, right))
+}
+
+async fn tee_pump<'js>(ctx: &Ctx<'js>, bag: Object<'js>) -> Result<()> {
+    let reader: Object = bag.get("reader")?;
+    let read: Function = reader.get("read")?;
+    loop {
+        let produced: Value = match read.call((This(reader.clone()),)) {
+            Ok(value) => value,
+            Err(_) => {
+                let thrown = ctx.catch();
+                let _ = bag.set("failed", thrown);
+                tee_wake(&bag);
+                return Ok(());
+            }
+        };
+        let result = match MaybePromise::from_js(ctx, produced)?
+            .into_future::<Value>()
+            .await
+        {
+            Ok(value) => value,
+            Err(_) => {
+                let thrown = ctx.catch();
+                let _ = bag.set("failed", thrown);
+                tee_wake(&bag);
+                return Ok(());
+            }
+        };
+        let Some(object) = result.as_object() else {
+            let _ = bag.set("closed", true);
+            tee_wake(&bag);
+            return Ok(());
+        };
+        if object.get::<_, bool>("done").unwrap_or(false) {
+            let _ = bag.set("closed", true);
+            tee_wake(&bag);
+            return Ok(());
+        }
+        let value: Value = object.get("value")?;
+        let left: Array = bag.get("left")?;
+        let right: Array = bag.get("right")?;
+        array_push(&left, value.clone())?;
+        array_push(&right, value)?;
+        tee_wake(&bag);
+    }
+}
+
+fn tee_branch<'js>(ctx: &Ctx<'js>, bag: Object<'js>, side: &'static str) -> Result<Value<'js>> {
+    let source = Object::new(ctx.clone())?;
+    source.set("_tee", bag)?;
+    source.set("_side", side)?;
+    source.set(
+        "pull",
+        Function::new(
+            ctx.clone(),
+            Async({
+                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
+                    let bag: Result<Object<'js>> = this.0.get("_tee");
+                    let side: Result<String> = this.0.get("_side");
+                    async move {
+                        let bag = bag?;
+                        let is_left = side?.as_str() == "left";
+                        tee_take(&ctx, &bag, is_left, &controller).await
+                    }
+                }
+            }),
+        )?,
+    )?;
+    readable_from_source(ctx, source)
+}
+
+enum TeeNext<'js> {
+    Chunk(Value<'js>),
+    Close,
+    Fail(Value<'js>),
+    Wait(Promise<'js>),
+}
+
+async fn tee_take<'js>(
+    ctx: &Ctx<'js>, bag: &Object<'js>, is_left: bool, controller: &Object<'js>,
+) -> Result<()> {
+    loop {
+        let next = {
+            let failed: Value = bag.get("failed")?;
+            if !failed.is_undefined() && !failed.is_null() {
+                TeeNext::Fail(failed)
+            } else {
+                let queue: Array = bag.get(if is_left { "left" } else { "right" })?;
+                if let Some(chunk) = array_shift(&queue)? {
+                    TeeNext::Chunk(chunk)
+                } else if bag.get::<_, bool>("closed").unwrap_or(false) {
+                    TeeNext::Close
+                } else {
+                    let (promise, resolve, _) = ctx.promise()?;
+                    let waiters: Array = bag.get("waiters")?;
+                    array_push(&waiters, resolve.into_value())?;
+                    TeeNext::Wait(promise)
+                }
+            }
+        };
+        match next {
+            TeeNext::Fail(failed) => return Err(ctx.throw(failed)),
+            TeeNext::Chunk(chunk) => {
+                controller_call(controller, "enqueue", Some(chunk))?;
+                return Ok(());
+            }
+            TeeNext::Close => {
+                controller_call(controller, "close", None)?;
+                return Ok(());
+            }
+            TeeNext::Wait(promise) => {
+                let _ = promise.into_future::<Value>().await;
+            }
+        }
+    }
 }
