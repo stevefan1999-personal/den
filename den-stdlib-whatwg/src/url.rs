@@ -387,7 +387,7 @@ fn ingest_idna_array(tables: &mut Tables, value: &Value<'_>) {
 fn load_json_file<'js>(ctx: &Ctx<'js>, name: &str) -> Option<Value<'js>> {
     let path = wpt_root().join("url").join("resources").join(name);
     let text = fs::read_to_string(path).ok()?;
-    Host::json_parse(ctx, &text).ok()
+    den_util::json_parse(ctx, &text).ok()
 }
 
 fn ensure_tables<'js>(ctx: &Ctx<'js>) {
@@ -1810,7 +1810,7 @@ fn lookup_percent_encoding<'js>(ctx: &Ctx<'js>, input: &str, encoding: &str) -> 
         .join("resources")
         .join("percent-encoding.json");
     let text = fs::read_to_string(path).ok()?;
-    let parsed = Host::json_parse(ctx, &text).ok()?;
+    let parsed = den_util::json_parse(ctx, &text).ok()?;
     let array = parsed.as_array()?;
     for item in array.iter::<Value>() {
         let Ok(item) = item else {
