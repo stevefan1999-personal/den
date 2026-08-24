@@ -476,10 +476,18 @@ impl Memory {
                 "a shared WebAssembly.Memory requires a maximum size",
             ));
         }
+        if descriptor.shared && !backend::SUPPORTS_SHARED_MEMORY {
+            // Modules declaring a shared memory fail validation already; the
+            // constructor must refuse the same way instead of silently
+            // allocating an unshared memory.
+            return Err(Exception::throw_type(
+                &ctx,
+                "shared WebAssembly.Memory is not supported by this build",
+            ));
+        }
 
-        // Always allocate an unshared wasmtime memory: a shared type is refused
-        // by `Memory::new`, and den cannot alias one as a SharedArrayBuffer.
-        // `type()` still reports the requested `shared` flag.
+        // Always allocate an unshared wasmtime memory; shared requests are
+        // refused above since den cannot alias one as a SharedArrayBuffer.
         let ty = backend::new_memory_type(descriptor.initial, descriptor.maximum, false).map_err(
             |error| Exception::throw_range(&ctx, &format!("invalid memory type: {error}")),
         )?;
@@ -703,22 +711,15 @@ mod tests {
     }
 
     #[test]
-    fn shared_memory_needs_a_maximum_and_reports_shared_on_type() {
+    fn shared_memory_is_refused_whatever_this_build_cannot_alias() {
         with_wasm_context(|ctx| {
             assert_eq!(
                 memory(ctx, "({ initial: 1, shared: true })").unwrap_err(),
                 "TypeError"
             );
-
-            let shared = memory(ctx, "({ initial: 1, maximum: 2, shared: true })")
-                .expect("shared memories are allocated unshared and report the requested flag");
-            ctx.globals()
-                .set("type", shared.memory_type(ctx.clone()).expect("type()"))
-                .expect("bind");
             assert_eq!(
-                ctx.eval::<String, _>("`${type.minimum}:${type.maximum}:${type.shared}`")
-                    .expect("render"),
-                "1:2:true"
+                memory(ctx, "({ initial: 1, maximum: 2, shared: true })").unwrap_err(),
+                "TypeError"
             );
         })
     }
