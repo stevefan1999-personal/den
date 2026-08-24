@@ -436,13 +436,7 @@ impl<'js> Response<'js> {
         {
             return Some(reason);
         }
-        ctx.globals()
-            .get::<_, Constructor>("DOMException")
-            .ok()
-            .and_then(|ctor| {
-                ctor.construct::<_, JsValue>(("The operation was aborted.", "AbortError"))
-                    .ok()
-            })
+        den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError").ok()
     }
 }
 
