@@ -3,7 +3,8 @@
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 use rquickjs::{
-    ArrayBuffer, Class, Ctx, Function, JsLifetime, Object, Promise, Result, TypedArray, Value,
+    ArrayBuffer, Class, Constructor, Ctx, Function, JsLifetime, Object, Promise, Result,
+    TypedArray, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Opt, This},
@@ -424,8 +425,13 @@ impl<'js> XMLHttpRequest<'js> {
             header_pairs.set(index, pair)?;
         }
         init.set("headers", header_pairs)?;
-        let (signal, abort) = AbortSignal::create(&ctx)?;
-        init.set("signal", signal)?;
+        let abort = match AbortSignal::create(&ctx)? {
+            Some((signal, abort)) => {
+                init.set("signal", signal)?;
+                Some(abort)
+            }
+            None => None,
+        };
         let payload = body
             .0
             .filter(|value| !value.is_null() && !value.is_undefined());
@@ -434,7 +440,9 @@ impl<'js> XMLHttpRequest<'js> {
                 init.set("body", payload)?;
             }
         }
-        if timeout > 0 {
+        if timeout > 0
+            && let Some(abort) = abort.as_ref()
+        {
             let abort = abort.clone();
             let timed_out = Rc::clone(&timed_out);
             let aborted = Rc::clone(&aborted);
@@ -496,6 +504,7 @@ impl<'js> XMLHttpRequest<'js> {
                             Host::event(&ctx, "loadend")
                                 .unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
                         );
+                        this.borrow().events.borrow_mut().clear();
                     }
                     Err(_) => XMLHttpRequest::fail(&this, &ctx, &aborted, &timed_out),
                 }
@@ -670,40 +679,28 @@ impl<'js> XMLHttpRequest<'js> {
             ctx,
             Host::event(ctx, "loadend").unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
         );
+        this.borrow().events.borrow_mut().clear();
     }
 }
 
 struct AbortSignal;
 
 impl AbortSignal {
-    fn create<'js>(ctx: &Ctx<'js>) -> Result<(Object<'js>, Function<'js>)> {
-        let object = Object::new(ctx.clone())?;
-        object.set("aborted", false)?;
-        let listeners = Rc::new(std::cell::RefCell::new(Vec::<Function<'js>>::new()));
-        object.set(
-            "addEventListener",
-            Function::new(ctx.clone(), {
-                let listeners = Rc::clone(&listeners);
-                move |type_: String, callback: Function<'js>| -> Result<()> {
-                    if type_ == "abort" {
-                        listeners.borrow_mut().push(callback);
-                    }
-                    Ok(())
-                }
-            })?,
-        )?;
-        let abort = Function::new(ctx.clone(), {
-            let object = object.clone();
-            let listeners = Rc::clone(&listeners);
-            move || -> Result<()> {
-                let _ = object.set("aborted", true);
-                for listener in listeners.borrow().iter() {
-                    let _ = listener.call::<_, ()>(());
-                }
-                Ok(())
-            }
+    /// A real `AbortSignal` from the realm's `AbortController`. A duck-typed
+    /// stand-in would take fetch's `AbortSignal.any` path, which pins
+    /// listener<->source cycles QuickJS's refcount GC cannot collect; realms
+    /// without the worker module simply go without abort support.
+    fn create<'js>(ctx: &Ctx<'js>) -> Result<Option<(Value<'js>, Function<'js>)>> {
+        let Ok(ctor) = ctx.globals().get::<_, Constructor>("AbortController") else {
+            return Ok(None);
+        };
+        let controller: Object<'js> = ctor.construct(())?;
+        let signal: Value<'js> = controller.get("signal")?;
+        let abort_method: Function<'js> = controller.get("abort")?;
+        let abort = Function::new(ctx.clone(), move || -> Result<()> {
+            abort_method.call::<_, ()>((This(controller.clone()),))
         })?;
-        Ok((object, abort))
+        Ok(Some((signal, abort)))
     }
 }
 

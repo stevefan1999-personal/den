@@ -44,6 +44,15 @@ impl<'js> HostEventTarget<'js> {
 
     pub fn share() -> SharedEvents<'js> { Rc::new(RefCell::new(Self::new())) }
 
+    /// Drop every listener and handler. Stored callbacks routinely capture
+    /// their own target, and QuickJS cannot collect a cycle whose links are
+    /// Rust-held refcounts, so a finished target must sever them itself or it
+    /// leaks until the runtime's free assert fires.
+    pub fn clear(&mut self) {
+        self.listeners.clear();
+        self.handlers.clear();
+    }
+
     pub fn add(
         &mut self, ctx: &Ctx<'js>, type_: String, callback: Value<'js>, options: Option<Value<'js>>,
     ) -> Result<()> {
