@@ -21,6 +21,8 @@ wasmtime = { workspace = true, features = ["reexport-wasmparser", "pulley"] }
 wasmtime-wasi.workspace = true
 
 [dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib", "typescript", "react", "wasm", "jit"] }
 libtest-mimic.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

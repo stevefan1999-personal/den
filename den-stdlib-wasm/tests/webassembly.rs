@@ -5,7 +5,6 @@
 //! — module registration, the transpiler in front of the source and the
 //! userdata wiring all included. Every assertion travels back into Rust, so a
 //! JS-side failure cannot pass as green.
-#![cfg(feature = "wasm")]
 
 use color_eyre::eyre;
 use den_core::engine::Engine;

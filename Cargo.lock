@@ -1198,6 +1198,8 @@ dependencies = [
 name = "den-stdlib-wasm"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "den-util",
  "derive_more",
  "either",
@@ -1254,6 +1256,8 @@ dependencies = [
 name = "den-stdlib-worker"
 version = "0.4.0"
 dependencies = [
+ "color-eyre",
+ "den-core",
  "den-stdlib-core",
  "den-transpiler-oxc",
  "den-util",

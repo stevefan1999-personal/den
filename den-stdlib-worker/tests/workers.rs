@@ -7,7 +7,6 @@
 //! script, `BaseUrl` following the entry point, and `Engine::shutdown` reaping
 //! the threads. Every assertion travels back into Rust, and every cross-thread
 //! wait is a promise settled by an event under a timeout — never a sleep.
-#![cfg(feature = "stdlib-worker")]
 
 use std::{env::temp_dir, fs, path::PathBuf, process, time::Duration};
 
