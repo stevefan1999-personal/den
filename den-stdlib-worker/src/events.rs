@@ -51,8 +51,7 @@ struct TimeOrigin(f64);
 pub(crate) fn new_dom_exception<'js>(
     ctx: &Ctx<'js>, message: &str, name: &str,
 ) -> Result<Value<'js>> {
-    let ctor: rquickjs::Constructor<'js> = ctx.globals().get("DOMException")?;
-    ctor.construct((message, name))
+    den_util::new_dom_exception(ctx, message, name)
 }
 
 fn unix_ms() -> f64 {
@@ -83,24 +82,7 @@ fn to_unsigned_long<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<u32> {
 }
 
 fn dict_get<'js>(options: Option<&Value<'js>>, key: &str) -> Result<Option<Value<'js>>> {
-    let Some(options) = options else {
-        return Ok(None);
-    };
-    if options.is_undefined() {
-        return Ok(None);
-    }
-    let Some(object) = options.as_object() else {
-        return Err(Exception::throw_type(
-            options.ctx(),
-            "The provided value cannot be converted to a dictionary",
-        ));
-    };
-    let value: Value<'js> = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
+    den_util::dict_get(options, key)
 }
 
 fn dict_bool<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>, key: &str) -> Result<bool> {
