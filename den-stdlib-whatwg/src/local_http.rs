@@ -7,7 +7,6 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-#[allow(dead_code)]
 pub struct Incoming {
     pub method:  String,
     pub path:    String,
@@ -72,15 +71,21 @@ async fn handle(
 ) -> std::io::Result<()> {
     let incoming = read_request(&mut stream).await?;
     if incoming.method == "OPTIONS" {
-        // Automatic CORS preflight: the fixture answers like a permissive
-        // server, so non-safelisted request headers (Cache-Control,
-        // Last-Event-ID) never reach the test handler as a failure.
+        // Automatic CORS preflight: echo Access-Control-Request-Headers so
+        // non-safelisted request headers (Cache-Control, Last-Event-ID) never
+        // reach the test handler as a failure.
+        let allow_headers = incoming
+            .headers
+            .get("access-control-request-headers")
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "*".into());
         let preflight = Outgoing {
             status:  200,
             headers: vec![
                 ("Access-Control-Allow-Origin".into(), "*".into()),
                 ("Access-Control-Allow-Methods".into(), "*".into()),
-                ("Access-Control-Allow-Headers".into(), "*".into()),
+                ("Access-Control-Allow-Headers".into(), allow_headers),
             ],
             body:    Vec::new(),
             hang:    false,

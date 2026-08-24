@@ -208,36 +208,6 @@ impl<'js> Response<'js> {
 
     fn mark_used(&self) { *self.inner.borrow_mut() = ResponseBody::Taken; }
 
-    async fn take_bytes(&self, ctx: &Ctx<'_>) -> Result<Vec<u8>> {
-        let taken = {
-            let mut inner = self.inner.borrow_mut();
-            if matches!(*inner, ResponseBody::None) {
-                return Ok(Vec::new());
-            }
-            core::mem::replace(&mut *inner, ResponseBody::Taken)
-        };
-        match taken {
-            ResponseBody::None => Ok(Vec::new()),
-            ResponseBody::Bytes(bytes) => Ok(bytes),
-            ResponseBody::Live(response) => {
-                response
-                    .bytes()
-                    .await
-                    .map(|bytes| bytes.to_vec())
-                    .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))
-            }
-            ResponseBody::Stream(mut stream) => {
-                let mut out = Vec::new();
-                while let Some(chunk) = stream.next().await {
-                    out.extend(chunk.map_err(|err| Exception::throw_type(ctx, &err))?);
-                }
-                Ok(out)
-            }
-            ResponseBody::Failed(message) => Err(Exception::throw_type(ctx, &message)),
-            ResponseBody::Taken => Err(Exception::throw_type(ctx, "Already distributed")),
-        }
-    }
-
     fn begin_consume(response: &Class<'js, Response<'js>>, ctx: &Ctx<'js>) -> Result<()> {
         let this = response.borrow();
         if this.body_used() || this.consume_started.get() {
@@ -304,22 +274,6 @@ impl<'js> Response<'js> {
             }
         });
         Ok(promise)
-    }
-
-    pub(crate) async fn consume_js_stream(&self, ctx: &Ctx<'js>) -> Result<Vec<u8>> {
-        let existing = self.body_stream.clone();
-        if let Some(value) = existing {
-            if body::is_readable_stream(ctx, &value)? {
-                if body::stream_is_locked(&value) {
-                    return Err(Exception::throw_type(ctx, "ReadableStream is locked"));
-                }
-                self.mark_used();
-                return body::read_stream(ctx, value).await;
-            }
-            self.mark_used();
-            return body::value_to_bytes(ctx, Some(value)).await;
-        }
-        self.take_bytes(ctx).await
     }
 
     fn stream_disturbed(value: &JsValue<'js>) -> bool {

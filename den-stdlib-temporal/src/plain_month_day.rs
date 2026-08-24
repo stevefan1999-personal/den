@@ -38,9 +38,7 @@ pub struct PlainMonthDay {
 }
 
 impl PlainMonthDay {
-    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self {
-        Self { inner }
-    }
+    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self { Self { inner } }
 
     pub fn new<'js>(
         iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
@@ -228,19 +226,13 @@ fn as_object_like<'js>(value: &Value<'js>) -> Option<Object<'js>> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl PlainMonthDay {
     #[qjs(get, configurable)]
-    pub fn calendar_id(&self) -> &'static str {
-        self.inner.calendar_id()
-    }
+    pub fn calendar_id(&self) -> &'static str { self.inner.calendar_id() }
 
     #[qjs(get, configurable)]
-    pub fn month_code(&self) -> String {
-        self.inner.month_code().as_str().to_string()
-    }
+    pub fn month_code(&self) -> String { self.inner.month_code().as_str().to_string() }
 
     #[qjs(get, configurable)]
-    pub fn day(&self) -> u8 {
-        self.inner.day()
-    }
+    pub fn day(&self) -> u8 { self.inner.day() }
 
     pub fn with<'js>(
         &self, item: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
@@ -281,38 +273,34 @@ impl PlainMonthDay {
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
         let display = match options_object(&ctx, options)? {
             None => DisplayCalendar::Auto,
-            Some(object) => match get_defined(&object, "calendarName")? {
-                None => DisplayCalendar::Auto,
-                Some(value) => option_display_calendar(&ctx, &value)?,
-            },
+            Some(object) => {
+                match get_defined(&object, "calendarName")? {
+                    None => DisplayCalendar::Auto,
+                    Some(value) => option_display_calendar(&ctx, &value)?,
+                }
+            }
         };
         Ok(self.inner.to_ixdtf_string(display))
     }
 
-    pub fn to_locale_string(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_locale_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     #[qjs(rename = "toJSON")]
-    pub fn to_json(&self) -> String {
-        self.inner.to_ixdtf_string(DisplayCalendar::Auto)
-    }
+    pub fn to_json(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainMonthDay"))
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str {
-        "Temporal.PlainMonthDay"
-    }
+    pub fn to_string_tag() -> &'static str { "Temporal.PlainMonthDay" }
 }
 
 struct MonthDayBag {
-    day: Option<u8>,
-    month: Option<u8>,
+    day:        Option<u8>,
+    month:      Option<u8>,
     month_code: Option<String>,
-    year: Option<i32>,
+    year:       Option<i32>,
 }
 
 impl MonthDayBag {
