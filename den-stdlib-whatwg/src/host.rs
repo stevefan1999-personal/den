@@ -36,9 +36,7 @@ impl Host {
         if CString::new(name).is_ok() && CString::new(message).is_ok() {
             return den_util::throw_dom_exception(ctx, name, message);
         }
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException")
-            && let Ok(exc) = ctor.construct::<_, Value>((message, name))
-        {
+        if let Ok(exc) = den_util::new_dom_exception(ctx, message, name) {
             return ctx.throw(exc);
         }
         let code: i32 = match name {
