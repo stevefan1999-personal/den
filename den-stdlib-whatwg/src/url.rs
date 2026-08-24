@@ -785,32 +785,7 @@ fn coerce_url_text<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
     }
     match coerce_string(ctx, value.clone()) {
         Ok(text) => Ok(text),
-        Err(_) => {
-            let replace: Function = ctx.eval(
-                r#"(function (value) {
-                  var text = String(value);
-                  var out = "";
-                  for (var i = 0; i < text.length; i++) {
-                    var code = text.charCodeAt(i);
-                    if (code >= 0xD800 && code <= 0xDBFF) {
-                      var next = text.charCodeAt(i + 1);
-                      if (next >= 0xDC00 && next <= 0xDFFF) {
-                        out += text[i] + text[i + 1];
-                        i++;
-                      } else {
-                        out += "\uFFFD";
-                      }
-                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
-                      out += "\uFFFD";
-                    } else {
-                      out += text[i];
-                    }
-                  }
-                  return out;
-                })"#,
-            )?;
-            replace.call((value,))
-        }
+        Err(_) => Host::coerce_usv_string(ctx, value),
     }
 }
 
