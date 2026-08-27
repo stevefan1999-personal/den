@@ -35,11 +35,10 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
 ```
 
 `den-core` owns everything about *how* JavaScript gets in: the `Engine`
-(runtime + context + stop token), module resolution, module loading and the
-transpile hook. Each `den-stdlib-*` crate owns one JS-visible API and knows
-nothing about the loader chain. The binary owns only process concerns. The
-stop token is a Rust `CancellationToken` on `Engine`, never a JS class;
-timers store numeric ids in userdata and `clearTimeout(id)` looks them up.
+(runtime + context), module resolution, module loading and the transpile
+hook. Each `den-stdlib-*` crate owns one JS-visible API and knows nothing
+about the loader chain. The binary owns only process concerns. Timers store
+numeric ids in userdata and `clearTimeout(id)` looks them up.
 
 ## 2. CLI event loop and Ctrl-C
 
@@ -49,26 +48,23 @@ plus every `ctx.spawn` future until the scheduler is empty. `drive()` polls
 the same scheduler but releases the lock between polls; spawning it *and*
 calling `idle()` makes two loopers fight, so den does not spawn `drive()`.
 
-Ctrl-C (and `Engine::stop()`) cancel `Engine.stop_token`. Two things read
-that token:
-
-1. The interrupt handler (`runtime.set_interrupt_handler`) — kills tight JS
-   loops on bytecode back-edges.
-2. Every `ctx.spawn` future that should not outlive the process. Timers
-   (`den-stdlib-timer`) select on it next to their own per-id token; a
-   60-second `setTimeout` therefore completes as soon as the engine stops,
-   which is what lets `idle()` return. Dropping `idle()` does **not** cancel
-   spawned futures.
+den installs no SIGINT handler, so Ctrl-C is kernel death at its default
+disposition, exactly as in Node, Deno and Bun: no Rust unwinds and pending
+work is abandoned where it stands. An `Engine` therefore carries no realm-wide
+cancellation of any kind — stopping one is dropping it, which drops every
+`ctx.spawn`ed future before the QuickJS runtime is freed. An embedder that
+needs to interrupt a tight JS loop installs its own
+`runtime.set_interrupt_handler` over a flag it owns.
 
 The REPL cannot call `engine.eval` (an `async_with`) while `idle()` holds the
 lock. `start_repl_session` only owns the rustyline task; `run_until_end`
 `ctx.spawn`s a pump that `recv`s lines and evaluates them on the same `Ctx`.
-Closing the REPL cancels the stop token so the pump and any leftover timers
-complete and `idle()` returns.
+Closing the REPL ends the process outright, once `run_repl` has closed the
+history.
 
 A worker owns its own token, with no link to the realm that started it: the
-realm holds the handle, so `Engine::shutdown` cancels and joins the threads
-after `idle()` returns, and simply dropping the realm cancels them too.
+realm holds the handle, so `Engine::shutdown` cancels and joins the threads,
+and simply dropping the realm cancels them too.
 
 ## 3. How one Rust module becomes both `den:x` and a global
 
