@@ -21,7 +21,6 @@ use rquickjs::{
     runtime::UserDataError,
 };
 use tokio::task::yield_now;
-use tokio_util::sync::CancellationToken;
 use url::Url;
 #[cfg(feature = "stdlib-worker")]
 use {
@@ -118,7 +117,6 @@ pub struct Engine {
     pub transpiler: Arc<EasyOxcTranspiler>,
     pub runtime:    AsyncRuntime,
     pub context:    AsyncContext,
-    pub stop_token: CancellationToken,
 }
 
 #[allow(dead_code)]
@@ -149,12 +147,7 @@ impl Engine {
         "{}.tsx",
     ];
 
-    pub async fn new() -> Engine { Self::new_with_stop_token(CancellationToken::new()).await }
-
-    /// Build an engine whose interrupt handler observes `stop_token`, so that
-    /// an embedder holding the other end can stop a script that is already
-    /// running.
-    pub async fn new_with_stop_token(stop_token: CancellationToken) -> Engine {
+    pub async fn new() -> Engine {
         #[cfg(feature = "transpile")]
         let transpiler = Arc::new(EasyOxcTranspiler);
 
@@ -371,13 +364,6 @@ impl Engine {
         }
 
         runtime
-            .set_interrupt_handler({
-                let world_end = stop_token.clone();
-                Some(Box::new(move || world_end.is_cancelled()))
-            })
-            .await;
-
-        runtime
             .set_host_promise_rejection_tracker(Some(Box::new(Self::track_rejection)))
             .await;
 
@@ -466,7 +452,6 @@ impl Engine {
             transpiler,
             runtime,
             context,
-            stop_token,
         }
     }
 
@@ -592,21 +577,20 @@ impl Engine {
             .await?)
     }
 
-    /// Stop and reap every worker this realm spawned.
-    ///
-    /// Cancelling is the half den-core owns: it reaches a main script that is
-    /// still running, wherever it is. The other half — interrupting each
-    /// worker and joining its thread, which a parked worker needs because it
-    /// has nothing to interrupt — is `den_stdlib_worker`'s worker registry.
+    /// Reap every worker this realm spawned: interrupt each one and join its
+    /// thread, which a parked worker needs because it has nothing to
+    /// interrupt. Stopping the realm itself is dropping the `Engine`, so an
+    /// embedder calls this and then drops it.
     pub async fn shutdown(&self) {
-        self.stop_token.cancel();
         #[cfg(feature = "stdlib-worker")]
         den_stdlib_worker::worker::shutdown(&self.context).await;
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_millis(500), self.runtime.idle()).await;
         let _ = self
             .context
             .with(|ctx| {
+                // The checkpoint that normally reports these rides the event
+                // loop, and shutdown is the last moment one can still run: say
+                // what the realm never handled before forgetting it.
+                Self::report_unhandled_rejections(&ctx);
                 if let Some(pending) = ctx.userdata::<PendingRejections>() {
                     if let Ok(mut unhandled) = pending.unhandled.try_borrow_mut() {
                         unhandled.clear();
@@ -855,13 +839,6 @@ impl Engine {
             })
             .unwrap_or_else(|| "unknown error".to_owned())
     }
-
-    /// Interrupt this realm: a script running on it stops at its next bytecode
-    /// back-edge. Workers own their tokens and are reached by
-    /// [`Self::shutdown`] or by dropping the realm, not by this.
-    pub fn stop(&self) { self.stop_token.cancel() }
-
-    pub fn stop_token(&self) -> CancellationToken { self.stop_token.clone() }
 }
 
 #[derive(Display, From, Error, Debug)]
@@ -1117,19 +1094,24 @@ mod tests {
         Ok(())
     }
 
-    /// Ctrl-C / `Engine::stop()` must complete every `ctx.spawn`ed timer so
-    /// `idle()` can return; dropping `idle()` itself does not cancel them.
+    /// Cancellation of a pending timer is drop, not a flag: the runtime clears
+    /// its spawner before `JS_FreeRuntime`, so an embedder that drops the
+    /// `Engine` never waits out a 60-second `setTimeout`.
     #[cfg(feature = "stdlib-timer")]
     #[tokio::test(flavor = "multi_thread")]
-    async fn stopping_the_engine_releases_idle_from_a_long_timer() -> eyre::Result<()> {
+    async fn dropping_an_engine_with_a_pending_timer_returns_promptly() -> eyre::Result<()> {
         let engine = Engine::new().await;
         engine
             .eval::<()>("setTimeout(() => {}, 60000);\nundefined;")
             .await?;
-        engine.stop();
-        tokio::time::timeout(std::time::Duration::from_secs(2), engine.runtime.idle())
-            .await
-            .expect("idle() should return once the timer observes the stop token");
+
+        let started = std::time::Instant::now();
+        drop(engine);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "dropping the engine waited {elapsed:?} for the timer"
+        );
         Ok(())
     }
 
