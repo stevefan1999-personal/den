@@ -1,4 +1,7 @@
-use rquickjs::{Ctx, IntoJs, Object, Result, Value};
+use std::{io::Write as _, path::Path};
+
+use rquickjs::{Ctx, FromJs, IntoJs, Object, Result, Value};
+use tempfile::NamedTempFile;
 
 /// `std::fs::Metadata` flattened into the handful of fields a script actually
 /// reads. `mode` is Unix-only: Windows has no useful equivalent beyond the
@@ -80,30 +83,51 @@ impl<'js> IntoJs<'js> for DirEntry {
     }
 }
 
-struct Permissions;
+/// Options bag for `write`. Absent means the historical truncate-then-write
+/// path; only `atomic` changes it.
+#[derive(Default)]
+pub struct WriteOptions {
+    atomic: bool,
+}
 
-impl Permissions {
-    async fn set(path: String, mode: u32) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let permissions = std::fs::Permissions::from_mode(mode);
-            tokio::fs::set_permissions(path, permissions).await?;
+impl WriteOptions {
+    /// Whole-file write. The default path truncates the target and then streams
+    /// the bytes in, so a process that dies mid-write leaves a prefix behind.
+    /// `atomic` writes to a sibling temporary file and renames it onto the
+    /// target instead, and `rename(2)` on one filesystem is indivisible: a
+    /// reader sees either the whole old file or the whole new one. No fsync —
+    /// that would buy power-loss durability, which is a different question.
+    async fn write(self, path: String, contents: Vec<u8>) -> Result<()> {
+        if !self.atomic {
+            tokio::fs::write(path, contents).await?;
+            return Ok(());
         }
-        #[cfg(windows)]
-        {
-            // Windows has no Unix mode bits. Mapping the write bits onto
-            // `readonly` is the closest equivalent; missing write bits
-            // (0o222) become readonly.
-            let mut permissions = tokio::fs::metadata(&path).await?.permissions();
-            permissions.set_readonly(mode & 0o222 == 0);
-            tokio::fs::set_permissions(path, permissions).await?;
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (path, mode);
-        }
+        // tempfile is sync, and this is the same blocking shape tokio::fs::write
+        // already uses underneath.
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            let target = Path::new(&path);
+            let parent = target
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let mut temporary = NamedTempFile::new_in(parent)?;
+            temporary.write_all(&contents)?;
+            temporary.persist(target).map_err(|error| error.error)?;
+            Ok(())
+        })
+        .await
+        .map_err(std::io::Error::other)??;
         Ok(())
+    }
+}
+
+impl<'js> FromJs<'js> for WriteOptions {
+    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
+        Ok(Self {
+            atomic: Object::from_js(ctx, value)?
+                .get::<_, Option<bool>>("atomic")?
+                .unwrap_or_default(),
+        })
     }
 }
 
@@ -113,7 +137,7 @@ impl Permissions {
     rename_types = "camelCase"
 )]
 pub mod fs {
-    use rquickjs::{Result, module::Declarations};
+    use rquickjs::{Result, function::Opt, module::Declarations};
 
     #[qjs(declare)]
     pub fn declare(declare: &Declarations) -> rquickjs::Result<()> {
@@ -222,7 +246,20 @@ pub mod fs {
 
     #[rquickjs::function(rename = "setPermissions")]
     pub async fn set_permissions(path: String, mode: u32) -> Result<()> {
-        super::Permissions::set(path, mode).await
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
+        }
+        #[cfg(windows)]
+        {
+            let mut permissions = tokio::fs::metadata(&path).await?.permissions();
+            permissions.set_readonly(mode & 0o222 == 0);
+            tokio::fs::set_permissions(path, permissions).await?;
+        }
+        #[cfg(not(any(unix, windows)))]
+        let _ = (path, mode);
+        Ok(())
     }
 
     #[rquickjs::function(rename = "symlinkMetadata")]
@@ -233,8 +270,9 @@ pub mod fs {
     }
 
     #[rquickjs::function(rename = "write")]
-    pub async fn write(path: String, contents: Vec<u8>) -> Result<()> {
-        tokio::fs::write(path, contents).await?;
-        Ok(())
+    pub async fn write(
+        path: String, contents: Vec<u8>, options: Opt<super::WriteOptions>,
+    ) -> Result<()> {
+        options.0.unwrap_or_default().write(path, contents).await
     }
 }
