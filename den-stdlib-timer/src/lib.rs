@@ -38,12 +38,6 @@ impl Timers {
     }
 }
 
-/// Realm-wide stop signal. Not a JS class: `Engine::stop()` and Ctrl-C cancel
-/// it so every `ctx.spawn` future (timers included) can complete and `idle()`
-/// can return.
-#[derive(Clone, JsLifetime)]
-pub struct StopToken(pub CancellationToken);
-
 #[rquickjs::module(
     rename = "camelCase",
     rename_vars = "camelCase",
@@ -57,7 +51,7 @@ pub mod timer {
     use tokio::time;
     use tokio_util::sync::CancellationToken;
 
-    use super::{StopToken, Timers};
+    use super::Timers;
 
     /// What a zero delay means. Browsers clamp every timer to at least this
     /// (HTML §8.6 "timer initialisation steps" nests the clamp deeper, but the
@@ -82,7 +76,7 @@ pub mod timer {
         }
     }
 
-    fn arm(ctx: &Ctx<'_>) -> Result<(u32, CancellationToken, CancellationToken)> {
+    fn arm(ctx: &Ctx<'_>) -> Result<(u32, CancellationToken)> {
         let timers = ctx
             .userdata::<Timers>()
             .ok_or_else(|| rquickjs::Exception::throw_internal(ctx, "timers are not installed"))?;
@@ -97,11 +91,7 @@ pub mod timer {
             }
         };
         handles.insert(id, token.clone());
-        let stop = ctx
-            .userdata::<StopToken>()
-            .map(|stop| stop.0.clone())
-            .unwrap_or_default();
-        Ok((id, token, stop))
+        Ok((id, token))
     }
 
     // The macro injects `Ctx` by value, and the body only borrows it; a
@@ -117,22 +107,15 @@ pub mod timer {
     ) -> Result<u32> {
         let mut interval = time::interval(delay_of(delay));
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-        let (id, token, stop) = arm(&ctx)?;
+        let (id, token) = arm(&ctx)?;
 
         ctx.spawn({
             let ctx = ctx.clone();
             async move {
-                let first = token
-                    .run_until_cancelled(stop.run_until_cancelled(interval.tick()))
-                    .await
-                    .flatten();
-                if first.is_some() {
-                    while token
-                        .run_until_cancelled(stop.run_until_cancelled(interval.tick()))
-                        .await
-                        .flatten()
-                        .is_some()
-                    {
+                // The first tick is immediate, and firing on it would run the
+                // callback before the delay elapsed.
+                if token.run_until_cancelled(interval.tick()).await.is_some() {
+                    while token.run_until_cancelled(interval.tick()).await.is_some() {
                         invoke(&ctx, &callback);
                     }
                 }
@@ -165,15 +148,14 @@ pub mod timer {
         callback: Value<'js>, delay: Option<usize>, ctx: Ctx<'js>,
     ) -> Result<u32> {
         let duration = delay_of(delay);
-        let (id, token, stop) = arm(&ctx)?;
+        let (id, token) = arm(&ctx)?;
 
         ctx.spawn({
             let ctx = ctx.clone();
             async move {
                 let fired = token
-                    .run_until_cancelled(stop.run_until_cancelled(time::sleep(duration)))
+                    .run_until_cancelled(time::sleep(duration))
                     .await
-                    .flatten()
                     .is_some();
                 Timers::forget(&ctx, id);
                 if fired {

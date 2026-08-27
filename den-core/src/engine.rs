@@ -422,13 +422,7 @@ impl Engine {
                 evaluate_stdlib_module!(den_stdlib_text::js_text, "den:text");
 
                 #[cfg(feature = "stdlib-timer")]
-                {
-                    // Stored before the module evaluates so a timer armed during
-                    // install (none today) would still observe Ctrl-C. The
-                    // interrupt handler reads the same token.
-                    Self::store_userdata(&ctx, den_stdlib_timer::StopToken(stop_token.clone()))?;
-                    evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
-                }
+                evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
 
                 #[cfg(feature = "stdlib-whatwg-fetch")]
                 evaluate_stdlib_module!(den_stdlib_whatwg_fetch::js_whatwg, "den:whatwg-fetch");
