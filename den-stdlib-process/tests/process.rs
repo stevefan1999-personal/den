@@ -63,3 +63,12 @@ async fn a_signal_listener_does_not_keep_the_realm_alive() -> eyre::Result<()> {
     timeout(DEADLINE, engine.runtime.idle()).await?;
     Ok(())
 }
+
+/// Signals belong to the process and only the realm running the root event loop
+/// can deliver them; a worker's loop is `idle()` and never drains an inbox, so a
+/// listener registered there would swallow every signal it was asked for. Node
+/// says the same: "Signals are not available on `Worker` threads".
+#[tokio::test(flavor = "multi_thread")]
+async fn add_signal_listener_throws_in_a_worker_realm() -> eyre::Result<()> {
+    run("signals_in_a_worker.js").await
+}

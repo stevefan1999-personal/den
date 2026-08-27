@@ -2,7 +2,7 @@
 //! to.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     future::Future,
     pin::pin,
@@ -156,6 +156,10 @@ pub struct SignalHub {
     /// process: a receiver consumed by the first would leave every signal after
     /// it queued for ever.
     inbox:     RefCell<Option<UnboundedReceiver<String>>>,
+    /// False in a realm nobody drives — a worker, whose loop is `idle()` alone.
+    /// Its inbox would never be drained, so it refuses listeners rather than
+    /// silently swallowing every signal they were registered for.
+    driven:    Cell<bool>,
 }
 
 impl Default for SignalHub {
@@ -168,6 +172,7 @@ impl Default for SignalHub {
             handlers: RefCell::default(),
             inbox_tx,
             inbox: RefCell::new(Some(inbox)),
+            driven: Cell::new(true),
         }
     }
 }
@@ -183,6 +188,14 @@ impl SignalHub {
         ctx.store_userdata(Self::default())
             .map(|_| ())
             .map_err(|_| rquickjs::Error::UserData(UserDataError(())))
+    }
+
+    /// Mark this realm as one with no root event loop, so that it says so
+    /// instead of losing the signals it is asked to listen for.
+    pub fn disable(ctx: &Ctx<'_>) {
+        if let Some(hub) = ctx.userdata::<Self>() {
+            hub.driven.set(false);
+        }
     }
 
     pub fn add<'js>(ctx: &Ctx<'js>, sig: String, listener: Function<'js>) -> Result<()> {
@@ -208,6 +221,12 @@ impl SignalHub {
                 "signal hub is not installed",
             ));
         };
+        if !hub.driven.get() {
+            return Err(Exception::throw_type(
+                ctx,
+                "signal listeners are not available in workers",
+            ));
+        }
         let first = {
             let mut listeners = hub.listeners.borrow_mut();
             let list = listeners.entry(sig.clone()).or_default();
