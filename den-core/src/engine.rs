@@ -1143,6 +1143,43 @@ mod tests {
         Ok(())
     }
 
+    /// The embedder recipe cancels by dropping the `Engine`, and a server
+    /// spends its life inside the entry module's top-level await — so the drop
+    /// lands mid-`async_with`, with the module's promise and the op it is
+    /// parked on both still pending. QuickJS has to free that context without
+    /// waiting for them. `multi_thread` so the stop can arrive while the JS
+    /// loop owns the runtime.
+    #[cfg(feature = "stdlib-timer")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hosts_token_drops_an_engine_parked_on_a_top_level_await() -> eyre::Result<()> {
+        let entry = write_script(
+            "parked-on-a-long-await",
+            "await new Promise((resolve) => setTimeout(resolve, 60000));\n",
+        );
+        let engine = Engine::new().await;
+
+        // Stands in for the host's stop signal (a `watch` flip, a Ctrl-C, an
+        // admin endpoint): whatever it is, it only ever races the program
+        // future.
+        let started = std::time::Instant::now();
+        let stopped_the_program = tokio::select! {
+            _ = engine.run_file(entry) => false,
+            () = tokio::time::sleep(std::time::Duration::from_millis(100)) => true,
+        };
+        drop(engine);
+        let elapsed = started.elapsed();
+
+        assert!(
+            stopped_the_program,
+            "the entry module returned instead of staying parked"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "stopping a parked engine took {elapsed:?}"
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "stdlib-timer")]
     #[tokio::test(flavor = "multi_thread")]
     async fn set_timeout_returns_a_number_and_clear_timeout_is_a_function() -> eyre::Result<()> {
