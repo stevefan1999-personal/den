@@ -1,7 +1,6 @@
 use den_core::engine::Engine;
-use futures::prelude::*;
 use rquickjs::convert::Coerced;
-use tokio::{signal, sync::mpsc};
+use tokio::sync::mpsc;
 
 use crate::repl;
 
@@ -24,11 +23,13 @@ impl App {
         let (repl_tx, repl_rx) = mpsc::unbounded_channel::<String>();
 
         // The REPL runs on a different task and sends complete scripts to the
-        // `ctx.spawn`ed pump started in `run_until_end`. Closing the REPL
-        // cancels the engine so pending timers complete and `idle()` returns.
-        tokio::spawn({
-            let stop_token = self.engine.stop_token.clone();
-            repl::run_repl(repl_tx).then(move |_| async move { stop_token.cancel() })
+        // `ctx.spawn`ed pump started in `run_until_end`. Closing the REPL ends
+        // the process outright: `run_repl` has already closed the history, and
+        // anything still spawned on the engine is abandoned exactly as it would
+        // be on signal death.
+        tokio::spawn(async move {
+            repl::run_repl(repl_tx).await;
+            std::process::exit(0)
         });
 
         self.repl_rx = Some(repl_rx);
@@ -59,15 +60,7 @@ impl App {
     async fn repl_pump(
         ctx: rquickjs::Ctx<'_>, engine: Engine, mut repl_rx: mpsc::UnboundedReceiver<String>,
     ) {
-        let stop = engine.stop_token.clone();
-        loop {
-            let source = tokio::select! {
-                _ = stop.cancelled() => break,
-                source = repl_rx.recv() => match source {
-                    Some(source) => source,
-                    None => break,
-                },
-            };
+        while let Some(source) = repl_rx.recv().await {
             let src = match engine.prepare_eval_source(&source) {
                 Ok(src) => src,
                 Err(error) => {
@@ -82,20 +75,9 @@ impl App {
             }
         }
     }
-
-    // Just hooks the Ctrl-C signal and then automatically stop the VM engine
-    pub fn hook_ctrlc_handler(&mut self) {
-        let stop_token = self.engine.stop_token.clone();
-
-        tokio::spawn(signal::ctrl_c().then(|_| {
-            async move {
-                stop_token.cancel();
-            }
-        }));
-    }
 }
 
-fn print_js_error(ctx: &rquickjs::Ctx<'_>) {
+pub fn print_js_error(ctx: &rquickjs::Ctx<'_>) {
     let e = ctx.catch();
     if let Some(e) = e.as_exception() {
         eprintln!("{e}")

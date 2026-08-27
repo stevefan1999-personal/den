@@ -1,24 +1,57 @@
-use std::path::PathBuf;
+use std::{env, ffi::OsString, path::PathBuf};
 
-use app::App;
-use clap::Parser;
+use app::{App, print_js_error};
 use den_core::engine::EngineError;
-use rquickjs::Coerced;
+#[cfg(not(all(feature = "tokio-console", tokio_unstable)))]
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[derive(Debug, Default)]
 struct Cli {
-    #[arg()]
-    file:       Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
-    repl:       bool,
-    #[arg(long, default_value_t = true)]
-    typescript: bool,
+    file: Option<PathBuf>,
+    repl: bool,
+}
+
+impl Cli {
+    fn parse() -> color_eyre::eyre::Result<Option<Self>> {
+        Self::parse_args(env::args_os().skip(1))
+    }
+
+    fn parse_args<I>(args: I) -> color_eyre::eyre::Result<Option<Self>>
+    where
+        I: IntoIterator<Item = OsString>,
+    {
+        let mut cli = Self::default();
+        let mut positional_only = false;
+        for arg in args {
+            let text = arg.to_str();
+            if !positional_only && text == Some("--") {
+                positional_only = true;
+            } else if !positional_only && matches!(text, Some("-h" | "--help")) {
+                println!(
+                    "{}\n\nUsage: den [--repl] [FILE]",
+                    env!("CARGO_PKG_DESCRIPTION")
+                );
+                return Ok(None);
+            } else if !positional_only && matches!(text, Some("-V" | "--version")) {
+                println!("den {}", env!("CARGO_PKG_VERSION"));
+                return Ok(None);
+            } else if !positional_only && text == Some("--repl") {
+                cli.repl = true;
+            } else if !positional_only && text.is_some_and(|value| value.starts_with('-')) {
+                return Err(color_eyre::eyre::eyre!(
+                    "unknown option: {}",
+                    arg.to_string_lossy()
+                ));
+            } else if cli.file.replace(PathBuf::from(arg)).is_some() {
+                return Err(color_eyre::eyre::eyre!("only one input file is supported"));
+            }
+        }
+        Ok(Some(cli))
+    }
 }
 
 #[tokio::main]
@@ -28,6 +61,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
         console_subscriber::init();
     }
     color_eyre::install()?;
+    #[cfg(not(all(feature = "tokio-console", tokio_unstable)))]
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
@@ -37,38 +71,20 @@ async fn main() -> color_eyre::eyre::Result<()> {
         .pretty()
         .init();
 
-    let cli = Cli::parse();
+    let Some(cli) = Cli::parse()? else {
+        return Ok(());
+    };
     let mut app = App::new().await;
 
     if let Some(x) = cli.file.clone() {
-        app.hook_ctrlc_handler();
-        match app
-            .engine
-            .stop_token
-            .child_token()
-            .run_until_cancelled(app.engine.run_file::<()>(x))
-            .await
-        {
-            Some(Err(EngineError::Rquickjs(_))) => {
-                app.engine
-                    .context
-                    .async_with(async |ctx| {
-                        let e = ctx.catch();
-                        if let Some(e) = e.as_exception() {
-                            eprintln!("{e}")
-                        } else if let Ok(Coerced(e)) = e.get::<Coerced<String>>() {
-                            eprintln!("{e}")
-                        } else {
-                            eprintln!("unknown error")
-                        }
-                    })
-                    .await;
+        match app.engine.run_file(x).await {
+            Err(EngineError::Rquickjs(_)) => {
+                app.engine.context.with(|ctx| print_js_error(&ctx)).await;
             }
-            #[allow(unreachable_patterns)]
-            Some(Err(e)) => {
+            Err(e) => {
                 eprintln!("{e}")
             }
-            _ => {}
+            Ok(()) => {}
         }
     }
 
@@ -82,4 +98,9 @@ async fn main() -> color_eyre::eyre::Result<()> {
 }
 
 mod app;
+mod history;
 mod repl;
+
+#[cfg(test)]
+#[path = "../tests/unit/cli.rs"]
+mod tests;
