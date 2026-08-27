@@ -76,16 +76,18 @@ async fn main() -> color_eyre::eyre::Result<()> {
     };
     let mut app = App::new().await;
 
-    if let Some(x) = cli.file.clone() {
-        match app.engine.run_file(x).await {
-            Err(EngineError::Rquickjs(_)) => {
+    if let Some(x) = cli.file.clone()
+        && let Err(error) = app.engine.run_file(x).await
+    {
+        match error {
+            EngineError::Rquickjs(_) => {
                 app.engine.context.with(|ctx| print_js_error(&ctx)).await;
             }
-            Err(e) => {
-                eprintln!("{e}")
-            }
-            Ok(()) => {}
+            error => eprintln!("{error}"),
         }
+        // A failed entry file is fatal: Node and Deno exit here and never fall
+        // through into the REPL.
+        std::process::exit(1)
     }
 
     if cli.repl || cli.file.is_none() {
