@@ -184,3 +184,48 @@ fn signal_is_delivered_during_top_level_await_and_after_the_module_returns() {
     den.signal(libc::SIGTERM);
     assert_eq!(den.wait().signal(), Some(libc::SIGTERM));
 }
+
+/// den's one graceful hook is strictly more than Node's, Deno's or Bun's exit
+/// hooks: the listener may `await` and its continuation still runs, so a real
+/// close (drain in-flight work, flush, `db.close()`) can finish before `exit`.
+#[test]
+fn async_listener_finishes_its_close_then_exits_0() {
+    let mut den = Den::start(
+        &[],
+        r#"process.addSignalListener("SIGINT", async () => {
+             await new Promise(resolve => setTimeout(resolve, 300));
+             console.log("closed");
+             process.exit(0);
+           });
+           setTimeout(() => {}, 1e9);
+           console.log("armed")"#,
+    );
+    den.wait_for_line("armed");
+    den.signal(libc::SIGINT);
+    den.wait_for_line("closed");
+    assert_eq!(den.wait().code(), Some(0));
+}
+
+/// The second-Ctrl-C escape, which is why the recipe removes the listener
+/// before it awaits anything: removing the last listener for a signal hands
+/// the disposition back to the kernel, so SIGINT #2 is death even though the
+/// handler is in a loop no event loop will ever interrupt.
+#[test]
+fn listener_that_removes_itself_dies_of_the_second_sigint() {
+    let mut den = Den::start(
+        &[],
+        r#"const goodbye = () => {
+             process.removeSignalListener("SIGINT", goodbye);
+             console.log("caught");
+             while (true) {}
+           };
+           process.addSignalListener("SIGINT", goodbye);
+           setTimeout(() => {}, 1e9);
+           console.log("armed")"#,
+    );
+    den.wait_for_line("armed");
+    den.signal(libc::SIGINT);
+    den.wait_for_line("caught");
+    den.signal(libc::SIGINT);
+    assert_eq!(den.wait().signal(), Some(libc::SIGINT));
+}
