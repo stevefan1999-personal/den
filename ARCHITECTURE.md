@@ -555,7 +555,7 @@ far-side `messageerror` (across a worker).
 
 `AsyncRuntime::idle()` resolves only when no `ctx.spawn`-ed future is left
 (`docs/research/09` §2.2), so "what keeps den alive" is exactly "what is
-spawned". Four rules, and they are the whole of it:
+spawned". Five rules, and they are the whole of it:
 
 1. **A queue the script opened stays open until the script closes it.**
    `port.start()`, assigning `onmessage` on a `MessagePort` (§9.4.4 says that
@@ -577,6 +577,12 @@ spawned". Four rules, and they are the whole of it:
 4. **A worker realm ends** when its own `idle()` resolves (no timers, no started
    ports, no in-flight fetch), or at `close()`, or at `terminate()`, or when the
    parent hangs up and its pump sees the channel close.
+5. **A signal listener does not keep den alive.** `addSignalListener` spawns
+   nothing into the realm: the OS signal is forwarded by a `tokio::spawn`ed task
+   into an inbox that the root `select!` drains, so a script whose only
+   remaining business is listening still reaches `idle()` and exits 0. Whatever
+   the listener then *starts* is ordinary spawned work and does keep den alive
+   until it finishes, which is what makes an async cleanup handler possible.
 
 The practical consequence, and the one to remember: `new Worker("./w.js")` where
 `w.js` only prints exits 0 like Node, while a worker that registers `onmessage`
