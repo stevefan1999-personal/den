@@ -64,6 +64,33 @@ the [min-sized-rust guide](https://github.com/johnthagen/min-sized-rust#optimize
 $ cargo install den
 ```
 
+## Stopping den
+
+Ctrl-C is the kernel's by default: den installs no SIGINT handler, so the
+process dies at the signal's default disposition, like Node, Deno and Bun. A
+script that wants a graceful stop asks for the signal, and then owns
+termination — nothing exits on its behalf:
+
+```js
+import { addSignalListener, removeSignalListener, exit } from "den:process";
+
+const goodbye = async () => {
+  removeSignalListener("SIGINT", goodbye); // first: a second Ctrl-C is kernel death again
+  setTimeout(() => exit(130), 5000);       // the deadline for everything below
+  closing = true;                          // stop taking new work
+  await Promise.allSettled(inFlight);      // den stays alive while these are pending
+  await conn.shutdown();                   // protocol goodbyes, not durability
+  exit(0);                                 // mandatory: nothing else ends the process
+};
+
+addSignalListener("SIGINT", goodbye);
+```
+
+An embedder stops a realm by dropping it, plus its own flag in
+`runtime.set_interrupt_handler` for a script spinning in bytecode — the
+compiled recipe is the rustdoc on `den_core::engine::Engine`. See
+[ARCHITECTURE.md](ARCHITECTURE.md) §2.
+
 ## Testing
 
 A green `jit` run says nothing about Pulley: same JS-API layer, different compiler
@@ -148,7 +175,11 @@ There are still a lot of bugs that needs to be addressed before it can be deemed
       [ARCHITECTURE.md](ARCHITECTURE.md) §7.5. The process still exits 0 on an uncaught error,
       which is the next thing to fix.
 - [x] Make it easily embeddable to other Rust projects
-    - [x] Remove the need for the global state. There is only one so far and that is the "global cancellation token"
+    - [x] Remove the need for the global state. The last of it was the "global cancellation token":
+      an `Engine` now carries no realm-wide cancellation at all — stopping one is dropping it, and a
+      host that has to interrupt a running script installs its own interrupt flag. See
+      [docs/research/16](docs/research/16-cancellation-without-tokens.md) and
+      [17](docs/research/17-graceful-shutdown-and-external-stop.md).
     - This is also important because we can reuse it to test the standard library
     - Better yet, integrate some crates and libraries to upstream rquickjs so everybody can enjoy
 - [ ] Finish up the standard libraries

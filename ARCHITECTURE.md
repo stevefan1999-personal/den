@@ -48,23 +48,78 @@ plus every `ctx.spawn` future until the scheduler is empty. `drive()` polls
 the same scheduler but releases the lock between polls; spawning it *and*
 calling `idle()` makes two loopers fight, so den does not spawn `drive()`.
 
-den installs no SIGINT handler, so Ctrl-C is kernel death at its default
-disposition, exactly as in Node, Deno and Bun: no Rust unwinds and pending
-work is abandoned where it stands. An `Engine` therefore carries no realm-wide
+den installs no SIGINT handler of its own, so by default Ctrl-C is kernel
+death at the signal's default disposition, exactly as in Node, Deno and Bun:
+no Rust unwinds, no destructor runs, the shell sees `signal == SIGINT` and
+pending work is abandoned where it stands. An `Engine` carries no realm-wide
 cancellation of any kind — stopping one is dropping it, which drops every
-`ctx.spawn`ed future before the QuickJS runtime is freed. An embedder that
-needs to interrupt a tight JS loop installs its own
-`runtime.set_interrupt_handler` over a flag it owns.
+`ctx.spawn`ed future before the QuickJS runtime is freed.
+
+A script opts out of that by installing a listener with
+`addSignalListener("SIGINT", …)` (`den:process`). The signal then stops being
+death and becomes a *message*: tokio's handler forwards it into the realm's
+inbox, and `Engine::run_event_loop` — a `select!` over that inbox and `idle()`
+— leaves `idle()`, calls the listeners on the JS thread, and re-enters. The
+listener owns termination from that moment on, as it does on all three
+reference runtimes: den kills nothing for it, the pending `accept()`/`fetch`
+futures are untouched, and a listener that never calls `exit()` never ends the
+process. In exchange the listener may be async, and den stays alive while its
+promises are pending — strictly more than a Node `exit` hook can do, none of
+which can complete I/O on any of the three.
+
+`removeSignalListener` restores the default disposition, and that is the
+second-Ctrl-C escape: a listener that removes itself *first*, before any
+`await`, dies of SIGINT #2 through the kernel even if it is wedged in a loop.
+A listener that does not remove itself simply runs again on the second Ctrl-C.
+den has no grace timer and no force-exit of its own; a deadline is
+`setTimeout(() => exit(130), GRACE_MS)` inside the listener.
+
+Neither path has anything to flush. den holds no user-space file buffer —
+`den:fs` has no open-file handle and no `append`, and once `write(2)` has
+returned the bytes are the kernel's and survive process death. What abrupt
+death can still do is tear a file *mid-write*, which is a property of the write
+call, not of shutdown:
+
+| Write path | Torn by abrupt death | Why / remedy |
+|---|---|---|
+| `den:fs write` | **yes** — 0 bytes or a prefix | `File::create` truncates, then `write_all`; opt into `write(path, bytes, { atomic: true })`, which writes a sibling temp file and `rename(2)`s it over the target |
+| `den:fs copy` | **yes** — destination truncated then filled | `std::fs::copy` is `copy_file_range(2)`, not read-then-write, so it cannot use that helper; do not call it while stopping |
+| `den:assert assertSnapshot` | **yes** — same tear as `write` | test-only, deliberately unfixed |
+| `den:sqlite` | no | DELETE journal and `synchronous=FULL` are the compiled-in defaults; an interrupted transaction rolls back on the next open |
+| REPL history | no | every accepted entry commits with `Durability::Immediate` (fsync), and SurrealKV replays its WAL on open |
+| `console.*` → stdout | no | one `write_all` per event through a `LineWriter`: events are whole or absent, never spliced |
+
+Graceful stop therefore buys no durability in den; it buys protocol-level
+goodbyes — a `shutdown()` on a socket, a reply to a peer, a final log line.
+The full inventory, with the probes behind each row, is
+[docs/research/17](docs/research/17-graceful-shutdown-and-external-stop.md) §3.
 
 The REPL cannot call `engine.eval` (an `async_with`) while `idle()` holds the
 lock. `start_repl_session` only owns the rustyline task; `run_until_end`
 `ctx.spawn`s a pump that `recv`s lines and evaluates them on the same `Ctx`.
 Closing the REPL ends the process outright, once `run_repl` has closed the
-history.
+history. Ctrl-C there is a key and not a signal: rustyline holds the terminal
+in raw mode, so the first press clears the line and the second exits.
 
 A worker owns its own token, with no link to the realm that started it: the
 realm holds the handle, so `Engine::shutdown` cancels and joins the threads,
 and simply dropping the realm cancels them too.
+
+### 2.1 Embedding: stopping an Engine
+
+A host that wants to stop a realm from outside composes three things it
+already has, and den adds no API for it: its own flag in
+`runtime.set_interrupt_handler` (installed *before* any JS runs, because
+installing takes the lock the event loop holds), one `select!` over
+`run_file` + `run_event_loop` against whatever awaitable the flag flips, and
+`drop(engine)`. That is the shape `axum::serve(..).with_graceful_shutdown`
+uses — take a future, own no token. The compiled recipe, with the five rules
+the type cannot enforce (an interrupted script reports `Err`, so the host's
+flag decides whether that was a failure; the flag must be flipped from a
+thread the JS loop does not block; the runtime is single-use once it is set;
+`Engine` is `Clone`, so `drop` cancels only the last clone and a clone must
+never be moved into a `ctx.spawn`ed future), is the rustdoc on
+`den_core::engine::Engine`.
 
 ## 3. How one Rust module becomes both `den:x` and a global
 
