@@ -833,11 +833,11 @@ async fn an_echo_arrives_while_three_workers_spin() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Ctrl-C's path: the token cancels the main realm, and `shutdown` is what
-/// reaches the worker threads — including one that is parked with nothing to
-/// interrupt, which only a join can reclaim.
+/// The embedder's teardown path: `shutdown` is what reaches the worker
+/// threads — including one that is parked with nothing to interrupt, which
+/// only a join can reclaim.
 #[tokio::test(flavor = "multi_thread")]
-async fn shutdown_terminates_and_joins_workers_after_the_token_is_cancelled() -> eyre::Result<()> {
+async fn shutdown_terminates_and_joins_every_worker() -> eyre::Result<()> {
     let fixture = Fixture::new("shutdown", &[("spin.js", SPIN), ("echo.js", ECHO)])?;
     let engine = fixture
         .start(
@@ -857,7 +857,6 @@ async fn shutdown_terminates_and_joins_workers_after_the_token_is_cancelled() ->
     );
     assert!(live_worker_threads("shutdown-join") > 0, "the workers ran");
 
-    engine.stop();
     timeout(DEADLINE, engine.shutdown()).await?;
     no_worker_threads("shutdown-join").await;
     Ok(())

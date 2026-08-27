@@ -369,18 +369,6 @@ fn worker_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<(S
     Ok((kind, name))
 }
 
-/// The stop token of the realm a context belongs to — what `Engine::stop()`
-/// cancels.
-///
-/// Every worker a realm spawns gets a *child* of it, so that stopping a realm
-/// interrupts the workers it started instead of leaving them running under a
-/// realm that is already gone. Stored by whoever builds the context: den-core
-/// for the main realm, `WorkerThread::install_scope` for a worker's own. A
-/// context without one still spawns workers — their tokens are simply roots,
-/// reachable only through `terminate()` and [`shutdown`].
-#[derive(Clone, JsLifetime)]
-pub struct RealmStop(pub CancellationToken);
-
 /// The threads one realm spawned, so that shutting that realm down can stop and
 /// reap them rather than let the process exit around them.
 #[derive(Default, JsLifetime)]
@@ -391,6 +379,23 @@ struct WorkerRegistry {
 struct WorkerHandle {
     stop: CancellationToken,
     join: JoinHandle<()>,
+}
+
+impl Drop for WorkerRegistry {
+    /// How a realm that ends *without* [`shutdown`] — an embedder simply
+    /// letting its `Engine` go — still stops the workers it started: the
+    /// registry dies with the realm's userdata, and cancelling is the last
+    /// thing it does. Idempotent, and it does not join: a spinning worker
+    /// leaves at its next interrupt poll and nobody is left to care when.
+    ///
+    /// It lives here rather than on [`WorkerHandle`] because [`shutdown`]
+    /// moves the join handles out of one, which `Drop` would forbid.
+    fn drop(&mut self) {
+        self.threads
+            .get_mut()
+            .iter()
+            .for_each(|thread| thread.stop.cancel());
+    }
 }
 
 impl WorkerRegistry {
@@ -522,12 +527,10 @@ pub fn spawn<'js>(
         .ok_or_else(|| Exception::throw_type(&ctx, "the worker's port is not usable"))?;
 
     let (faults, fault_inbox) = mpsc::unbounded_channel();
-    // A child of the spawning realm's token, so that stopping that realm — not
-    // only `terminate()` and `shutdown` — reaches this worker and, through its
-    // own `RealmStop`, everything it spawns in turn.
-    let stop = ctx
-        .userdata::<RealmStop>()
-        .map_or_else(CancellationToken::new, |realm| realm.0.child_token());
+    // The worker's own, with no link to the realm that started it: a parent
+    // ends by dropping its registry (`impl Drop for WorkerRegistry`), not
+    // cancelling a tree.
+    let stop = CancellationToken::new();
     let thread = WorkerThread {
         host,
         stop: stop.clone(),
@@ -622,7 +625,7 @@ impl WorkerThread {
         // `close()` cancels this one, `terminate()` cancels its parent — which
         // reaches this one too, and additionally arms the interrupt handler.
         let closing = self.stop.child_token();
-        let engine = match self.host.build_engine(self.stop.clone(), self.base.clone()) {
+        let engine = match self.host.build_engine(self.base.clone()) {
             Ok(engine) => engine,
             Err(error) => {
                 let _ = self
@@ -631,6 +634,17 @@ impl WorkerThread {
                 return;
             }
         };
+        // Bytecode already running on this thread can only be stopped by a flag
+        // polled at back-edges, and the handler cannot be installed once
+        // `idle()` holds the runtime mutex — so it goes on here, before the
+        // script does.
+        engine
+            .runtime
+            .set_interrupt_handler({
+                let stop = self.stop.clone();
+                Some(Box::new(move || stop.is_cancelled()))
+            })
+            .await;
 
         let Self {
             script,
@@ -649,15 +663,7 @@ impl WorkerThread {
             .async_with({
                 let closing = closing.clone();
                 let faults = faults.clone();
-                let stop = self.stop.clone();
                 async move |ctx| {
-                    // This realm's own token, for the workers this worker
-                    // spawns: a tree of workers is cancelled from any node
-                    // down. It has to be in place before the script runs,
-                    // which is the first thing that can call `new Worker`.
-                    if let Err(error) = ctx.store_userdata(RealmStop(stop)) {
-                        return Some(WorkerFault::from_message(error.to_string()));
-                    }
                     Self::boot(&ctx, channel, &name, kind, &script, &closing, faults).await
                 }
             })
@@ -1263,7 +1269,6 @@ mod tests {
         task::block_in_place,
         time::{self},
     };
-    use tokio_util::sync::CancellationToken;
     use url::Url;
 
     use crate::host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost, WorkerHostError};
@@ -1319,12 +1324,10 @@ mod tests {
     struct BareHost;
 
     impl WorkerHost for BareHost {
-        fn build_engine(
-            &self, stop: CancellationToken, base: BaseUrl,
-        ) -> Result<WorkerEngine, WorkerHostError> {
+        fn build_engine(&self, base: BaseUrl) -> Result<WorkerEngine, WorkerHostError> {
             // Same pair den-core's host uses: a synchronous trait method
             // reaching an async constructor from inside a runtime.
-            block_in_place(|| tokio::runtime::Handle::current().block_on(Self::build(stop, base)))
+            block_in_place(|| tokio::runtime::Handle::current().block_on(Self::build(base)))
                 .map_err(|error| WorkerHostError(error.to_string()))
         }
     }
@@ -1350,8 +1353,7 @@ mod tests {
         /// still there, short enough to be a blink in a test.
         const SLOW_TEARDOWN: Duration = Duration::from_millis(400);
 
-        async fn build(stop: CancellationToken, base: BaseUrl) -> rquickjs::Result<WorkerEngine> {
-            let interrupt = stop.clone();
+        async fn build(base: BaseUrl) -> rquickjs::Result<WorkerEngine> {
             assert!(
                 !base.0.contains(Self::PANIC_DIRECTORY),
                 "the host panicked while building a worker engine"
@@ -1361,10 +1363,10 @@ mod tests {
                 // for, which is the case `shutdown_background` abandons.
                 tokio::task::spawn_blocking(|| std::thread::sleep(Self::SLOW_TEARDOWN));
             }
+            // No interrupt handler: a worker's is installed by `serve_engine`
+            // on the runtime this hands back, which is exactly what the host
+            // seam no longer owes this crate.
             let runtime = AsyncRuntime::new()?;
-            runtime
-                .set_interrupt_handler(Some(Box::new(move || interrupt.is_cancelled())))
-                .await;
             runtime
                 .set_loader(
                     FileUrlResolver,
@@ -1376,10 +1378,6 @@ mod tests {
                 .with(|ctx| {
                     install_worker_api(&ctx)?;
                     Self::store(&ctx, HostHandle(Arc::new(BareHost)))?;
-                    // The one line den-core owes this crate: without it a
-                    // worker's token is a root and stopping the realm never
-                    // reaches it.
-                    Self::store(&ctx, super::RealmStop(stop))?;
                     Self::store(&ctx, base)
                 })
                 .await?;
@@ -1422,22 +1420,17 @@ mod tests {
     struct Fixture {
         runtime: AsyncRuntime,
         context: AsyncContext,
-        /// The realm's own token — den-core's `Engine::stop()`. Every worker
-        /// this realm spawns gets a child of it.
-        stop:    CancellationToken,
     }
 
     impl Fixture {
         async fn new(test: &str, files: &[(&str, &str)]) -> Self {
             let base = BaseUrl(fixture(test, files));
-            let stop = CancellationToken::new();
-            let engine = BareHost::build(stop.clone(), base)
+            let engine = BareHost::build(base)
                 .await
                 .expect("the bare host builds a parent realm");
             Self {
                 runtime: engine.runtime,
                 context: engine.context,
-                stop,
             }
         }
 
@@ -2125,25 +2118,28 @@ mod tests {
         no_threads_named("den-worker:cccc").await;
     }
 
-    /// A worker's token is a child of the token of the realm that spawned it,
-    /// so stopping that realm — den-core's `Engine::stop()`, which has nothing
-    /// else to interrupt in a parked parent — reaches the workers too.
+    /// A realm that simply goes away — no `terminate()`, no [`shutdown`] —
+    /// must still stop what it started: the registry is realm userdata, so
+    /// dropping the realm cancels one level down. The worker posted its
+    /// message and then stopped yielding the interpreter, so only its
+    /// interrupt handler can end it, and only the cancellation can arm that.
     #[tokio::test(flavor = "multi_thread")]
-    async fn stopping_the_realm_interrupts_the_workers_it_spawned() {
-        let fixture = Fixture::new("realm-stop", &[SPIN]).await;
+    async fn dropping_the_parent_realm_stops_a_spinning_worker() {
+        let fixture = Fixture::new("realm-drop", &[SPIN]).await;
         fixture
             .eval::<()>(
                 r#"
-                globalThis.worker = new Worker("./spin.js");
+                globalThis.worker = new Worker("./spin.js", { name: "dddd" });
                 await new Promise((resolve) => { worker.onmessage = resolve; });
                 "#,
             )
             .await;
-        fixture.stop.cancel();
-        // No terminate(), and the worker never yields the interpreter: the
-        // realm going idle means its interrupt handler saw the cancellation.
-        fixture.settle().await;
-        fixture.shutdown().await;
+        let Fixture { runtime, context } = fixture;
+        // Context first, then the runtime: userdata — the registry with it —
+        // is freed with the runtime, and the context holds a handle on one.
+        drop(context);
+        drop(runtime);
+        no_threads_named("den-worker:dddd").await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

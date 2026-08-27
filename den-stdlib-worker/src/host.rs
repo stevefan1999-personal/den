@@ -9,7 +9,6 @@ use core::fmt::{self, Display};
 use std::sync::Arc;
 
 use rquickjs::{AsyncContext, AsyncRuntime, JsLifetime};
-use tokio_util::sync::CancellationToken;
 
 /// The realm's API base URL: what a relative worker script URL resolves
 /// against, e.g. `"file:///home/me/project/"`.
@@ -50,16 +49,15 @@ impl std::error::Error for WorkerHostError {}
 /// userdata of every context that may run `new Worker` — worker contexts
 /// included, which is what makes nesting free.
 pub trait WorkerHost: Send + Sync + 'static {
-    /// Build a complete engine: runtime, context, loaders, every stdlib module
-    /// including `den:worker`, and an interrupt handler that observes `stop`.
+    /// Build a complete engine: runtime, context, loaders and every stdlib
+    /// module including `den:worker`. Stopping it is not the host's business —
+    /// this crate installs the interrupt handler on the runtime it gets back.
     ///
     /// Called **on the worker's own OS thread**, inside that thread's tokio
     /// runtime context, before any script runs. An implementor whose engine
     /// construction is `async` blocks on it there; nothing else is running on
     /// that thread yet.
-    fn build_engine(
-        &self, stop: CancellationToken, base: BaseUrl,
-    ) -> Result<WorkerEngine, WorkerHostError>;
+    fn build_engine(&self, base: BaseUrl) -> Result<WorkerEngine, WorkerHostError>;
 }
 
 /// Userdata slot holding the host. `new Worker` reads it; contexts built

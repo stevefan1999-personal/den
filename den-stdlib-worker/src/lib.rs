@@ -23,7 +23,6 @@ pub use message::{Message, throw_data_clone};
 pub use port::NativePort;
 pub use report::report_exception;
 pub use transport::{Envelope, PortHandle};
-pub use worker::RealmStop;
 
 pub use crate::js_worker_module as js_worker;
 
