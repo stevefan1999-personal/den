@@ -683,7 +683,7 @@ futures.workspace = true
 mimalloc = { workspace = true, optional = true }
 rquickjs.workspace = true
 rustyline = { workspace = true, features = ["derive", "with-sqlite-history"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["json", "env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
