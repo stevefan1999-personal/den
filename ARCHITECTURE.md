@@ -731,8 +731,8 @@ cargo nextest run --workspace --all-targets --no-default-features \
 Both invocations must be green. The bulk is still `den-stdlib-worker` and
 `den-stdlib-wasm`; the WinterTC crates add process, whatwg, fetch, fs, crypto,
 networking, and den-core import-map/attribute suites on top. The timer crate
-now covers numeric ids, and den-core pins `Engine::stop()` releasing `idle()`
-from a long timer.
+now covers numeric ids, and den-core pins dropping an engine parked on a
+pending timer returning promptly.
 
 JS that a script would run is tested on the crate that owns the API
 (`den-stdlib-*/tests/js` or `tests/webassembly`, static
