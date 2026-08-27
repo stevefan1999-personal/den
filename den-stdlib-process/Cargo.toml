@@ -16,6 +16,7 @@ indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = [
     "io-util",
+    "macros",
     "net",
     "process",
     "rt",

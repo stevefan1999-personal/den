@@ -130,7 +130,6 @@ fn repl_with_broken_file_exits_1() {
 }
 
 #[test]
-#[ignore = "needs the event-loop signal delivery of commit 6"]
 fn listener_survives_two_sigints_then_dies_of_sigterm() {
     let mut den = Den::start(
         &[],
@@ -146,14 +145,12 @@ fn listener_survives_two_sigints_then_dies_of_sigterm() {
 }
 
 #[test]
-#[ignore = "needs the event-loop signal delivery of commit 6"]
 fn listener_alone_does_not_keep_den_alive() {
     let mut den = Den::start(&[], r#"process.addSignalListener("SIGUSR1", () => {})"#);
     assert_eq!(den.wait().code(), Some(0));
 }
 
 #[test]
-#[ignore = "needs the event-loop signal delivery of commit 6"]
 fn self_signal_reaches_the_listener() {
     let mut den = Den::start(
         &[],
@@ -166,7 +163,6 @@ fn self_signal_reaches_the_listener() {
 }
 
 #[test]
-#[ignore = "needs the event-loop signal delivery of commit 6"]
 fn signal_is_delivered_during_top_level_await_and_after_the_module_returns() {
     // The first SIGINT lands while the entry module is parked on a top-level
     // await, the second after it returned: both phases must share one inbox.
