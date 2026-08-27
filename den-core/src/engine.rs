@@ -119,6 +119,83 @@ impl WorkerHost for DenWorkerHost {
     }
 }
 
+/// One QuickJS realm — an [`AsyncRuntime`] plus its [`AsyncContext`] — and the
+/// whole of den's embedding surface.
+///
+/// There is deliberately no stop token here. Stopping a realm is *dropping* it,
+/// which drops every `ctx.spawn`ed future before the QuickJS runtime is freed;
+/// interrupting a script already spinning in bytecode is a flag the **host**
+/// owns, polled by QuickJS's interrupt handler every few thousand back-edges.
+/// A host that wants both composes them itself, the way `axum` takes a
+/// shutdown future and owns no token of its own:
+///
+/// ```no_run
+/// use std::path::PathBuf;
+///
+/// use den_core::engine::{Engine, EngineError};
+///
+/// #[tokio::main(flavor = "multi_thread")]
+/// async fn main() -> Result<(), EngineError> {
+///     let entry = PathBuf::from("main.js");
+///     // Host-owned stop signal. An `Arc<AtomicBool>` plus any awaitable the
+///     // host already holds is the same recipe.
+///     let (stop, mut stopped) = tokio::sync::watch::channel(false);
+///
+///     let engine = Engine::new().await;
+///     // Before the first run: installing takes the runtime lock that the
+///     // event loop holds while it is parked.
+///     engine
+///         .runtime
+///         .set_interrupt_handler(Some(Box::new({
+///             let flag = stop.subscribe();
+///             move || *flag.borrow()
+///         })))
+///         .await;
+///
+///     // Entry module and event loop are one future, so one `select!` covers
+///     // the script, its timers and its in-flight I/O alike.
+///     let program = async {
+///         engine.run_file(entry).await?;
+///         engine.run_event_loop().await;
+///         Ok::<_, EngineError>(())
+///     };
+///     tokio::select! {
+///       // A stopped script reports `Err(interrupted)`: that is the host's own
+///       // stop, not a failing script, so the flag decides which it was.
+///       result = program => if !*stop.borrow() { result? },
+///       _ = stopped.changed() => {}
+///     }
+///     drop(engine); // the cancel; the losing arm is dropped mid-await
+///     Ok(())
+/// }
+/// ```
+///
+/// The rules that recipe encodes, none of which the type can enforce:
+///
+/// 1. Install the interrupt handler *before* any JS runs. It takes the same
+///    runtime mutex [`AsyncRuntime::idle`] holds, so a handler installed while
+///    the loop is parked waits for the loop it was meant to interrupt.
+/// 2. Flip the flag from somewhere the JS loop does not block: a task on a
+///    multi-thread runtime, or a `std::thread`. On a `current_thread` runtime
+///    the canceller never gets to run and the stop never arrives.
+/// 3. The program arm can win with `Err`, because an interrupted script *is* an
+///    uncatchable QuickJS exception. Ask the host's own flag before reporting a
+///    script failure.
+/// 4. A true flag stays true for the whole runtime: every later `eval` in it
+///    dies at its first interrupt poll. The engine is single-use after a hard
+///    stop — including a "goodbye" script, which needs the interrupter to hold
+///    a second flag if it is to survive at all.
+/// 5. [`Engine`] is [`Clone`], so `drop` cancels only when the *last* clone
+///    dies, and a clone must never be moved into a `ctx.spawn`ed future:
+///    runtime → spawner → future → `Engine` → runtime is a cycle that drop
+///    cannot break.
+/// 6. For a deadline instead of an event, run the loop under a timeout: `let _
+///    = tokio::time::timeout(grace, engine.run_event_loop()).await;` then flip
+///    the flag and drop.
+///
+/// Ctrl-C is not in this list on purpose: den installs no signal handler, and a
+/// script that wants a graceful one installs it itself with
+/// `den:process`'s `addSignalListener`. See `ARCHITECTURE.md` §2.
 #[derive(Clone)]
 pub struct Engine {
     #[cfg(feature = "transpile")]
