@@ -43,6 +43,15 @@ async fn add_and_remove_signal_listener_do_not_throw() -> eyre::Result<()> {
     run("signals.js").await
 }
 
+/// A name `add` accepts is a name `remove` must accept: the listenable set is
+/// derived from what the realm can actually forward, so unix refuses SIGBREAK
+/// on the way in instead of throwing on the way out.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn add_refuses_a_signal_it_could_never_deliver() -> eyre::Result<()> {
+    run("unlistenable_signal.js").await
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn kill_terminates_a_spawned_sleep() -> eyre::Result<()> {
