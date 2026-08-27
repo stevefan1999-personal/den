@@ -99,6 +99,14 @@ impl WorkerHost for DenWorkerHost {
         let engine = block_in_place(|| {
             Handle::current().block_on(async move {
                 let engine = Engine::new().await;
+                // Signals belong to the process, and only the realm running the
+                // root event loop can deliver them: a worker's loop is `idle()`
+                // and never drains an inbox.
+                #[cfg(feature = "stdlib-process")]
+                engine
+                    .context
+                    .with(|ctx| den_stdlib_process::signal::SignalHub::disable(&ctx))
+                    .await;
                 engine.set_base_url(base).await.map(|()| engine)
             })
         })
