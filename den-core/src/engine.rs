@@ -84,23 +84,22 @@ unsafe impl<'js> JsLifetime<'js> for PendingRejections {
 
 /// den-core's side of the worker crate's engine seam. A worker thread asks for
 /// an engine and gets the very same one the main script runs on — same loaders,
-/// same stdlib, same `den:worker` — differing only in its base URL and in the
-/// cancellation token that stops it.
+/// same stdlib, same `den:worker` — differing only in its base URL. Stopping it
+/// is the worker crate's business: it owns the token and installs the interrupt
+/// handler on the runtime this hands back.
 #[cfg(feature = "stdlib-worker")]
 struct DenWorkerHost;
 
 #[cfg(feature = "stdlib-worker")]
 impl WorkerHost for DenWorkerHost {
-    fn build_engine(
-        &self, stop: CancellationToken, base: BaseUrl,
-    ) -> Result<WorkerEngine, WorkerHostError> {
+    fn build_engine(&self, base: BaseUrl) -> Result<WorkerEngine, WorkerHostError> {
         // Called on the worker's own OS thread, inside that thread's
         // multi-threaded runtime: `block_in_place` + `block_on` is what lets a
         // synchronous trait method reach an async constructor, and it is the
         // same pair den's module loaders already use one layer down.
         let engine = block_in_place(|| {
             Handle::current().block_on(async move {
-                let engine = Engine::new_with_stop_token(stop).await;
+                let engine = Engine::new().await;
                 engine.set_base_url(base).await.map(|()| engine)
             })
         })
@@ -152,12 +151,9 @@ impl Engine {
 
     pub async fn new() -> Engine { Self::new_with_stop_token(CancellationToken::new()).await }
 
-    /// Build an engine whose interrupt handler observes `stop_token`.
-    ///
-    /// Handing the token in is what lets a worker thread be stopped by its
-    /// parent: the worker's token is a child of the parent's, so one
-    /// `cancel` — Ctrl-C, or `worker.terminate()` — reaches a script that is
-    /// already running.
+    /// Build an engine whose interrupt handler observes `stop_token`, so that
+    /// an embedder holding the other end can stop a script that is already
+    /// running.
     pub async fn new_with_stop_token(stop_token: CancellationToken) -> Engine {
         #[cfg(feature = "transpile")]
         let transpiler = Arc::new(EasyOxcTranspiler);
@@ -451,11 +447,6 @@ impl Engine {
                         den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost)),
                     )?;
                     Self::store_userdata(&ctx, Self::working_directory_url())?;
-                    // The realm's own stop token, which every worker spawned
-                    // here takes a child of. Without it a top-level worker's
-                    // token is a fresh root and `Engine::stop()` — which is
-                    // documented to reach workers — would leave it running.
-                    Self::store_userdata(&ctx, den_stdlib_worker::RealmStop(stop_token.clone()))?;
                 }
 
                 // After `den:worker` so FileReader / XHR / EventSource / WebSocket
@@ -865,9 +856,9 @@ impl Engine {
             .unwrap_or_else(|| "unknown error".to_owned())
     }
 
-    /// Interrupt this realm, and with it every worker it spawned: a worker's
-    /// token is a child of the one this realm publishes as `RealmStop`, all the
-    /// way down the tree. Reaping the threads afterwards is [`Self::shutdown`].
+    /// Interrupt this realm: a script running on it stops at its next bytecode
+    /// back-edge. Workers own their tokens and are reached by
+    /// [`Self::shutdown`] or by dropping the realm, not by this.
     pub fn stop(&self) { self.stop_token.cancel() }
 
     pub fn stop_token(&self) -> CancellationToken { self.stop_token.clone() }
@@ -952,28 +943,6 @@ mod tests {
         engine.run_file::<()>(path.clone()).await?;
         assert_eq!(engine.eval::<usize>("globalThis.absoluteRan").await?, 7);
         fs::remove_file(path)?;
-        Ok(())
-    }
-
-    /// A worker takes a child of the token its spawning realm published, and
-    /// `new Worker` in the main script is spawning from *this* realm — so
-    /// without the token in the context userdata, a top-level worker's token is
-    /// a fresh root and `stop()` never reaches it.
-    #[cfg(feature = "stdlib-worker")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn stop_reaches_the_workers_the_main_realm_spawns() -> eyre::Result<()> {
-        use den_stdlib_worker::RealmStop;
-
-        let engine = Engine::new().await;
-        let published = engine
-            .context
-            .with(|ctx| ctx.userdata::<RealmStop>().map(|realm| realm.0.clone()))
-            .await
-            .expect("the main realm publishes its stop token");
-
-        assert!(!published.is_cancelled());
-        engine.stop();
-        assert!(published.is_cancelled());
         Ok(())
     }
 

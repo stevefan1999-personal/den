@@ -66,8 +66,9 @@ lock. `start_repl_session` only owns the rustyline task; `run_until_end`
 Closing the REPL cancels the stop token so the pump and any leftover timers
 complete and `idle()` returns.
 
-Workers still take a child of the same token (`RealmStop`); `Engine::shutdown`
-joins their threads after `idle()` returns.
+A worker owns its own token, with no link to the realm that started it: the
+realm holds the handle, so `Engine::shutdown` cancels and joins the threads
+after `idle()` returns, and simply dropping the realm cancels them too.
 
 ## 3. How one Rust module becomes both `den:x` and a global
 
@@ -424,19 +425,22 @@ entry. `den-core` reaches the same bag for `dispatchTrusted` when it fires
 method (`host.rs`):
 
 ```rust
-fn build_engine(&self, stop: CancellationToken, base: BaseUrl)
-    -> Result<WorkerEngine, WorkerHostError>;
+fn build_engine(&self, base: BaseUrl) -> Result<WorkerEngine, WorkerHostError>;
 ```
 
 Lifetime: **singleton** — one `Arc<dyn WorkerHost>` per process, cloned into the
 userdata of every context that may run `new Worker`, worker contexts included,
 which is what makes nesting free. It is called on the worker's own OS thread,
-inside that thread's tokio runtime, before any script runs. Two more userdata
-slots complete the picture: `BaseUrl` (what a relative worker URL resolves
-against, following the entry point rather than the working directory) and
-`RealmStop` (this realm's cancellation token, of which every worker it spawns
-takes a *child* — so `Engine::stop()` interrupts a whole tree, and `shutdown()`
-then reaps it bottom-up).
+inside that thread's tokio runtime, before any script runs. One more userdata
+slot completes the picture: `BaseUrl`, what a relative worker URL resolves
+against, following the entry point rather than the working directory.
+
+Stopping is not part of the seam. Each worker makes its own `CancellationToken`
+and `den-stdlib-worker` installs the interrupt handler that polls it on the
+runtime the host hands back, so an embedder cannot forget to. The parent holds
+the other end in its `WorkerRegistry` userdata, which cancels every handle it
+still has when it is dropped — a realm that ends without `shutdown()` therefore
+still stops its workers, one level down at a time.
 
 ### 7.3 One OS thread, one tokio worker thread
 
