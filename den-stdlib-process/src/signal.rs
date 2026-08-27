@@ -110,24 +110,6 @@ impl Signal {
             Err(Exception::throw_internal(ctx, "kill is not supported"))
         }
     }
-
-    pub fn can_listen(name: &str) -> bool {
-        matches!(
-            name,
-            "SIGINT"
-                | "SIGTERM"
-                | "SIGHUP"
-                | "SIGQUIT"
-                | "SIGUSR1"
-                | "SIGUSR2"
-                | "SIGCHLD"
-                | "SIGALRM"
-                | "SIGPIPE"
-                | "SIGIO"
-                | "SIGWINCH"
-                | "SIGBREAK"
-        )
-    }
 }
 
 /// The realm's JS signal listeners and the mailbox that feeds them.
@@ -199,16 +181,19 @@ impl SignalHub {
     }
 
     pub fn add<'js>(ctx: &Ctx<'js>, sig: String, listener: Function<'js>) -> Result<()> {
-        if !Signal::can_listen(&sig) {
+        // The listenable set is whatever this realm can actually forward, so a
+        // name accepted here is always a name `remove` can hand back. On unix
+        // that is exactly the domain of `kind`; deriving it keeps the two from
+        // drifting apart.
+        #[cfg(unix)]
+        let listenable = Self::kind(&sig).is_some();
+        #[cfg(windows)]
+        let listenable = matches!(sig.as_str(), "SIGINT" | "SIGBREAK");
+        #[cfg(not(any(unix, windows)))]
+        let listenable = false;
+        if !listenable {
             // SIGKILL/SIGSTOP and friends cannot be caught; match the platform.
             let _ = Signal::number(&sig, ctx)?;
-            return Err(Exception::throw_type(
-                ctx,
-                &format!("cannot listen for {sig}"),
-            ));
-        }
-        #[cfg(windows)]
-        if !matches!(sig.as_str(), "SIGINT" | "SIGBREAK") {
             return Err(Exception::throw_type(
                 ctx,
                 &format!("cannot listen for {sig}"),
