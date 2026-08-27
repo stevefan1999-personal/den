@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use color_eyre::eyre;
 use den_core::engine::Engine;
+use tokio::time::timeout;
 
 fn case(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/js").join(name)
@@ -46,4 +47,19 @@ async fn add_and_remove_signal_listener_do_not_throw() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn kill_terminates_a_spawned_sleep() -> eyre::Result<()> {
     run("kill.js").await
+}
+
+/// The regression this crate's signal delivery exists for: the forwarder is a
+/// `tokio::spawn`ed task, so a realm whose only business is listening for a
+/// signal still reaches idle and `den script.js` still exits. A `ctx.spawn`ed
+/// pump — what this used to be — never returns from `idle()` at all.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signal_listener_does_not_keep_the_realm_alive() -> eyre::Result<()> {
+    const DEADLINE: Duration = Duration::from_secs(1);
+
+    let engine = Engine::new().await;
+    engine.run_file::<()>(case("signal_listener.js")).await?;
+    timeout(DEADLINE, engine.runtime.idle()).await?;
+    Ok(())
 }

@@ -50,7 +50,7 @@ impl App {
                 .await;
         }
 
-        self.engine.runtime.idle().await;
+        self.engine.run_event_loop().await;
         self.engine.shutdown().await;
     }
 

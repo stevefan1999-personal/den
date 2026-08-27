@@ -486,7 +486,7 @@ impl Engine {
         let specifier = path.to_string_lossy().replace('\\', "/");
         let script_name = file_url.map_or_else(|| specifier.clone(), String::from);
 
-        Ok(self
+        let entry = self
             .context
             .async_with(async |ctx| {
                 // Evil hack by using top-level await, so that the eval will transfer the import
@@ -514,8 +514,28 @@ impl Engine {
                 .into_future::<Object>()
                 .await?
                 .get("value")
-            })
-            .await?)
+            });
+
+        // A server spends its whole life inside the entry module's top-level
+        // await, so a signal that lands there has to reach JS there.
+        #[cfg(feature = "stdlib-process")]
+        let value = den_stdlib_process::signal::SignalHub::deliver_while(&self.context, entry);
+        #[cfg(not(feature = "stdlib-process"))]
+        let value = entry;
+        Ok(value.await?)
+    }
+
+    /// Run this realm's event loop until nothing is left spawned, delivering
+    /// signals to its JS listeners along the way.
+    ///
+    /// [`Self::run_file`] only awaits the entry module's own promise; this is
+    /// what a host runs afterwards, and what makes `addSignalListener` mean
+    /// anything once the module has returned.
+    pub async fn run_event_loop(&self) {
+        #[cfg(feature = "stdlib-process")]
+        den_stdlib_process::signal::SignalHub::drive(&self.runtime, &self.context).await;
+        #[cfg(not(feature = "stdlib-process"))]
+        self.runtime.idle().await;
     }
 
     #[cfg(feature = "transpile")]
