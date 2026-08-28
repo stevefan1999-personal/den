@@ -52,6 +52,37 @@ assertEquals(ptr.cstring(probe.hello(), 16), "hello");
 // A bounded scan that finds no NUL is an error, never a truncated string.
 assertEquals(assertThrows(() => ptr.cstring(probe.unterminated(), 4)).kind, "Range");
 
+// A pointer's provenance is checked again after the whole argument list is
+// marshalled, because reading a later argument runs JS: this struct's getter
+// disposes the library the address came from, and den refuses rather than
+// handing C an address it has already been told is dead. The two handles are
+// this same library opened twice, so disposing one is a real `dlclose` request.
+const donor = open(library, {
+  cell_address: { params: [], result: "pointer" },
+}, capability);
+const reader = open(library, {
+  read_i32_after: {
+    params: ["pointer", { struct: { b: "i8", n: "i32" } }],
+    result: "i32",
+  },
+}, capability);
+
+const donated = donor.cell_address();
+assertEquals(reader.read_i32_after(donated, { b: 0, n: 0 }), 7);
+assertEquals(
+  assertThrows(() =>
+    reader.read_i32_after(donated, {
+      b: 0,
+      get n() {
+        donor[Symbol.dispose]();
+        return 0;
+      },
+    })
+  ).kind,
+  "Closed",
+);
+reader[Symbol.dispose]();
+
 probe[Symbol.dispose]();
 
 // Provenance: every Pointer carries the library that produced it, so a

@@ -6,8 +6,10 @@
 //! index into the realm's registry, exactly as `den-stdlib-wasm` does for a
 //! wasm import (`instance.rs`, `ImportedFunctions`).
 //!
-//! A trampoline entered from the realm's own thread re-enters JS directly. One
-//! entered from a thread C created posts to a mailbox and blocks on the reply,
+//! A trampoline entered from inside a synchronous call den made re-enters JS
+//! directly — that frame holds the realm's lock, which is the precondition
+//! `OwnedCtx::with` states and [`INSIDE_CALL`] is how it is checked. One
+//! entered from any other thread posts to a mailbox and blocks on the reply,
 //! and a `ctx.spawn`-ed pump on the realm side answers it. That pump is also
 //! what keeps den alive while a callback is armed (ARCHITECTURE §7.5 rule 1);
 //! `Symbol.dispose` is what takes it back.
@@ -32,7 +34,7 @@
 //! gone; that is the caller's contract, and it is in the `.d.ts`.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell as StdCell, RefCell},
     ffi::c_void,
     panic::{self, AssertUnwindSafe},
     pin::Pin,
@@ -41,7 +43,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{RecvTimeoutError, SyncSender, sync_channel},
     },
-    thread::{self, ThreadId},
     time::Duration,
 };
 
@@ -71,6 +72,50 @@ use crate::{
 /// enough that §4.7's residual deadlock is a stall a human notices rather than
 /// a process that never comes back.
 const FOREIGN_CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+thread_local! {
+    /// The synchronous foreign call this thread is inside, if any.
+    ///
+    /// This is the trampoline's answer to "may I run JS right now?", and it is
+    /// deliberately *not* a `ThreadId` comparison against the thread a callback
+    /// was registered on. den's realm is not pinned to a thread — it is driven
+    /// by `Context::async_with` on a multi-threaded runtime, and a
+    /// `nonblocking` call resumes it through tokio's injection queue — so the
+    /// registering thread and the thread holding the runtime lock are not the
+    /// same question. What `OwnedCtx::with` actually requires is that this
+    /// frame holds the lock for *this realm*, and a call den itself made is the
+    /// only way C gets control while that is true.
+    static INSIDE_CALL: StdCell<Option<InsideCall>> = const { StdCell::new(None) };
+}
+
+/// The realm this thread is currently inside a synchronous foreign call for.
+#[derive(Clone, Copy)]
+pub struct InsideCall {
+    /// The `JSContext` whose lock this frame holds, as an address: identity
+    /// only, never dereferenced here.
+    realm:   usize,
+    /// Whether that call lent C the bytes of a JS buffer. While it has, no JS
+    /// may run: script could detach, transfer or resize the store C is holding
+    /// the address of, and C would write through freed memory (§4.6).
+    lending: bool,
+}
+
+/// Set for the length of one synchronous `Cif::call`, and restored — not
+/// cleared — on the way out, because a re-entrant callback may make a call of
+/// its own.
+pub struct Entered(Option<InsideCall>);
+
+impl InsideCall {
+    /// Mark this thread as being inside a call it made into `ctx`'s realm.
+    pub fn enter(ctx: &Ctx<'_>, lending: bool) -> Entered {
+        let realm = ctx.as_raw().as_ptr() as usize;
+        Entered(INSIDE_CALL.replace(Some(Self { realm, lending })))
+    }
+}
+
+impl Drop for Entered {
+    fn drop(&mut self) { INSIDE_CALL.set(self.0); }
+}
 
 /// The handle JS holds. Everything mutable about a callback lives in the
 /// realm's registry, so a disposed handle cannot answer a stale address.
@@ -241,7 +286,10 @@ impl CallbackEntry {
 /// into the realm from any other thread.
 struct Slot {
     index:     usize,
-    owner:     ThreadId,
+    /// The realm this callback's JS function belongs to, as an address. A
+    /// trampoline may only re-enter JS from a frame that holds *this* realm's
+    /// lock, which is what [`INSIDE_CALL`] answers.
+    realm:     usize,
     signature: Arc<FnSig>,
     /// The realm-side pump's end. Closed once the callback is disposed, which
     /// is how a late call from C becomes a logged zero rather than a wait.
@@ -282,10 +330,10 @@ struct Call {
 // SAFETY: C decides which thread calls a trampoline, so `&Slot` crosses
 // threads whether den likes it or not. Every field but `reentrant` is
 // `Send + Sync` plain data. `reentrant` is an `OwnedCtx`, which is neither,
-// and [`Slot::invoke`] reaches it only after `thread::current().id() ==
-// self.owner` — i.e. only from the thread that built it. That comparison is
-// the invariant this impl asserts, and it is the seam phase 5 replaces with a
-// mailbox rather than removes.
+// and [`Slot::invoke`] reaches it only when this thread's [`INSIDE_CALL`] names
+// `self.realm` — i.e. only from a frame that is inside a call den made into
+// that realm and therefore holds its runtime lock. That is the invariant this
+// impl asserts; every other thread takes the mailbox.
 unsafe impl Sync for Slot {}
 
 impl Slot {
@@ -296,7 +344,26 @@ impl Slot {
     unsafe fn invoke(&self, out: *mut c_void, arguments: *const *const c_void) {
         // SAFETY: the caller's contract, restated on this function.
         let arguments = unsafe { self.arguments(arguments) };
-        if thread::current().id() == self.owner {
+        let inside = INSIDE_CALL
+            .get()
+            .filter(|inside| inside.realm == self.realm);
+        if let Some(inside) = inside {
+            if inside.lending {
+                // The frame below us handed C the address of a JS buffer's own
+                // bytes, and running JS here could detach, transfer or resize
+                // that store — after which C writes through freed memory. This
+                // is the one branch that can neither throw into C nor be made
+                // safe, so it refuses out loud (§4.6, §5.1).
+                eprintln!(
+                    "den:ffi: `{}` called back into JS while a Uint8Array's bytes were lent to C \
+                     by a synchronous call on this thread; den:ffi does not support re-entering a \
+                     realm whose buffer is borrowed, so the callback `{}` did not run and C got \
+                     the zero value.",
+                    self.describe_origin(),
+                    self.signature.describe()
+                );
+                return;
+            }
             // C called back inside a call JS made, so the runtime lock is held
             // by the frame below us — which is exactly what `OwnedCtx::with`
             // requires of its caller.
@@ -446,7 +513,7 @@ impl<'js> FfiRealm<'js> {
         registered.push(Registration {
             entry:    CallbackEntry::new(cif, Slot {
                 index,
-                owner: thread::current().id(),
+                realm: ctx.as_raw().as_ptr() as usize,
                 signature: Arc::clone(signature),
                 mailbox,
                 origin: Mutex::new(None),
@@ -527,10 +594,14 @@ impl<'js> FfiRealm<'js> {
         if signature.result == NativeType::Void {
             return Ok(None);
         }
+        // The scratch vector is the library share of a `pointer` this callback
+        // returns: C is handed the address as the trampoline returns, and den
+        // has nothing further to do with it (§5.1 item 2).
         Ok(Some(ArgumentCell::value(
             ctx,
             &signature.result,
             &returned,
+            &mut Vec::new(),
         )?))
     }
 
