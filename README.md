@@ -13,6 +13,8 @@ Made during the Easter holiday of 2023.
   `TextEncoder`/`TextDecoder`, timers, `fetch` (`Headers`/`Request`/`Response`), `crypto.subtle.digest`,
   `den:fs`, `den:networking` (TCP/UDP/Unix/TLS), `den:sqlite`, `den:process`,
   `Temporal` (`temporal_rs`)
+- Optional C FFI as `den:ffi` (`--features stdlib-ffi`, off by default; a script still needs
+  a `--allow-ffi[=PATH,...]` grant at run time)
 - WinterTC / WHATWG web platform APIs: `AbortController`, `Blob`/`File`/`FileReader`/`FormData`,
   `XMLHttpRequest`, `EventSource`, `URLPattern`, `CompressionStream`, `WebSocket`,
   `performance.now`, `navigator.userAgentData` — all native Rust classes, no JS preludes

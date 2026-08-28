@@ -1032,9 +1032,11 @@ dependencies = [
  "console-subscriber",
  "den-core",
  "futures",
+ "libc",
  "mimalloc",
  "rquickjs",
  "rustyline",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
  "vc-ltl",
@@ -1050,6 +1052,7 @@ dependencies = [
  "den-stdlib-console",
  "den-stdlib-core",
  "den-stdlib-crypto",
+ "den-stdlib-ffi",
  "den-stdlib-fs",
  "den-stdlib-networking",
  "den-stdlib-process",
@@ -1074,7 +1077,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
- "tokio-util",
  "typed-builder",
  "url",
  "wat",
@@ -1129,6 +1131,20 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "den-stdlib-ffi"
+version = "0.4.0"
+dependencies = [
+ "color-eyre",
+ "den-core",
+ "dlopen2",
+ "libc",
+ "libffi",
+ "rquickjs",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2524,6 +2540,25 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libffi"
+version = "5.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a8d526bc07aa02e6826944ec446ecd8d228bd97b1cbd21e5bc5e3407a09a585"
+dependencies = [
+ "libc",
+ "libffi-sys",
+]
+
+[[package]]
+name = "libffi-sys"
+version = "4.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54d39d034f5ea2662814789448722078d01cc9431a2a09ff15e55f0df7120bae"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "libm"
