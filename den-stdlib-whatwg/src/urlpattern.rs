@@ -1,11 +1,15 @@
 //! JS `URLPattern` wrapping the denoland `urlpattern` crate.
 
+use std::borrow::Cow;
+
 use indexmap::{IndexMap, indexmap};
 use rquickjs::{
     Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace, function::Opt,
 };
-use url::Url;
-use urlpattern::{UrlPattern as Inner, UrlPatternInit, UrlPatternMatchInput, UrlPatternOptions};
+use urlpattern::{
+    UrlPattern as Inner, UrlPatternMatchInput, UrlPatternOptions,
+    quirks::{self, StringOrInit, UrlPatternInit},
+};
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
@@ -26,17 +30,6 @@ impl URLPattern {
         }
     }
 
-    fn parse_base(ctx: &Ctx<'_>, value: Option<String>) -> Result<Option<Url>> {
-        match value {
-            None => Ok(None),
-            Some(href) => {
-                Url::parse(&href)
-                    .map(Some)
-                    .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))
-            }
-        }
-    }
-
     fn init_from_object<'js>(ctx: &Ctx<'js>, obj: &Object<'js>) -> Result<UrlPatternInit> {
         Ok(UrlPatternInit {
             protocol: Self::optional_string(ctx, obj, "protocol")?,
@@ -47,21 +40,19 @@ impl URLPattern {
             pathname: Self::optional_string(ctx, obj, "pathname")?,
             search:   Self::optional_string(ctx, obj, "search")?,
             hash:     Self::optional_string(ctx, obj, "hash")?,
-            base_url: Self::parse_base(ctx, Self::optional_string(ctx, obj, "baseURL")?)?,
+            base_url: Self::optional_string(ctx, obj, "baseURL")?,
         })
     }
 
-    fn parse_init<'js>(
-        ctx: &Ctx<'js>, input: Value<'js>, base_url: Option<String>,
-    ) -> Result<UrlPatternInit> {
-        let base = Self::parse_base(ctx, base_url)?;
+    /// A pattern or a match target is either a full URL-shaped string — which
+    /// the crate decomposes into all eight components — or an init dictionary.
+    /// A missing argument is an empty init, i.e. every component wildcards.
+    fn string_or_init<'js>(ctx: &Ctx<'js>, input: &Value<'js>) -> Result<StringOrInit<'static>> {
+        if input.is_undefined() || input.is_null() {
+            return Ok(StringOrInit::Init(UrlPatternInit::default()));
+        }
         if let Some(string) = input.as_string() {
-            let href = string.to_string()?;
-            return Ok(UrlPatternInit {
-                pathname: Some(href),
-                base_url: base,
-                ..Default::default()
-            });
+            return Ok(StringOrInit::String(Cow::Owned(string.to_string()?)));
         }
         let Some(obj) = input.as_object() else {
             return Err(Exception::throw_type(
@@ -69,29 +60,18 @@ impl URLPattern {
                 "URLPattern input must be a string or object",
             ));
         };
-        let mut init = Self::init_from_object(ctx, obj)?;
-        if init.base_url.is_none() {
-            init.base_url = base;
-        }
-        Ok(init)
+        Ok(StringOrInit::Init(Self::init_from_object(ctx, obj)?))
     }
 
-    fn match_input<'js>(ctx: &Ctx<'js>, input: Value<'js>) -> Result<UrlPatternMatchInput> {
-        if let Some(string) = input.as_string() {
-            let href = string.to_string()?;
-            let url = Url::parse(&href)
-                .map_err(|err| Exception::throw_type(ctx, &format!("invalid URL: {err}")))?;
-            return Ok(UrlPatternMatchInput::Url(url));
-        }
-        if let Some(obj) = input.as_object() {
-            return Ok(UrlPatternMatchInput::Init(Self::init_from_object(
-                ctx, obj,
-            )?));
-        }
-        Err(Exception::throw_type(
-            ctx,
-            "URLPattern input must be a string or object",
-        ))
+    /// `None` means the input could not be parsed as a URL at all, which the
+    /// spec reports as "no match" rather than as an error.
+    fn match_input<'js>(
+        ctx: &Ctx<'js>, input: Value<'js>, base_url: Option<&str>,
+    ) -> Result<Option<UrlPatternMatchInput>> {
+        let input = Self::string_or_init(ctx, &input)?;
+        quirks::process_match_input(input, base_url)
+            .map(|matched| matched.map(|(input, _)| input))
+            .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))
     }
 
     fn component_to_js<'js>(
@@ -116,21 +96,31 @@ impl URLPattern {
 impl URLPattern {
     #[qjs(constructor)]
     pub fn new<'js>(ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<String>) -> Result<Self> {
-        let init = Self::parse_init(&ctx, input, base_url.0)?;
+        let input = Self::string_or_init(&ctx, &input)?;
+        let init = quirks::process_construct_pattern_input(input, base_url.0.as_deref())
+            .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))?;
         let inner = Inner::parse(init, UrlPatternOptions::default())
             .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))?;
         Ok(Self { inner })
     }
 
-    pub fn test<'js>(&self, ctx: Ctx<'js>, input: Value<'js>) -> Result<bool> {
-        let input = Self::match_input(&ctx, input)?;
+    pub fn test<'js>(
+        &self, ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<String>,
+    ) -> Result<bool> {
+        let Some(input) = Self::match_input(&ctx, input, base_url.0.as_deref())? else {
+            return Ok(false);
+        };
         self.inner
             .test(input)
             .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))
     }
 
-    pub fn exec<'js>(&self, ctx: Ctx<'js>, input: Value<'js>) -> Result<Value<'js>> {
-        let input = Self::match_input(&ctx, input)?;
+    pub fn exec<'js>(
+        &self, ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<String>,
+    ) -> Result<Value<'js>> {
+        let Some(input) = Self::match_input(&ctx, input, base_url.0.as_deref())? else {
+            return Ok(Value::new_null(ctx));
+        };
         match self
             .inner
             .exec(input)
