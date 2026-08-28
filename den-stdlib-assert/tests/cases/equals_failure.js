@@ -1,7 +1,7 @@
-import { assertEquals } from "den:assert";
+import { assertEquals, assertSnapshot } from "den:assert";
 try {
   assertEquals(1, 2);
   throw new Error("expected a throw");
 } catch (error) {
-  assertEquals(error.message, "Values are not equal: 1 !== 2");
+  assertSnapshot(error.message, "den_assert_equals_failure");
 }

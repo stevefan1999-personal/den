@@ -1,0 +1,10 @@
+---
+source: den-stdlib-assert/src/lib.rs
+---
+assert: Assertion failed
+assertFalse: Expected false
+assertEquals: Values are not equal: 1 !== 2
+assertStrictEquals: Expected strictly equal
+assertStringIncludes: "hello" does not include "xyz"
+assertThrows: Expected function to throw
+assertRejects: Expected promise to reject

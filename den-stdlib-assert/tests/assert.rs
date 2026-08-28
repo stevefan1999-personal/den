@@ -11,7 +11,7 @@ fn case(name: &str) -> PathBuf {
 async fn run(name: &str) -> Result<(), String> {
     Engine::new()
         .await
-        .run_file::<()>(case(name))
+        .run_file(case(name))
         .await
         .map_err(|error| error.to_string())
 }
@@ -32,3 +32,20 @@ async fn assert_equals_failure_message_snapshots() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn evaluate_def_exports_the_jsr_names() { run("export_names.js").await.expect("exports"); }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn equality_edge_cases() { run("equality_edges.js").await.expect("equality edges"); }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn assertion_failure_messages_snapshot() {
+    run("failure_messages.js").await.expect("failure messages");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn javascript_values_snapshot_through_insta() { run("snapshot.js").await.expect("snapshot"); }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fail_unimplemented_unreachable_and_is_error() { run("fail.js").await.expect("fail"); }
+
+#[test]
+fn insta_is_reexported_for_rust_consumers() { drop(den_stdlib_assert::insta::Settings::new()); }
