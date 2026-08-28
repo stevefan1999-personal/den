@@ -105,7 +105,7 @@ impl BoundFn {
             .params
             .iter()
             .zip(arguments)
-            .map(|(declared, value)| ArgumentCell::marshal(ctx, *declared, value))
+            .map(|(declared, value)| ArgumentCell::marshal(ctx, declared, value))
             .collect::<Result<Vec<_>>>()?;
         let cells: Vec<Arg<'_>> = cells.iter().map(ArgumentCell::as_arg).collect();
 
@@ -205,15 +205,12 @@ fn bind<'js>(
             // SAFETY: `address` is the address of the exported object, and the
             // schema declares its type. That the declaration is true is the
             // caller's contract (§5.1) — a `.so` carries no type information.
-            unsafe { marshal::read(ctx, *declared, address.cast::<u8>(), library) }
+            unsafe { marshal::read(ctx, *declared, address.cast::<u8>(), Some(library)) }
         }
         SymbolKind::Function { params, result } => {
             let call = Rc::new(BoundFn {
                 address: CodePtr::from_ptr(address),
-                cif:     Cif::new(
-                    params.iter().map(|declared| declared.ffi_type()),
-                    result.ffi_type(),
-                ),
+                cif:     Cif::new(params.iter().map(ParamType::ffi_type), result.ffi_type()),
                 params:  params.clone(),
                 result:  *result,
                 library: Rc::clone(library),
@@ -229,7 +226,9 @@ fn bind<'js>(
     }
 }
 
-fn dispose_key<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
+/// `Symbol.dispose`, which both handles this crate hands out use as their one
+/// reserved key.
+pub fn dispose_key<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     ctx.globals()
         .get::<_, Object<'js>>("Symbol")?
         .get("dispose")

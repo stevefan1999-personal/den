@@ -14,6 +14,8 @@ keywords.workspace = true
 test = false
 
 [dependencies]
+den-stdlib-core.workspace = true
+den-util.workspace = true
 dlopen2.workspace = true
 libffi.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }

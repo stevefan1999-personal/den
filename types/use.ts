@@ -2,10 +2,11 @@
 // that the inference works and that every `@ts-expect-error` below is
 // consumed — an unused one is itself an error (TS2578).
 //
-// Nothing here runs; the runtime implements the scalar corner of this surface
-// and refuses the rest at `open()`.
+// Nothing here runs; the runtime implements the scalar corner of this surface,
+// buffers and same-thread callbacks, and refuses the rest at `open()`.
 import {
   type Callback,
+  callback,
   FfiGrant,
   grant,
   open,
@@ -53,9 +54,10 @@ if (address !== null) {
   void [bits, same, bytes, text];
 }
 
-declare const callback: Callback<readonly ["i32"], "i32">;
-const applied: number = lib.apply(callback, 21);
-void applied;
+using doubler = callback({ params: ["i32"], result: "i32" }, (n) => n * 2);
+const applied: number = lib.apply(doubler, 21);
+const code: Pointer = doubler.pointer;
+void [applied, code];
 
 // @ts-expect-error — wrong arity.
 lib.add(1);
@@ -75,6 +77,10 @@ lib.maybe();
 lib.apply((n: number) => n * 2, 1);
 // @ts-expect-error — the signature brand: this handle is the wrong shape.
 lib.apply(wrongSignature, 1);
+// @ts-expect-error — the implementation is typed against its own definition.
+callback({ params: ["i32"], result: "i32" }, (text: string) => text.length);
+// @ts-expect-error — a callback is handed addresses, so it cannot take a buffer.
+callback({ params: ["buffer"], result: "void" }, () => {});
 // @ts-expect-error — `buffer` is an argument type, not a static's type.
 open("./libprobe.so", { v: { type: "buffer" } }, capability);
 // @ts-expect-error — `buffer` is not a result type.

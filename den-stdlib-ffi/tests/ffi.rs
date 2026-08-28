@@ -1,6 +1,7 @@
-//! `docs/research/19-den-ffi.md` §6, phases 1 to 3: the scalar vocabulary and
-//! borrowed buffers against a real `.so`, built here with the platform's C
-//! compiler so that the ABI under test is the one this machine actually uses.
+//! `docs/research/19-den-ffi.md` §6, phases 1 to 4: the scalar vocabulary,
+//! borrowed buffers and same-thread callbacks against a real `.so`, built here
+//! with the platform's C compiler so that the ABI under test is the one this
+//! machine actually uses.
 
 use std::{
     env,
@@ -44,7 +45,7 @@ impl Probe {
         let library = directory.path().join("libprobe.so");
         let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
         let built = Command::new(&compiler)
-            .args(["-shared", "-fPIC", "-o"])
+            .args(["-shared", "-fPIC", "-pthread", "-o"])
             .arg(&library)
             .arg(fixtures.join("c/probe.c"))
             .output();
@@ -167,6 +168,27 @@ async fn a_buffer_is_borrowed_at_its_byte_offset_or_refused() -> eyre::Result<()
         return Ok(());
     };
     run("buffers.js", Some(scoped(probe))).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn c_calls_back_into_js_on_the_realm_thread() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("callbacks.js", Some(scoped(probe))).await
+}
+
+/// §0 fact 11: a realm dropped with a callback still registered must shut down
+/// normally. The failure mode is not an assertion in this test but QuickJS's
+/// `JS_FreeRuntime: Assertion 'list_empty(&rt->gc_obj_list)' failed`, which
+/// aborts the whole test process — so reaching the end of this function *is*
+/// the assertion.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_realm_can_be_dropped_with_a_live_callback() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("leak.js", Some(scoped(probe))).await
 }
 
 /// §0 fact 3, asserted rather than trusted: `call_return_into` writes exactly

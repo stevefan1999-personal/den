@@ -4,7 +4,9 @@
  * compiler's ABI. */
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <stdint.h>
+#include <pthread.h>
 
 int add(int left, int right) { return left + right; }
 
@@ -54,4 +56,44 @@ void fill_bytes(uint8_t *out, size_t length) {
   for (size_t index = 0; index < length; index++) {
     out[index] = (uint8_t)(index + 1);
   }
+}
+
+/* Callbacks. `apply` is the same-thread case: den's trampoline runs inside the
+ * very call JS made, so the realm's runtime lock is held throughout. */
+int32_t apply(int32_t (*function)(int32_t), int32_t value) { return function(value); }
+
+double apply_f64(double (*function)(double), double value) { return function(value); }
+
+void notify(void (*function)(int32_t), int32_t value) { function(value); }
+
+/* qsort-shaped: C owns the loop and calls back once per comparison, handing
+ * the callback two addresses rather than values. */
+void sort_i32(int32_t *values, size_t count,
+              int (*compare)(const void *, const void *)) {
+  qsort(values, count, sizeof(int32_t), compare);
+}
+
+/* The foreign-thread seam: C fires the callback from a thread it created and
+ * joins. den has no way into the realm from there, so phase 4 answers the zero
+ * value and says so on stderr; phase 5 posts to a mailbox instead. */
+struct fired {
+  int32_t (*function)(int32_t);
+  int32_t value;
+  int32_t result;
+};
+
+static void *fire(void *raw) {
+  struct fired *call = raw;
+  call->result = call->function(call->value);
+  return NULL;
+}
+
+int32_t call_on_thread(int32_t (*function)(int32_t), int32_t value) {
+  struct fired call = {function, value, -1};
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, fire, &call) != 0) {
+    return -1;
+  }
+  pthread_join(thread, NULL);
+  return call.result;
 }
