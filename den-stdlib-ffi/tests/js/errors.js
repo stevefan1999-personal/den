@@ -33,7 +33,10 @@ assertEquals(renamed.symbol, "add");
 // unimplemented key and a malformed entry all throw, naming the symbol.
 for (const broken of [
   { params: [{ struct: { x: "i32" } }], result: "i32" },
-  { params: [{ callback: { params: [], result: "void" } }], result: "i32" },
+  // A callback parameter is legal; a callback that takes a `buffer` is not —
+  // C hands the trampoline an address with no length.
+  { params: [{ callback: { params: ["buffer"], result: "void" } }], result: "i32" },
+  { params: [{ callback: { params: [], result: "void" }, oops: 1 }], result: "i32" },
   { params: ["i32", "i32"], result: "buffer" },
   { params: ["void"], result: "void" },
   { params: ["i32", "i32"], result: "i32", nonblocking: true },

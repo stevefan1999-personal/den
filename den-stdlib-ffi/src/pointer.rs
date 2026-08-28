@@ -28,22 +28,26 @@ const DEFAULT_CSTRING_LIMIT: usize = 4096;
 pub struct Pointer {
     #[qjs(skip_trace)]
     address: usize,
+    /// The library whose `dlclose` invalidates this address, when den knows
+    /// which one that is. A pointer C passed *in* — a callback's argument —
+    /// has none: den is told an address and nothing about where it came from,
+    /// so there is nothing to check it against and it is never `Closed`.
     #[qjs(skip_trace)]
-    library: Rc<LoadedLibrary>,
+    library: Option<Rc<LoadedLibrary>>,
 }
 
 impl Pointer {
     /// A C address as a JS value: the null pointer is JS `null`, so a script
     /// never holds a `Pointer` it must not dereference.
     pub fn to_js<'js>(
-        ctx: &Ctx<'js>, address: usize, library: &Rc<LoadedLibrary>,
+        ctx: &Ctx<'js>, address: usize, library: Option<&Rc<LoadedLibrary>>,
     ) -> Result<Value<'js>> {
         if address == 0 {
             return Ok(Value::new_null(ctx.clone()));
         }
         Ok(Class::instance(ctx.clone(), Self {
             address,
-            library: Rc::clone(library),
+            library: library.map(Rc::clone),
         })?
         .into_value())
     }
@@ -74,14 +78,15 @@ impl Pointer {
 
     /// The address, if the library that produced it is still mapped.
     fn live(&self, ctx: &Ctx<'_>) -> Result<usize> {
-        if self.library.is_live() {
-            Ok(self.address)
-        } else {
-            Err(ErrorKind::Closed.throw_at(
-                ctx,
-                "the library this pointer came from is closed",
-                self.library.path(),
-            ))
+        match &self.library {
+            Some(library) if !library.is_live() => {
+                Err(ErrorKind::Closed.throw_at(
+                    ctx,
+                    "the library this pointer came from is closed",
+                    library.path(),
+                ))
+            }
+            _known_live_or_unowned => Ok(self.address),
         }
     }
 }

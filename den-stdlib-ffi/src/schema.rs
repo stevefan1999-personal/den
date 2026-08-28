@@ -6,6 +6,8 @@
 //! callbacks, `nonblocking` — throws `FfiError { kind: "Schema" }` naming the
 //! offender, rather than widening or ignoring it.
 
+use std::sync::Arc;
+
 use libffi::middle::Type;
 use rquickjs::{Array, Ctx, Object, Result, Value};
 
@@ -48,8 +50,8 @@ impl NativeType {
                 Err(ErrorKind::Schema.throw_for(
                     ctx,
                     format_args!(
-                        "symbol `{symbol}`: a type must be a type name — struct and callback \
-                         types are not supported yet"
+                        "symbol `{symbol}`: a type must be a type name — struct types are not \
+                         supported yet, and `{{ callback }}` is a parameter type only"
                     ),
                     symbol,
                 ))
@@ -96,6 +98,24 @@ impl NativeType {
                     symbol,
                 ))
             }
+        }
+    }
+
+    /// The declared type of one parameter. `void` is a result type only: a C
+    /// function takes no `void` argument, and accepting one would make the CIF
+    /// disagree with the argument array.
+    fn parse_param(ctx: &Ctx<'_>, symbol: &str, name: &str) -> Result<Self> {
+        match Self::named(ctx, symbol, name)? {
+            Self::Void => {
+                Err(ErrorKind::Schema.throw_for(
+                    ctx,
+                    format_args!(
+                        "symbol `{symbol}`: `void` is a result type, not a parameter type"
+                    ),
+                    symbol,
+                ))
+            }
+            scalar => Ok(scalar),
         }
     }
 
@@ -148,42 +168,147 @@ impl NativeType {
 /// pointer C hands back carries no length to build a `Uint8Array` from (§4.4).
 /// Keeping it out of [`NativeType`] is what makes "not a result, not a static"
 /// a property of the types rather than a check someone can forget.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParamType {
     Scalar(NativeType),
     /// A `Uint8Array` whose bytes C borrows for exactly one call (§4.6).
     Buffer,
+    /// `{ callback: { params, result } }` — a function pointer into JS. The
+    /// signature is kept so that the handle passed at the call site can be
+    /// checked against the slot it is passed to: a mismatch is a
+    /// wrong-signature call into libffi, which is undefined behaviour with no
+    /// diagnostic at any layer (§0 fact 1). The `.d.ts` brand makes the same
+    /// check at compile time; this is the one that holds for plain JS.
+    Callback(Arc<FnSig>),
 }
 
 impl ParamType {
-    /// `void` is a result type only: a C function takes no `void` argument, and
-    /// accepting one would make the CIF disagree with the argument array.
-    pub fn parse(ctx: &Ctx<'_>, symbol: &str, declared: &Value<'_>) -> Result<Self> {
+    pub fn parse<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>) -> Result<Self> {
+        // A `{ callback }` wrapper is the only object a parameter may be, and
+        // it is what tells a function-pointer slot apart from a plain
+        // `pointer` — the slot's signature is what the handle is checked
+        // against at the call site.
+        if let Some(object) = declared.as_object()
+            && let Some(signature) = object.get::<_, Option<Value<'js>>>("callback")?
+        {
+            refuse_unknown_keys(ctx, symbol, object, &["callback"])?;
+            return Ok(Self::Callback(Arc::new(FnSig::parse(
+                ctx, symbol, &signature,
+            )?)));
+        }
         let name = NativeType::type_name(ctx, symbol, declared)?;
         if name == "buffer" {
             return Ok(Self::Buffer);
         }
-        match NativeType::named(ctx, symbol, &name)? {
-            NativeType::Void => {
-                Err(ErrorKind::Schema.throw_for(
-                    ctx,
-                    format_args!(
-                        "symbol `{symbol}`: `void` is a result type, not a parameter type"
-                    ),
-                    symbol,
-                ))
-            }
-            scalar => Ok(Self::Scalar(scalar)),
-        }
+        Ok(Self::Scalar(NativeType::parse_param(ctx, symbol, &name)?))
     }
 
-    /// A buffer reaches C as the address of its first byte.
-    pub fn ffi_type(self) -> Type {
+    /// Both a buffer and a callback reach C as an address.
+    pub fn ffi_type(&self) -> Type {
         match self {
             Self::Scalar(scalar) => scalar.ffi_type(),
-            Self::Buffer => Type::pointer(),
+            Self::Buffer | Self::Callback(_) => Type::pointer(),
         }
     }
+}
+
+/// The signature of a JS function C may call.
+///
+/// Plain data, so it is `Send + Sync`: the trampoline reads it from whatever
+/// thread C calls on, and phase 5 carries it to a `spawn_blocking` worker.
+#[derive(Debug, Eq, PartialEq)]
+pub struct FnSig {
+    pub params: Vec<NativeType>,
+    pub result: NativeType,
+}
+
+impl FnSig {
+    const KEYS: [&'static str; 2] = ["params", "result"];
+
+    pub fn parse<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>) -> Result<Self> {
+        let declared = declared.as_object().ok_or_else(|| {
+            ErrorKind::Schema.throw_for(
+                ctx,
+                format_args!("symbol `{symbol}`: a callback needs a `{{ params, result }}` object"),
+                symbol,
+            )
+        })?;
+        refuse_unknown_keys(ctx, symbol, declared, &Self::KEYS)?;
+
+        let params = declared
+            .get::<_, Option<Array<'js>>>("params")?
+            .ok_or_else(|| {
+                ErrorKind::Schema.throw_for(
+                    ctx,
+                    format_args!("symbol `{symbol}`: a callback's `params` must be an array"),
+                    symbol,
+                )
+            })?
+            .iter::<Value<'js>>()
+            .map(|declared| {
+                let name = NativeType::type_name(ctx, symbol, &declared?)?;
+                // A buffer is a length den is told, and C tells it nothing:
+                // the trampoline is handed a bare address, so there is no
+                // length to build a `Uint8Array` from.
+                if name == "buffer" {
+                    return Err(ErrorKind::Schema.throw_for(
+                        ctx,
+                        format_args!(
+                            "symbol `{symbol}`: a callback parameter cannot be `buffer` — C hands \
+                             den an address with no length; take a `pointer` and use `ptr.view`"
+                        ),
+                        symbol,
+                    ));
+                }
+                NativeType::parse_param(ctx, symbol, &name)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let result = declared
+            .get::<_, Option<Value<'js>>>("result")?
+            .ok_or_else(|| {
+                ErrorKind::Schema.throw_for(
+                    ctx,
+                    format_args!("symbol `{symbol}`: a callback's `result` must be a type name"),
+                    symbol,
+                )
+            })
+            .and_then(|declared| NativeType::parse(ctx, symbol, &declared))?;
+
+        Ok(Self { params, result })
+    }
+
+    /// How this signature reads in an error message: `(i32, i32) => i32`.
+    pub fn describe(&self) -> String {
+        let params: Vec<&str> = self.params.iter().map(|param| param.name()).collect();
+        format!("({}) => {}", params.join(", "), self.result.name())
+    }
+}
+
+/// An ignored key is how Bun turns a `nonblocking` request into a synchronous
+/// call with no diagnostic; den refuses instead. `nonblocking` is one of those
+/// keys today, which is why nothing here has to say that a `buffer` parameter
+/// may not be nonblocking — when phase 5 makes the key legal, that pairing has
+/// to become its own refusal (§4.6), as does passing a `{ callback }` to a
+/// symbol that is not `nonblocking` (§4.7).
+fn refuse_unknown_keys(
+    ctx: &Ctx<'_>, key: &str, declared: &Object<'_>, allowed: &[&str],
+) -> Result<()> {
+    for name in declared.keys::<String>() {
+        let name = name?;
+        if !allowed.contains(&name.as_str()) {
+            return Err(ErrorKind::Schema.throw_for(
+                ctx,
+                format_args!(
+                    "symbol `{key}`: key `{name}` is not supported yet — den:ffi currently reads \
+                     {}",
+                    allowed.join(", ")
+                ),
+                key,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What a schema entry declares the symbol to be.
@@ -229,7 +354,7 @@ impl SymbolSpec {
         })?;
 
         let static_type = declared.get::<_, Option<Value<'js>>>("type")?;
-        Self::refuse_unknown_keys(
+        refuse_unknown_keys(
             ctx,
             key,
             declared,
@@ -296,30 +421,5 @@ impl SymbolSpec {
             .and_then(|declared| NativeType::parse(ctx, key, &declared))?;
 
         Ok(SymbolKind::Function { params, result })
-    }
-
-    /// An ignored key is how Bun turns a `nonblocking` request into a
-    /// synchronous call with no diagnostic; den refuses instead. `nonblocking`
-    /// is one of those keys today, which is why nothing here has to say that a
-    /// `buffer` parameter may not be nonblocking — when phase 5 makes the key
-    /// legal, that pairing has to become its own refusal (§4.6).
-    fn refuse_unknown_keys(
-        ctx: &Ctx<'_>, key: &str, declared: &Object<'_>, allowed: &[&str],
-    ) -> Result<()> {
-        for name in declared.keys::<String>() {
-            let name = name?;
-            if !allowed.contains(&name.as_str()) {
-                return Err(ErrorKind::Schema.throw_for(
-                    ctx,
-                    format_args!(
-                        "symbol `{key}`: key `{name}` is not supported yet — den:ffi currently \
-                         reads {}",
-                        allowed.join(", ")
-                    ),
-                    key,
-                ));
-            }
-        }
-        Ok(())
     }
 }

@@ -8,10 +8,14 @@
 
 use std::{ffi::c_void, rc::Rc, str::FromStr};
 
-use libffi::middle::{Arg, Cif, CodePtr, Ret};
+use libffi::{
+    low::{ffi_arg, ffi_sarg},
+    middle::{Arg, Cif, CodePtr, Ret},
+};
 use rquickjs::{BigInt, Coerced, Ctx, FromJs as _, Object, Result, TypedArray, Value};
 
 use crate::{
+    callback::Callback,
     error::ErrorKind,
     library::LoadedLibrary,
     pointer::Pointer,
@@ -43,10 +47,21 @@ pub enum ArgumentCell {
 }
 
 impl ArgumentCell {
-    pub fn marshal<'js>(ctx: &Ctx<'js>, declared: ParamType, value: &Value<'js>) -> Result<Self> {
+    pub fn marshal<'js>(ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>) -> Result<Self> {
         match declared {
-            ParamType::Scalar(scalar) => Self::scalar(ctx, scalar, value),
+            ParamType::Scalar(scalar) => Self::scalar(ctx, *scalar, value),
             ParamType::Buffer => Ok(Self::Pointer(Self::buffer(ctx, value)?)),
+            // The trampoline's code pointer, checked live and checked against
+            // the signature the slot declares. Phase 5 refuses this outright
+            // unless the symbol is `nonblocking: true` (§4.7): C is free to
+            // hand the pointer to a thread of its own, and a callback that
+            // arrives on one has no way back into the realm until the mailbox
+            // lands.
+            ParamType::Callback(signature) => {
+                Ok(Self::Pointer(Callback::code_pointer(
+                    ctx, signature, value,
+                )?))
+            }
         }
     }
 
@@ -127,7 +142,7 @@ impl ArgumentCell {
         Ok(())
     }
 
-    fn scalar<'js>(ctx: &Ctx<'js>, declared: NativeType, value: &Value<'js>) -> Result<Self> {
+    pub fn scalar<'js>(ctx: &Ctx<'js>, declared: NativeType, value: &Value<'js>) -> Result<Self> {
         let name = declared.name();
         Ok(match declared {
             NativeType::I8 => Self::I8(integer(ctx, name, value)?),
@@ -252,6 +267,7 @@ pub unsafe fn call<'js>(
     ctx: &Ctx<'js>, declared: NativeType, cif: &Cif, address: CodePtr, args: &[Arg<'_>],
     library: &Rc<LoadedLibrary>,
 ) -> Result<Value<'js>> {
+    let library = Some(library);
     macro_rules! into_cell {
         ($ty:ty, $zero:expr) => {{
             let mut cell: $ty = $zero;
@@ -285,8 +301,10 @@ pub unsafe fn call<'js>(
 
 /// Read one C value of `declared` out of `address` and build its JS value.
 ///
-/// Both a returned cell and a static symbol land here, so the two paths cannot
-/// drift apart.
+/// A returned cell, a static symbol and a callback's incoming argument all
+/// land here, so the paths cannot drift apart. `library` is the provenance a
+/// resulting `Pointer` carries; a callback argument has none, because den is
+/// not told which library the address it is handed came from.
 ///
 /// # Safety
 ///
@@ -294,7 +312,7 @@ pub unsafe fn call<'js>(
 /// `declared` names. For a static symbol that the schema is describing
 /// correctly is the caller's contract (§5.1).
 pub unsafe fn read<'js>(
-    ctx: &Ctx<'js>, declared: NativeType, address: *const u8, library: &Rc<LoadedLibrary>,
+    ctx: &Ctx<'js>, declared: NativeType, address: *const u8, library: Option<&Rc<LoadedLibrary>>,
 ) -> Result<Value<'js>> {
     macro_rules! cell {
         ($ty:ty) => {
@@ -329,4 +347,78 @@ pub unsafe fn read<'js>(
         }
         NativeType::Void => Ok(Value::new_undefined(ctx.clone())),
     }
+}
+
+/// Write the JS side's answer into a closure's return buffer.
+///
+/// libffi(3) on closures: the buffer is at least `sizeof(ffi_arg)` wide, and
+/// an integral result narrower than that **must be widened** to `ffi_arg` —
+/// the trampoline loads the whole register. Floats and everything already
+/// register-wide are written as themselves.
+///
+/// # Safety
+///
+/// `out` must be the `result` buffer libffi handed the trampoline, and `cell`
+/// must hold the type that closure's CIF declares as its result.
+pub unsafe fn write_return(out: *mut c_void, cell: &ArgumentCell) {
+    // SAFETY: the caller's contract, restated on this function. Each arm
+    // writes at most `max(size_of::<ffi_arg>(), size of the declared result)`
+    // bytes, which is the buffer libffi guarantees.
+    unsafe {
+        match cell {
+            ArgumentCell::I8(value) => widen_signed(out, ffi_sarg::from(*value)),
+            ArgumentCell::I16(value) => widen_signed(out, ffi_sarg::from(*value)),
+            ArgumentCell::I32(value) => widen_signed(out, ffi_sarg::from(*value)),
+            ArgumentCell::U8(value) => widen_unsigned(out, ffi_arg::from(*value)),
+            ArgumentCell::U16(value) => widen_unsigned(out, ffi_arg::from(*value)),
+            ArgumentCell::U32(value) => widen_unsigned(out, ffi_arg::from(*value)),
+            ArgumentCell::I64(value) => out.cast::<i64>().write(*value),
+            ArgumentCell::U64(value) => out.cast::<u64>().write(*value),
+            ArgumentCell::Isize(value) => out.cast::<isize>().write(*value),
+            ArgumentCell::Usize(value) => out.cast::<usize>().write(*value),
+            ArgumentCell::F32(value) => out.cast::<f32>().write(*value),
+            ArgumentCell::F64(value) => out.cast::<f64>().write(*value),
+            ArgumentCell::Pointer(value) => out.cast::<*mut c_void>().write(*value),
+        }
+    }
+}
+
+/// The zero of `declared`, which is what C is handed whenever JS could not
+/// produce an answer — a throw, a panic, a callback reached from a thread this
+/// phase cannot serve. Every one of those also writes a line to stderr: the
+/// value is a lie, and a silent lie is worse than a loud one (§4.7).
+///
+/// # Safety
+///
+/// As [`write_return`].
+pub const unsafe fn write_zero(out: *mut c_void, declared: NativeType) {
+    // SAFETY: the caller's contract, restated on this function.
+    unsafe {
+        match declared {
+            NativeType::Void => {}
+            NativeType::F32 => out.cast::<f32>().write(0.0),
+            NativeType::F64 => out.cast::<f64>().write(0.0),
+            NativeType::Pointer => out.cast::<*mut c_void>().write(std::ptr::null_mut()),
+            NativeType::I64 | NativeType::Isize => out.cast::<i64>().write(0),
+            NativeType::U64 | NativeType::Usize => out.cast::<u64>().write(0),
+            _narrower_than_a_register => widen_unsigned(out, 0),
+        }
+    }
+}
+
+/// # Safety
+///
+/// As [`write_return`].
+const unsafe fn widen_signed(out: *mut c_void, value: ffi_sarg) {
+    // SAFETY: the caller's contract. `ffi_sarg` is `ffi_arg`'s width, which is
+    // the buffer's minimum size.
+    unsafe { out.cast::<ffi_sarg>().write(value) }
+}
+
+/// # Safety
+///
+/// As [`write_return`].
+const unsafe fn widen_unsigned(out: *mut c_void, value: ffi_arg) {
+    // SAFETY: the caller's contract, as above.
+    unsafe { out.cast::<ffi_arg>().write(value) }
 }

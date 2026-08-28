@@ -8,10 +8,12 @@
 //!
 //! The scalar vocabulary is complete — every integer width, `bool`, `f32`,
 //! `f64`, `pointer` and `void`, as arguments, as results and as static
-//! symbols — and a `Uint8Array` reaches C as a borrowed `buffer` argument.
-//! Structs, callbacks and `nonblocking` are still refused by name at `open()`,
-//! with `FfiError { kind: "Schema" }`.
+//! symbols — a `Uint8Array` reaches C as a borrowed `buffer` argument, and a
+//! JS function reaches C as a `{ callback }` function pointer, callable on
+//! den's own thread. Structs and `nonblocking` are still refused by name at
+//! `open()`, with `FfiError { kind: "Schema" }`.
 
+mod callback;
 mod error;
 mod grant;
 mod library;
@@ -24,7 +26,7 @@ pub use crate::{error::FfiError, grant::FfiGrant};
 #[rquickjs::module]
 pub mod ffi {
     use rquickjs::{
-        Class, Ctx, Object, Result, Value,
+        Class, Ctx, Function, Object, Result, Value,
         function::Opt,
         module::{Declarations, Exports},
     };
@@ -45,6 +47,20 @@ pub mod ffi {
         ctx: Ctx<'js>, path: String, schema: Object<'js>, grant: Opt<Value<'js>>,
     ) -> Result<Object<'js>> {
         super::library::open(ctx, path, schema, grant.0)
+    }
+
+    /// Mint a C function pointer for `function`.
+    ///
+    /// The handle owns the trampoline: `def` is checked here, the signature it
+    /// declares is checked again against every slot the handle is passed to,
+    /// and neither check can tell whether C will call it from a thread of its
+    /// own — which is why an off-thread call currently returns the zero value
+    /// and says so on stderr.
+    #[rquickjs::function]
+    pub fn callback<'js>(
+        ctx: Ctx<'js>, def: Value<'js>, function: Function<'js>,
+    ) -> Result<Value<'js>> {
+        super::callback::create(ctx, def, function)
     }
 
     /// This realm's FFI grant, or `null` when it has none.
@@ -73,6 +89,7 @@ pub mod ffi {
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
         super::error::install(ctx)?;
+        super::callback::FfiRealm::install(ctx)?;
         exports.export("ptr", super::pointer::namespace(ctx)?)?;
         // The platform's shared-library extension, so a script can name one
         // library across three operating systems without a `switch`.

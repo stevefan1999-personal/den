@@ -16,12 +16,10 @@
  *
  * **Implemented today: the whole scalar vocabulary** — every integer width,
  * `bool`, `f32`, `f64`, `pointer` and `void` — as arguments, as results and as
- * static symbols, plus `buffer` arguments, `name`, `optional` and the `ptr`
- * namespace, all called synchronously. `struct`, `callback` and `nonblocking`
- * are part of the settled schema but throw `FfiError { kind: "Schema" }` at
- * `open()` until their phase lands. `Callback<P, R>` is declared here from the start, brand
- * and all, because adding a brand to a published interface later is a breaking
- * change.
+ * static symbols, plus `buffer` arguments, `name`, `optional`, the `ptr`
+ * namespace and same-thread `callback`s, all called synchronously. `struct`
+ * and `nonblocking` are part of the settled schema but throw
+ * `FfiError { kind: "Schema" }` at `open()` until their phase lands.
  */
 
 declare module "den:ffi" {
@@ -60,9 +58,16 @@ declare module "den:ffi" {
   /** An exported variable has the same problem a result does. */
   type StaticType = Exclude<ValueType, "buffer">;
 
+  /**
+   * A callback is handed bare addresses: a `buffer` is a length den is *told*,
+   * and C tells it nothing, so a callback parameter takes a `pointer` and
+   * `ptr.view` instead.
+   */
+  type CallbackParamType = Exclude<ValueType, "buffer">;
+
   /** The signature of a JS function C is allowed to call back into. */
   interface FnSig {
-    readonly params: readonly ValueType[];
+    readonly params: readonly CallbackParamType[];
     readonly result: ResultType;
   }
 
@@ -195,6 +200,32 @@ declare module "den:ffi" {
      *  the type, and a forgeable grant is not a capability. */
     private readonly roots: unknown;
   }
+
+  /**
+   * Mint a C function pointer for `fn`.
+   *
+   * The handle owns the trampoline, and the signature it carries is checked
+   * again — at run time, not only here — against every slot it is passed to.
+   *
+   * **The lifetime contract is yours.** A `Symbol.dispose` drops the JS
+   * function and makes every later JS-side dispatch throw `Closed`, but den
+   * keeps the trampoline mapped for the realm's life, because nothing tells it
+   * when C stopped holding the address. What den cannot survive is C calling
+   * the pointer after the realm itself is gone: that is a jump into unmapped
+   * memory, and no layer can turn it into a throw.
+   *
+   * **Same thread only, for now.** A callback C invokes from a thread it
+   * created returns the zero value of its result type and writes one line to
+   * stderr; there is no way into a QuickJS realm from a foreign thread until
+   * the mailbox lands.
+   */
+  export function callback<
+    const P extends readonly CallbackParamType[],
+    const R extends ResultType,
+  >(
+    def: { readonly params: P; readonly result: R },
+    fn: (...args: Args<P>) => Native<R>,
+  ): Callback<P, R>;
 
   /** This realm's grant, or `null` when it was given none. */
   export function grant(): FfiGrant | null;
