@@ -37,6 +37,18 @@ pub(crate) fn stream_is_locked<'js>(value: &Value<'js>) -> bool {
     object.get::<_, bool>("locked").unwrap_or(false)
 }
 
+/// A body may only be taken from a stream nothing has read yet. `releaseLock`
+/// hands the lock back but leaves the stream disturbed, so `locked` alone is
+/// not enough to decide.
+pub(crate) fn stream_is_disturbed<'js>(value: &Value<'js>) -> bool {
+    value.as_object().is_some_and(|object| {
+        Class::<ReadableStream>::from_object(object)
+            .and_then(|stream| stream.try_borrow().ok().map(|stream| stream.is_disturbed()))
+            .or_else(|| object.get("_denDisturbed").ok())
+            .unwrap_or(false)
+    })
+}
+
 pub(crate) fn is_instance_of_global<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, name: &str,
 ) -> Result<bool> {

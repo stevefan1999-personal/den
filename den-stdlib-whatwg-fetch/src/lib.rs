@@ -21,6 +21,7 @@ mod data_url;
 mod fetch_op;
 mod headers;
 mod request;
+mod upload;
 
 pub use headers::Headers;
 pub use request::Request;
@@ -501,8 +502,13 @@ impl<'js> Response<'js> {
                     "Response with null body status cannot have a body",
                 ));
             }
-            if body::is_readable_stream(&ctx, value)? && body::stream_is_locked(value) {
-                return Err(Exception::throw_type(&ctx, "ReadableStream is locked"));
+            if body::is_readable_stream(&ctx, value)?
+                && (body::stream_is_locked(value) || body::stream_is_disturbed(value))
+            {
+                return Err(Exception::throw_type(
+                    &ctx,
+                    "ReadableStream is locked or disturbed",
+                ));
             }
         }
         let (inner, body_stream) = match body {

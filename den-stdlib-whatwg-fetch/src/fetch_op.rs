@@ -102,6 +102,32 @@ pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
 
 fn network_error(ctx: &Ctx<'_>, message: &str) -> Error { Exception::throw_type(ctx, message) }
 
+/// A request body on its way to the wire.
+///
+/// `Bytes` has a source and can be replayed, which redirects and retries need.
+/// `Stream` does not: it is consumed the moment it is sent, so a second send
+/// has to be a network error rather than a silently empty body.
+pub(crate) enum Outgoing {
+    None,
+    Bytes(Vec<u8>),
+    Stream(reqwest::Body),
+    Spent,
+}
+
+impl Outgoing {
+    fn is_none(&self) -> bool { matches!(self, Self::None) }
+
+    fn is_stream(&self) -> bool { matches!(self, Self::Stream(_)) }
+
+    fn take_for_send(&mut self) -> Self {
+        match self {
+            Self::None | Self::Spent => Self::None,
+            Self::Bytes(bytes) => Self::Bytes(bytes.clone()),
+            Self::Stream(_) => std::mem::replace(self, Self::Spent),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct CacheEntry {
     status:        u16,
@@ -765,7 +791,7 @@ async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> R
 
 async fn send_http<'js>(
     ctx: &Ctx<'js>, method: reqwest::Method, url: &reqwest::Url, headers: &[(String, String)],
-    body: Option<Vec<u8>>, watch: Option<&AbortWatch>, send_cookies: bool,
+    body: Outgoing, watch: Option<&AbortWatch>, send_cookies: bool,
 ) -> Result<reqwest::Response> {
     use reqwest::{
         cookie::CookieStore as _,
@@ -797,8 +823,10 @@ async fn send_http<'js>(
         };
         builder = builder.header("host", host);
     }
-    if let Some(body) = body {
-        builder = builder.body(body);
+    match body {
+        Outgoing::Bytes(bytes) => builder = builder.body(bytes),
+        Outgoing::Stream(stream) => builder = builder.body(stream),
+        Outgoing::None | Outgoing::Spent => {}
     }
     let request = builder.send();
     let response = if let Some(signal) = watch {
@@ -970,7 +998,7 @@ async fn preflight<'js>(
         reqwest::Method::OPTIONS,
         url,
         &preflight_headers,
-        None,
+        Outgoing::None,
         watch,
         false,
     )
@@ -1130,11 +1158,21 @@ pub(crate) async fn run<'js>(
         _ => return Err(network_error(&ctx, "Scheme is not supported")),
     }
 
+    // `duplex: "half"` is only honest if the body actually leaves as it is
+    // produced, so a `ReadableStream` body is piped straight to the transport;
+    // everything else has a byte source and is collected as before.
     let body = if has_body {
         let taken = request.borrow_mut().take_body(&ctx)?;
-        Some(crate::body::value_to_bytes(&ctx, taken).await?)
+        match taken
+            .as_ref()
+            .and_then(JsValue::as_object)
+            .and_then(Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object)
+        {
+            Some(stream) => Outgoing::Stream(crate::upload::stream_request_body(&ctx, &stream)?),
+            None => Outgoing::Bytes(crate::body::value_to_bytes(&ctx, taken).await?),
+        }
     } else {
-        None
+        Outgoing::None
     };
     if let Some(watch) = &abort
         && watch.aborted.load(Ordering::SeqCst)
@@ -1164,7 +1202,7 @@ pub(crate) async fn run<'js>(
         &signal,
         0,
         false,
-        has_body,
+        false,
         false,
         false,
     )
@@ -1179,12 +1217,20 @@ pub(crate) async fn run<'js>(
 async fn http_fetch<'js>(
     ctx: &Ctx<'js>, mut url: reqwest::Url, mut method: String, mode: String, credentials: String,
     redirect: String, cache_mode: String, integrity: String, referrer: String,
-    mut headers: Vec<(String, String)>, mut body: Option<Vec<u8>>, watch: Option<&AbortWatch>,
+    mut headers: Vec<(String, String)>, mut body: Outgoing, watch: Option<&AbortWatch>,
     signal: &JsValue<'js>, hops: u8, mut redirected: bool, streamed_upload: bool,
     mut tainted_origin: bool, mut saw_cross: bool,
 ) -> Result<Response<'js>> {
     if hops > 20 {
         return Err(network_error(ctx, "Too many redirects"));
+    }
+    // The specification's "request's body's source is null" case: a stream body
+    // was already handed to the transport and there is nothing to replay.
+    if matches!(body, Outgoing::Spent) {
+        return Err(network_error(
+            ctx,
+            "a streaming request body cannot be sent twice",
+        ));
     }
     if let Some(watch) = watch {
         watch.refresh(signal);
@@ -1395,10 +1441,11 @@ async fn http_fetch<'js>(
     let http_method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))?;
     let send_body = if matches!(method.as_str(), "GET" | "HEAD") {
-        None
+        Outgoing::None
     } else {
-        body.clone()
+        body.take_for_send()
     };
+    let streamed_upload = streamed_upload || send_body.is_stream();
     let send_cookies = credentials == "include" || (credentials == "same-origin" && !cross_origin);
     let response = match send_http(
         ctx,
@@ -1504,7 +1551,7 @@ async fn http_fetch<'js>(
                     || (status == 303 && !matches!(method.as_str(), "GET" | "HEAD"))
                 {
                     method = "GET".to_string();
-                    body = None;
+                    body = Outgoing::None;
                     headers.retain(|(name, _)| {
                         !matches!(
                             name.as_str(),
