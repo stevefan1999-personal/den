@@ -1,6 +1,12 @@
 /target
 scratchpad/
 history.db
+notes.db
+notes.db-shm
+notes.db-wal
+test.db
+/history.surrealkv/
+/link_args_probe
 /.worktrees/
 .qwen/
 .serena/
