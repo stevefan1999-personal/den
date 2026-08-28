@@ -2,7 +2,6 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     rc::Rc,
     sync::{
         Arc, Mutex, OnceLock,
@@ -11,6 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use dashmap::DashMap;
 use futures::future::Either;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Error, Exception, Function, Object, Result, TypedArray,
@@ -158,9 +158,15 @@ fn cookie_jar() -> &'static reqwest::cookie::Jar {
     JAR.get_or_init(reqwest::cookie::Jar::default)
 }
 
-fn cache() -> &'static Mutex<HashMap<String, Vec<CacheEntry>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Vec<CacheEntry>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// The HTTP cache, keyed by credentials mode and URL, one entry per `Vary`
+/// variant.
+///
+/// Sharded by key: a `Ref` into an entry holds that shard's lock, so nothing
+/// here may touch the map again while one is alive — `invalidate_cache`'s
+/// whole-map `retain` least of all.
+fn cache() -> &'static DashMap<String, Vec<CacheEntry>> {
+    static CACHE: OnceLock<DashMap<String, Vec<CacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(DashMap::new)
 }
 
 fn origin_of(ctx: &Ctx<'_>) -> String {
@@ -492,10 +498,7 @@ fn cache_key(url: &str, credentials: &str) -> String { format!("{credentials}\0{
 fn lookup_cache(
     url: &str, credentials: &str, request_headers: &[(String, String)],
 ) -> Option<CacheEntry> {
-    let Ok(map) = cache().lock() else {
-        return None;
-    };
-    let entries = map.get(&cache_key(url, credentials))?;
+    let entries = cache().get(&cache_key(url, credentials))?;
     entries
         .iter()
         .rev()
@@ -517,10 +520,8 @@ fn lookup_cache(
 }
 
 fn invalidate_cache(url: &str) {
-    if let Ok(mut map) = cache().lock() {
-        let suffix = format!("\0{url}");
-        map.retain(|key, _| key != url && !key.ends_with(&suffix));
-    }
+    let suffix = format!("\0{url}");
+    cache().retain(|key, _| key != url && !key.ends_with(&suffix));
 }
 
 fn store_cache(
@@ -543,11 +544,10 @@ fn store_cache(
         body,
         stored_at: Instant::now(),
     };
-    if let Ok(mut map) = cache().lock() {
-        map.entry(cache_key(&url, credentials))
-            .or_default()
-            .push(entry);
-    }
+    cache()
+        .entry(cache_key(&url, credentials))
+        .or_default()
+        .push(entry);
 }
 
 /// A cache entry whose body is not known yet.

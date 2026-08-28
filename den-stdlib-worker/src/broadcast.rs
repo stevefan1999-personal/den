@@ -10,13 +10,13 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     sync::{
-        LazyLock, Mutex, PoisonError,
+        LazyLock,
         atomic::{AtomicU64, Ordering},
     },
 };
 
+use dashmap::DashMap;
 use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
     Class, Ctx, Function, IntoJs, JsLifetime, Object, Result, Value,
@@ -43,12 +43,12 @@ struct Subscriber {
 
 /// Every open channel in the process, keyed by name.
 ///
-/// The lock is only ever held around a map lookup and a batch of non-blocking
-/// `send`s — never across an await, and never while running JS.
-// ponytail: one global lock for all names; shard by name if a broadcast-heavy
-// workload ever shows contention.
-static SUBSCRIBERS: LazyLock<Mutex<HashMap<String, Vec<Subscriber>>>> =
-    LazyLock::new(Mutex::default);
+/// Sharded by name, so two names contend only by accident of hashing. A shard
+/// lock is only ever held around a lookup and a batch of non-blocking `send`s —
+/// never across an await, and never while running JS. It is also never held
+/// while touching the map a second time: that is a self-deadlock, not a wait,
+/// which is why [`NativeBroadcast::unregister`] is written the way it is.
+static SUBSCRIBERS: LazyLock<DashMap<String, Vec<Subscriber>>> = LazyLock::new(DashMap::new);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -74,8 +74,7 @@ impl NativeBroadcast {
     /// whose realm went away without closing them (a worker that exited mid-
     /// flight): their receiver is gone, so the send is how we find out.
     fn fan_out(&self, message: &Message) {
-        let mut subscribers = SUBSCRIBERS.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(peers) = subscribers.get_mut(&self.name) else {
+        let Some(mut peers) = SUBSCRIBERS.get_mut(&self.name) else {
             return;
         };
         peers.retain(|peer| {
@@ -90,13 +89,19 @@ impl NativeBroadcast {
     /// Leave the registry. Idempotent, and the reason a channel that is merely
     /// dropped — never `close()`d, because its worker died — does not leak a
     /// sender that keeps its name alive forever.
+    ///
+    /// Two steps rather than one because the entry's guard *is* its shard's
+    /// lock: dropping the name while still holding it would block this thread
+    /// on itself. The re-check inside `remove_if` is what makes the gap between
+    /// the two safe — a channel opened on this name in the meantime has already
+    /// refilled the list, and survives.
     fn unregister(&self) {
-        let mut subscribers = SUBSCRIBERS.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(peers) = subscribers.get_mut(&self.name) {
+        let emptied = SUBSCRIBERS.get_mut(&self.name).is_some_and(|mut peers| {
             peers.retain(|peer| peer.id != self.id);
-            if peers.is_empty() {
-                subscribers.remove(&self.name);
-            }
+            peers.is_empty()
+        });
+        if emptied {
+            SUBSCRIBERS.remove_if(&self.name, |_, peers| peers.is_empty());
         }
     }
 
@@ -129,8 +134,6 @@ impl NativeBroadcast {
         let (inbox, outbox) = mpsc::unbounded_channel();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         SUBSCRIBERS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .entry(name.clone())
             .or_default()
             .push(Subscriber { id, inbox });
@@ -637,5 +640,75 @@ mod tests {
 
         fixture.settle().await;
         assert_eq!(fixture.text("log.join()").await, "from another thread");
+    }
+}
+
+/// The registry's own concurrency, below the JS surface: these reach
+/// [`SUBSCRIBERS`] directly, which no test outside this module can.
+#[cfg(test)]
+mod registry_tests {
+    use std::{
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use super::{NativeBroadcast, SUBSCRIBERS};
+
+    /// Long enough that a slow machine finishes the storm, short enough that a
+    /// deadlock is a failing test rather than a hung CI job.
+    const WATCHDOG: Duration = Duration::from_secs(30);
+    const CHURN: usize = 20_000;
+    const THREADS: usize = 3;
+
+    /// Open/close churn on one shared name, from several threads at once.
+    ///
+    /// Two regressions in one, both of which the obvious `get_mut` + `remove`
+    /// spelling of [`NativeBroadcast::unregister`] would hit:
+    ///
+    /// * the removal must not run under the entry's own guard — that is the
+    ///   same shard lock twice on one thread, so a *single* iteration hangs;
+    /// * the removal must re-check emptiness, or a channel that another thread
+    ///   opened in the gap is dropped from the registry while still live. Each
+    ///   iteration asserts its own registration between construction and close,
+    ///   so a stale removal by a peer thread fails the test instead of silently
+    ///   losing that channel's messages.
+    ///
+    /// The watchdog is a `recv_timeout` on this thread rather than a join: a
+    /// deadlocked worker never comes back, and the point is to still report.
+    #[test]
+    fn concurrent_open_and_close_of_one_name_neither_deadlocks_nor_drops_a_live_channel() {
+        const NAME: &str = "registry_tests::churn";
+        let (finished, outcome) = mpsc::channel();
+        for _ in 0..THREADS {
+            let finished = finished.clone();
+            thread::spawn(move || {
+                let verdict = (0..CHURN).try_for_each(|_| {
+                    let channel = NativeBroadcast::new(NAME.to_owned());
+                    let registered = SUBSCRIBERS
+                        .get(NAME)
+                        .is_some_and(|peers| peers.iter().any(|peer| peer.id == channel.id));
+                    channel.close();
+                    registered
+                        .then_some(())
+                        .ok_or("a live channel was dropped from the registry by a peer's close()")
+                });
+                let _ = finished.send(verdict);
+            });
+        }
+        drop(finished);
+
+        let deadline = Instant::now() + WATCHDOG;
+        for _ in 0..THREADS {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match outcome.recv_timeout(remaining) {
+                Ok(verdict) => verdict.unwrap_or_else(|reason| panic!("{reason}")),
+                Err(_) => panic!("the registry deadlocked: a churn thread never finished"),
+            }
+        }
+        assert!(
+            SUBSCRIBERS.get(NAME).is_none(),
+            "the last close() must drop the name, or the registry leaks one entry per name"
+        );
     }
 }
