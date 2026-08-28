@@ -2,11 +2,12 @@
 //!
 //! Two rules carry most of the weight here. 64-bit integers cross through
 //! their **decimal string**, never `BigInt::to_i64` (doc 09 fact 12). And a
-//! return cell is a Rust local of exactly the declared type, because
+//! result lands in a [`Cell`] rather than in a typed local, because
 //! `call_return_into` corrects sub-register returns itself and writes exactly
-//! `type.size()` bytes (§0 fact 3).
+//! `type.size()` bytes (§0 fact 3) into a buffer libffi requires to be at
+//! least `ffi_arg`-wide.
 
-use std::{ffi::c_void, rc::Rc, str::FromStr};
+use std::{ffi::c_void, rc::Rc, str::FromStr, sync::Arc};
 
 use libffi::{
     low::{ffi_arg, ffi_sarg},
@@ -19,7 +20,7 @@ use crate::{
     error::ErrorKind,
     library::LoadedLibrary,
     pointer::Pointer,
-    schema::{NativeType, ParamType},
+    schema::{CallMode, NativeType, ParamType},
 };
 
 /// The largest integer a JS `number` holds exactly. Past it the value was
@@ -27,9 +28,60 @@ use crate::{
 /// C a wrong answer it cannot detect.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
+/// The bytes one C value occupies while it is neither a JS value nor an
+/// [`ArgumentCell`]: a result libffi has written, or an argument a trampoline
+/// was handed on a thread that may not touch JS.
+///
+/// Eight bytes, eight-aligned. That is at least libffi's `ffi_arg`, which is
+/// the minimum size libffi documents for a return buffer, and at least every
+/// scalar den marshals — `call_return_into` then writes exactly the declared
+/// type's size into it (§0 fact 3).
+#[derive(Clone, Copy, Default)]
+#[repr(C, align(8))]
+pub struct Cell([u8; CELL_BYTES]);
+
+const CELL_BYTES: usize = size_of::<u64>();
+const _: () = assert!(
+    size_of::<ffi_arg>() <= CELL_BYTES && size_of::<*mut c_void>() <= CELL_BYTES,
+    "a C value den marshals does not fit its cell"
+);
+
+impl Cell {
+    /// Copy one C value out of the buffer libffi is pointing at.
+    ///
+    /// # Safety
+    ///
+    /// `address` must point at an initialised, readable C value of the type
+    /// `declared` names.
+    pub unsafe fn read_from(declared: NativeType, address: *const u8) -> Self {
+        let mut cell = Self::default();
+        // SAFETY: the caller's contract, and `declared.size()` — which is that
+        // value's width — never exceeds this cell.
+        unsafe { std::ptr::copy_nonoverlapping(address, cell.0.as_mut_ptr(), declared.size()) };
+        cell
+    }
+
+    pub const fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
+}
+
+/// Where an argument is going: what makes a `Callback` legal, and what a
+/// foreign-thread callback names when it gives up waiting for the realm.
+#[derive(Clone, Copy)]
+pub struct CallSite<'a> {
+    pub mode:   CallMode,
+    /// `/path/to/lib.so::symbol`, recorded on a callback as the last place C
+    /// was handed its address.
+    pub origin: &'a Arc<str>,
+}
+
 /// One argument, owned for exactly the duration of one call: `Arg::new` takes
 /// the cell's address, and libffi may rewrite the argument array in place, so
 /// cells are built fresh per call and never cached (§4.3).
+///
+/// Plain data, and therefore `Send`: this is what a `nonblocking` call carries
+/// to its worker thread and what the realm sends back to a foreign-thread
+/// callback. An address rides as a `usize` for exactly that reason — see
+/// [`ArgumentCell::as_arg`].
 pub enum ArgumentCell {
     I8(i8),
     U8(u8),
@@ -43,23 +95,42 @@ pub enum ArgumentCell {
     Usize(usize),
     F32(f32),
     F64(f64),
-    Pointer(*mut c_void),
+    /// An address, already exposed for the C side to reconstitute. A raw
+    /// pointer here would make the whole cell `!Send` for no gain: libffi
+    /// copies the bytes and Rust's provenance cannot follow them into C.
+    Pointer(usize),
 }
 
 impl ArgumentCell {
-    pub fn marshal<'js>(ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>) -> Result<Self> {
+    pub fn marshal<'js>(
+        ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>, site: CallSite<'_>,
+    ) -> Result<Self> {
         match declared {
             ParamType::Scalar(scalar) => Self::scalar(ctx, *scalar, value),
             ParamType::Buffer => Ok(Self::Pointer(Self::buffer(ctx, value)?)),
-            // The trampoline's code pointer, checked live and checked against
-            // the signature the slot declares. Phase 5 refuses this outright
-            // unless the symbol is `nonblocking: true` (§4.7): C is free to
-            // hand the pointer to a thread of its own, and a callback that
-            // arrives on one has no way back into the realm until the mailbox
-            // lands.
+            // §4.7, and the whole of fact 6: a C function handed a callback is
+            // free to spawn a thread, call it and join. On the realm thread
+            // that is an unbreakable deadlock — the realm is inside C, so it
+            // can never service the callback — so a `Callback` may only be
+            // handed to a symbol that runs off the realm thread. Deterministic,
+            // checked here, and satisfied by one word in the schema.
+            ParamType::Callback(_) if site.mode == CallMode::Blocking => {
+                Err(ErrorKind::BadArgument.throw(
+                    ctx,
+                    format_args!(
+                        "`{}` must be declared `nonblocking: true` to take a callback — C may \
+                         call it from a thread of its own, and this thread is the only one that \
+                         may run JS",
+                        site.origin
+                    ),
+                ))
+            }
             ParamType::Callback(signature) => {
                 Ok(Self::Pointer(Callback::code_pointer(
-                    ctx, signature, value,
+                    ctx,
+                    signature,
+                    value,
+                    site.origin,
                 )?))
             }
         }
@@ -77,7 +148,7 @@ impl ArgumentCell {
     /// The address is never stored: the `Value` this reads lives in the
     /// caller's argument list for the whole of `BoundFn::call`, and the
     /// cell dies with the call.
-    fn buffer<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<*mut c_void> {
+    fn buffer<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<usize> {
         let view = value
             .as_object()
             .cloned()
@@ -97,9 +168,11 @@ impl ArgumentCell {
 
     /// The address of the view's first byte, or the typed refusal for a
     /// detached buffer.
-    fn address_of<'js>(ctx: &Ctx<'js>, view: &TypedArray<'js, u8>) -> Result<*mut c_void> {
+    fn address_of<'js>(ctx: &Ctx<'js>, view: &TypedArray<'js, u8>) -> Result<usize> {
         view.as_raw()
-            .map(|raw| raw.ptr.as_ptr().cast::<c_void>())
+            // Exposed rather than merely addressed: this is handed to C, which
+            // is exactly what `expose_provenance` documents.
+            .map(|raw| raw.ptr.as_ptr().expose_provenance())
             .ok_or_else(|| {
                 ErrorKind::BadArgument.throw(ctx, "the buffer behind this Uint8Array is detached")
             })
@@ -173,6 +246,11 @@ impl ArgumentCell {
         })
     }
 
+    /// `Arg::new` passes the *address of* the cell, and libffi reads the
+    /// declared width out of it. A `usize` and a `*mut c_void` have the same
+    /// size and layout (asserted at [`CELL_BYTES`]), so a pointer argument is
+    /// the address of the `usize` holding it, exactly as it would be the
+    /// address of a pointer local.
     pub fn as_arg(&self) -> Arg<'_> {
         match self {
             Self::I8(value) => Arg::new(value),
@@ -184,10 +262,10 @@ impl ArgumentCell {
             Self::I64(value) => Arg::new(value),
             Self::U64(value) => Arg::new(value),
             Self::Isize(value) => Arg::new(value),
-            Self::Usize(value) => Arg::new(value),
+            // A pointer *is* a `usize` here, so these are one arm.
+            Self::Usize(value) | Self::Pointer(value) => Arg::new(value),
             Self::F32(value) => Arg::new(value),
             Self::F64(value) => Arg::new(value),
-            Self::Pointer(value) => Arg::new(value),
         }
     }
 }
@@ -253,50 +331,36 @@ fn narrowing(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f32> {
     Ok(float(ctx, declared, value)? as f32)
 }
 
-/// Call `address` and build the JS value for its result.
+/// Call `address` and hand back the raw bytes of its result.
 ///
-/// The return cell is a Rust local of exactly the declared type — the whole
-/// reason a dynamic marshaller may use `call_return_into` at all (§0 fact 3).
+/// Raw rather than a JS value, because this is the one step a `nonblocking`
+/// symbol performs on a worker thread that has no realm to build a value in;
+/// [`read`] turns the cell into a `Value` back on the realm thread. The
+/// synchronous path does both in a row.
 ///
 /// # Safety
 ///
-/// `cif`, `args` and `declared` must all describe the same signature, and that
+/// `cif`, `cells` and `declared` must all describe the same signature, and that
 /// signature must be the one `address` really has. The latter is the caller's
 /// contract (§5.1) and is checkable at no layer.
-pub unsafe fn call<'js>(
-    ctx: &Ctx<'js>, declared: NativeType, cif: &Cif, address: CodePtr, args: &[Arg<'_>],
-    library: &Rc<LoadedLibrary>,
-) -> Result<Value<'js>> {
-    let library = Some(library);
-    macro_rules! into_cell {
-        ($ty:ty, $zero:expr) => {{
-            let mut cell: $ty = $zero;
-            // SAFETY: the caller's contract, restated on this function.
-            unsafe { cif.call_return_into(address, args, Ret::new(&mut cell)) };
-            // SAFETY: `cell` is a live, aligned local of exactly the type
-            // `declared` names, which is what `read` reads back out of it.
-            unsafe { read(ctx, declared, (&raw const cell).cast::<u8>(), library) }
-        }};
-    }
-
-    match declared {
-        NativeType::Void => {
-            // SAFETY: the caller's contract, restated on this function.
-            unsafe { cif.call_return_into(address, args, Ret::void()) };
-            Ok(Value::new_undefined(ctx.clone()))
-        }
-        NativeType::I8 => into_cell!(i8, 0),
-        NativeType::U8 | NativeType::Bool => into_cell!(u8, 0),
-        NativeType::I16 => into_cell!(i16, 0),
-        NativeType::U16 => into_cell!(u16, 0),
-        NativeType::I32 => into_cell!(i32, 0),
-        NativeType::U32 => into_cell!(u32, 0),
-        NativeType::I64 | NativeType::Isize => into_cell!(i64, 0),
-        NativeType::U64 | NativeType::Usize => into_cell!(u64, 0),
-        NativeType::F32 => into_cell!(f32, 0.0),
-        NativeType::F64 => into_cell!(f64, 0.0),
-        NativeType::Pointer => into_cell!(*mut c_void, std::ptr::null_mut()),
-    }
+pub unsafe fn invoke(
+    declared: NativeType, cif: &Cif, address: CodePtr, cells: &[ArgumentCell],
+) -> Cell {
+    let args: Vec<Arg<'_>> = cells.iter().map(ArgumentCell::as_arg).collect();
+    let mut cell = Cell::default();
+    // A `void` function has nowhere to write, and libffi wants to be told so
+    // rather than handed a buffer it must not touch.
+    let returned = if declared == NativeType::Void {
+        Ret::void()
+    } else {
+        Ret::new(&mut cell.0)
+    };
+    // SAFETY: the caller's contract, restated on this function. The return
+    // buffer is `CELL_BYTES` wide, which is at least libffi's documented
+    // minimum and at least `declared.size()`, the number of bytes
+    // `call_return_into` writes (§0 fact 3).
+    unsafe { cif.call_return_into(address, &args, returned) };
+    cell
 }
 
 /// Read one C value of `declared` out of `address` and build its JS value.
@@ -375,10 +439,11 @@ pub unsafe fn write_return(out: *mut c_void, cell: &ArgumentCell) {
             ArgumentCell::I64(value) => out.cast::<i64>().write(*value),
             ArgumentCell::U64(value) => out.cast::<u64>().write(*value),
             ArgumentCell::Isize(value) => out.cast::<isize>().write(*value),
-            ArgumentCell::Usize(value) => out.cast::<usize>().write(*value),
+            ArgumentCell::Usize(value) | ArgumentCell::Pointer(value) => {
+                out.cast::<usize>().write(*value)
+            }
             ArgumentCell::F32(value) => out.cast::<f32>().write(*value),
             ArgumentCell::F64(value) => out.cast::<f64>().write(*value),
-            ArgumentCell::Pointer(value) => out.cast::<*mut c_void>().write(*value),
         }
     }
 }
@@ -398,7 +463,7 @@ pub const unsafe fn write_zero(out: *mut c_void, declared: NativeType) {
             NativeType::Void => {}
             NativeType::F32 => out.cast::<f32>().write(0.0),
             NativeType::F64 => out.cast::<f64>().write(0.0),
-            NativeType::Pointer => out.cast::<*mut c_void>().write(std::ptr::null_mut()),
+            NativeType::Pointer => out.cast::<usize>().write(0),
             NativeType::I64 | NativeType::Isize => out.cast::<i64>().write(0),
             NativeType::U64 | NativeType::Usize => out.cast::<u64>().write(0),
             _narrower_than_a_register => widen_unsigned(out, 0),

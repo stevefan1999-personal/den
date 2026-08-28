@@ -39,8 +39,10 @@ for (const broken of [
   { params: [{ callback: { params: [], result: "void" }, oops: 1 }], result: "i32" },
   { params: ["i32", "i32"], result: "buffer" },
   { params: ["void"], result: "void" },
-  { params: ["i32", "i32"], result: "i32", nonblocking: true },
   { params: ["i32", "i32"], result: "i32", nonblokcing: true },
+  // `nonblocking` is legal now, but not over a borrowed buffer: the bytes are
+  // the script's, and the call outlives the call site.
+  { params: ["buffer"], result: "i32", nonblocking: true },
   { result: "i32" },
   { params: ["i32", "i32"] },
   // A static and a function are different key sets, so neither accepts the

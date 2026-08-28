@@ -18,7 +18,10 @@ den-stdlib-core.workspace = true
 den-util.workspace = true
 dlopen2.workspace = true
 libffi.workspace = true
-rquickjs = { workspace = true, features = ["macro"] }
+rquickjs = { workspace = true, features = ["macro", "futures"] }
+# `spawn_blocking` for a `nonblocking` symbol, and the mailbox a foreign-thread
+# callback posts to. `macros` is `tokio::select!` in the realm-side pump.
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 # `RTLD_NOW | RTLD_LOCAL`: dlopen2 defaults to `RTLD_LAZY | RTLD_LOCAL`, and a
 # lazy binding turns a missing dependency into a SIGSEGV at the first call.
@@ -29,7 +32,7 @@ libc.workspace = true
 color-eyre.workspace = true
 den-core = { workspace = true, features = ["stdlib", "stdlib-ffi"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

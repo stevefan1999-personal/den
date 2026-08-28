@@ -1,7 +1,7 @@
-//! `docs/research/19-den-ffi.md` §6, phases 1 to 4: the scalar vocabulary,
-//! borrowed buffers and same-thread callbacks against a real `.so`, built here
-//! with the platform's C compiler so that the ABI under test is the one this
-//! machine actually uses.
+//! `docs/research/19-den-ffi.md` §6, phases 1 to 5: the scalar vocabulary,
+//! borrowed buffers, callbacks on den's thread and on C's, and `nonblocking`
+//! symbols — all against a real `.so`, built here with the platform's C
+//! compiler so that the ABI under test is the one this machine actually uses.
 
 use std::{
     env,
@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
+    time::Duration,
 };
 
 use color_eyre::eyre;
@@ -99,6 +100,12 @@ async fn run(name: &str, grant: Option<FfiGrant>) -> eyre::Result<()> {
     let Some(probe) = Probe::get() else {
         return Ok(());
     };
+    realm(probe, name, grant).await.map(drop)
+}
+
+/// As [`run`], but hands the engine back, so that a test can ask what is still
+/// keeping the realm alive after the entry module has returned.
+async fn realm(probe: &Probe, name: &str, grant: Option<FfiGrant>) -> eyre::Result<Engine> {
     let engine = Engine::new().await;
     if let Some(grant) = grant {
         engine.set_ffi_grant(grant).await?;
@@ -119,7 +126,8 @@ async fn run(name: &str, grant: Option<FfiGrant>) -> eyre::Result<()> {
             })
             .await;
     }
-    Ok(outcome?)
+    outcome?;
+    Ok(engine)
 }
 
 /// The grant every granted case gets: the fixture directory and nothing else.
@@ -171,11 +179,67 @@ async fn a_buffer_is_borrowed_at_its_byte_offset_or_refused() -> eyre::Result<()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn c_calls_back_into_js_on_the_realm_thread() -> eyre::Result<()> {
+async fn c_calls_back_into_js_from_a_thread_of_its_own() -> eyre::Result<()> {
     let Some(probe) = Probe::get() else {
         return Ok(());
     };
     run("callbacks.js", Some(scoped(probe))).await
+}
+
+/// The other branch of the trampoline: a stored callback fired from the realm's
+/// own thread, inside a synchronous call, re-entering JS under the lock that
+/// call already holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_callback_fires_on_the_realm_thread() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("same_thread.js", Some(scoped(probe))).await
+}
+
+/// §4.7's residual deadlock, and the only thing that breaks it: the
+/// foreign-thread wait is bounded, so a callback fired into a synchronous call
+/// stalls for the timeout and then hands C the zero value.
+///
+/// The outer timeout is what makes a regression a *failure* rather than a hung
+/// test process — an unbounded `blocking_recv` here is `[exit=124]`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_callback_fired_into_a_synchronous_call_stalls_and_recovers() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        run("deadlock.js", Some(scoped(probe))),
+    )
+    .await
+    .map_err(|_elapsed| {
+        eyre::eyre!("the realm never recovered: the foreign-thread wait is not bounded")
+    })?
+}
+
+/// ARCHITECTURE §7.5 rule 1, for callbacks: C may call an armed one at any
+/// moment, so its pump keeps the process alive, and `Symbol.dispose` is what
+/// takes that back. This is why den:ffi needs no `ref()`/`unref()`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_armed_callback_keeps_the_realm_alive_until_it_is_disposed() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    let armed = realm(probe, "armed.js", Some(scoped(probe))).await?;
+    if tokio::time::timeout(Duration::from_millis(500), armed.runtime.idle())
+        .await
+        .is_ok()
+    {
+        return Err(eyre::eyre!(
+            "an armed callback must keep the event loop open"
+        ));
+    }
+
+    let disposed = realm(probe, "disposed.js", Some(scoped(probe))).await?;
+    tokio::time::timeout(Duration::from_secs(5), disposed.runtime.idle())
+        .await
+        .map_err(|_elapsed| eyre::eyre!("a disposed callback must let the event loop close"))
 }
 
 /// §0 fact 11: a realm dropped with a callback still registered must shut down

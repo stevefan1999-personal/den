@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <pthread.h>
 
 int add(int left, int right) { return left + right; }
@@ -67,10 +68,26 @@ double apply_f64(double (*function)(double), double value) { return function(val
 void notify(void (*function)(int32_t), int32_t value) { function(value); }
 
 /* qsort-shaped: C owns the loop and calls back once per comparison, handing
- * the callback two addresses rather than values. */
-void sort_i32(int32_t *values, size_t count,
-              int (*compare)(const void *, const void *)) {
-  qsort(values, count, sizeof(int32_t), compare);
+ * the callback two addresses rather than values.
+ *
+ * The values live here rather than in a `buffer` argument because a callback
+ * forces the symbol to be `nonblocking`, and a nonblocking call may not borrow
+ * a script's bytes. JS loads them, sorts them and reads them back by address. */
+static int32_t sorted[8];
+static size_t sorted_count = 0;
+
+void load_values(const uint8_t *bytes, size_t length) {
+  if (length > sizeof(sorted)) {
+    length = sizeof(sorted);
+  }
+  memcpy(sorted, bytes, length);
+  sorted_count = length / sizeof(int32_t);
+}
+
+const int32_t *sorted_values(void) { return sorted; }
+
+void sort_values(int (*compare)(const void *, const void *)) {
+  qsort(sorted, sorted_count, sizeof(int32_t), compare);
 }
 
 /* The foreign-thread seam: C fires the callback from a thread it created and
@@ -92,6 +109,27 @@ int32_t call_on_thread(int32_t (*function)(int32_t), int32_t value) {
   struct fired call = {function, value, -1};
   pthread_t thread;
   if (pthread_create(&thread, NULL, fire, &call) != 0) {
+    return -1;
+  }
+  pthread_join(thread, NULL);
+  return call.result;
+}
+
+/* A callback C keeps for itself, which is how a callback outlives the call
+ * that handed it over. `fire_stored` runs it on the caller's own thread — the
+ * realm's, when a synchronous symbol calls it — and `fire_on_thread_and_join`
+ * runs it on a thread it creates and then waits for, which is §4.7's residual
+ * deadlock: the realm is inside this function and so cannot answer. */
+static int32_t (*stored)(int32_t) = NULL;
+
+void store_callback(int32_t (*function)(int32_t)) { stored = function; }
+
+int32_t fire_stored(int32_t value) { return stored ? stored(value) : -1; }
+
+int32_t fire_on_thread_and_join(int32_t value) {
+  struct fired call = {stored, value, -1};
+  pthread_t thread;
+  if (stored == NULL || pthread_create(&thread, NULL, fire, &call) != 0) {
     return -1;
   }
   pthread_join(thread, NULL);

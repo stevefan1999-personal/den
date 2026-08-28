@@ -9,7 +9,7 @@
 //! bounds check: den cannot know how large a pointee is, and `live` tracks only
 //! den's own `dlclose`. §5.1 items 2 and 4; the same warning is in the `.d.ts`.
 
-use std::{ffi::c_void, rc::Rc, slice};
+use std::{rc::Rc, slice};
 
 use rquickjs::{
     BigInt, Class, Ctx, Function, JsLifetime, Object, Result, TypedArray, Value, class::Trace,
@@ -55,13 +55,12 @@ impl Pointer {
     /// A pointer argument. `null` is the null pointer; anything that is not a
     /// `Pointer` is refused rather than coerced, and a `Pointer` whose library
     /// is gone is `Closed` rather than a call into unmapped pages.
-    pub fn marshal<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<*mut c_void> {
+    pub fn marshal<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<usize> {
         if value.is_null() {
-            return Ok(std::ptr::null_mut());
+            return Ok(0);
         }
         let instance = Self::from_value(ctx, value)?;
-        let address = instance.borrow().live(ctx)?;
-        Ok(std::ptr::with_exposed_provenance_mut(address))
+        instance.borrow().live(ctx)
     }
 
     fn from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Class<'js, Self>> {
