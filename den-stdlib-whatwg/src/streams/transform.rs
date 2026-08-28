@@ -119,13 +119,27 @@ fn set_backpressure<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, backpressure: boo
     borrow.backpressure = backpressure;
 }
 
-/// Error both halves. A transformer that throws must not leave readers hanging.
+/// TransformStreamErrorWritableAndUnblockWrite. A transformer that throws must
+/// not leave readers hanging, and it must not leave a write parked on
+/// backpressure that nothing will ever lift: erroring is what unblocks it, and
+/// the write then rejects with the stream's stored error.
 fn error_both<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, reason: Value<'js>) {
     if let Some(readable) = readable_of(shared) {
         ReadableStream::error(ctx, &readable, reason.clone());
     }
     if let Some(writable) = writable_of(shared) {
         WritableStream::start_erroring(ctx, &writable, reason);
+    }
+    unblock_write(ctx, shared);
+}
+
+/// TransformStreamUnblockWrite.
+fn unblock_write<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>) {
+    if shared
+        .upgrade()
+        .is_some_and(|owned| owned.borrow().backpressure)
+    {
+        set_backpressure(ctx, shared, false);
     }
 }
 
@@ -146,6 +160,15 @@ fn resume_parked<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, id: u64) {
     let Some((_, chunk, mut cap)) = parked else {
         return;
     };
+    // Specification step 2 of the sink write algorithm: a stream that started
+    // erroring while this write was parked rejects with its stored error
+    // rather than running the transformer.
+    if let Some(reason) =
+        writable_of(shared).and_then(|writable| WritableStream::stored_error_for_pipe(&writable))
+    {
+        cap.reject(reason);
+        return;
+    }
     match perform_transform(ctx, shared, chunk) {
         Ok(transformed) => {
             let (resolve, reject) = cap.into_parts();
@@ -286,6 +309,7 @@ impl<'js> TransformStream<'js> {
                     if let Some(writable) = writable_of(&shared) {
                         WritableStream::start_erroring(&ctx, &writable, reason.clone());
                     }
+                    unblock_write(&ctx, &shared);
                     match cancel_fn {
                         Some(cancel) => cancel.call((This(transformer), reason)),
                         None => Ok(Value::new_undefined(ctx.clone())),
@@ -542,14 +566,14 @@ impl<'js> TransformStreamDefaultController<'js> {
 
     pub fn terminate(&self, ctx: Ctx<'js>) {
         let shared = Rc::downgrade(&self.shared);
-        let (readable, writable) = (readable_of(&shared), writable_of(&shared));
-        if let Some(readable) = readable {
+        if let Some(readable) = readable_of(&shared) {
             let _ = ReadableStream::close_requested(&ctx, &readable);
         }
-        if let Some(writable) = writable {
+        if let Some(writable) = writable_of(&shared) {
             let reason = type_error(&ctx, "the transform stream was terminated");
             WritableStream::start_erroring(&ctx, &writable, reason);
         }
+        unblock_write(&ctx, &shared);
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
