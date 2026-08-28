@@ -13,9 +13,9 @@ keywords.workspace = true
 [dependencies]
 base64-simd.workspace = true
 den-stdlib-networking.workspace = true
+den-stdlib-worker = { workspace = true, default-features = false }
 den-util.workspace = true
 flate2.workspace = true
-futures.workspace = true
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "indexmap"] }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
@@ -31,7 +31,7 @@ color-eyre.workspace = true
 den-core = { workspace = true, features = ["stdlib"] }
 den-stdlib-text.workspace = true
 den-stdlib-whatwg-fetch.workspace = true
-den-stdlib-worker = { workspace = true, features = ["transpile"] }
+insta.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 
 [lints]

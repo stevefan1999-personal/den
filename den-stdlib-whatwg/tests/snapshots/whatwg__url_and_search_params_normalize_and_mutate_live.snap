@@ -1,0 +1,60 @@
+---
+source: den-stdlib-whatwg/tests/whatwg.rs
+expression: "snapshot(\"url.js\").await?"
+---
+{
+  "afterParams": {
+    "href": "https://User:Pass@example.com/a/c?a=9&b=2&space=a+b#frag",
+    "origin": "https://example.com",
+    "protocol": "https:",
+    "username": "User",
+    "password": "Pass",
+    "host": "example.com",
+    "hostname": "example.com",
+    "port": "",
+    "pathname": "/a/c",
+    "search": "?a=9&b=2&space=a+b",
+    "hash": "#frag",
+    "entries": [
+      [
+        "a",
+        "9"
+      ],
+      [
+        "b",
+        "2"
+      ],
+      [
+        "space",
+        "a b"
+      ]
+    ]
+  },
+  "afterSearch": {
+    "href": "https://User:Pass@example.com/a/c?x=2&z=%E2%9C%93#frag",
+    "entries": [
+      [
+        "x",
+        "2"
+      ],
+      [
+        "z",
+        "✓"
+      ]
+    ],
+    "size": 2
+  },
+  "standalone": {
+    "text": "b=2&a=x+y&a=last",
+    "keys": [
+      "b",
+      "a",
+      "a"
+    ],
+    "values": [
+      "2",
+      "x y",
+      "last"
+    ]
+  }
+}

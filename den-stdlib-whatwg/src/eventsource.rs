@@ -5,26 +5,24 @@ use std::{cell::Cell, rc::Rc};
 use rquickjs::{
     Class, Ctx, FromJs, Function, JsLifetime, Object, Promise, Result, Value,
     atom::PredefinedAtom,
-    class::{Trace, Tracer},
+    class::Trace,
     function::{Opt, This},
 };
 use url::Url;
 
-use crate::{
-    event_target::{HostEventTarget, SharedEvents},
-    host::Host,
-};
+use crate::host::Host;
 
 const CONNECTING: i32 = 0;
 const OPEN: i32 = 1;
 const CLOSED: i32 = 2;
 const DEFAULT_RECONNECT_MS: u64 = 3000;
 
-#[derive(JsLifetime)]
-#[rquickjs::class]
-pub struct EventSource<'js> {
-    events:            SharedEvents<'js>,
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class(rename_all = "camelCase")]
+pub struct EventSource {
+    #[qjs(get)]
     url:               String,
+    #[qjs(get)]
     with_credentials:  bool,
     ready_state:       i32,
     origin:            String,
@@ -40,43 +38,19 @@ pub struct EventSource<'js> {
     aborted:           Rc<Cell<bool>>,
 }
 
-impl<'js> Trace<'js> for EventSource<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Ok(events) = self.events.try_borrow() {
-            events.trace(tracer);
-        }
-    }
-}
-
-impl<'js> EventSource<'js> {
-    fn dispatch(this: &Class<'js, Self>, ctx: &Ctx<'js>, event: Value<'js>) -> Result<()> {
+impl EventSource {
+    fn dispatch<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>, event: Value<'js>) -> Result<()> {
         let this = this.clone();
         let fire = Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> Result<()> {
-            HostEventTarget::dispatch_shared(
-                &this.borrow().events,
-                &ctx,
-                this.as_inner(),
+            den_stdlib_worker::events::dispatch_trusted(
+                ctx,
+                this.as_inner().clone().into_value(),
                 event.clone(),
             )?;
             Ok(())
         })?;
         fire.defer(())?;
         Ok(())
-    }
-
-    fn handler(this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str) -> Value<'js> {
-        this.0.borrow().events.borrow().handler_or_null(&ctx, type_)
-    }
-
-    fn set_handler(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str, value: Value<'js>,
-    ) -> Result<()> {
-        this.0.borrow().events.borrow_mut().set_handler(
-            &ctx,
-            this.0.as_inner().clone(),
-            type_,
-            value,
-        )
     }
 
     fn resolve_url(ctx: &Ctx<'_>, url: &str) -> Result<String> {
@@ -96,9 +70,11 @@ impl<'js> EventSource<'js> {
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl<'js> EventSource<'js> {
+impl EventSource {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, url: String, options: Opt<Object<'js>>) -> Result<Class<'js, Self>> {
+    pub fn new<'js>(
+        ctx: Ctx<'js>, url: String, options: Opt<Object<'js>>,
+    ) -> Result<Class<'js, Self>> {
         let url = Self::resolve_url(&ctx, &url)?;
         let with_credentials = options
             .0
@@ -107,7 +83,6 @@ impl<'js> EventSource<'js> {
             .unwrap_or(false);
         let closed = Rc::new(Cell::new(false));
         let class = Class::instance(ctx.clone(), Self {
-            events: HostEventTarget::share(),
             url,
             with_credentials,
             ready_state: CONNECTING,
@@ -142,12 +117,6 @@ impl<'js> EventSource<'js> {
     pub fn closed_const() -> i32 { CLOSED }
 
     #[qjs(get)]
-    pub fn url(&self) -> String { self.url.clone() }
-
-    #[qjs(get)]
-    pub fn with_credentials(&self) -> bool { self.with_credentials }
-
-    #[qjs(get)]
     pub fn ready_state(&self) -> i32 {
         if self.closed.get() {
             CLOSED
@@ -162,77 +131,14 @@ impl<'js> EventSource<'js> {
         self.ready_state_slot_closed();
     }
 
-    pub fn add_event_listener(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: String, callback: Value<'js>,
-        options: Opt<Value<'js>>,
-    ) -> Result<()> {
-        this.0
-            .borrow()
-            .events
-            .borrow_mut()
-            .add(&ctx, type_, callback, options.0)
-    }
-
-    pub fn remove_event_listener(
-        this: This<Class<'js, Self>>, type_: String, callback: Value<'js>, options: Opt<Value<'js>>,
-    ) {
-        this.0
-            .borrow()
-            .events
-            .borrow_mut()
-            .remove(&type_, &callback, options.0);
-    }
-
-    pub fn dispatch_event(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, event: Value<'js>,
-    ) -> Result<bool> {
-        HostEventTarget::dispatch_shared(&this.0.borrow().events, &ctx, this.0.as_inner(), event)
-    }
-
-    #[qjs(get, rename = "onopen")]
-    pub fn onopen(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "open")
-    }
-
-    #[qjs(set, rename = "onopen")]
-    pub fn set_onopen(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "open", value)
-    }
-
-    #[qjs(get, rename = "onmessage")]
-    pub fn onmessage(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "message")
-    }
-
-    #[qjs(set, rename = "onmessage")]
-    pub fn set_onmessage(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "message", value)
-    }
-
-    #[qjs(get, rename = "onerror")]
-    pub fn onerror(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "error")
-    }
-
-    #[qjs(set, rename = "onerror")]
-    pub fn set_onerror(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "error", value)
-    }
-
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
     pub fn to_string_tag() -> &'static str { "EventSource" }
 }
 
-impl<'js> EventSource<'js> {
+impl EventSource {
     fn ready_state_slot_closed(&self) { let _ = self; }
 
-    fn start(this: Class<'js, Self>, ctx: Ctx<'js>) {
+    fn start<'js>(this: Class<'js, Self>, ctx: Ctx<'js>) {
         if this.borrow().closed.get() {
             this.borrow_mut().ready_state = CLOSED;
             return;
@@ -344,13 +250,13 @@ impl<'js> EventSource<'js> {
             .to_ascii_lowercase()
     }
 
-    async fn response_text(_ctx: &Ctx<'js>, response: &Object<'js>) -> Result<String> {
+    async fn response_text<'js>(_ctx: &Ctx<'js>, response: &Object<'js>) -> Result<String> {
         let text: Function = response.get("text")?;
         let promise: Promise = text.call((This(response.clone()),))?;
         promise.into_future().await
     }
 
-    fn fail(this: &Class<'js, Self>, ctx: &Ctx<'js>) {
+    fn fail<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>) {
         if this.borrow().closed.get() {
             return;
         }
@@ -363,7 +269,7 @@ impl<'js> EventSource<'js> {
         );
     }
 
-    fn reconnect(this: Class<'js, Self>, ctx: Ctx<'js>) {
+    fn reconnect<'js>(this: Class<'js, Self>, ctx: Ctx<'js>) {
         if this.borrow().closed.get() {
             this.borrow_mut().ready_state = CLOSED;
             return;
@@ -398,7 +304,7 @@ impl<'js> EventSource<'js> {
         let _ = set_timeout.call::<_, Value>((callback, delay));
     }
 
-    fn feed(this: &Class<'js, Self>, ctx: &Ctx<'js>, chunk: &str) {
+    fn feed<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>, chunk: &str) {
         this.borrow_mut().buffer.push_str(chunk);
         let buffer = this.borrow().buffer.clone();
         let len = buffer.len();
@@ -427,7 +333,7 @@ impl<'js> EventSource<'js> {
         this.borrow_mut().buffer = buffer[line_start..].to_string();
     }
 
-    fn process_line(this: &Class<'js, Self>, ctx: &Ctx<'js>, line: &str) {
+    fn process_line<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>, line: &str) {
         if line.is_empty() {
             Self::dispatch_message(this, ctx);
             return;
@@ -445,7 +351,7 @@ impl<'js> EventSource<'js> {
         Self::process_field(this, field, value);
     }
 
-    fn process_field(this: &Class<'js, Self>, field: &str, value: &str) {
+    fn process_field(this: &Class<'_, Self>, field: &str, value: &str) {
         let mut es = this.borrow_mut();
         match field {
             "event" => es.event_type_buffer = value.to_string(),
@@ -469,7 +375,7 @@ impl<'js> EventSource<'js> {
         }
     }
 
-    fn dispatch_message(this: &Class<'js, Self>, ctx: &Ctx<'js>) {
+    fn dispatch_message<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>) {
         let (data, type_, origin, last_event_id, closed) = {
             let mut es = this.borrow_mut();
             es.last_event_id = es.last_event_id_buf.clone();
