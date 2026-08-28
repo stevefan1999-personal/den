@@ -49,7 +49,14 @@ const STATUS_TIMEOUT: i32 = 2;
 const HARNESS_ERROR: i32 = 1;
 const HARNESS_TIMEOUT: i32 = 2;
 
-const WPT_TREES: &[&str] = &["websockets", "FileAPI", "url", "fetch", "wasm/jsapi", "streams"];
+const WPT_TREES: &[&str] = &[
+    "websockets",
+    "FileAPI",
+    "url",
+    "fetch",
+    "wasm/jsapi",
+    "streams",
+];
 
 fn wpt_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
