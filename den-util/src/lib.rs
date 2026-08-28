@@ -227,3 +227,49 @@ impl ObjectExt for Object<'_> {
         Ok(false)
     }
 }
+
+/// Owning, lifetime-erased handle to a QuickJS context.
+///
+/// A host callback the engine below calls — a wasmtime host function, a libffi
+/// closure — has to be `'static`, so it cannot borrow `'js`. `Ctx` is
+/// refcounted (`Clone` is `JS_DupContext`), so parking one keeps the
+/// `JSContext` alive and [`OwnedCtx::with`] mints a callback-scoped `'js` on
+/// demand — `Ctx` is invariant in `'js`, so it has to be minted rather than
+/// reborrowed.
+///
+/// This is the most delicate `unsafe` in den; keep it to this one type.
+///
+/// Deliberately *not* `Sync`: a `JSContext` is not shareable between threads,
+/// and asserting it would make every container of one look as if it were.
+pub struct OwnedCtx(Ctx<'static>);
+
+impl OwnedCtx {
+    pub fn new(ctx: &Ctx<'_>) -> Self {
+        // SAFETY: `from_raw` takes a reference of its own via `JS_DupContext`, and the
+        // caller is inside `ctx`, so the runtime lock is held right now.
+        Self(unsafe { Ctx::from_raw(ctx.as_raw()) })
+    }
+
+    /// Re-narrow the erased context to a callback-scoped `'js`.
+    ///
+    /// This is the only way to reach the context: a `fn ctx(&self) -> Ctx<'_>`
+    /// would hand out a lifetime the caller could outlive.
+    ///
+    /// # Safety of the *call site*, which this type cannot check
+    ///
+    /// The reference itself is sound — `Ctx::from_raw` performs
+    /// `JS_DupContext`, and the runtime drops its userdata (hence every value
+    /// of this type) before `JS_FreeRuntime`, so the context outlives the
+    /// handle. What the caller must supply is the **runtime lock**: `f` runs
+    /// JS, so this may only be entered from a frame that already holds it —
+    /// for a host callback, one a JS call reached. den's two users check that
+    /// differently: a wasm host callback is only ever entered from such a
+    /// frame, while a libffi trampoline compares thread ids first, because C
+    /// may call it from a thread of its own.
+    pub fn with<R, F: FnOnce(&Ctx<'_>) -> R>(&self, f: F) -> R {
+        // SAFETY: `self.0` holds a live reference to this context, and the caller
+        // holds the runtime lock (see above). The minted `Ctx` never escapes.
+        let ctx = unsafe { Ctx::from_raw(self.0.as_raw()) };
+        f(&ctx)
+    }
+}

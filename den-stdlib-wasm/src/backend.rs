@@ -115,46 +115,12 @@ const HOST_HAS_CRANELIFT: bool = cfg!(any(
 /// runtime / iOS builds leave `jit` off so they still emit Pulley.
 pub const USES_PULLEY: bool = !cfg!(feature = "jit") || !HOST_HAS_CRANELIFT;
 
-/// Owning, lifetime-erased handle to the QuickJS context that created the
-/// [`Store`].
-///
-/// wasmtime 48 bounds `T: 'static` on `Linker`/`Instance`/`Func`, so the store
-/// payload cannot borrow `'js`. `Ctx` is refcounted (`Clone` is
-/// `JS_DupContext`), so parking one keeps the `JSContext` alive and
-/// [`OwnedCtx::with`] mints a callback-scoped `'js` on demand — `Ctx` is
-/// invariant in `'js`, so it has to be minted rather than reborrowed.
-///
-/// This is the only `unsafe` in the crate's foundation; keep it that way.
-///
-/// Deliberately *not* `Sync`: nothing here needs it (the store payload is
-/// only ever reached through `&mut Store`, and the host closures that must
-/// be `Send + Sync` capture no `OwnedCtx`), and asserting it would make
-/// `StoreData` — hence `wasmtime::Store<StoreData>` — look shareable
-/// between threads, which a `JSContext` is not.
-pub struct OwnedCtx(Ctx<'static>);
-
-impl OwnedCtx {
-    pub fn new(ctx: &Ctx<'_>) -> Self {
-        // SAFETY: `from_raw` takes a reference of its own via `JS_DupContext`, and the
-        // caller is inside `ctx`, so the runtime lock is held right now.
-        Self(unsafe { Ctx::from_raw(ctx.as_raw()) })
-    }
-
-    /// Re-narrow the erased context to a callback-scoped `'js`.
-    ///
-    /// This is the only way to reach the context: a `fn ctx(&self) -> Ctx<'_>`
-    /// would hand out a lifetime the caller could outlive.
-    pub fn with<R>(&self, f: impl FnOnce(&Ctx<'_>) -> R) -> R {
-        // SAFETY: `self.0` holds a live reference to this context — `Ctx::from_raw`
-        // performs `JS_DupContext`, and the runtime drops its userdata (hence this
-        // value) before `JS_FreeRuntime` — and the runtime lock is held by whoever
-        // called into wasm: the `Store` this lives in is userdata of that very
-        // context, and a host callback is only entered from a JS call that holds the
-        // lock for the whole closure. The minted `Ctx` never escapes.
-        let ctx = unsafe { Ctx::from_raw(self.0.as_raw()) };
-        f(&ctx)
-    }
-}
+/// The store payload parks a [`den_util::OwnedCtx`]: wasmtime 48 bounds
+/// `T: 'static` on `Linker`/`Instance`/`Func`, so it cannot borrow `'js`.
+/// Re-exported because it is named throughout this crate's API; it lives in
+/// `den-util` because `den-stdlib-ffi`'s libffi trampoline needs the same
+/// handle.
+pub use den_util::OwnedCtx;
 
 /// Payload of the single [`Store`] den keeps per JS context.
 ///
