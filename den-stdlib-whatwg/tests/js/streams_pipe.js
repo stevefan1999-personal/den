@@ -150,3 +150,10 @@ const parkedWriter = parked.getWriter();
 globalThis.parkedWrite = parkedWriter.write("first");
 globalThis.parkedNext = parkedWriter.write("second");
 globalThis.parkedRead = new ReadableStream({ start() {} }).getReader().read();
+
+// A pipe watching a live AbortSignal. The signal's listener list and the
+// listener must not hold each other over an edge the collector cannot see.
+globalThis.watchedPipe = new ReadableStream().pipeThrough(
+  { writable: new WritableStream(), readable: new ReadableStream() },
+  { signal: new AbortController().signal },
+);
