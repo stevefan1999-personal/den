@@ -18,7 +18,6 @@ mod zoned_date_time;
 
 pub use duration::Duration;
 pub use instant::Instant;
-pub use now::Now;
 pub use plain_date::PlainDate;
 pub use plain_date_time::PlainDateTime;
 pub use plain_month_day::PlainMonthDay;

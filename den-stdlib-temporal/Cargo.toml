@@ -10,9 +10,11 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 
+[lib]
+test = false
+
 [dependencies]
 den-util.workspace = true
-indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 temporal_rs = { workspace = true, features = ["sys", "compiled_data", "sys-local"] }
 
