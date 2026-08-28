@@ -1,7 +1,7 @@
 //! Native WebSocket client (and a test-oriented accept path) for
 //! `den:networking`.
 //!
-//! Handshake, TLS (`wss` via `tokio-native-tls`), ping/pong, close frames and
+//! Handshake, TLS (`wss` via `tokio-rustls`), ping/pong, close frames and
 //! the send/receive loop live here. WHATWG `WebSocket` wraps
 //! [`NativeWebSocket`] and must not reimplement the I/O task.
 
@@ -26,7 +26,7 @@ use tokio::{
     runtime::Handle,
     sync::mpsc,
 };
-use tokio_native_tls::{TlsConnector, TlsStream};
+use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 use tokio_tungstenite::{
     WebSocketStream, accept_hdr_async, client_async,
     tungstenite::{
@@ -265,8 +265,10 @@ impl NativeWebSocket {
                     let transport = if parsed.scheme() == "wss" {
                         let connector = tls_connector(options.ca_pem.as_deref())?;
                         let domain = options.tls_domain.as_deref().unwrap_or(host.as_str());
+                        let server_name = ServerName::try_from(domain.to_owned())
+                            .map_err(|error| NativeWsError::Tls(error.to_string()))?;
                         let tls = connector
-                            .connect(domain, tcp)
+                            .connect(server_name, tcp)
                             .await
                             .map_err(|error| NativeWsError::Tls(error.to_string()))?;
                         Transport::Tls(tls)
@@ -515,18 +517,12 @@ fn header_text(headers: &tokio_tungstenite::tungstenite::http::HeaderMap, name: 
         .map_or(String::new(), |text| text.trim().to_owned())
 }
 
+/// The `wss` connector, over the same trust rules as `TlsStream.connect`:
+/// a custom CA replaces the platform store, otherwise the platform verifier.
 fn tls_connector(ca_pem: Option<&str>) -> Result<TlsConnector, NativeWsError> {
-    let mut builder = native_tls::TlsConnector::builder();
-    if let Some(pem) = ca_pem {
-        builder.disable_built_in_roots(true);
-        let cert = native_tls::Certificate::from_pem(pem.as_bytes())
-            .map_err(|error| NativeWsError::Tls(error.to_string()))?;
-        builder.add_root_certificate(cert);
-    }
-    let connector = builder
-        .build()
-        .map_err(|error| NativeWsError::Tls(error.to_string()))?;
-    Ok(TlsConnector::from(connector))
+    crate::tls::Tls::client_config(ca_pem)
+        .map(|config| TlsConnector::from(Arc::new(config)))
+        .map_err(|error| NativeWsError::Tls(error.to_string()))
 }
 
 async fn run<S>(
@@ -930,16 +926,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wss_connects_with_tokio_native_tls() {
+    async fn wss_connects_with_tokio_rustls() {
         let certified = rcgen::generate_simple_self_signed(["localhost".to_string()])
             .expect("self-signed cert");
         let cert_pem = certified.cert.pem();
         let key_pem = certified.signing_key.serialize_pem();
-        let identity = native_tls::Identity::from_pkcs8(cert_pem.as_bytes(), key_pem.as_bytes())
-            .expect("identity");
-        let acceptor = tokio_native_tls::TlsAcceptor::from(
-            native_tls::TlsAcceptor::new(identity).expect("acceptor"),
-        );
+        let chain = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+            .collect::<std::io::Result<Vec<_>>>()
+            .expect("certificate chain");
+        let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
+            .expect("key pem")
+            .expect("a private key");
+        let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(chain, key)
+                .expect("acceptor"),
+        ));
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind wss listener");
