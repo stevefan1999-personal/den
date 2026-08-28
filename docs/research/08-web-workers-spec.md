@@ -35,7 +35,7 @@ den sources read: `den-core/src/engine.rs`, `src/app.rs`, `src/main.rs`,
 `den-core/src/loader/{http,mmap_script}.rs`, `den-stdlib-timer/src/lib.rs`,
 `den-stdlib-core/src/{lib,cancellation}.rs`, `den-stdlib-whatwg-fetch/src/lib.rs`,
 `den-stdlib-wasm/src/error.rs`, `den-core/tests/stdlib.rs`, `ARCHITECTURE.md`, and
-`docs/research/05-webassembly-js-api-spec.md` (format model for this note).
+the earlier migration research (format model for this note).
 
 Every claim below carries either a spec section or a `file:line` that was read.
 
