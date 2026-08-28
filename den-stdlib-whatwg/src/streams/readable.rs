@@ -10,7 +10,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, method, native::NativeSource, pipe, range_error, react, thrown, type_error,
+    Cap, Pins, method, native::NativeSource, pipe, range_error, react, thrown, type_error,
 };
 
 pub(crate) enum RsState<'js> {
@@ -383,24 +383,21 @@ impl<'js> ReadableStream<'js> {
         };
         match outcome {
             Ok(value) => {
-                let keeper = Self::keeper(inner);
+                // Pinning the controller is what keeps the record's JS values alive
+                // for the length of this operation: see the note on
+                // `ReadableStreamDefaultController`.
+                let pin = Pins::hold(ctx, Self::keeper(inner));
                 let ok = {
-                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
+                    let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                        // Holding the controller is what keeps the record's JS values
-                        // alive for the length of this operation: see the note on
-                        // `ReadableStreamDefaultController`.
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         ReadableStream::pull_settled(&ctx, &inner);
                     })
                 };
                 let err = {
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        // Holding the controller is what keeps the record's JS values
-                        // alive for the length of this operation: see the note on
-                        // `ReadableStreamDefaultController`.
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         inner.borrow_mut().pulling = false;
                         ReadableStream::error(&ctx, &inner, reason);
                     })
@@ -718,19 +715,20 @@ impl<'js> ReadableStream<'js> {
             Some(start) => start.call::<_, Value>((This(source_object), controller.clone()))?,
             None => Value::new_undefined(ctx.clone()),
         };
+        let pin = Pins::hold(&ctx, Some(controller.clone()));
         let ok = {
-            let (inner, keeper) = (Rc::clone(&inner), controller.clone());
+            let inner = Rc::clone(&inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                let _keeper = &keeper;
+                Pins::release(&ctx, pin);
                 inner.borrow_mut().started = true;
                 ReadableStream::pull_settled(&ctx, &inner);
                 ReadableStream::pull_if_needed(&ctx, &inner);
             })?
         };
         let err = {
-            let (inner, keeper) = (Rc::clone(&inner), controller.clone());
+            let inner = Rc::clone(&inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                let _keeper = &keeper;
+                Pins::release(&ctx, pin);
                 ReadableStream::error(&ctx, &inner, reason);
             })?
         };
