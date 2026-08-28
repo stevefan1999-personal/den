@@ -11,8 +11,11 @@ Made during the Easter holiday of 2023.
   transform → codegen, wired into the file and HTTP module loaders
 - A standard library exposed both as `den:*` modules and as globals: `console`, `atob`/`btoa`/`gc`,
   `TextEncoder`/`TextDecoder`, timers, `fetch` (`Headers`/`Request`/`Response`), `crypto.subtle.digest`,
-  `den:fs`, `den:networking` (TCP/UDP/Unix/TLS), `den:sqlite`, `den:process`,
+  `den:assert` (including Insta-backed named snapshots), `den:fs`,
+  `den:path` (portable/POSIX/Windows lexical paths),
+  `den:networking` (TCP/UDP/Unix/TLS), `den:process`,
   `Temporal` (`temporal_rs`)
+- Optional bundled SQLite as `den:sqlite` (`--features stdlib-sqlite`)
 - Optional C FFI as `den:ffi` (`--features stdlib-ffi`, off by default; a script still needs
   a `--allow-ffi[=PATH,...]` grant at run time)
 - WinterTC / WHATWG web platform APIs: `AbortController`, `Blob`/`File`/`FileReader`/`FormData`,
@@ -22,10 +25,11 @@ Made during the Easter holiday of 2023.
   test262 Temporal (`cargo nextest run -p den-stdlib-temporal --test test262`),
   WebAssembly spec (`cargo nextest run -p den-stdlib-wasm --test spec_core`),
   WPT (`cargo nextest run -p den-core --test wpt --features stdlib`).
-  All three: `cargo nextest run --profile official`
+  All three: `cargo nextest run --profile official --build-jobs 8`
 - Import maps and import attributes (`json` / `text` / `bytes`)
 - The WebAssembly JS API on wasmtime 48, with a `jit` feature (native Cranelift)
   and Pulley for no-JIT / unsupported hosts (App Store, hardened runtime, iOS)
+- Optional WASI preview1 imports as `den:wasm`'s `wasiImports` (`--features wasi`)
 - Web Workers: `Worker` (classic and module), `MessageChannel`/`MessagePort`, `BroadcastChannel`,
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
   thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
@@ -50,15 +54,66 @@ Run the following command to get an optimized release build:
 $ cargo build --release
 ```
 
+Add the optional SQLite module when it is needed:
+
+```bash
+$ cargo build --features stdlib-sqlite
+```
+
 Or choose the `min-size-release` profile to get a size-favored build:
 
 ```bash
 $ cargo build --profile min-size-release
 ```
 
-Meanwhile, Den will not attempt to make code smaller intentionally, we will and should let the compiler do the job.
-If you want to optimize even further, the easiest way is to run `build-std`. You can headout to
-the [min-sized-rust guide](https://github.com/johnthagen/min-sized-rust#optimize-libstd-with-build-std) for more.
+On Linux/ELF, also remap build paths, disable QuickJS's native assertions, and
+enable identical-code folding plus packed relocations:
+
+```bash
+$ ./scripts/min-size-linux
+```
+
+Add `--features wasi` to that command when preview1 imports are required.
+
+The aggressive artifact is isolated under `target/<host-triple>/min-size-release`.
+
+This profile stays on stable Rust. A nightly toolchain can go further by rebuilding
+the standard library; see the [min-sized-rust `build-std` guide](https://github.com/johnthagen/min-sized-rust#optimize-libstd-with-build-std).
+
+### Embedded bytecode modules
+
+Applications embedding `den-core` can compile fixed ES modules into their Rust
+binary with rquickjs's existing `embed!` macro:
+
+```toml
+rquickjs = { version = "0.12.2", features = ["loader", "macro", "phf"] }
+```
+
+```rust
+use den_core::engine::Engine;
+use rquickjs::{embed, loader::Bundle};
+
+static MODULES: Bundle = {
+    // Keep this dependency in the same item so JS-only edits rerun `embed!`.
+    const _: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/js/main.js"));
+    embed! {
+        "app:/main.js": "js/main.js",
+    }
+};
+
+async fn run() -> Result<(), den_core::engine::EngineError> {
+    let engine = Engine::new_with_bundle(MODULES).await;
+    engine.run_module("app:/main.js").await
+}
+```
+
+The macro compiles on the build host, so embedded bytecode must use the same
+QuickJS version and endianness as the target. It accepts JavaScript modules,
+not classic scripts or TypeScript/JSX; bundle or transpile those before calling
+the macro. List every module; static dependencies must precede their importers,
+and cyclic static dependency graphs must be bundled first. Keep one
+`include_bytes!` dependency inside the `MODULES` item for every embedded input,
+otherwise a JS-only edit can reuse stale incremental bytecode.
 
 **(WIP)** In addition, you can also install it as a binary:
 
@@ -100,13 +155,13 @@ target. Both have to pass:
 
 ```bash
 # wasmtime + native Cranelift (the default feature set)
-$ cargo nextest run --workspace --all-targets
+$ cargo nextest run --workspace --build-jobs 8
 
 # den unit tests only (skip official vendor binaries)
-$ cargo nextest run --profile compat --workspace --all-targets
+$ cargo nextest run --profile compat --workspace --build-jobs 8
 
 # wasmtime + Pulley (no JIT pages)
-$ cargo nextest run --workspace --all-targets --no-default-features \
+$ cargo nextest run --workspace --build-jobs 8 --no-default-features \
     --features stdlib,typescript,react,wasm
 ```
 
@@ -114,46 +169,38 @@ $ cargo nextest run --workspace --all-targets --no-default-features \
 so leaving the defaults on keeps `jit` enabled. aarch64-apple-darwin *has*
 Cranelift; App Store / hardened runtime / iOS builds omit `jit` on purpose.
 
-## Build matrix
+For the fastest edit loop, test the owning crate instead of unifying every
+workspace feature into every test binary:
 
-State of the build:
+```bash
+$ cargo nextest run -p den-stdlib-worker --test integration --build-jobs 8
+```
 
-| Architecture➡️<br/>Platform⬇️ | i386 | amd64 | arm32 | arm64 | ppc64le | s390x |
-|:-----------------------------:|:----:|:-----:|:-----:|:-----:|:-------:|:-----:|
-|            Windows            |  ❓   |  ✔️   |  🤷   |   ❓   |   🤷    |  🤷   |
-|             Linux             |  ❓   |   ❓   |   ❓   |   ❓   |    ❓    |   ❓   |
-|             MacOS             |  🤷  |   ❓   |  🤷   |   ❓   |   🤷    |  🤷   |
-|            FreeBSD            |  ❓   |   ❓   |   ❓   |   ❓   |    ❓    |   ❓   |
-|            Android            |  🤷  |   ❓   |  🤷   |   ❓   |   🤷    |  🤷   |
-|              iOS              |  🤷  |  🤷   |  🤷   |   ❓   |   🤷    |  🤷   | 
+The test profile keeps line-number backtraces but omits dependency DWARF, which
+materially reduces linker memory and target size. CI disables incremental
+compilation, allowing a configured `sccache` runner to cache Rust dependencies;
+local incremental builds remain enabled for quick rebuilds.
 
-_in the format of [\<state\> - \<emoji\> (\<emoji text\>): \<description\>]_
+The REPL stores its bounded history in the `history.surrealkv` directory using
+[SurrealKV](https://github.com/surrealdb/surrealkv) with immediate commits. SurrealKV locks a store to one process; a
+second REPL in the same directory falls back to in-memory history instead of
+failing to start.
 
-- Perfect - ✅ (greenlit tick)
-    - Unit/Integration/E2E tests AC (all cleared)
-    - Can be chosen as RC builds
-    - Official Docker builds are available for end user
-- Choked - ❎ (greenlit cross)
-    - Unit/Integration tests failure
-    - Implies Passed
-    - Should be somewhat usable at this point
-- Passed - ✔️ (non-greenlit tick)
-    - Build passed
-    - Build artifacts maybe provided
-- Failed - ❌ (non-greenlit cross)
-    - Build failure
-- Unknown - ❓ (question mark)
-    - Possible but not investigated
-- Undefined - 🤷 (shrug)
-    - Don't care condition/Impossible/Not applicable
+### Snapshot assertions
 
-TODO: write a bot that automatically updates the status from CI/CD pipeline, change the format to a markdown table.
+`den:assert` exposes Insta-backed named snapshots:
 
-TODO: add a triplet table to complete the build matrix/cube a format of _architecture-platform_ **[cartesian product]**
-_compiler_
+```js
+import { assertSnapshot } from "den:assert";
 
-TODO: put the explanations to the design document. Only put the build cube in the frontpage but keep a link to the
-design document.
+assertSnapshot(JSON.stringify(value), "stable_name");
+```
+
+Names are required because JavaScript calls share one Rust assertion site;
+snapshots live under `./snapshots` in the process working directory. Review
+updates with `cargo insta review` (from the separate `cargo-insta` CLI), or use
+`INSTA_UPDATE` with ordinary `cargo test`; see the
+[Insta documentation](https://docs.rs/insta/latest/insta/).
 
 # TODO LIST
 
@@ -211,4 +258,3 @@ There are still a lot of bugs that needs to be addressed before it can be deemed
 # Contributors
 
 #
-

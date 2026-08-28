@@ -817,7 +817,7 @@ bytes, not JS values: nothing with a `'js` lifetime crosses a thread.
 
 ## 10. Test strategy
 
-Layering follows ARCHITECTURE §8 / doc 07 §5.1: the crate proves *semantics*
+Layering follows ARCHITECTURE §8: the crate proves *semantics*
 against a bare `AsyncContext`; `den-core/tests/` proves *wiring* through the
 real `Engine`. Everything cross-thread is awaited through a promise with a
 tokio timeout as the failure bound — no sleeps.
@@ -884,7 +884,7 @@ not rebuild it.
 ### 10.3 Integration tests — `den-core/tests/workers.rs`
 
 `#![cfg(feature = "stdlib-worker")]`, every test
-`#[tokio::test(flavor = "multi_thread")]` (block_in_place, doc 07 §5.6).
+`#[tokio::test(flavor = "multi_thread")]` because the loaders use `block_in_place`.
 
 ```rust
 const DEADLINE: Duration = Duration::from_secs(10);
@@ -947,7 +947,7 @@ const FIRST_MESSAGE: &str = r#"
 is not a direct dependency (only wasmtime's, `cargo tree -i tempfile`), and
 absolute paths do not resolve (§7.4), so `std::env::temp_dir()` is out until
 the resolver bug is fixed. `cargo nextest run` runs with cwd = `den-core/`
-(doc 07 §5.6), and `/target` is gitignored (`.gitignore:1`). So:
+and `/target` is gitignored (`.gitignore:1`). So:
 
 ```rust
 /// Write `files` under target/ and return the cwd-relative directory den can
