@@ -39,11 +39,19 @@ impl FfiGrant {
     /// library. Roots are resolved once here so that the check site compares
     /// two canonical paths; a root that does not exist stays as written and
     /// therefore matches nothing.
+    ///
+    /// An **empty** root is dropped rather than kept, because `starts_with` on
+    /// one is true of every path: `--allow-ffi=` with an unset variable behind
+    /// it, or one stray comma in the list, would otherwise read as a scoped
+    /// grant and be a grant over the whole filesystem. Dropping it leaves a
+    /// grant that covers nothing, which is the fail-closed half of the
+    /// mistake.
     pub fn under<R: IntoIterator<Item = PathBuf>>(roots: R) -> Self {
         Self {
             roots: Roots::Under(
                 roots
                     .into_iter()
+                    .filter(|root| !root.as_os_str().is_empty())
                     .map(|root| root.canonicalize().unwrap_or(root))
                     .collect(),
             ),

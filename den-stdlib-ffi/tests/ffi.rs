@@ -133,6 +133,22 @@ async fn realm(probe: &Probe, name: &str, grant: Option<FfiGrant>) -> eyre::Resu
 /// The grant every granted case gets: the fixture directory and nothing else.
 fn scoped(probe: &Probe) -> FfiGrant { FfiGrant::under([probe.root().to_path_buf()]) }
 
+/// §5.3: the roots are the whole capability, and `Path::starts_with` on an
+/// empty one is true of every path — so `--allow-ffi=` with an unset variable
+/// behind it, or one stray comma, must not read as "scoped" and mean "all".
+#[test]
+fn an_empty_root_grants_nothing() {
+    let scoped = FfiGrant::under([PathBuf::new(), PathBuf::from("/opt/den")]);
+    assert!(
+        !scoped.allows(Path::new("/etc/shadow")),
+        "an empty root widened a scoped grant to the whole filesystem"
+    );
+    assert!(
+        scoped.allows(Path::new("/opt/den/lib.so")),
+        "the real root still counts"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn bound_symbols_call_into_c_and_refuse_after_dispose() -> eyre::Result<()> {
     let Some(probe) = Probe::get() else {
