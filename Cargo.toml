@@ -9,6 +9,7 @@ members = [
     "den-stdlib-ffi",
     "den-stdlib-fs",
     "den-stdlib-networking",
+    "den-stdlib-path",
     "den-stdlib-process",
     "den-stdlib-sqlite",
     "den-stdlib-temporal",
@@ -44,6 +45,7 @@ den-stdlib-crypto = { version = "0.4.0", path = "den-stdlib-crypto" }
 den-stdlib-ffi = { version = "0.4.0", path = "den-stdlib-ffi" }
 den-stdlib-fs = { version = "0.4.0", path = "den-stdlib-fs" }
 den-stdlib-networking = { version = "0.4.0", path = "den-stdlib-networking" }
+den-stdlib-path = { version = "0.4.0", path = "den-stdlib-path" }
 den-stdlib-process = { version = "0.4.0", path = "den-stdlib-process" }
 den-stdlib-sqlite = { version = "0.4.0", path = "den-stdlib-sqlite" }
 den-stdlib-temporal = { version = "0.4.0", path = "den-stdlib-temporal" }

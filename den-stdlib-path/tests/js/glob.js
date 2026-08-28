@@ -1,0 +1,20 @@
+import { assert } from "den:assert";
+import { posix, windows } from "den:path";
+
+assert(posix.matchesGlob("src/lib/path.rs", "src/**/{path,url}.rs"));
+assert(posix.matchesGlob("src/lib/url.rs", "src/**/{path,url}.rs"));
+assert(posix.matchesGlob("foo.js", "@(foo|bar).js"));
+assert(posix.matchesGlob("bar.js", "@(foo|bar).js"));
+assert(!posix.matchesGlob("baz.js", "@(foo|bar).js"));
+assert(!posix.matchesGlob("src/.env", "src/*"));
+assert(posix.matchesGlob("a.js", "*.js"));
+assert(!posix.matchesGlob("a/b.js", "*.js"));
+assert(posix.matchesGlob("a/b.js", "**/*.js"));
+assert(posix.matchesGlob("ab", "a?"));
+assert(!posix.matchesGlob("a/b", "a?"));
+assert(posix.matchesGlob("b.js", "[a-c].js"));
+assert(!posix.matchesGlob("d.js", "[a-c].js"));
+assert(posix.matchesGlob("foo", "[!b]*"));
+assert(!posix.matchesGlob("bar", "[!b]*"));
+assert(windows.matchesGlob("src\\lib.rs", "src/*.rs"));
+assert(!windows.matchesGlob("src\\nested\\lib.rs", "src/*.rs"));
