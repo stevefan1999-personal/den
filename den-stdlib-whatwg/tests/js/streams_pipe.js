@@ -123,6 +123,67 @@ for (const build of [
   assert(threw, "an unimplemented stream feature must throw a TypeError");
 }
 
+// How a promise settled, or that it never did. A stall is a real failure mode
+// here, so every wait below is bounded rather than allowed to hang the suite.
+const settlement = (promise) =>
+  Promise.race([
+    promise.then(() => "resolved", () => "rejected"),
+    new Promise((resolve) => setTimeout(() => resolve("pending"), 1000)),
+  ]);
+
+// A transform that errors must unblock a write parked on its backpressure,
+// and settle the writer's own abort, instead of leaving both pending forever.
+const backpressured = new TransformStream(
+  { transform(chunk, controller) { controller.enqueue(chunk); } },
+  undefined,
+  { highWaterMark: 1 },
+);
+const parkedTransformWriter = backpressured.writable.getWriter();
+parkedTransformWriter.write("first");
+const parkedOnBackpressure = settlement(parkedTransformWriter.write("second"));
+// The writer's own abort fulfils: it reaches the stream before the cancel
+// starts erroring it, which is the settlement the specification gives it.
+const writerAbort = settlement(parkedTransformWriter.abort(new Error("consumer gave up")));
+await backpressured.readable.cancel(new Error("consumer gave up"));
+assertEquals(await parkedOnBackpressure, "rejected");
+assertEquals(await writerAbort, "resolved");
+
+// ReadableStream.from errors the stream when the iterator rejects, rather
+// than dropping the rejection and never settling another read.
+let iteratorStep = 0;
+const rejectingIterator = {
+  [Symbol.asyncIterator]: () => ({
+    next: () =>
+      iteratorStep++ === 0
+        ? Promise.resolve({ value: "only", done: false })
+        : Promise.reject(new Error("the iterator failed")),
+  }),
+};
+const rejectingReader = ReadableStream.from(rejectingIterator).getReader();
+assertEquals((await rejectingReader.read()).value, "only");
+assertEquals(await settlement(rejectingReader.read()), "rejected");
+assertEquals(await settlement(rejectingReader.closed), "rejected");
+
+// `done` is ToBoolean, not a strict boolean: a `done` of 1 ends the stream.
+let coercingStep = 0;
+const coercingIterator = {
+  [Symbol.iterator]: () => ({
+    next: () => (coercingStep++ === 0 ? { value: "x", done: 0 } : { done: 1 }),
+  }),
+};
+assertEquals(await drain(ReadableStream.from(coercingIterator)), "x");
+
+// tee settles both branches with the source's cancel result: a teardown that
+// fails must not report success to whichever branch cancelled first.
+const failingCancel = new ReadableStream({
+  cancel: () => Promise.reject(new Error("teardown failed")),
+});
+const [firstBranch, secondBranch] = failingCancel.tee();
+const firstOutcome = settlement(firstBranch.cancel());
+const secondOutcome = settlement(secondBranch.cancel());
+assertEquals(await firstOutcome, "rejected");
+assertEquals(await secondOutcome, "rejected");
+
 // Teardown probes. Every shape below leaves an operation in flight when the
 // realm is dropped, which is where QuickJS asserts that no JS object is still
 // referenced from Rust. A stream graph that Rust pins for an operation that
