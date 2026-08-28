@@ -1,0 +1,23 @@
+---
+source: den-stdlib-worker/tests/js.rs
+assertion_line: 29
+expression: "snapshot(\"exports.js\").await?"
+---
+AbortController: ok
+AbortSignal: ok
+BroadcastChannel: ok
+CustomEvent: ok
+ErrorEvent: ok
+Event: ok
+EventTarget: ok
+MessageChannel: ok
+MessageEvent: ok
+MessagePort: ok
+NavigatorUAData: ok
+PromiseRejectionEvent: ok
+Worker: ok
+navigator: ok
+performance: ok
+reportError: ok
+structuredClone: ok
+unexpected: none

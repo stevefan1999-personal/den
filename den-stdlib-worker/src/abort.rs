@@ -76,7 +76,9 @@ fn remove_listener<'js>(source: &Value<'js>, listener: &Function<'js>) {
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct AbortSignal<'js> {
+    #[qjs(get)]
     aborted: bool,
+    #[qjs(get)]
     reason:  Value<'js>,
 }
 
@@ -118,12 +120,6 @@ impl<'js> AbortSignal<'js> {
 impl<'js> AbortSignal<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>) -> Self { Self::fresh(&ctx) }
-
-    #[qjs(get)]
-    pub fn aborted(&self) -> bool { self.aborted }
-
-    #[qjs(get)]
-    pub fn reason(&self) -> Value<'js> { self.reason.clone() }
 
     pub fn throw_if_aborted(&self, ctx: Ctx<'js>) -> Result<()> {
         if self.aborted {
@@ -202,6 +198,7 @@ impl<'js> AbortSignal<'js> {
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct AbortController<'js> {
+    #[qjs(get)]
     signal: Class<'js, AbortSignal<'js>>,
 }
 
@@ -213,9 +210,6 @@ impl<'js> AbortController<'js> {
             signal: Class::instance(ctx.clone(), AbortSignal::fresh(&ctx))?,
         })
     }
-
-    #[qjs(get)]
-    pub fn signal(&self) -> Class<'js, AbortSignal<'js>> { self.signal.clone() }
 
     pub fn abort(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) -> Result<()> {
         AbortSignal::abort_inner(&ctx, &self.signal, reason.0, true)?;

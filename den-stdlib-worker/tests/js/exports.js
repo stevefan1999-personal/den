@@ -1,4 +1,3 @@
-import { assertEquals } from "den:assert";
 import * as ns from "den:worker";
 
 const documented = [
@@ -40,4 +39,5 @@ const report = documented.map((name) => {
   if (exported.name !== name) return `${name}: named ${exported.name}`;
   return `${name}: ok`;
 });
-assertEquals(report.join(","), documented.map((name) => `${name}: ok`).join(","));
+const unexpected = Object.keys(ns).filter((name) => !documented.includes(name));
+globalThis.snapshot = [...report, `unexpected: ${unexpected.join(",") || "none"}`].join("\n");

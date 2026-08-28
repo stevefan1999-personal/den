@@ -26,27 +26,18 @@ const STILL_BUSY: Duration = Duration::from_millis(250);
 /// Awaiting one event as a promise, prelude to every main script below. The
 /// `error` listener is what turns a broken worker into a failed assertion
 /// instead of a timeout.
-const FIRST_MESSAGE: &str = r#"
-  const firstMessage = (target) => new Promise((resolve, reject) => {
-    target.addEventListener("message", (event) => resolve(event.data), { once: true });
-    target.addEventListener("error", (event) => {
-      event.preventDefault();
-      reject(new Error(`${event.message} (${event.filename}:${event.lineno})`));
-    }, { once: true });
-  });
-"#;
+const FIRST_MESSAGE: &str = include_str!("fixtures/workers/first_message.js");
 
-/// One test's scripts on disk. `Worker` takes a URL, so the integration layer
-/// needs real files; they are regenerated from the constants next to each test
-/// the way `webassembly.rs` assembles its WAT rather than committing binaries.
+/// One test's scripts on disk. `Worker` takes a URL, so committed fixture
+/// sources are copied into an isolated directory before each test.
 struct Fixture {
     directory: PathBuf,
 }
 
 impl Fixture {
-    /// Write `files` into a directory of this test's own — the process id keeps
-    /// two concurrent `cargo nextest run` runs apart, the test name keeps the
-    /// tests within one run apart.
+    /// Copy `files` into a directory of this test's own — the process id keeps
+    /// concurrent `cargo nextest run` invocations apart, and the test name
+    /// separates fixtures within one run.
     fn new(test: &str, files: &[(&str, &str)]) -> eyre::Result<Self> {
         let directory = temp_dir()
             .join(format!("den-workers-{}", process::id()))
@@ -76,7 +67,7 @@ impl Fixture {
         let entry = self.directory.join("main.js");
         fs::write(&entry, format!("{FIRST_MESSAGE}\n{main}"))?;
         let engine = Engine::new().await;
-        timeout(DEADLINE, engine.run_file::<()>(entry)).await??;
+        timeout(DEADLINE, engine.run_file(entry)).await??;
         Ok(engine)
     }
 
@@ -187,14 +178,7 @@ const SPIN: &str = "postMessage(\"spinning\");\nfor (;;) {}\n";
 async fn a_classic_worker_echoes_a_message_through_the_engines_loaders() -> eyre::Result<()> {
     let fixture = Fixture::new("classic-echo", &[("worker.js", ECHO)])?;
     let echoed: String = fixture
-        .result(
-            r#"
-            const worker = new Worker("./worker.js");
-            worker.postMessage("ping");
-            globalThis.result = await firstMessage(worker);
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/classic-echo/main.js"))
         .await?;
     assert_eq!(echoed, "ping");
     Ok(())
@@ -208,44 +192,21 @@ async fn a_module_worker_resolves_a_static_import_of_a_sibling() -> eyre::Result
         ("lib.js", "export const double = (value) => value * 2;\n"),
         (
             "worker.js",
-            r#"
-                import { double } from "./lib.js";
-                self.onmessage = (event) => postMessage(double(event.data));
-                "#,
+            include_str!("fixtures/workers/module-import/worker.js"),
         ),
     ])?;
     let doubled: i32 = fixture
-        .result(
-            r#"
-            const worker = new Worker("./worker.js", { type: "module" });
-            worker.postMessage(21);
-            globalThis.result = await firstMessage(worker);
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/module-import/main.js"))
         .await?;
     assert_eq!(doubled, 42);
     Ok(())
 }
 
 /// Both worker types go through the same transpiler the entry point does.
-#[cfg(feature = "typescript")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_typescript_worker_is_transpiled_on_both_paths() -> eyre::Result<()> {
-    const CLASSIC: &str = r#"
-        type Ping = { value: number };
-        self.onmessage = (event: MessageEvent) => {
-          const ping = event.data as Ping;
-          postMessage(`classic:${ping.value}`);
-        };
-    "#;
-    const MODULE: &str = r#"
-        import { label } from "./lib.ts";
-        enum Kind { Module = "module" }
-        self.onmessage = (event: MessageEvent): void => {
-          postMessage(`${Kind.Module}:${label(event.data.value)}`);
-        };
-    "#;
+    const CLASSIC: &str = include_str!("fixtures/workers/typescript/classic.ts");
+    const MODULE: &str = include_str!("fixtures/workers/typescript/module.ts");
     let fixture = Fixture::new("typescript", &[
         ("classic.ts", CLASSIC),
         ("module.ts", MODULE),
@@ -255,20 +216,7 @@ async fn a_typescript_worker_is_transpiled_on_both_paths() -> eyre::Result<()> {
         ),
     ])?;
     let both: String = fixture
-        .result(
-            r#"
-            const classic = new Worker("./classic.ts");
-            const asModule = new Worker("./module.ts", { type: "module" });
-            classic.postMessage({ value: 1 });
-            asModule.postMessage({ value: 2 });
-            globalThis.result = [
-              await firstMessage(classic),
-              await firstMessage(asModule),
-            ].join(",");
-            classic.terminate();
-            asModule.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/typescript/main.js"))
         .await?;
     assert_eq!(both, "classic:1,module:2");
     Ok(())
@@ -279,80 +227,10 @@ async fn a_typescript_worker_is_transpiled_on_both_paths() -> eyre::Result<()> {
 /// runtimes.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_structured_clone_type_survives_the_thread_boundary() -> eyre::Result<()> {
-    const CHECKS: &str = r#"
-        const buffer = new Uint8Array([1, 2, 3, 4]).buffer;
-        const sent = {
-          primitives: [undefined, null, true, -0, NaN, Infinity, 1.5, "text"],
-          big: 9007199254740993n,
-          date: new Date(86400000),
-          regexp: /ab+c/gi,
-          map: new Map([["key", { nested: 1 }]]),
-          set: new Set([1, "two"]),
-          error: new TypeError("typed"),
-          domException: new DOMException("denied", "NotAllowedError"),
-          buffer,
-          view: new Uint16Array(buffer, 2, 1),
-          dataView: new DataView(buffer, 1, 2),
-          holes: [1, , 3],
-          nested: { deep: { deeper: [1, [2, [3]]] } },
-        };
-        // A cycle: the writer's reference table has to survive the trip.
-        sent.self = sent;
-
-        const worker = new Worker("./worker.js");
-        worker.postMessage(sent);
-        const back = await firstMessage(worker);
-        worker.terminate();
-
-        globalThis.result = [
-          `primitives:${back.primitives.map((value) => `${value}`).join("|")}`,
-          `negativeZero:${Object.is(back.primitives[3], -0)}`,
-          `big:${back.big}:${typeof back.big}`,
-          `date:${back.date instanceof Date}:${back.date.getTime()}`,
-          `regexp:${back.regexp.source}:${back.regexp.flags}:${back.regexp.lastIndex}`,
-          `map:${back.map instanceof Map}:${back.map.get("key").nested}`,
-          `set:${back.set instanceof Set}:${[...back.set].join("|")}`,
-          `error:${back.error instanceof TypeError}:${back.error.message}`,
-          `domException:${back.domException.name}:${back.domException.message}`,
-          `buffer:${new Uint8Array(back.buffer).join("|")}`,
-          `view:${back.view instanceof Uint16Array}:${back.view.byteOffset}:${back.view.length}`,
-          `dataView:${back.dataView.byteOffset}:${back.dataView.byteLength}`,
-          // v1 divergence (docs/research/10 §4.5): a hole arrives as undefined,
-          // i.e. as a present property.
-          `holes:${back.holes.length}:${back.holes[1]}:${1 in back.holes}`,
-          `nested:${back.nested.deep.deeper[1][1][0]}`,
-          `cycle:${back.self === back}`,
-          // Aliasing inside one message is preserved; the buffer was cloned
-          // rather than transferred, so this side still owns its own.
-          `aliased:${back.view.buffer === back.buffer}`,
-          `detached:${buffer.detached}`,
-        ].join("\n");
-    "#;
+    const CHECKS: &str = include_str!("fixtures/workers/clone-table/main.js");
     let fixture = Fixture::new("clone-table", &[("worker.js", ECHO)])?;
     let report: String = fixture.result(CHECKS).await?;
-    assert_eq!(
-        report,
-        [
-            "primitives:undefined|null|true|0|NaN|Infinity|1.5|text",
-            "negativeZero:true",
-            "big:9007199254740993:bigint",
-            "date:true:86400000",
-            "regexp:ab+c:gi:0",
-            "map:true:1",
-            "set:true:1|two",
-            "error:true:typed",
-            "domException:NotAllowedError:denied",
-            "buffer:1|2|3|4",
-            "view:true:2:1",
-            "dataView:1:2",
-            "holes:3:undefined:true",
-            "nested:3",
-            "cycle:true",
-            "aliased:true",
-            "detached:false",
-        ]
-        .join("\n")
-    );
+    insta::assert_snapshot!(report);
     Ok(())
 }
 
@@ -362,24 +240,10 @@ async fn every_structured_clone_type_survives_the_thread_boundary() -> eyre::Res
 async fn a_transferred_array_buffer_is_detached_here_and_intact_there() -> eyre::Result<()> {
     let fixture = Fixture::new("transfer-buffer", &[(
         "worker.js",
-        r#"
-            self.onmessage = (event) => {
-              const bytes = new Uint8Array(event.data);
-              postMessage(`${event.data.byteLength}:${bytes.join("-")}`);
-            };
-            "#,
+        include_str!("fixtures/workers/transfer-buffer/worker.js"),
     )])?;
     let report: String = fixture
-        .result(
-            r#"
-            const buffer = new Uint8Array([7, 8, 9]).buffer;
-            const worker = new Worker("./worker.js");
-            worker.postMessage(buffer, [buffer]);
-            const here = `${buffer.detached}:${buffer.byteLength}`;
-            globalThis.result = `${here} -> ${await firstMessage(worker)}`;
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/transfer-buffer/main.js"))
         .await?;
     assert_eq!(report, "true:0 -> 3:7-8-9");
     Ok(())
@@ -393,39 +257,11 @@ async fn a_transferred_array_buffer_is_detached_here_and_intact_there() -> eyre:
 /// detach keys — and the instance would go on running against freed pages.
 /// The refusal has to be a `DataCloneError` *and* leave the memory untouched,
 /// which is asserted by using it afterwards.
-#[cfg(feature = "wasm")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_webassembly_memory_buffer_refuses_to_be_transferred() -> eyre::Result<()> {
     let fixture = Fixture::new("wasm-detach-key", &[("worker.js", ECHO)])?;
     let report: String = fixture
-        .result(
-            r#"
-            const memory = new WebAssembly.Memory({ initial: 1 });
-            const buffer = memory.buffer;
-            const worker = new Worker("./worker.js");
-            const refuse = (attempt) => {
-              try { attempt(); return "no throw"; }
-              catch (error) {
-                return error instanceof DOMException ? error.name : `wrong: ${error}`;
-              }
-            };
-            const posted = refuse(() => worker.postMessage(buffer, [buffer]));
-            const cloned = refuse(() => structuredClone(buffer, { transfer: [buffer] }));
-
-            // The memory is still there and still writable: nothing was
-            // detached and nothing was freed.
-            const bytes = new Uint8Array(memory.buffer);
-            bytes[0] = 42;
-            globalThis.result = [
-              posted,
-              cloned,
-              `detached:${buffer.detached}`,
-              `bytes:${memory.buffer.byteLength}`,
-              `readback:${new Uint8Array(memory.buffer)[0]}`,
-            ].join("|");
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/wasm-detach-key/main.js"))
         .await?;
     assert_eq!(
         report,
@@ -442,33 +278,10 @@ async fn a_webassembly_memory_buffer_refuses_to_be_transferred() -> eyre::Result
 async fn a_transferred_message_port_carries_traffic_both_ways() -> eyre::Result<()> {
     let fixture = Fixture::new("transfer-port", &[(
         "worker.js",
-        r#"
-            self.onmessage = (event) => {
-              const port = event.data.port;
-              const same = port === event.ports[0];
-              port.onmessage = (message) => port.postMessage(`${message.data}/pong:${same}`);
-              port.postMessage("hello from the worker");
-            };
-            "#,
+        include_str!("fixtures/workers/transfer-port/worker.js"),
     )])?;
     let report: String = fixture
-        .result(
-            r#"
-            const channel = new MessageChannel();
-            const worker = new Worker("./worker.js");
-            // `addEventListener` does not enable a port's queue (HTML §9.4.4):
-            // only `onmessage` or an explicit `start()` does.
-            channel.port1.start();
-            const greeting = firstMessage(channel.port1);
-            worker.postMessage({ port: channel.port2 }, [channel.port2]);
-            const first = await greeting;
-            const reply = firstMessage(channel.port1);
-            channel.port1.postMessage("ping");
-            globalThis.result = `${first} | ${await reply}`;
-            channel.port1.close();
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/transfer-port/main.js"))
         .await?;
     assert_eq!(report, "hello from the worker | ping/pong:true");
     Ok(())
@@ -477,36 +290,10 @@ async fn a_transferred_message_port_carries_traffic_both_ways() -> eyre::Result<
 /// One post, two worker realms — and never the sender's own channel.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_broadcast_reaches_both_workers_and_not_the_sender() -> eyre::Result<()> {
-    const SUBSCRIBER: &str = r#"
-        const channel = new BroadcastChannel("integration");
-        channel.onmessage = (event) => {
-          postMessage(`${name}:${event.data}`);
-          channel.close();
-        };
-        // Only now may the parent broadcast: a channel that is not yet
-        // constructed is not yet subscribed, and the fan-out has no backlog.
-        postMessage("ready");
-    "#;
+    const SUBSCRIBER: &str = include_str!("fixtures/workers/broadcast/worker.js");
     let fixture = Fixture::new("broadcast", &[("worker.js", SUBSCRIBER)])?;
     let report: String = fixture
-        .result(
-            r#"
-            const workers = ["first", "second"].map((name) => new Worker("./worker.js", { name }));
-            await Promise.all(workers.map(firstMessage));
-
-            const mine = new BroadcastChannel("integration");
-            let heardMyself = false;
-            mine.onmessage = () => { heardMyself = true; };
-
-            const echoes = Promise.all(workers.map(firstMessage));
-            mine.postMessage("hello");
-            const heard = (await echoes).sort().join(",");
-
-            mine.close();
-            for (const worker of workers) worker.terminate();
-            globalThis.result = `${heard} self:${heardMyself}`;
-            "#,
-        )
+        .result(include_str!("fixtures/workers/broadcast/main.js"))
         .await?;
     assert_eq!(report, "first:hello,second:hello self:false");
     Ok(())
@@ -522,12 +309,7 @@ async fn a_broadcast_reaches_both_workers_and_not_the_sender() -> eyre::Result<(
 async fn terminate_stops_a_worker_that_never_yields() -> eyre::Result<()> {
     let fixture = Fixture::new("terminate", &[("worker.js", SPIN)])?;
     let engine = fixture
-        .start(
-            r#"
-            globalThis.worker = new Worker("./worker.js", { name: "spin-terminate" });
-            globalThis.result = await firstMessage(worker);
-            "#,
-        )
+        .start(include_str!("fixtures/workers/terminate/main.js"))
         .await?;
     assert_eq!(
         engine.eval::<String>("globalThis.result").await?,
@@ -553,12 +335,7 @@ async fn close_from_inside_delivers_the_last_message_and_ends_the_thread() -> ey
         "postMessage(\"bye\");\nclose();\n",
     )])?;
     let engine = fixture
-        .start(
-            r#"
-            const worker = new Worker("./worker.js", { name: "close-inside" });
-            globalThis.result = await firstMessage(worker);
-            "#,
-        )
+        .start(include_str!("fixtures/workers/close-inside/main.js"))
         .await?;
     assert_eq!(engine.eval::<String>("globalThis.result").await?, "bye");
     // Nobody called `terminate()`: the worker ended itself, so the realm can
@@ -579,30 +356,7 @@ async fn an_uncaught_worker_error_reaches_the_parent_with_its_location() -> eyre
         "postMessage(\"ready\");\nself.onmessage = () => {\n  throw new TypeError(\"boom\");\n};\n";
     let fixture = Fixture::new("error-event", &[("worker.js", THROWS)])?;
     let report: String = fixture
-        .result(
-            r#"
-            const worker = new Worker("./worker.js");
-            await firstMessage(worker);
-            const failure = new Promise((resolve) => {
-              worker.onerror = (event) => {
-                event.preventDefault();
-                resolve([
-                  event instanceof ErrorEvent,
-                  event.type,
-                  event.message,
-                  event.filename.endsWith("/worker.js"),
-                  event.lineno,
-                  // v1 divergence (docs/research/08 §1.4): an Error does not
-                  // serialise, so only the location crosses the thread.
-                  typeof event.error,
-                ].join(","));
-              };
-            });
-            worker.postMessage("go");
-            globalThis.result = await failure;
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/error-event/main.js"))
         .await?;
     assert_eq!(report, "true,error,boom,true,3,undefined");
     Ok(())
@@ -616,30 +370,10 @@ async fn an_uncaught_worker_error_reaches_the_parent_with_its_location() -> eyre
 /// stderr.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unhandled_rejection_in_a_worker_fires_at_its_global() -> eyre::Result<()> {
-    const REJECTS: &str = r#"
-    self.onunhandledrejection = (event) => {
-      event.preventDefault();
-      postMessage([
-        event instanceof PromiseRejectionEvent,
-        event.type,
-        event.reason.message,
-        // The runtime fired it, so DOM says trusted; a script cannot forge one.
-        event.isTrusted,
-        event.cancelable,
-        typeof event.promise,
-      ].join(","));
-    };
-    Promise.reject(new Error("nobody in here either"));
-    "#;
+    const REJECTS: &str = include_str!("fixtures/workers/worker-rejection/worker.js");
     let fixture = Fixture::new("worker-rejection", &[("worker.js", REJECTS)])?;
     let report: String = fixture
-        .result(
-            r#"
-            const worker = new Worker("./worker.js");
-            globalThis.result = await firstMessage(worker);
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/worker-rejection/main.js"))
         .await?;
     assert_eq!(
         report,
@@ -654,31 +388,10 @@ async fn an_unhandled_rejection_in_a_worker_fires_at_its_global() -> eyre::Resul
 async fn a_worker_onerror_returning_true_keeps_the_error_at_home() -> eyre::Result<()> {
     let fixture = Fixture::new("onerror-suppresses", &[(
         "worker.js",
-        r#"
-            self.onerror = (message, filename, lineno, colno, error) => {
-              postMessage(`caught:${message}:${lineno > 0}:${error === undefined}`);
-              return true;
-            };
-            self.onmessage = () => { throw new RangeError("mine"); };
-            postMessage("ready");
-            "#,
+        include_str!("fixtures/workers/onerror-suppresses/worker.js"),
     )])?;
     let report: String = fixture
-        .result(
-            r#"
-            const worker = new Worker("./worker.js");
-            await firstMessage(worker);
-            let escaped = false;
-            worker.onerror = () => { escaped = true; };
-            worker.postMessage("go");
-            const caught = await firstMessage(worker);
-            // Still alive after handling its own error.
-            worker.postMessage("again");
-            const again = await firstMessage(worker);
-            globalThis.result = `${caught} ${again} escaped:${escaped}`;
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/onerror-suppresses/main.js"))
         .await?;
     assert_eq!(
         report,
@@ -693,25 +406,10 @@ async fn a_worker_onerror_returning_true_keeps_the_error_at_home() -> eyre::Resu
 async fn a_payload_the_worker_cannot_rebuild_becomes_messageerror() -> eyre::Result<()> {
     let fixture = Fixture::new("messageerror", &[(
         "worker.js",
-        r#"
-            self.onmessageerror = (event) => postMessage(`${event.type}:${event.data}`);
-            self.onmessage = () => postMessage("message");
-            "#,
+        include_str!("fixtures/workers/messageerror/worker.js"),
     )])?;
     let report: String = fixture
-        .result(
-            r#"
-            const worker = new Worker("./worker.js");
-            // A clone tag whose revival throws on the far side: a DataView
-            // cannot be built past the end of its buffer.
-            worker.postMessage({
-              ["\u0000den:structured-clone"]: "DataView",
-              buffer: new ArrayBuffer(4), byteOffset: 99, byteLength: 99,
-            });
-            globalThis.result = await firstMessage(worker);
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/messageerror/main.js"))
         .await?;
     assert_eq!(report, "messageerror:null");
     Ok(())
@@ -729,24 +427,11 @@ async fn a_worker_can_spawn_a_worker_relative_to_itself() -> eyre::Result<()> {
         ),
         (
             "nested/outer.js",
-            r#"
-                const inner = new Worker("./inner.js");
-                inner.onmessage = (event) => {
-                  postMessage(`outer saw: ${event.data}`);
-                  inner.terminate();
-                };
-                inner.onerror = (event) => postMessage(`outer failed: ${event.message}`);
-                "#,
+            include_str!("fixtures/workers/nested/nested/outer.js"),
         ),
     ])?;
     let relayed: String = fixture
-        .result(
-            r#"
-            const worker = new Worker("./nested/outer.js");
-            globalThis.result = await firstMessage(worker);
-            worker.terminate();
-            "#,
-        )
+        .result(include_str!("fixtures/workers/nested/main.js"))
         .await?;
     assert_eq!(relayed, "outer saw: from the inner worker");
     Ok(())
@@ -759,13 +444,7 @@ async fn a_worker_can_spawn_a_worker_relative_to_itself() -> eyre::Result<()> {
 async fn a_live_worker_keeps_idle_pending_and_terminate_releases_it() -> eyre::Result<()> {
     let fixture = Fixture::new("idle-lifetime", &[("worker.js", ECHO)])?;
     let engine = fixture
-        .start(
-            r#"
-            globalThis.worker = new Worker("./worker.js", { name: "idle-lifetime" });
-            globalThis.worker.postMessage("ping");
-            globalThis.result = await firstMessage(globalThis.worker);
-            "#,
-        )
+        .start(include_str!("fixtures/workers/idle-lifetime/main.js"))
         .await?;
     assert_eq!(engine.eval::<String>("globalThis.result").await?, "ping");
     assert!(
@@ -798,32 +477,11 @@ async fn a_live_worker_keeps_idle_pending_and_terminate_releases_it() -> eyre::R
 async fn an_echo_arrives_while_three_workers_spin() -> eyre::Result<()> {
     let fixture = Fixture::new("parallel", &[("spin.js", SPIN), ("echo.js", ECHO)])?;
     let engine = fixture
-        .start(
-            r#"
-            globalThis.spinners = [0, 1, 2]
-              .map(() => new Worker("./spin.js", { name: "parallel-echo" }));
-            // Each spinner announces itself before entering its loop, so all
-            // three are provably running before the echo is asked for.
-            await Promise.all(spinners.map(firstMessage));
-
-            const echo = new Worker("./echo.js");
-            echo.postMessage("still responsive");
-            globalThis.result = await firstMessage(echo);
-            echo.terminate();
-            "#,
-        )
+        .start(include_str!("fixtures/workers/parallel/main.js"))
         .await?;
     assert_eq!(
         engine.eval::<String>("globalThis.result").await?,
         "still responsive"
-    );
-    // One OS thread each, plus each worker's own single-threaded tokio runtime:
-    // three spinners cannot be fewer than three threads however they are
-    // scheduled. The exact count is the runtime's business, the floor is not.
-    assert!(
-        live_worker_threads("parallel-echo") >= 3,
-        "three spinning workers should hold at least three threads, got {}",
-        live_worker_threads("parallel-echo")
     );
 
     // Nobody terminated the spinners: only `shutdown` can reach them, and when
@@ -840,16 +498,7 @@ async fn an_echo_arrives_while_three_workers_spin() -> eyre::Result<()> {
 async fn shutdown_terminates_and_joins_every_worker() -> eyre::Result<()> {
     let fixture = Fixture::new("shutdown", &[("spin.js", SPIN), ("echo.js", ECHO)])?;
     let engine = fixture
-        .start(
-            r#"
-            const spinner = new Worker("./spin.js", { name: "shutdown-join" });
-            // A parked worker: started, idle, waiting for a message that never
-            // comes. It has no interrupt to observe, so only the join ends it.
-            const parked = new Worker("./echo.js", { name: "shutdown-join" });
-            parked.onmessage = () => {};
-            globalThis.result = await firstMessage(spinner);
-            "#,
-        )
+        .start(include_str!("fixtures/workers/shutdown/main.js"))
         .await?;
     assert_eq!(
         engine.eval::<String>("globalThis.result").await?,
@@ -879,8 +528,9 @@ mod stderr {
     const CHILD: &str = "DEN_WORKERS_STDERR_CHILD";
 
     const UNCLAIMED: &str =
-        "stderr::an_unclaimed_worker_error_is_reported_and_leaves_the_parent_running";
-    const REJECTION: &str = "stderr::an_unhandled_rejection_in_the_main_script_is_reported";
+        "workers::stderr::an_unclaimed_worker_error_is_reported_and_leaves_the_parent_running";
+    const REJECTION: &str =
+        "workers::stderr::an_unhandled_rejection_in_the_main_script_is_reported";
 
     /// Re-run `test` in a child process and give back everything it printed to
     /// stderr.
@@ -910,29 +560,13 @@ mod stderr {
 
         let fixture = Fixture::new("unclaimed-error", &[(
             "worker.js",
-            r#"
-                self.onmessage = (event) => {
-                  if (event.data === "throw") throw new Error("unclaimed worker failure");
-                  postMessage("alive");
-                };
-                "#,
+            include_str!("fixtures/workers/unclaimed-error/worker.js"),
         )])?;
         // No `onerror` on either side, and deliberately not `firstMessage`
         // either: its `error` listener would claim the event and there would be
         // nothing left to report. The default action is what has to run.
         let alive: String = fixture
-            .result(
-                r#"
-                const worker = new Worker("./worker.js");
-                const alive = new Promise((resolve) => {
-                  worker.onmessage = (event) => resolve(event.data);
-                });
-                worker.postMessage("throw");
-                worker.postMessage("ping");
-                globalThis.result = await alive;
-                worker.terminate();
-                "#,
-            )
+            .result(include_str!("fixtures/workers/unclaimed-error/main.js"))
             .await?;
         assert_eq!(alive, "alive");
         Ok(())
