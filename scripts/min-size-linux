@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${RUSTFLAGS:-}${CARGO_ENCODED_RUSTFLAGS:-}${CARGO_BUILD_RUSTFLAGS:-}" ]; then
+    echo "min-size-linux manages Rust flags; unset custom Rust flags first" >&2
+    exit 2
+fi
+
+cd -- "$(dirname -- "$0")/.."
+den_workspace=$(pwd -P)
+den_sysroot=$(rustc --print sysroot)
+den_registry=$(
+    cargo metadata --locked --format-version 1 \
+        | sed -n 's/.*"manifest_path":"\([^"]*\/registry\/src\/[^/" ]*\)\/[^/" ]*\/Cargo.toml".*/\1/p'
+)
+
+den_separator=$(printf '\037')
+den_rustflags="--remap-path-scope=object${den_separator}--remap-path-prefix=${den_workspace}=/den${den_separator}--remap-path-prefix=${den_sysroot}=/rust"
+if [ -n "$den_registry" ]; then
+    den_rustflags="${den_rustflags}${den_separator}--remap-path-prefix=${den_registry}=/cargo"
+fi
+export CARGO_ENCODED_RUSTFLAGS="$den_rustflags"
+
+# ICF can merge distinct function addresses; packed RELR needs glibc 2.36+.
+exec cargo rustc --target host-tuple --profile min-size-release --locked --bin den \
+    --features rquickjs/disable-assertions "$@" -- \
+    -C link-arg=-Wl,-O2,--icf=all,-z,pack-relative-relocs,--sort-section=alignment
