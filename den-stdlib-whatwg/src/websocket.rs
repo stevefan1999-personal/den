@@ -8,61 +8,42 @@ use den_stdlib_networking::websocket::{
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Ctx, FromJs as _, Function, JsLifetime, Result, Value,
     atom::PredefinedAtom,
-    class::{Trace, Tracer},
+    class::Trace,
     function::{Opt, Rest, This},
 };
 
-use crate::{
-    blob::Blob,
-    event_target::{HostEventTarget, SharedEvents},
-    host::Host,
-};
+use crate::{blob::Blob, host::Host};
 
 const CONNECTING: i32 = 0;
 const OPEN: i32 = 1;
 const CLOSING: i32 = 2;
 const CLOSED: i32 = 3;
 
-#[derive(JsLifetime)]
-#[rquickjs::class]
-pub struct WebSocket<'js> {
-    events:      SharedEvents<'js>,
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class(rename_all = "camelCase")]
+pub struct WebSocket {
     #[qjs(skip_trace)]
     native:      Rc<NativeWebSocket>,
     binary_type: String,
+    #[qjs(get)]
     protocol:    String,
+    #[qjs(get)]
     extensions:  String,
     origin:      String,
+    #[qjs(get)]
     url:         String,
+    #[qjs(get)]
     ready_state: i32,
 }
 
-impl<'js> Trace<'js> for WebSocket<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Ok(events) = self.events.try_borrow() {
-            events.trace(tracer);
-        }
-    }
-}
-
-impl<'js> WebSocket<'js> {
-    fn dispatch(this: &Class<'js, Self>, ctx: &Ctx<'js>, event: Value<'js>) -> Result<()> {
-        let events = Rc::clone(&this.borrow().events);
-        HostEventTarget::dispatch_shared(&events, ctx, this.as_inner(), event)?;
+impl WebSocket {
+    fn dispatch<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>, event: Value<'js>) -> Result<()> {
+        den_stdlib_worker::events::dispatch_trusted(
+            ctx.clone(),
+            this.as_inner().clone().into_value(),
+            event,
+        )?;
         Ok(())
-    }
-
-    fn handler(this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str) -> Value<'js> {
-        let events = Rc::clone(&this.0.borrow().events);
-        events.borrow().handler_or_null(&ctx, type_)
-    }
-
-    fn set_handler(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str, value: Value<'js>,
-    ) -> Result<()> {
-        let events = Rc::clone(&this.0.borrow().events);
-        let target = this.0.as_inner().clone();
-        events.borrow_mut().set_handler(&ctx, target, type_, value)
     }
 
     fn throw_native(ctx: &Ctx<'_>, error: NativeWsError) -> rquickjs::Error {
@@ -84,7 +65,7 @@ impl<'js> WebSocket<'js> {
         }
     }
 
-    fn event_or_undefined(ctx: &Ctx<'js>, event: Result<Value<'js>>) -> Value<'js> {
+    fn event_or_undefined<'js>(ctx: &Ctx<'js>, event: Result<Value<'js>>) -> Value<'js> {
         event.unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
     }
 
@@ -98,7 +79,7 @@ impl<'js> WebSocket<'js> {
         }
     }
 
-    fn protocols_from_list(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<String>> {
+    fn protocols_from_list<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<String>> {
         if let Some(string) = value.as_string() {
             let text = string.to_string()?;
             return Ok(if text.is_empty() {
@@ -120,7 +101,9 @@ impl<'js> WebSocket<'js> {
         ))
     }
 
-    fn protocols_from_constructor_arg(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<String>> {
+    fn protocols_from_constructor_arg<'js>(
+        ctx: &Ctx<'js>, value: Value<'js>,
+    ) -> Result<Vec<String>> {
         if value.is_undefined() {
             return Ok(Vec::new());
         }
@@ -140,7 +123,7 @@ impl<'js> WebSocket<'js> {
         ))
     }
 
-    fn pump(this: Class<'js, Self>, ctx: Ctx<'js>) {
+    fn pump<'js>(this: Class<'js, Self>, ctx: Ctx<'js>) {
         ctx.spawn({
             let ctx = ctx.clone();
             async move {
@@ -241,7 +224,7 @@ impl<'js> WebSocket<'js> {
 
     /// Web IDL constants also live on the prototype so `socket.CONNECTING`
     /// works.
-    pub fn install_idl_constants(ctx: &Ctx<'js>) -> Result<()> {
+    pub fn install_idl_constants(ctx: &Ctx<'_>) -> Result<()> {
         let Some(proto) = Class::<Self>::prototype(ctx)? else {
             return Ok(());
         };
@@ -254,9 +237,11 @@ impl<'js> WebSocket<'js> {
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl<'js> WebSocket<'js> {
+impl WebSocket {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, url: String, protocols: Opt<Value<'js>>) -> Result<Class<'js, Self>> {
+    pub fn new<'js>(
+        ctx: Ctx<'js>, url: String, protocols: Opt<Value<'js>>,
+    ) -> Result<Class<'js, Self>> {
         let parsed =
             NativeWebSocket::parse_url(&url).map_err(|error| Self::throw_native(&ctx, error))?;
         let scheme = if parsed.scheme() == "wss" {
@@ -284,7 +269,6 @@ impl<'js> WebSocket<'js> {
         let native = NativeWebSocket::connect(&url, &protocols)
             .map_err(|error| Self::throw_native(&ctx, error))?;
         let class = Class::instance(ctx.clone(), Self {
-            events: HostEventTarget::share(),
             native: Rc::new(native),
             binary_type: "blob".to_owned(),
             protocol: String::new(),
@@ -328,23 +312,11 @@ impl<'js> WebSocket<'js> {
     }
 
     #[qjs(get)]
-    pub fn protocol(&self) -> String { self.protocol.clone() }
-
-    #[qjs(get)]
-    pub fn ready_state(&self) -> i32 { self.ready_state }
-
-    #[qjs(get)]
-    pub fn url(&self) -> String { self.url.clone() }
-
-    #[qjs(get)]
     pub fn buffered_amount(&self) -> i32 {
         i32::try_from(self.native.buffered_amount()).unwrap_or(i32::MAX)
     }
 
-    #[qjs(get)]
-    pub fn extensions(&self) -> String { self.extensions.clone() }
-
-    pub fn send(this: This<Class<'js, Self>>, ctx: Ctx<'js>, data: Value<'js>) -> Result<()> {
+    pub fn send<'js>(this: This<Class<'js, Self>>, ctx: Ctx<'js>, data: Value<'js>) -> Result<()> {
         let ready = this.0.borrow().ready_state;
         if ready == CONNECTING {
             return Err(Host::throw_dom(
@@ -370,7 +342,7 @@ impl<'js> WebSocket<'js> {
         }
     }
 
-    pub fn close(
+    pub fn close<'js>(
         this: This<Class<'js, Self>>, ctx: Ctx<'js>, args: Rest<Value<'js>>,
     ) -> Result<()> {
         let ready = this.0.borrow().ready_state;
@@ -408,76 +380,6 @@ impl<'js> WebSocket<'js> {
         };
         native.close_opt(code, reason);
         Ok(())
-    }
-
-    pub fn add_event_listener(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: String, callback: Value<'js>,
-        options: Opt<Value<'js>>,
-    ) -> Result<()> {
-        let events = Rc::clone(&this.0.borrow().events);
-        events.borrow_mut().add(&ctx, type_, callback, options.0)
-    }
-
-    pub fn remove_event_listener(
-        this: This<Class<'js, Self>>, type_: String, callback: Value<'js>, options: Opt<Value<'js>>,
-    ) {
-        let events = Rc::clone(&this.0.borrow().events);
-        events.borrow_mut().remove(&type_, &callback, options.0);
-    }
-
-    pub fn dispatch_event(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, event: Value<'js>,
-    ) -> Result<bool> {
-        let events = Rc::clone(&this.0.borrow().events);
-        HostEventTarget::dispatch_shared(&events, &ctx, this.0.as_inner(), event)
-    }
-
-    #[qjs(get, rename = "onopen")]
-    pub fn onopen(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "open")
-    }
-
-    #[qjs(set, rename = "onopen")]
-    pub fn set_onopen(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "open", value)
-    }
-
-    #[qjs(get, rename = "onmessage")]
-    pub fn onmessage(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "message")
-    }
-
-    #[qjs(set, rename = "onmessage")]
-    pub fn set_onmessage(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "message", value)
-    }
-
-    #[qjs(get, rename = "onerror")]
-    pub fn onerror(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "error")
-    }
-
-    #[qjs(set, rename = "onerror")]
-    pub fn set_onerror(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "error", value)
-    }
-
-    #[qjs(get, rename = "onclose")]
-    pub fn onclose(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "close")
-    }
-
-    #[qjs(set, rename = "onclose")]
-    pub fn set_onclose(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "close", value)
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]

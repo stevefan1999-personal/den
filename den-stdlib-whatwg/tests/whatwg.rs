@@ -11,9 +11,17 @@ fn case(name: &str) -> PathBuf {
 
 async fn run(name: &str) -> eyre::Result<()> {
     let engine = Engine::new().await;
-    engine.run_file::<()>(case(name)).await?;
+    engine.run_file(case(name)).await?;
     engine.shutdown().await;
     Ok(())
+}
+
+async fn snapshot(name: &str) -> eyre::Result<String> {
+    let engine = Engine::new().await;
+    engine.run_file(case(name)).await?;
+    let report = engine.eval("globalThis.snapshot").await?;
+    engine.shutdown().await;
+    Ok(report)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -27,6 +35,12 @@ async fn blob_file_form_data_and_file_reader_are_globals() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn url_pattern_matches_a_pathname_group() -> eyre::Result<()> { run("url_pattern.js").await }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn url_and_search_params_normalize_and_mutate_live() -> eyre::Result<()> {
+    insta::assert_snapshot!(snapshot("url.js").await?);
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compression_round_trips_gzip_deflate_and_raw() -> eyre::Result<()> {

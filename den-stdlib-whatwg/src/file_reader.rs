@@ -13,21 +13,20 @@ use rquickjs::{
     function::{Opt, This},
 };
 
-use crate::{
-    event_target::{HostEventTarget, SharedEvents},
-    host::Host,
-};
+use crate::host::Host;
 
 const EMPTY: i32 = 0;
 const LOADING: i32 = 1;
 const DONE: i32 = 2;
 
 #[derive(JsLifetime)]
-#[rquickjs::class]
+#[rquickjs::class(rename_all = "camelCase")]
 pub struct FileReader<'js> {
-    events:      SharedEvents<'js>,
+    #[qjs(get)]
     ready_state: i32,
+    #[qjs(get)]
     result:      Value<'js>,
+    #[qjs(get)]
     error:       Value<'js>,
     #[qjs(skip_trace)]
     aborted:     Rc<Cell<bool>>,
@@ -37,16 +36,16 @@ impl<'js> Trace<'js> for FileReader<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
         self.result.trace(tracer);
         self.error.trace(tracer);
-        if let Ok(events) = self.events.try_borrow() {
-            events.trace(tracer);
-        }
     }
 }
 
 impl<'js> FileReader<'js> {
     fn dispatch(this: &Class<'js, Self>, ctx: &Ctx<'js>, event: Value<'js>) -> Result<()> {
-        let events = this.borrow().events.clone();
-        HostEventTarget::dispatch_shared(&events, ctx, this.as_inner(), event)?;
+        den_stdlib_worker::events::dispatch_trusted(
+            ctx.clone(),
+            this.as_inner().clone().into_value(),
+            event,
+        )?;
         Ok(())
     }
 
@@ -61,21 +60,6 @@ impl<'js> FileReader<'js> {
         Self::dispatch(this, ctx, event)
     }
 
-    fn handler(this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str) -> Value<'js> {
-        this.0.borrow().events.borrow().handler_or_null(&ctx, type_)
-    }
-
-    fn set_handler(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: &'static str, value: Value<'js>,
-    ) -> Result<()> {
-        this.0.borrow().events.borrow_mut().set_handler(
-            &ctx,
-            this.0.as_inner().clone(),
-            type_,
-            value,
-        )
-    }
-
     /// Web IDL `const` members also live on the prototype so `reader.EMPTY`
     /// works. rquickjs rejects a second getter with the same rename.
     pub fn install_idl_constants(ctx: &Ctx<'js>) -> Result<()> {
@@ -85,7 +69,6 @@ impl<'js> FileReader<'js> {
         proto.set("EMPTY", EMPTY)?;
         proto.set("LOADING", LOADING)?;
         proto.set("DONE", DONE)?;
-        Host::install_fileapi_document(ctx)?;
         Ok(())
     }
 }
@@ -95,7 +78,6 @@ impl<'js> FileReader<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>) -> Self {
         Self {
-            events:      HostEventTarget::share(),
             ready_state: EMPTY,
             result:      Value::new_null(ctx.clone()),
             error:       Value::new_null(ctx),
@@ -111,42 +93,6 @@ impl<'js> FileReader<'js> {
 
     #[qjs(static, get, rename = "DONE")]
     pub fn done_const() -> i32 { DONE }
-
-    #[qjs(get)]
-    pub fn ready_state(&self) -> i32 { self.ready_state }
-
-    #[qjs(get)]
-    pub fn result(&self) -> Value<'js> { self.result.clone() }
-
-    #[qjs(get)]
-    pub fn error(&self) -> Value<'js> { self.error.clone() }
-
-    pub fn add_event_listener(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, type_: String, callback: Value<'js>,
-        options: Opt<Value<'js>>,
-    ) -> Result<()> {
-        this.0
-            .borrow()
-            .events
-            .borrow_mut()
-            .add(&ctx, type_, callback, options.0)
-    }
-
-    pub fn remove_event_listener(
-        this: This<Class<'js, Self>>, type_: String, callback: Value<'js>, options: Opt<Value<'js>>,
-    ) {
-        this.0
-            .borrow()
-            .events
-            .borrow_mut()
-            .remove(&type_, &callback, options.0);
-    }
-
-    pub fn dispatch_event(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, event: Value<'js>,
-    ) -> Result<bool> {
-        HostEventTarget::dispatch_shared(&this.0.borrow().events, &ctx, this.0.as_inner(), event)
-    }
 
     pub fn abort(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<()> {
         let ready = this.0.borrow().ready_state;
@@ -203,78 +149,6 @@ impl<'js> FileReader<'js> {
         this: This<Class<'js, Self>>, ctx: Ctx<'js>, blob: Value<'js>,
     ) -> Result<()> {
         Self::read(this, ctx, blob, ReadKind::BinaryString, None)
-    }
-
-    #[qjs(get, rename = "onload")]
-    pub fn onload(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "load")
-    }
-
-    #[qjs(set, rename = "onload")]
-    pub fn set_onload(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "load", value)
-    }
-
-    #[qjs(get, rename = "onerror")]
-    pub fn onerror(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "error")
-    }
-
-    #[qjs(set, rename = "onerror")]
-    pub fn set_onerror(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "error", value)
-    }
-
-    #[qjs(get, rename = "onloadend")]
-    pub fn onloadend(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "loadend")
-    }
-
-    #[qjs(set, rename = "onloadend")]
-    pub fn set_onloadend(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "loadend", value)
-    }
-
-    #[qjs(get, rename = "onloadstart")]
-    pub fn onloadstart(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "loadstart")
-    }
-
-    #[qjs(set, rename = "onloadstart")]
-    pub fn set_onloadstart(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "loadstart", value)
-    }
-
-    #[qjs(get, rename = "onprogress")]
-    pub fn onprogress(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "progress")
-    }
-
-    #[qjs(set, rename = "onprogress")]
-    pub fn set_onprogress(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "progress", value)
-    }
-
-    #[qjs(get, rename = "onabort")]
-    pub fn onabort(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Value<'js> {
-        Self::handler(this, ctx, "abort")
-    }
-
-    #[qjs(set, rename = "onabort")]
-    pub fn set_onabort(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, value: Value<'js>,
-    ) -> Result<()> {
-        Self::set_handler(this, ctx, "abort", value)
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
