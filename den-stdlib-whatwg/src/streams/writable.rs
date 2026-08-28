@@ -17,7 +17,8 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, method, native::NativeSink, react, readable::extract_strategy, thrown, type_error,
+    Cap, method, native::NativeSink, range_error, react, readable::extract_strategy, thrown,
+    type_error,
 };
 
 pub(crate) enum WsState<'js> {
@@ -214,6 +215,15 @@ impl<'js> WritableStream<'js> {
         Self::attach_controller(ctx, inner)?;
         Self::recompute_backpressure(ctx, inner);
         Ok(())
+    }
+
+    pub(crate) fn writer_pending(inner: &Inner<'js>) -> (bool, bool) {
+        inner
+            .borrow()
+            .writer
+            .as_ref()
+            .map(|slot| (slot.ready.is_pending(), slot.closed.is_pending()))
+            .unwrap_or((false, false))
     }
 
     pub(crate) fn writer_is_current(inner: &Inner<'js>, id: u64) -> bool {
@@ -755,11 +765,14 @@ impl<'js> WritableStream<'js> {
         let size_fn = inner.borrow().size_fn.clone();
         let size = match size_fn {
             Some(size_fn) => {
-                match size_fn.call::<_, Coerced<f64>>((chunk.clone(),)) {
+                match size_fn.call::<_, Coerced<f64>>((
+                    This(Value::new_undefined(ctx.clone())),
+                    chunk.clone(),
+                )) {
                     Ok(size) if size.0.is_finite() && size.0 >= 0.0 => size.0,
                     Ok(_) => {
                         let reason =
-                            type_error(ctx, "a chunk size must be a non-negative finite number");
+                            range_error(ctx, "a chunk size must be a non-negative finite number");
                         Self::error_if_needed(ctx, inner, reason.clone());
                         return Cap::rejected(ctx, reason);
                     }
@@ -985,7 +998,7 @@ pub struct WritableStreamDefaultWriter<'js> {
     stream: Class<'js, WritableStream<'js>>,
     id:     u64,
     ready:  RefCell<Promise<'js>>,
-    closed: Promise<'js>,
+    closed: RefCell<Promise<'js>>,
 }
 
 impl<'js> Trace<'js> for WritableStreamDefaultWriter<'js> {
@@ -994,7 +1007,9 @@ impl<'js> Trace<'js> for WritableStreamDefaultWriter<'js> {
         if let Ok(ready) = self.ready.try_borrow() {
             ready.trace(tracer);
         }
-        self.closed.trace(tracer);
+        if let Ok(closed) = self.closed.try_borrow() {
+            closed.trace(tracer);
+        }
     }
 }
 
@@ -1016,7 +1031,7 @@ impl<'js> WritableStreamDefaultWriter<'js> {
             stream,
             id,
             ready: RefCell::new(ready),
-            closed,
+            closed: RefCell::new(closed),
         })
     }
 
@@ -1051,7 +1066,7 @@ impl<'js> WritableStreamDefaultWriter<'js> {
             stream,
             id,
             ready: RefCell::new(ready),
-            closed,
+            closed: RefCell::new(closed),
         })
     }
 
@@ -1070,7 +1085,18 @@ impl<'js> WritableStreamDefaultWriter<'js> {
     }
 
     #[qjs(get)]
-    pub fn closed(&self) -> Promise<'js> { self.closed.clone() }
+    pub fn closed(&self, ctx: Ctx<'js>) -> Promise<'js> {
+        let inner = self.stream.borrow().inner.clone();
+        if WritableStream::writer_is_current(&inner, self.id)
+            && let Some(slot) = inner.borrow().writer.as_ref()
+        {
+            let promise = slot.closed.promise();
+            *self.closed.borrow_mut() = promise.clone();
+            return promise;
+        }
+        let _ = ctx;
+        self.closed.borrow().clone()
+    }
 
     #[qjs(get)]
     pub fn desired_size(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
@@ -1120,7 +1146,22 @@ impl<'js> WritableStreamDefaultWriter<'js> {
 
     pub fn release_lock(&self, ctx: Ctx<'js>) {
         let inner = self.stream.borrow().inner.clone();
+        if !WritableStream::writer_is_current(&inner, self.id) {
+            return;
+        }
+        let (ready_pending, closed_pending) = WritableStream::writer_pending(&inner);
+        let _ = self.ready(ctx.clone());
+        let _ = self.closed(ctx.clone());
         WritableStream::release_writer(&ctx, &inner, self.id);
+        let reason = type_error(&ctx, "the writer was released");
+        if !ready_pending && let Ok(replacement) = Cap::rejected(&ctx, reason.clone()) {
+            crate::streams::mark_handled(&ctx, &replacement);
+            *self.ready.borrow_mut() = replacement;
+        }
+        if !closed_pending && let Ok(replacement) = Cap::rejected(&ctx, reason) {
+            crate::streams::mark_handled(&ctx, &replacement);
+            *self.closed.borrow_mut() = replacement;
+        }
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
