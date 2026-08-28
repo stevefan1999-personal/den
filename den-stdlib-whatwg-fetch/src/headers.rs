@@ -384,16 +384,9 @@ impl Headers {
 }
 
 fn strip_http_whitespace(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut start = 0;
-    let mut end = bytes.len();
-    while start < end && matches!(bytes[start], b'\t' | b'\n' | b'\r' | b' ') {
-        start += 1;
-    }
-    while end > start && matches!(bytes[end - 1], b'\t' | b'\n' | b'\r' | b' ') {
-        end -= 1;
-    }
-    value[start..end].to_string()
+    value
+        .trim_matches(|byte| matches!(byte, '\t' | '\n' | '\r' | ' '))
+        .to_string()
 }
 
 pub(crate) fn is_forbidden_method(method: &str) -> bool {
