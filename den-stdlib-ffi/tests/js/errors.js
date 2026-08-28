@@ -86,3 +86,11 @@ assertEquals(
     .kind,
   "Schema",
 );
+
+// Every refusal is read by a human before it is read by a catch block, and a
+// continued string literal that lost its `\` is invisible to a `.kind` check.
+assertEquals(
+  /\s\s/.test(assertThrows(() => layout(cyclic)).message),
+  false,
+  "an FfiError message must not carry a rewrapped literal's indentation",
+);
