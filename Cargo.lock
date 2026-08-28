@@ -1117,6 +1117,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "den-e2e"
+version = "0.4.0"
+dependencies = [
+ "color-eyre",
+ "den-core",
+ "tokio",
+]
+
+[[package]]
 name = "den-stdlib-assert"
 version = "0.4.0"
 dependencies = [
