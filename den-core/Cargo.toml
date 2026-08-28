@@ -58,7 +58,7 @@ tokio-tungstenite = { workspace = true, features = ["handshake"] }
 wat.workspace = true
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm", "jit"]
+default = ["stdlib", "typescript", "react", "wasm", "wasi", "jit"]
 typescript = [
     "transpile",
     "den-transpiler-oxc?/typescript",
@@ -107,6 +107,7 @@ stdlib-worker = ["dep:den-stdlib-worker"]
 # pulling Cranelift-native through den-stdlib-wasm's own default.
 wasm = ["dep:den-stdlib-wasm"]
 jit = ["den-stdlib-wasm?/jit"]
+wasi = ["wasm", "den-stdlib-wasm/wasi"]
 
 [[test]]
 name = "compat"

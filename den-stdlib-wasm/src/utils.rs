@@ -9,71 +9,73 @@
 
 use std::cell::RefCell;
 
-use derive_more::derive::{Display as DisplayDerive, Error, From, Into};
 use rquickjs::{
     Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Result, Symbol,
     Value, function::Rest,
 };
-use wasmtime::{Func, Val, ValType};
+use wasmtime::{Func, RefType, Val, ValType};
 
-use crate::{
-    backend::{self, ValKind, ValView},
-    error::throw_runtime_error,
-    memory::MemoryBuffers,
-    store::Store,
-};
-
-/// No default value exists for a wasm type: non-nullable references have none,
-/// and `v128` is not representable in JS at all.
-#[derive(Clone, Copy, Debug, DisplayDerive, Error)]
-#[display("this WebAssembly type has no default value")]
-pub struct NoDefaultValue;
+use crate::{backend, error::throw_runtime_error, memory::MemoryBuffers, store::Store};
 
 /// A wasm value together with the coercions that move it across the JS
 /// boundary.
-#[derive(Clone, Debug, From, Into)]
+#[derive(Clone, Debug)]
 pub struct WasmValue(pub Val);
 
 impl WasmValue {
     /// `DefaultValue(valuetype)` — the zero of a type, used when a
     /// `Global`/`Table` descriptor omits its initial value.
-    pub fn default_for(ty: &ValType) -> core::result::Result<Self, NoDefaultValue> {
-        backend::val_default(ty).map(Self).ok_or(NoDefaultValue)
+    pub fn default_for(ty: &ValType) -> core::result::Result<Self, &'static str> {
+        Val::default_for_ty(ty)
+            .filter(|_| !matches!(ty, ValType::V128))
+            .map(Self)
+            .ok_or("this WebAssembly type has no default value")
     }
 
     /// `ToWebAssemblyValue(v, type)` — JS to wasm, directed by the target type.
     pub fn from_js<'js>(ctx: &Ctx<'js>, value: &Value<'js>, ty: &ValType) -> Result<Self> {
-        let kind = backend::val_type_kind(ty).ok_or_else(|| {
-            Exception::throw_type(ctx, "this WebAssembly type cannot cross the JS boundary")
-        })?;
-
-        let value = match kind {
-            ValKind::I32 => Val::I32(Coerced::<i32>::from_js(ctx, value.clone())?.0),
-            ValKind::I64 => Val::I64(Self::to_big_int_64(ctx, value)?),
-            ValKind::F32 => Val::from(Coerced::<f64>::from_js(ctx, value.clone())?.0 as f32),
-            ValKind::F64 => Val::from(Coerced::<f64>::from_js(ctx, value.clone())?.0),
-            ValKind::V128 => {
+        let value = match ty {
+            ValType::I32 => Val::I32(Coerced::<i32>::from_js(ctx, value.clone())?.0),
+            ValType::I64 => Val::I64(Self::to_big_int_64(ctx, value)?),
+            ValType::F32 => Val::from(Coerced::<f64>::from_js(ctx, value.clone())?.0 as f32),
+            ValType::F64 => Val::from(Coerced::<f64>::from_js(ctx, value.clone())?.0),
+            ValType::V128 => {
                 return Err(Exception::throw_type(
                     ctx,
                     "v128 values cannot cross the JS boundary",
                 ));
             }
-            ValKind::FuncRef | ValKind::ExternRef | ValKind::AnyRef if value.is_null() => {
+            ValType::Ref(reference)
+                if value.is_null()
+                    && (reference.matches(&RefType::FUNCREF)
+                        || reference.matches(&RefType::EXTERNREF)
+                        || reference.matches(&RefType::ANYREF)) =>
+            {
                 Self::default_for(ty)
-                    .map_err(|err| Exception::throw_type(ctx, &err.to_string()))?
+                    .map_err(|err| Exception::throw_type(ctx, err))?
                     .0
             }
             // Any JS value at all is a valid `externref`; a `funcref` needs a
             // `[[FunctionAddress]]`, which only an Exported Function has.
-            ValKind::ExternRef => HostReferences::extern_ref(ctx, value)?,
-            ValKind::FuncRef => HostReferences::func_ref(ctx, value)?,
+            ValType::Ref(reference) if reference.matches(&RefType::EXTERNREF) => {
+                HostReferences::extern_ref(ctx, value)?
+            }
+            ValType::Ref(reference) if reference.matches(&RefType::FUNCREF) => {
+                HostReferences::func_ref(ctx, value)?
+            }
             // `anyref` is not in the spec's `ValueType` enum at all — it can only
             // reach here from a function signature that uses the GC
             // proposal, and den has no `i31`/`struct`/`array` conversions.
-            ValKind::AnyRef => {
+            ValType::Ref(reference) if reference.matches(&RefType::ANYREF) => {
                 return Err(Exception::throw_type(
                     ctx,
-                    &format!("only null is convertible to a WebAssembly {}", kind.name()),
+                    "only null is convertible to a WebAssembly anyref",
+                ));
+            }
+            ValType::Ref(_) => {
+                return Err(Exception::throw_type(
+                    ctx,
+                    "this WebAssembly type cannot cross the JS boundary",
                 ));
             }
         };
@@ -83,22 +85,30 @@ impl WasmValue {
     /// `ToJSValue(w)` — wasm to JS. `i64` becomes a `BigInt`, floats become
     /// real `Number`s.
     pub fn to_js<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        match backend::val_view(&self.0) {
-            ValView::I32(x) => x.into_js(ctx),
-            ValView::I64(x) => BigInt::from_i64(ctx.clone(), x)?.into_js(ctx),
-            ValView::F32(x) => f64::from(x).into_js(ctx),
-            ValView::F64(x) => x.into_js(ctx),
-            ValView::V128 => {
+        match &self.0 {
+            Val::I32(x) => x.into_js(ctx),
+            Val::I64(x) => BigInt::from_i64(ctx.clone(), *x)?.into_js(ctx),
+            Val::F32(bits) => f64::from(f32::from_bits(*bits)).into_js(ctx),
+            Val::F64(bits) => f64::from_bits(*bits).into_js(ctx),
+            Val::V128(_) => {
                 Err(Exception::throw_type(
                     ctx,
                     "v128 values cannot cross the JS boundary",
                 ))
             }
-            ValView::NullRef => Ok(Value::new_null(ctx.clone())),
+            Val::FuncRef(None)
+            | Val::ExternRef(None)
+            | Val::AnyRef(None)
+            | Val::ExnRef(None)
+            | Val::ContRef(None) => Ok(Value::new_null(ctx.clone())),
             // The store borrow ends before either branch runs: building an
             // Exported Function reads the signature again, and a host value is
             // fetched from the JS-side registry.
-            ValView::Ref => {
+            Val::FuncRef(Some(_))
+            | Val::ExternRef(Some(_))
+            | Val::AnyRef(Some(_))
+            | Val::ExnRef(Some(_))
+            | Val::ContRef(Some(_)) => {
                 let store = Store::from_ctx(ctx)?;
                 let reference =
                     store.with_mut(ctx, |store| Reference::read(ctx, store, &self.0))?;
@@ -176,11 +186,7 @@ impl EnforceRange {
     pub fn size(self) -> u64 { u64::from(self.0) }
 }
 
-/// The reference a [`Val`] carries, in the one shape shared code can use.
-///
-/// [`ValView`] deliberately stops at "some reference": telling a `funcref`
-/// from an `externref`, and reading an `externref`'s payload back out, needs
-/// wasmtime's `Val` enum and `ExternRef` type.
+/// The reference a [`Val`] carries in a shape the JS-side cache can use.
 enum Reference {
     /// A function reference. Its JS side is an Exported Function.
     Func(Func),
@@ -369,7 +375,7 @@ impl<'js> HostReferences<'js> {
                 .try_borrow()
                 .map_err(|_| Self::busy(ctx))?
                 .iter()
-                .find(|entry| entry.identity == identity || handles_eq(&entry.func, &func))
+                .find(|entry| entry.identity == identity)
                 .map(|entry| entry.object.clone()))
         })?;
         if let Some(cached) = cached {
@@ -438,13 +444,14 @@ impl<'js> HostReferences<'js> {
 /// handed out.
 ///
 /// The spec caches these by store address so that importing a wrapper and
-/// exporting it again yields the *same* JS object. wasmtime's handles are
-/// `Copy` store indices; two handles that compare equal name one object.
+/// exporting it again yields the *same* JS object. Wasmtime exposes no handle
+/// equality API; its derived `Debug` identity contains the store/instance and
+/// index without reading the `repr(C)` padding bytes.
 #[derive(Default)]
 pub struct HostWrappers<'js> {
-    memories: RefCell<Vec<(wasmtime::Memory, Value<'js>)>>,
-    tables:   RefCell<Vec<(wasmtime::Table, Value<'js>)>>,
-    globals:  RefCell<Vec<(wasmtime::Global, Value<'js>)>>,
+    memories: RefCell<Vec<(String, Value<'js>)>>,
+    tables:   RefCell<Vec<(String, Value<'js>)>>,
+    globals:  RefCell<Vec<(String, Value<'js>)>>,
 }
 
 // SAFETY: the only `'js` data is the cached wrappers, which change lifetime
@@ -459,7 +466,7 @@ impl<'js> HostWrappers<'js> {
             ctx,
             handle,
             |wrappers| &wrappers.memories,
-            |handle| crate::memory::Memory::from(handle).into_js(ctx),
+            |inner| crate::memory::Memory { inner }.into_js(ctx),
         )
     }
 
@@ -468,7 +475,7 @@ impl<'js> HostWrappers<'js> {
             ctx,
             handle,
             |wrappers| &wrappers.tables,
-            |handle| crate::table::Table::from(handle).into_js(ctx),
+            |inner| crate::table::Table { inner }.into_js(ctx),
         )
     }
 
@@ -477,7 +484,7 @@ impl<'js> HostWrappers<'js> {
             ctx,
             handle,
             |wrappers| &wrappers.globals,
-            |handle| crate::global::Global::from(handle).into_js(ctx),
+            |inner| crate::global::Global { inner }.into_js(ctx),
         )
     }
 
@@ -499,44 +506,50 @@ impl<'js> HostWrappers<'js> {
         Self::remember(ctx, handle, object, |wrappers| &wrappers.globals)
     }
 
-    fn wrap<H: Copy>(
-        ctx: &Ctx<'js>, handle: H, slot: impl Fn(&Self) -> &RefCell<Vec<(H, Value<'js>)>>,
+    fn wrap<H: Copy + core::fmt::Debug>(
+        ctx: &Ctx<'js>, handle: H, slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
         create: impl FnOnce(H) -> Result<Value<'js>>,
     ) -> Result<Value<'js>> {
-        if let Some(existing) = Self::find(ctx, handle, &slot)? {
+        let identity = format!("{handle:?}");
+        if let Some(existing) = Self::find(ctx, &identity, &slot)? {
             return Ok(existing);
         }
         let object = create(handle)?;
-        Self::remember(ctx, handle, object.clone(), slot)?;
+        Self::remember_identity(ctx, identity, object.clone(), slot)?;
         Ok(object)
     }
 
-    fn find<H: Copy>(
-        ctx: &Ctx<'js>, handle: H, slot: impl Fn(&Self) -> &RefCell<Vec<(H, Value<'js>)>>,
+    fn find(
+        ctx: &Ctx<'js>, identity: &str, slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
     ) -> Result<Option<Value<'js>>> {
         Self::with(ctx, |wrappers| {
             Ok(slot(wrappers)
                 .try_borrow()
                 .map_err(|_| Self::busy(ctx))?
                 .iter()
-                .find(|(cached, _)| handles_eq(cached, &handle))
+                .find(|(cached, _)| cached == identity)
                 .map(|(_, object)| object.clone()))
         })
     }
 
-    fn remember<H: Copy>(
+    fn remember<H: core::fmt::Debug>(
         ctx: &Ctx<'js>, handle: H, object: Value<'js>,
-        slot: impl Fn(&Self) -> &RefCell<Vec<(H, Value<'js>)>>,
+        slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
+    ) -> Result<()> {
+        let identity = format!("{handle:?}");
+        Self::remember_identity(ctx, identity, object, slot)
+    }
+
+    fn remember_identity(
+        ctx: &Ctx<'js>, identity: String, object: Value<'js>,
+        slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
     ) -> Result<()> {
         Self::with(ctx, |wrappers| {
             let mut entries = slot(wrappers)
                 .try_borrow_mut()
                 .map_err(|_| Self::busy(ctx))?;
-            if !entries
-                .iter()
-                .any(|(cached, _)| handles_eq(cached, &handle))
-            {
-                entries.push((handle, object));
+            if !entries.iter().any(|(cached, _)| cached == &identity) {
+                entries.push((identity, object));
             }
             Ok(())
         })
@@ -561,16 +574,6 @@ impl<'js> HostWrappers<'js> {
     }
 }
 
-fn handles_eq<T: Copy>(left: &T, right: &T) -> bool {
-    let size = core::mem::size_of::<T>();
-    // SAFETY: `Memory` / `Table` / `Global` are `repr(C)` store-index handles;
-    // equal bytes are one object in the store. Nothing dereferences the bytes.
-    unsafe {
-        core::slice::from_raw_parts(core::ptr::from_ref(left).cast::<u8>(), size)
-            == core::slice::from_raw_parts(core::ptr::from_ref(right).cast::<u8>(), size)
-    }
-}
-
 impl<'js> ExportedFunction<'js> {
     /// "Call an Exported Function": pad the arguments with `undefined`, coerce
     /// against the declared types, then adapt the results by arity.
@@ -582,7 +585,7 @@ impl<'js> ExportedFunction<'js> {
         let store = Store::from_ctx(ctx)?;
         // The signature is read under its own short borrow: coercion below can
         // run arbitrary JS, which must not happen while the store is borrowed.
-        let signature = store.with_mut(ctx, |backend_store| Ok(func.ty(&*backend_store)))?;
+        let signature = store.with_context(ctx, |backend_store| Ok(func.ty(&backend_store)))?;
         let undefined = Value::new_undefined(ctx.clone());
         let parameters = Vec::from_iter(signature.params())
             .iter()
@@ -600,14 +603,13 @@ impl<'js> ExportedFunction<'js> {
             .map(|ty| {
                 WasmValue::default_for(ty)
                     .map(WasmValue::into_inner)
-                    .map_err(|err| Exception::throw_type(ctx, &err.to_string()))
+                    .map_err(|err| Exception::throw_type(ctx, err))
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let called = store.with_mut(ctx, |backend_store| {
-            func.call(&mut *backend_store, &parameters, &mut results)
-                .map_err(|err| Self::throw_call_failure(ctx, err))
-        });
+        let called = store
+            .invoke(ctx, &func, &parameters, &mut results)
+            .map_err(|err| Self::throw_call_failure(ctx, err));
         // "Refresh the memory buffer" on the way out, for a trap as well as a
         // return: a call that trapped may still have grown a memory first. The
         // trap is the more useful error of the two, so it is the one reported.
@@ -648,331 +650,5 @@ impl<'js> ExportedFunction<'js> {
 }
 
 #[cfg(test)]
-mod tests {
-    use rquickjs::{Context, Runtime};
-
-    use super::*;
-    use crate::memory::testing::{js, with_wasm_context};
-
-    fn with_context<R>(f: impl FnOnce(&Ctx<'_>) -> R) -> R {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| f(&ctx))
-    }
-
-    fn ty(name: &str) -> ValType { backend::val_type_from_str(name).expect("known value type") }
-
-    /// The `name` of whatever JS error is currently pending, e.g.
-    /// `"TypeError"`.
-    fn pending_error_name(ctx: &Ctx<'_>) -> String {
-        ctx.catch()
-            .as_exception()
-            .and_then(|exception| exception.get::<_, String>("name").ok())
-            .unwrap_or_else(|| "not a JS error".to_owned())
-    }
-
-    /// JS to wasm, reporting the *class* of a thrown JS error so the tests pin
-    /// the spec's error type rather than its wording.
-    fn from_js(ctx: &Ctx<'_>, source: &str, type_name: &str) -> core::result::Result<Val, String> {
-        let value = ctx
-            .eval::<Value, _>(source)
-            .expect("test snippet evaluates");
-        WasmValue::from_js(ctx, &value, &ty(type_name))
-            .map(WasmValue::into_inner)
-            .map_err(|_| pending_error_name(ctx))
-    }
-
-    /// wasm to JS, rendered as `"<typeof>:<value>"` by JS itself.
-    fn to_js_source(ctx: &Ctx<'_>, value: Val) -> core::result::Result<String, String> {
-        WasmValue(value)
-            .to_js(ctx)
-            .and_then(|value| {
-                ctx.globals().set("value", value)?;
-                ctx.eval::<String, _>("`${typeof value}:${value}`")
-            })
-            .map_err(|_| pending_error_name(ctx))
-    }
-
-    #[test]
-    fn i32_round_trips_through_to_int32_semantics() {
-        with_context(|ctx| {
-            assert!(matches!(from_js(ctx, "-5", "i32"), Ok(Val::I32(-5))));
-            // ToInt32 truncates and wraps rather than rejecting.
-            assert!(matches!(
-                from_js(ctx, "2147483648", "i32"),
-                Ok(Val::I32(i32::MIN))
-            ));
-            assert!(matches!(from_js(ctx, "1.9", "i32"), Ok(Val::I32(1))));
-            assert_eq!(to_js_source(ctx, Val::I32(-5)).unwrap(), "number:-5");
-        })
-    }
-
-    #[test]
-    fn i64_uses_bigint_in_both_directions_including_the_extremes() {
-        with_context(|ctx| {
-            assert!(matches!(from_js(ctx, "1n", "i64"), Ok(Val::I64(1))));
-            assert!(matches!(
-                from_js(ctx, "-9223372036854775808n", "i64"),
-                Ok(Val::I64(i64::MIN))
-            ));
-            assert!(matches!(
-                from_js(ctx, "9223372036854775807n", "i64"),
-                Ok(Val::I64(i64::MAX))
-            ));
-            assert_eq!(
-                to_js_source(ctx, Val::I64(i64::MAX)).unwrap(),
-                "bigint:9223372036854775807"
-            );
-            assert_eq!(
-                to_js_source(ctx, Val::I64(i64::MIN)).unwrap(),
-                "bigint:-9223372036854775808"
-            );
-        })
-    }
-
-    #[test]
-    fn i64_rejects_a_number_with_a_type_error() {
-        with_context(|ctx| {
-            let error = from_js(ctx, "1", "i64").expect_err("Number is not a BigInt");
-            assert_eq!(error, "TypeError");
-        })
-    }
-
-    #[test]
-    fn i64_accepts_the_values_to_big_int_accepts() {
-        with_context(|ctx| {
-            assert!(matches!(from_js(ctx, "'42'", "i64"), Ok(Val::I64(42))));
-            assert!(matches!(from_js(ctx, "true", "i64"), Ok(Val::I64(1))));
-            assert!(from_js(ctx, "undefined", "i64").is_err());
-            // ToBigInt64 wraps modulo 2^64: 2^63 is i64::MIN, not a conversion failure.
-            assert!(matches!(
-                from_js(ctx, "2n ** 63n", "i64"),
-                Ok(Val::I64(i64::MIN))
-            ));
-        })
-    }
-
-    #[test]
-    fn f32_narrows_to_nearest_and_keeps_the_value_not_the_bits() {
-        with_context(|ctx| {
-            let Ok(value) = from_js(ctx, "0.1", "f32") else {
-                panic!("0.1 is a valid f32");
-            };
-            assert_eq!(backend::val_view(&value), ValView::F32(0.1_f32));
-            // The JS side must see the widened f32, never the raw bit pattern.
-            assert_eq!(
-                to_js_source(ctx, value).unwrap(),
-                format!("number:{}", f64::from(0.1_f32))
-            );
-            assert_eq!(to_js_source(ctx, Val::from(1.0_f32)).unwrap(), "number:1");
-        })
-    }
-
-    #[test]
-    fn f64_preserves_nan_and_both_infinities() {
-        with_context(|ctx| {
-            for (source, expected) in [
-                ("Infinity", "number:Infinity"),
-                ("-Infinity", "number:-Infinity"),
-                ("NaN", "number:NaN"),
-            ] {
-                let value = from_js(ctx, source, "f64").expect("valid f64");
-                assert_eq!(to_js_source(ctx, value).unwrap(), expected);
-                let value = from_js(ctx, source, "f32").expect("valid f32");
-                assert_eq!(to_js_source(ctx, value).unwrap(), expected);
-            }
-        })
-    }
-
-    #[test]
-    fn undefined_and_null_follow_to_number_for_numeric_types() {
-        with_context(|ctx| {
-            // ToNumber(undefined) is NaN, ToInt32(NaN) is 0, ToNumber(null) is +0.
-            assert!(matches!(from_js(ctx, "undefined", "i32"), Ok(Val::I32(0))));
-            assert!(matches!(from_js(ctx, "null", "i32"), Ok(Val::I32(0))));
-            assert_eq!(
-                to_js_source(ctx, from_js(ctx, "undefined", "f64").unwrap()).unwrap(),
-                "number:NaN"
-            );
-            assert_eq!(
-                to_js_source(ctx, from_js(ctx, "null", "f64").unwrap()).unwrap(),
-                "number:0"
-            );
-        })
-    }
-
-    #[test]
-    fn null_is_a_reference_of_every_reference_type() {
-        with_context(|ctx| {
-            let value = from_js(ctx, "null", "anyfunc").expect("null funcref");
-            assert_eq!(backend::val_view(&value), ValView::NullRef);
-            assert_eq!(to_js_source(ctx, value).unwrap(), "object:null");
-        })
-    }
-
-    #[test]
-    fn a_plain_js_function_has_no_function_address_to_store_in_a_funcref() {
-        with_context(|ctx| {
-            // `ToWebAssemblyValue(v, funcref)` needs `v.[[FunctionAddress]]`, which
-            // only an Exported Function has.
-            assert_eq!(
-                from_js(ctx, "(() => {})", "anyfunc").unwrap_err(),
-                "TypeError"
-            );
-            assert_eq!(from_js(ctx, "({})", "anyfunc").unwrap_err(), "TypeError");
-        })
-    }
-
-    /// `[EnforceRange] unsigned long`, applied to a JS snippet.
-    fn enforce_range(ctx: &Ctx<'_>, source: &str) -> core::result::Result<u32, String> {
-        let value = ctx
-            .eval::<Value, _>(source)
-            .expect("test snippet evaluates");
-        EnforceRange::from_js(ctx, value)
-            .map(|range| range.0)
-            .map_err(|_| pending_error_name(ctx))
-    }
-
-    #[test]
-    fn enforce_range_truncates_toward_zero_like_web_idl() {
-        with_context(|ctx| {
-            assert_eq!(enforce_range(ctx, "1.9").unwrap(), 1);
-            // `IntegerPart` truncates toward zero, so -0 and -0.5 both land on 0
-            // and stay in range — only a value that truncates *past* zero is
-            // rejected.
-            assert_eq!(enforce_range(ctx, "-0").unwrap(), 0);
-            assert_eq!(enforce_range(ctx, "-0.5").unwrap(), 0);
-            assert_eq!(enforce_range(ctx, "'7'").unwrap(), 7);
-            assert_eq!(enforce_range(ctx, "true").unwrap(), 1);
-            assert_eq!(enforce_range(ctx, "4294967295").unwrap(), u32::MAX);
-            // The `valueOf` hook still runs; only the *result* is range-checked.
-            assert_eq!(enforce_range(ctx, "({ valueOf: () => 3 })").unwrap(), 3);
-        })
-    }
-
-    #[test]
-    fn enforce_range_rejects_nan_infinity_and_everything_out_of_range() {
-        with_context(|ctx| {
-            // `Coerced<u64>` reads every one of these as a number in range, which is
-            // how a `NaN` descriptor used to allocate an empty table instead of
-            // throwing.
-            for source in [
-                "NaN",
-                "undefined",
-                "Infinity",
-                "-Infinity",
-                "-1",
-                "4294967296",
-                "1e30",
-            ] {
-                assert_eq!(
-                    enforce_range(ctx, source).unwrap_err(),
-                    "TypeError",
-                    "{source}"
-                );
-            }
-        })
-    }
-
-    #[test]
-    fn v128_is_a_type_error_in_both_directions() {
-        with_context(|ctx| {
-            assert_eq!(
-                from_js(ctx, "0", "v128").expect_err("v128 is not representable"),
-                "TypeError"
-            );
-            assert_eq!(
-                to_js_source(ctx, Val::V128(wasmtime::V128::from(0_u128)))
-                    .expect_err("v128 is not representable"),
-                "TypeError"
-            );
-        })
-    }
-
-    /// Two distinct host functions must not share a cache key, or reading one
-    /// `funcref` would hand JS the other one's callable. This is the guard on
-    /// [`Reference::identity`].
-    #[test]
-    fn func_identity_tells_two_functions_apart() {
-        with_wasm_context(|ctx| {
-            let store = Store::from_ctx(ctx).expect("store");
-            store
-                .with_mut(ctx, |store| {
-                    let first = Func::wrap(&mut *store, || {});
-                    let second = Func::wrap(&mut *store, || {});
-                    assert_eq!(
-                        Reference::identity(store, &first),
-                        Reference::identity(store, &first),
-                        "the same function must keep one identity"
-                    );
-                    assert_ne!(
-                        Reference::identity(store, &first),
-                        Reference::identity(store, &second),
-                        "two functions must not collide"
-                    );
-                    Ok(())
-                })
-                .expect("identities");
-        })
-    }
-
-    #[test]
-    fn an_externref_carries_any_js_value_across_and_back_unchanged() {
-        with_wasm_context(|ctx| {
-            for source in [
-                "({ tag: 'host value' })",
-                "'a string'",
-                "42",
-                "Symbol.iterator",
-            ] {
-                let original = js(ctx, source);
-                let reference = WasmValue::from_js(ctx, &original, &ty("externref"))
-                    .expect("every JS value is a valid externref");
-                assert_eq!(
-                    reference.to_js(ctx).expect("readable externref"),
-                    original,
-                    "{source}"
-                );
-            }
-        })
-    }
-
-    #[test]
-    fn reading_the_same_funcref_twice_yields_the_same_js_function() {
-        with_wasm_context(|ctx| {
-            let store = Store::from_ctx(ctx).expect("store");
-            let func = store
-                .with_mut(ctx, |store| Ok(Func::wrap(&mut *store, || {})))
-                .expect("host function");
-            let reference = WasmValue(Reference::function(func));
-            let first = reference.to_js(ctx).expect("readable funcref");
-            let second = reference.to_js(ctx).expect("readable funcref");
-            assert_eq!(first, second, "the Exported Function cache is not caching");
-            // …and that object converts back to the same function address.
-            let round_tripped = WasmValue::from_js(ctx, &first, &ty("anyfunc"))
-                .expect("an Exported Function is a valid funcref");
-            assert_eq!(round_tripped.to_js(ctx).expect("readable funcref"), first);
-        })
-    }
-
-    #[test]
-    fn default_values_exist_for_every_type_but_v128() {
-        assert!(matches!(
-            WasmValue::default_for(&ty("i32")).map(WasmValue::into_inner),
-            Ok(Val::I32(0))
-        ));
-        assert!(matches!(
-            WasmValue::default_for(&ty("i64")).map(WasmValue::into_inner),
-            Ok(Val::I64(0))
-        ));
-        assert_eq!(
-            backend::val_view(&WasmValue::default_for(&ty("f32")).unwrap().0),
-            ValView::F32(0.0)
-        );
-        assert_eq!(
-            backend::val_view(&WasmValue::default_for(&ty("anyfunc")).unwrap().0),
-            ValView::NullRef
-        );
-        assert!(WasmValue::default_for(&ty("v128")).is_err());
-    }
-}
+#[path = "../tests/unit/utils.rs"]
+mod tests;

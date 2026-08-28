@@ -1,5 +1,6 @@
 [package]
 name = "den-stdlib-wasm"
+autotests = false
 description = "WebAssembly JS API for den"
 version.workspace = true
 edition.workspace = true
@@ -12,21 +13,27 @@ keywords.workspace = true
 
 [dependencies]
 den-util.workspace = true
-derive_more.workspace = true
-either.workspace = true
 indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
-wat.workspace = true
 wasmtime = { workspace = true, features = ["reexport-wasmparser", "pulley"] }
-wasmtime-wasi.workspace = true
+wasmtime-wasi = { workspace = true, optional = true }
 
 [dev-dependencies]
 color-eyre.workspace = true
-den-core = { workspace = true, features = ["stdlib", "typescript", "react", "wasm", "jit"] }
+den-core = { workspace = true, features = [
+    "stdlib-assert",
+    "wasm",
+] }
+insta.workspace = true
 libtest-mimic.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wast.workspace = true
+wat.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
 
 [[test]]
 name = "spec_core"
@@ -38,6 +45,7 @@ default = ["jit"]
 # cfg only: Cranelift and Pulley stay linked so modules compile at runtime.
 # `jit` picks the native host triple; without it, Cranelift emits Pulley.
 jit = []
+wasi = ["dep:wasmtime-wasi"]
 
 [lints]
 workspace = true

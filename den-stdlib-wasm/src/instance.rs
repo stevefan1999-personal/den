@@ -14,13 +14,15 @@ use wasmtime::{
     Mutability, TableType, Val,
 };
 
+#[cfg(feature = "wasi")]
+use crate::store::WasiImports;
 use crate::{
     backend,
     engine::Engine,
     error::{throw_link_error, throw_runtime_error},
-    memory::MemoryBuffers,
+    memory::{MemoryBuffers, ValueTypeName},
     module::Module,
-    store::{Store, WasiImports},
+    store::{ActiveHostCall, Store},
     utils::{HostReferences, HostWrappers, WasmValue},
 };
 
@@ -108,9 +110,13 @@ impl HostFunction {
             // refresh has to happen on the way *in* as well as on the way out:
             // otherwise this JS frame writes through a view built before the
             // growth. The store is borrowed by the call that got us here, hence
-            // the `Caller` rather than `Store`.
-            MemoryBuffers::refresh_in(ctx, &caller)
-                .and_then(|()| self.call(ctx, params, results))
+            // the `Caller` rather than `Store`. `ActiveHostCall` parks that
+            // same `Caller` so `Memory.buffer` can still see the pages.
+            ActiveHostCall::enter(ctx, &caller)
+                .and_then(|_guard| {
+                    MemoryBuffers::refresh_in(ctx, &caller)
+                        .and_then(|()| self.call(ctx, params, results))
+                })
                 .map_err(|err| Error::msg(format!("imported function failed: {err}")))
         })
     }
@@ -187,10 +193,16 @@ impl HostFunction {
 
 /// An import whose JS value has already been read, waiting to be linked
 /// under the store borrow.
+#[cfg_attr(
+    feature = "wasi",
+    expect(
+        clippy::large_enum_variant,
+        reason = "pending imports are short-lived; boxing every ordinary import costs more"
+    )
+)]
 enum PendingImport<'js> {
-    Wasi {
-        namespace: String,
-    },
+    #[cfg(feature = "wasi")]
+    Wasi { namespace: String },
     Value {
         namespace:  String,
         name:       String,
@@ -297,6 +309,7 @@ impl<'js> Instance<'js> {
             // Explicit, opt-in WASI: `wasiImports()` from `den:wasm` stands in for the
             // whole preview1 namespace, because those functions are implemented by the
             // engine against the calling instance's own memory and have no JS spelling.
+            #[cfg(feature = "wasi")]
             if WasiImports::is_marker(ctx, &namespace) {
                 pending.push(PendingImport::Wasi {
                     namespace: namespace_name.to_owned(),
@@ -328,6 +341,7 @@ impl<'js> Instance<'js> {
         let mut reused = HashMap::new();
         for import in pending {
             match import {
+                #[cfg(feature = "wasi")]
                 PendingImport::Wasi { namespace } => {
                     WasiImports::link(ctx, linker, &namespace)?;
                 }
@@ -458,29 +472,22 @@ impl<'js> Instance<'js> {
         // throw a LinkError"; "if valuetype is i64 and Type(v) is Number, throw
         // a LinkError"; "if valuetype is not i64 and Type(v) is BigInt, throw a
         // LinkError".
-        let mismatched = match backend::val_type_kind(&content) {
-            Some(backend::ValKind::V128) => true,
-            Some(backend::ValKind::I64) => value.is_number(),
-            _ => value.as_big_int().is_some(),
-        };
+        let mismatched = matches!(content, wasmtime::ValType::V128)
+            || matches!(content, wasmtime::ValType::I64) && value.is_number()
+            || !matches!(content, wasmtime::ValType::I64) && value.as_big_int().is_some();
         if mismatched {
             return Err(throw_link_error(
                 ctx,
                 format_args!(
                     "a {} global import cannot be initialised from this value",
-                    backend::val_type_name(&content).unwrap_or("WebAssembly")
+                    ValueTypeName::get(&content).unwrap_or("WebAssembly")
                 ),
             ));
         }
         let initial = WasmValue::from_js(ctx, value, &content)?;
-        backend::new_global(
-            store,
-            &content,
-            matches!(ty.mutability(), Mutability::Var),
-            initial.into_inner(),
-        )
-        .map(Into::into)
-        .map_err(|err| throw_link_error(ctx, err))
+        wasmtime::Global::new(store, ty.clone(), initial.into_inner())
+            .map(Into::into)
+            .map_err(|err| throw_link_error(ctx, err))
     }
 
     fn memory_import(
@@ -640,9 +647,8 @@ impl<'js> Instance<'js> {
                 tag.into_js(ctx)?
             } else {
                 // wasmtime's `SharedMemory` is the only remaining kind, and den
-                // has no `SharedArrayBuffer`-backed `Memory` to wrap one in
-                // (see `backend::SUPPORTS_SHARED_MEMORY`). Refusing out loud
-                // rather than skipping the entry keeps `instance.exports` and
+                // has no `SharedArrayBuffer`-backed `Memory` to wrap one in.
+                // Refusing out loud rather than skipping the entry keeps `instance.exports` and
                 // `Module.exports()` telling the same story: the latter lists
                 // every export the module declares, so an omission here would
                 // be an `undefined` property with no diagnostic. Unreachable
@@ -709,71 +715,5 @@ impl<'js> Instance<'js> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A context with the whole of `den:wasm` evaluated into it: these two
-    /// cross wrappers — `Instance` into `Table`, and `Instance` against
-    /// `Module` — so they are written the way JS reaches them.
-    fn with_wasm_namespace<R: Send>(f: impl FnOnce(&Ctx<'_>) -> R + Send) -> R {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(async {
-                let engine = den_core::engine::Engine::new().await;
-                let _: () = engine
-                    .eval("globalThis.denWasm = await import('den:wasm')")
-                    .await
-                    .expect("bind den:wasm");
-                engine.context.with(|ctx| f(&ctx)).await
-            })
-    }
-
-    /// An export read off `instance.exports` is an Exported Function, so it has
-    /// a `[[FunctionAddress]]` a funcref table accepts — and reading it back
-    /// hands out that very object rather than a second callable wrapping the
-    /// same wasm function. Before the exports object went through
-    /// `HostReferences::exported_function`, the `set` threw a `TypeError`.
-    const FUNCREF_ROUND_TRIP: &str = r#"
-      const bytes = denWasm.wat2wasm(`(module
-        (func (export "add") (param i32 i32) (result i32) local.get 0 local.get 1 i32.add))`);
-      const { add } = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports;
-      const table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
-      table.set(0, add);
-      [table.get(0) === add, table.get(0) === table.get(0), table.get(0)(20, 22),
-       add.name, add.length].join(",")
-    "#;
-
-    #[test]
-    fn an_export_round_trips_through_a_funcref_table_as_one_callable_object() {
-        with_wasm_namespace(|ctx| {
-            let outcome: String = ctx.eval(FUNCREF_ROUND_TRIP).expect("the snippet runs");
-            assert_eq!(outcome, "true,true,42,0,2");
-        })
-    }
-
-    /// `Module.exports()` promises a name for every declared export, so the
-    /// exports object has to carry all of them: an export kind den could not
-    /// wrap used to be dropped silently, leaving `instance.exports.x`
-    /// `undefined` with no diagnostic anywhere.
-    const BOTH_LISTINGS_AGREE: &str = r#"
-      const bytes = denWasm.wat2wasm(`(module
-        (func (export "f"))
-        (memory (export "m") 1)
-        (table (export "t") 1 funcref)
-        (global (export "g") i32 (i32.const 0)))`);
-      const module = new WebAssembly.Module(bytes);
-      const declared = WebAssembly.Module.exports(module).map((entry) => entry.name).join(",");
-      const built = Object.keys(new WebAssembly.Instance(module).exports).join(",");
-      [declared, built].join("|")
-    "#;
-
-    #[test]
-    fn the_exports_object_carries_every_export_the_module_declares() {
-        with_wasm_namespace(|ctx| {
-            let outcome: String = ctx.eval(BOTH_LISTINGS_AGREE).expect("the snippet runs");
-            assert_eq!(outcome, "f,m,t,g|f,m,t,g");
-        })
-    }
-}
+#[path = "../tests/unit/instance.rs"]
+mod tests;

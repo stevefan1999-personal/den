@@ -9,13 +9,9 @@ use rquickjs::{
     ArrayBuffer, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime,
     Object, Result, Value, class::Trace, qjs,
 };
-use wasmtime::{AsContext, Memory as WasmMemory, ValType};
+use wasmtime::{AsContext, Memory as WasmMemory, MemoryTypeBuilder, RefType, ValType};
 
-use crate::{
-    backend::{self, ValKind},
-    store::Store,
-    utils::EnforceRange,
-};
+use crate::{store::Store, utils::EnforceRange};
 
 /// Dictionary member reads that fail the way WebIDL says they should.
 pub(crate) trait DescriptorObject<'js> {
@@ -79,39 +75,51 @@ impl<'js> DescriptorObject<'js> for Object<'js> {
 pub(crate) struct ValueTypeName;
 
 impl ValueTypeName {
-    /// The types a `Global` or a `Tag` parameter may have: the spec's
-    /// `ValueType` enum, minus `v128`, whose values cannot cross into JS at
-    /// all, and without `anyref`, which is not in that enum however much it
-    /// looks like it should be.
-    pub(crate) const GLOBAL: &'static [ValKind] = &[
-        ValKind::I32,
-        ValKind::I64,
-        ValKind::F32,
-        ValKind::F64,
-        ValKind::ExternRef,
-        ValKind::FuncRef,
-    ];
-    /// The spec's `TableKind`.
-    pub(crate) const TABLE_ELEMENT: &'static [ValKind] = &[ValKind::FuncRef, ValKind::ExternRef];
+    /// A `Global` or `Tag` value type. `v128` cannot cross the JS boundary,
+    /// and `anyref` is not part of the JS API's `ValueType` enum.
+    pub(crate) fn value(ctx: &Ctx<'_>, name: &str, what: &str) -> Result<ValType> {
+        match name {
+            "i32" => Ok(ValType::I32),
+            "i64" => Ok(ValType::I64),
+            "f32" => Ok(ValType::F32),
+            "f64" => Ok(ValType::F64),
+            "anyfunc" | "funcref" => Ok(ValType::FUNCREF),
+            "externref" => Ok(ValType::EXTERNREF),
+            _ => {
+                Err(Exception::throw_type(
+                    ctx,
+                    &format!("`{name}` is not a valid {what}"),
+                ))
+            }
+        }
+    }
 
-    /// `ToValueType(name)`, restricted to `allowed`; `what` names the position
-    /// the type appears in, for the error message.
-    pub(crate) fn resolve(
-        ctx: &Ctx<'_>, name: &str, allowed: &[ValKind], what: &str,
-    ) -> Result<ValType> {
-        let kind = ValKind::parse(name)
-            .filter(|kind| allowed.contains(kind))
-            .ok_or_else(|| {
-                Exception::throw_type(ctx, &format!("`{name}` is not a valid {what}"))
-            })?;
-        backend::val_type_from_kind(kind).ok_or_else(|| {
-            Exception::throw_type(
-                ctx,
-                &format!(
-                    "the {} type is not representable in this build",
-                    kind.name()
-                ),
-            )
+    /// The spec's narrower `TableKind` enum.
+    pub(crate) fn table(ctx: &Ctx<'_>, name: &str) -> Result<ValType> {
+        match name {
+            "anyfunc" | "funcref" => Ok(ValType::FUNCREF),
+            "externref" => Ok(ValType::EXTERNREF),
+            _ => {
+                Err(Exception::throw_type(
+                    ctx,
+                    &format!("`{name}` is not a valid table element type"),
+                ))
+            }
+        }
+    }
+
+    /// Descriptor spelling of a native Wasmtime type.
+    pub(crate) fn get(ty: &ValType) -> Option<&'static str> {
+        Some(match ty {
+            ValType::I32 => "i32",
+            ValType::I64 => "i64",
+            ValType::F32 => "f32",
+            ValType::F64 => "f64",
+            ValType::V128 => "v128",
+            ValType::Ref(reference) if reference.matches(&RefType::FUNCREF) => "anyfunc",
+            ValType::Ref(reference) if reference.matches(&RefType::EXTERNREF) => "externref",
+            ValType::Ref(reference) if reference.matches(&RefType::ANYREF) => "anyref",
+            ValType::Ref(_) => return None,
         })
     }
 }
@@ -119,8 +127,8 @@ impl ValueTypeName {
 /// A `MemoryDescriptor`, in pages.
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryDescriptor {
-    initial: u64,
-    maximum: Option<u64>,
+    initial: u32,
+    maximum: Option<u32>,
     shared:  bool,
 }
 
@@ -128,10 +136,10 @@ impl<'js> FromJs<'js> for MemoryDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the memory descriptor")?;
         Ok(Self {
-            initial: u64::from(object.initial_or_minimum(ctx)?),
+            initial: object.initial_or_minimum(ctx)?,
             maximum: object
                 .get::<_, Option<EnforceRange>>("maximum")?
-                .map(|maximum| u64::from(maximum.0)),
+                .map(|maximum| maximum.0),
             shared:  object
                 .get::<_, Option<Coerced<bool>>>("shared")?
                 .is_some_and(|shared| shared.0),
@@ -185,7 +193,7 @@ impl<'js> MemoryBuffers<'js> {
     /// internal `memory.grow` reallocates, and every `Uint8Array` JS built
     /// beforehand would otherwise point at the old pages.
     pub(crate) fn refresh(ctx: &Ctx<'js>) -> Result<()> {
-        Store::from_ctx(ctx)?.with_mut(ctx, |store| Self::refresh_in(ctx, &*store))
+        Store::from_ctx(ctx)?.with_context(ctx, |store| Self::refresh_in(ctx, store))
     }
 
     /// [`Self::refresh`] against a store that is already borrowed, which is the
@@ -344,8 +352,8 @@ impl<'js> MemoryBuffers<'js> {
 
     /// The current base address and byte length of `memory`.
     fn extent(ctx: &Ctx<'js>, memory: &WasmMemory) -> Result<(usize, usize)> {
-        Store::from_ctx(ctx)?.with_mut(ctx, |store| {
-            Ok((memory.data_ptr(&*store) as usize, memory.data_size(&*store)))
+        Store::from_ctx(ctx)?.with_context(ctx, |store| {
+            Ok((memory.data_ptr(&store) as usize, memory.data_size(&store)))
         })
     }
 
@@ -454,55 +462,30 @@ impl<'js> MemoryBuffers<'js> {
 pub struct Memory {
     #[qjs(skip_trace)]
     pub(crate) inner: WasmMemory,
-    /// Requested `shared` from the descriptor. wasmtime cannot allocate a
-    /// shared memory we can alias as `SharedArrayBuffer`, so the engine
-    /// memory is always unshared; `type()` still reports what JS asked for.
-    shared:           bool,
-}
-
-impl From<WasmMemory> for Memory {
-    fn from(inner: WasmMemory) -> Self {
-        Self {
-            inner,
-            shared: false,
-        }
-    }
 }
 
 #[rquickjs::methods]
 impl Memory {
     #[qjs(constructor)]
     pub fn new(descriptor: MemoryDescriptor, ctx: Ctx<'_>) -> Result<Self> {
-        if descriptor.shared && descriptor.maximum.is_none() {
-            return Err(Exception::throw_type(
-                &ctx,
-                "a shared WebAssembly.Memory requires a maximum size",
-            ));
-        }
-        if descriptor.shared && !backend::SUPPORTS_SHARED_MEMORY {
-            // Modules declaring a shared memory fail validation already; the
-            // constructor must refuse the same way instead of silently
-            // allocating an unshared memory.
+        if descriptor.shared {
             return Err(Exception::throw_type(
                 &ctx,
                 "shared WebAssembly.Memory is not supported by this build",
             ));
         }
 
-        // Always allocate an unshared wasmtime memory; shared requests are
-        // refused above since den cannot alias one as a SharedArrayBuffer.
-        let ty = backend::new_memory_type(descriptor.initial, descriptor.maximum, false).map_err(
-            |error| Exception::throw_range(&ctx, &format!("invalid memory type: {error}")),
-        )?;
-
+        let mut ty = MemoryTypeBuilder::new();
+        let ty = ty
+            .min(u64::from(descriptor.initial))
+            .max(descriptor.maximum.map(u64::from))
+            .build()
+            .map_err(|error| {
+                Exception::throw_range(&ctx, &format!("invalid memory type: {error}"))
+            })?;
         Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
             WasmMemory::new(&mut *store, ty)
-                .map(|inner| {
-                    Self {
-                        inner,
-                        shared: descriptor.shared,
-                    }
-                })
+                .map(|inner| Self { inner })
                 .map_err(|error| {
                     Exception::throw_range(&ctx, &format!("cannot allocate memory: {error}"))
                 })
@@ -522,13 +505,13 @@ impl Memory {
     /// The js-types reflection method: `{ minimum, shared, maximum? }`.
     #[qjs(rename = "type")]
     pub fn memory_type<'js>(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
-        let (minimum, maximum) = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
-            let ty = self.inner.ty(&*store);
-            Ok((ty.minimum(), ty.maximum()))
+        let (minimum, maximum, shared) = Store::from_ctx(&ctx)?.with_context(&ctx, |store| {
+            let ty = self.inner.ty(&store);
+            Ok((ty.minimum(), ty.maximum(), ty.is_shared()))
         })?;
         let mut ty = indexmap! {
             "minimum" => minimum.into_js(&ctx)?,
-            "shared" => self.shared.into_js(&ctx)?,
+            "shared" => shared.into_js(&ctx)?,
         };
         if let Some(maximum) = maximum {
             ty.insert("maximum", maximum.into_js(&ctx)?);
@@ -545,17 +528,18 @@ impl Memory {
 
     #[qjs(rename = "toResizableBuffer")]
     pub fn to_resizable_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        let max_pages = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
-            self.inner.ty(&*store).maximum().ok_or_else(|| {
+        let max_pages = Store::from_ctx(&ctx)?.with_context(&ctx, |store| {
+            self.inner.ty(&store).maximum().ok_or_else(|| {
                 Exception::throw_type(
                     &ctx,
                     "toResizableBuffer requires a WebAssembly.Memory with a maximum",
                 )
             })
         })?;
-        let max_byte_length = usize::try_from(max_pages.saturating_mul(65536)).map_err(|_| {
-            Exception::throw_range(&ctx, "the memory maximum does not fit in a buffer")
-        })?;
+        let max_byte_length =
+            usize::try_from(max_pages.saturating_mul(0x0001_0000)).map_err(|_| {
+                Exception::throw_range(&ctx, "the memory maximum does not fit in a buffer")
+            })?;
         MemoryBuffers::to_resizable(&ctx, &self.inner, max_byte_length)
     }
 
@@ -578,155 +562,12 @@ impl Memory {
 
 /// Shared test scaffolding for the wasm object wrappers.
 #[cfg(test)]
-pub(crate) mod testing {
-    use rquickjs::{Context, Ctx, Object, Runtime, Value};
-
-    use crate::{backend, error::WebAssemblyErrors, memory::MemoryBuffers, store::Store};
-
-    /// A fresh runtime whose context carries everything the wrappers expect:
-    /// the shared wasm store and the three WebAssembly error classes.
-    pub(crate) fn with_wasm_context<R>(f: impl FnOnce(&Ctx<'_>) -> R) -> R {
-        let runtime = Runtime::new().expect("runtime");
-        let context = Context::full(&runtime).expect("context");
-        context.with(|ctx| {
-            let engine = backend::new_engine().expect("engine");
-            ctx.store_userdata(Store::new(&engine, &ctx))
-                .expect("store userdata");
-            ctx.store_userdata(MemoryBuffers::default())
-                .expect("memory buffer registry userdata");
-            let namespace = Object::new(ctx.clone()).expect("namespace");
-            WebAssemblyErrors::install(&ctx, &namespace).expect("error classes");
-            f(&ctx)
-        })
-    }
-
-    /// The `name` of the pending JS error, e.g. `"TypeError"`, so that tests
-    /// pin the spec's error *class* rather than its wording.
-    pub(crate) fn pending_error_name(ctx: &Ctx<'_>) -> String {
-        ctx.catch()
-            .as_exception()
-            .and_then(|exception| exception.get::<_, String>("name").ok())
-            .unwrap_or_else(|| "not a JS error".to_owned())
-    }
-
-    /// Evaluate a snippet to a JS value, for feeding arguments to the wrappers.
-    pub(crate) fn js<'js>(ctx: &Ctx<'js>, source: &str) -> Value<'js> {
-        ctx.eval(source).expect("test snippet evaluates")
-    }
-}
+#[path = "../tests/unit/memory_testing.rs"]
+pub(crate) mod testing;
 
 #[cfg(test)]
-mod tests {
-    use rquickjs::FromJs;
-
-    /// One wasm page, the unit memory sizes are counted in.
-    const PAGE_SIZE: usize = 65536;
-
-    use super::{
-        testing::{js, pending_error_name, with_wasm_context},
-        *,
-    };
-
-    fn memory(ctx: &Ctx<'_>, descriptor: &str) -> core::result::Result<Memory, String> {
-        MemoryDescriptor::from_js(ctx, js(ctx, descriptor))
-            .and_then(|descriptor| Memory::new(descriptor, ctx.clone()))
-            .map_err(|_| pending_error_name(ctx))
-    }
-
-    #[test]
-    fn buffer_aliases_the_linear_memory_and_is_the_same_object_between_grows() {
-        with_wasm_context(|ctx| {
-            let memory = memory(ctx, "({ initial: 2 })").expect("two pages");
-            let buffer = memory.buffer(ctx.clone()).expect("buffer");
-            assert_eq!(buffer.len(), 2 * PAGE_SIZE);
-            let again = memory.buffer(ctx.clone()).expect("buffer");
-            assert_eq!(buffer.as_value(), again.as_value());
-        })
-    }
-
-    #[test]
-    fn an_empty_memory_still_has_a_zero_length_buffer() {
-        with_wasm_context(|ctx| {
-            let memory = memory(ctx, "({ initial: 0 })").expect("no pages");
-            assert_eq!(memory.buffer(ctx.clone()).expect("buffer").len(), 0);
-        })
-    }
-
-    #[test]
-    fn grow_returns_the_previous_page_count_and_detaches_the_old_buffer() {
-        with_wasm_context(|ctx| {
-            let memory = memory(ctx, "({ initial: 1, maximum: 4 })").expect("one page");
-            let stale = memory.buffer(ctx.clone()).expect("buffer");
-            assert_eq!(stale.len(), PAGE_SIZE);
-
-            let previous = memory.grow(Coerced(2), ctx.clone()).expect("grow");
-            assert_eq!(previous, 1);
-            assert_eq!(stale.as_bytes(), None, "the old buffer must be detached");
-
-            let fresh = memory.buffer(ctx.clone()).expect("buffer");
-            assert_eq!(fresh.len(), 3 * PAGE_SIZE);
-            assert_ne!(stale.as_value(), fresh.as_value());
-        })
-    }
-
-    #[test]
-    fn growing_past_the_maximum_is_a_range_error() {
-        with_wasm_context(|ctx| {
-            let memory = memory(ctx, "({ initial: 1, maximum: 2 })").expect("one page");
-            let _ = memory
-                .grow(Coerced(5), ctx.clone())
-                .expect_err("over maximum");
-            assert_eq!(pending_error_name(ctx), "RangeError");
-        })
-    }
-
-    #[test]
-    fn a_descriptor_without_initial_is_a_type_error() {
-        with_wasm_context(|ctx| {
-            assert_eq!(memory(ctx, "({ maximum: 1 })").unwrap_err(), "TypeError");
-            assert_eq!(memory(ctx, "(1)").unwrap_err(), "TypeError");
-        })
-    }
-
-    #[test]
-    fn minimum_is_accepted_as_an_alias_of_initial_but_not_alongside_it() {
-        with_wasm_context(|ctx| {
-            let wasm_memory = memory(ctx, "({ minimum: 2 })").expect("minimum");
-            assert_eq!(
-                wasm_memory.buffer(ctx.clone()).expect("buffer").len(),
-                2 * PAGE_SIZE
-            );
-            assert_eq!(
-                memory(ctx, "({ initial: 1, minimum: 1 })").unwrap_err(),
-                "TypeError"
-            );
-        })
-    }
-
-    #[test]
-    fn a_maximum_below_the_initial_size_is_a_range_error() {
-        with_wasm_context(|ctx| {
-            assert_eq!(
-                memory(ctx, "({ initial: 4, maximum: 1 })").unwrap_err(),
-                "RangeError"
-            );
-        })
-    }
-
-    #[test]
-    fn shared_memory_is_refused_whatever_this_build_cannot_alias() {
-        with_wasm_context(|ctx| {
-            assert_eq!(
-                memory(ctx, "({ initial: 1, shared: true })").unwrap_err(),
-                "TypeError"
-            );
-            assert_eq!(
-                memory(ctx, "({ initial: 1, maximum: 2, shared: true })").unwrap_err(),
-                "TypeError"
-            );
-        })
-    }
-}
+#[path = "../tests/unit/memory.rs"]
+mod tests;
 
 /// The JS-visible surface of `Memory`, `Table` and `Global`, exercised through
 /// the real `den:wasm` module.
@@ -736,152 +577,9 @@ mod tests {
 /// `length` and `value` really are accessors under the names the spec gives
 /// them.
 #[cfg(test)]
-mod javascript_tests {
-    const EXERCISE: &str = r#"
-      const assert = (holds, what) => { if (!holds) throw new Error(what); };
-
-      const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
-      const buffer = memory.buffer;
-      assert(buffer === memory.buffer, "buffer is not the same object between grows");
-      assert(buffer.byteLength === 65536, "buffer does not span the linear memory");
-      new Uint8Array(buffer)[0] = 7;
-      assert(memory.grow(1) === 1, "grow does not return the previous page count");
-      assert(buffer.byteLength === 0, "the old buffer was not detached");
-      assert(memory.buffer.byteLength === 131072, "the fresh buffer has the wrong size");
-      assert(new Uint8Array(memory.buffer)[0] === 7, "growing lost the memory contents");
-
-      const table = new WebAssembly.Table({ element: "anyfunc", initial: 2 });
-      assert(table.length === 2, "length is wrong");
-      assert(table.get(0) === null, "a fresh anyfunc table is not full of nulls");
-      table.set(1, null);
-      assert(table.grow(1) === 2, "grow does not return the previous length");
-      assert(table.length === 3, "grow did not grow");
-
-      const mutable = new WebAssembly.Global({ value: "i32", mutable: true }, 5);
-      assert(mutable.value === 5, "the value getter is missing or wrong");
-      mutable.value = 6;
-      assert(mutable.valueOf() === 6, "the value setter or valueOf is missing or wrong");
-
-      const constant = new WebAssembly.Global({ value: "i64" }, 1n);
-      assert(constant.value === 1n, "an i64 global does not read as a BigInt");
-      try {
-        constant.value = 2n;
-        throw new Error("an immutable global accepted a write");
-      } catch (error) {
-        assert(error instanceof TypeError, "writing an immutable global is not a TypeError");
-      }
-      true
-    "#;
-
-    #[test]
-    fn the_wasm_objects_behave_the_way_scripts_expect() {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(async {
-                let held: bool = den_core::engine::Engine::new()
-                    .await
-                    .eval(EXERCISE)
-                    .await
-                    .expect("every assertion holds");
-                assert!(held);
-            })
-    }
-}
+#[path = "../tests/unit/memory_javascript.rs"]
+mod javascript_tests;
 
 #[cfg(test)]
-mod detach_key_tests {
-    use super::{
-        testing::{pending_error_name, with_wasm_context},
-        *,
-    };
-
-    /// One wasm page, the unit memory sizes are counted in.
-    const PAGE_SIZE: usize = 65536;
-
-    fn one_page(ctx: &Ctx<'_>) -> Memory {
-        Memory::new(
-            MemoryDescriptor {
-                initial: 1,
-                maximum: None,
-                shared:  false,
-            },
-            ctx.clone(),
-        )
-        .expect("one page")
-    }
-
-    /// `transfer` reaches `js_realloc` on the wasm linear memory base, so
-    /// before the buffer was sealed this corrupted the heap and crashed the
-    /// process rather than merely misbehaving.
-    #[test]
-    fn the_buffer_refuses_every_method_that_would_detach_it() {
-        with_wasm_context(|ctx| {
-            let memory = one_page(ctx);
-            ctx.globals()
-                .set("buf", memory.buffer(ctx.clone()).expect("buffer"))
-                .expect("bind");
-
-            for call in [
-                "buf.transfer()",
-                "buf.transfer(1)",
-                "buf.transferToFixedLength()",
-                "buf.transferToImmutable()",
-                "buf.resize(0)",
-            ] {
-                let outcome: rquickjs::Result<rquickjs::Value> = ctx.eval(call);
-                assert!(outcome.is_err(), "{call} must not succeed");
-                assert_eq!(pending_error_name(ctx), "TypeError", "{call}");
-            }
-
-            // Sealing must not have cost the buffer its ordinary behaviour.
-            let length: usize = ctx.eval("buf.byteLength").expect("byteLength");
-            assert_eq!(length, PAGE_SIZE);
-            let written: u8 = ctx
-                .eval("(new Uint8Array(buf))[7] = 42, (new Uint8Array(buf))[7]")
-                .expect("writable");
-            assert_eq!(written, 42);
-        })
-    }
-
-    /// Script must not be able to `delete` the guards to reach the originals on
-    /// `ArrayBuffer.prototype`.
-    #[test]
-    fn the_guards_are_neither_writable_nor_configurable() {
-        with_wasm_context(|ctx| {
-            let memory = one_page(ctx);
-            ctx.globals()
-                .set("buf", memory.buffer(ctx.clone()).expect("buffer"))
-                .expect("bind");
-
-            let descriptor: String =
-                ctx
-                    .eval(
-                        "(() => { const d = Object.getOwnPropertyDescriptor(buf, 'transfer'); \
-                         return                      \
-                         `${d.writable}/${d.configurable}/${d.enumerable}` })()",
-                    )
-                    .expect("descriptor");
-            assert_eq!(descriptor, "false/false/false");
-
-            // Non-configurable, so `delete` reports failure — as a thrown
-            // TypeError under strict mode, which is how rquickjs evaluates.
-            let deleted: String = ctx
-                .eval(
-                    "(() => { try { return String(delete buf.transfer) } catch (e) { return \
-                     e.name } })()",
-                )
-                .expect("delete");
-            assert!(
-                deleted == "false" || deleted == "TypeError",
-                "the guard must not be deletable, got {deleted}"
-            );
-
-            let still_refused: bool = ctx
-                .eval("(() => { try { buf.transfer(1); return false } catch { return true } })()")
-                .expect("transfer");
-            assert!(still_refused, "transfer must still be refused");
-        })
-    }
-}
+#[path = "../tests/unit/memory_detach_key.rs"]
+mod detach_key_tests;

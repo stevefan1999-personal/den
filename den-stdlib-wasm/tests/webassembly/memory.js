@@ -1,7 +1,6 @@
 import { assert, assertEquals } from "den:assert";
-import { wat2wasm } from "den:wasm";
 
-const WASM = wat2wasm(`
+const WASM = globalThis.wat2wasm(`
     (module
       (memory (export "mem") 1)
       (func (export "peek") (param i32) (result i32) local.get 0 i32.load8_u))

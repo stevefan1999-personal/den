@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "den:assert";
-import { wat2wasm, wasiImports } from "den:wasm";
+import * as denWasm from "den:wasm";
 
 const missing = [
   "validate",
@@ -21,9 +21,12 @@ const missing = [
 assertEquals(missing.join(","), "");
 
 assertEquals("wat2wasm" in WebAssembly, false);
-assertEquals(typeof wat2wasm, "function");
+assertEquals("wat2wasm" in denWasm, false);
+assertEquals(typeof globalThis.wat2wasm, "function");
 assertEquals("wasiImports" in WebAssembly, false);
-assertEquals(typeof wasiImports(), "object");
+if ("wasiImports" in denWasm) {
+  assertEquals(typeof denWasm.wasiImports(), "object");
+}
 
 const operations = new Set([
   "validate",

@@ -1,7 +1,7 @@
 import { assertEquals } from "den:assert";
-import { wat2wasm, wasiImports } from "den:wasm";
+import { wasiImports } from "den:wasm";
 
-const CALLS_WASI = wat2wasm(`
+const CALLS_WASI = globalThis.wat2wasm(`
     (module
       (import "wasi_snapshot_preview1" "environ_sizes_get"
               (func $sizes (param i32 i32) (result i32)))
