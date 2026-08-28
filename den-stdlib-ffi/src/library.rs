@@ -15,11 +15,18 @@ use rquickjs::{
 };
 
 use crate::{
+    callback::InsideCall,
     error::ErrorKind,
     grant::FfiGrant,
-    marshal::{self, ArgumentCell, Bytes, CallSite},
+    marshal::{self, ArgumentCell, Borrowed, Bytes, CallSite},
     schema::{CallMode, FnSig, ParamType, SymbolKind, SymbolSpec},
 };
+
+/// A share of a `dlopen`ed handle. Holding one keeps the pages mapped past a
+/// `Symbol.dispose`, so an address C has already been handed cannot be
+/// unmapped underneath it — which is what a `nonblocking` call, and any
+/// argument that is an address, need for the length of the call.
+pub type Mapped = Arc<dlopen2::raw::Library>;
 
 /// The loaded library. Every bound symbol and every `Pointer` holds an `Rc` of
 /// this, which is what keeps the pages mapped for as long as JS can still reach
@@ -35,7 +42,7 @@ pub struct LoadedLibrary {
     /// share, and the `dlclose` waits for the call that is inside the library
     /// right now. Without that, disposing a library mid-call unmaps the code
     /// the worker is executing.
-    handle: RefCell<Option<Arc<dlopen2::raw::Library>>>,
+    handle: RefCell<Option<Mapped>>,
     path:   PathBuf,
 }
 
@@ -78,11 +85,16 @@ impl LoadedLibrary {
 
     pub fn is_live(&self) -> bool { self.handle.borrow().is_some() }
 
+    /// [`Self::share`] without the throw, for a caller that is collecting
+    /// shares rather than checking liveness — a closed library has no pages
+    /// left to keep mapped.
+    pub fn mapped(&self) -> Option<Mapped> { self.handle.borrow().clone() }
+
     /// A share of the handle, for a call that outlives the borrow. Holding one
     /// keeps the library mapped past `Symbol.dispose`; it does not make the
     /// library live again, because every JS-side dispatch reads
     /// [`Self::is_live`] first.
-    fn share(&self, ctx: &Ctx<'_>) -> Result<Arc<dlopen2::raw::Library>> {
+    fn share(&self, ctx: &Ctx<'_>) -> Result<Mapped> {
         self.handle
             .borrow()
             .clone()
@@ -122,7 +134,7 @@ impl BoundFn {
     /// Check the call and marshal every argument, on the realm thread. This is
     /// the whole of the JS-touching half of a call: what it produces is plain
     /// data that a worker thread can use without a realm.
-    fn prepare<'js>(&self, ctx: &Ctx<'js>, arguments: &[Value<'js>]) -> Result<Vec<ArgumentCell>> {
+    fn prepare<'js>(&self, ctx: &Ctx<'js>, arguments: &[Value<'js>]) -> Result<Prepared<'js>> {
         if !self.library.is_live() {
             return Err(ErrorKind::Closed.throw_at(ctx, "library is closed", &self.library.path));
         }
@@ -140,24 +152,39 @@ impl BoundFn {
             mode:   self.mode,
             origin: &self.origin,
         };
-        self.params
-            .iter()
-            .zip(arguments)
-            .map(|(declared, value)| ArgumentCell::marshal(ctx, declared, value, site))
-            .collect()
+        let mut prepared = Prepared::default();
+        for (position, (declared, value)) in self.params.iter().zip(arguments).enumerate() {
+            let (cell, borrowed) =
+                ArgumentCell::marshal(ctx, declared, value, site, &mut prepared.mapped)?;
+            prepared.cells.push(cell);
+            if let Some(borrowed) = borrowed {
+                prepared.borrowed.push((position, borrowed));
+            }
+        }
+        // Marshalling the last argument was the last JS this call runs, so
+        // every borrowed address is taken again here — see [`Borrowed`].
+        Borrowed::settle(ctx, &mut prepared.cells, &prepared.borrowed)?;
+        prepared.mapped.push(self.library.share(ctx)?);
+        Ok(prepared)
     }
+
+    /// Whether this symbol lends a JS buffer's own bytes to C, which is what
+    /// makes re-entering JS during the call unsafe (§4.6).
+    fn lends_a_buffer(&self) -> bool { self.params.contains(&ParamType::Buffer) }
 
     /// The synchronous call: marshal, call, read the result back — all on the
     /// realm thread, holding the runtime lock throughout.
     fn call<'js>(&self, ctx: &Ctx<'js>, arguments: &[Value<'js>]) -> Result<Value<'js>> {
-        let cells = self.prepare(ctx, arguments)?;
-        // Marshalling runs JS — a struct field is an ordinary property read,
-        // and so is the resizable check on a buffer — and JS is free to
-        // dispose the library from inside one. Taking a share of the handle
-        // for the length of the call is what the `nonblocking` path does for
-        // the same reason: the `dlclose` then waits for C to return instead
-        // of unmapping the code this frame is about to jump into.
-        let _mapped = self.library.share(ctx)?;
+        // `prepare` ends by taking a share of every library an argument names
+        // and of this symbol's own: marshalling runs JS, and JS is free to
+        // dispose a library from inside it, so the `dlclose` waits for C to
+        // return instead of unmapping code or data this call is using.
+        let prepared = self.prepare(ctx, arguments)?;
+        let cells = &prepared.cells;
+        // What tells the trampoline that a callback firing on this thread is
+        // re-entrant rather than foreign — and, while a buffer is lent, that
+        // it may not run JS at all.
+        let _entered = InsideCall::enter(ctx, self.lends_a_buffer());
         // SAFETY: the CIF and the argument cells were built from the same
         // `SymbolSpec`, so their count and types agree, and the address came
         // from `dlsym` on a handle this `BoundFn` still holds an `Rc` to,
@@ -171,7 +198,7 @@ impl BoundFn {
                 &self.signature.result,
                 &self.cif,
                 CodePtr::from_ptr(std::ptr::with_exposed_provenance(self.address)),
-                &cells,
+                cells,
             )
         };
         // SAFETY: `cell` holds exactly the bytes libffi wrote for the declared
@@ -188,13 +215,24 @@ impl BoundFn {
 
     /// Everything the worker thread needs, and nothing that belongs to a realm.
     fn plan<'js>(&self, ctx: &Ctx<'js>, arguments: &[Value<'js>]) -> Result<ForeignCall> {
+        let prepared = self.prepare(ctx, arguments)?;
         Ok(ForeignCall {
             address:   self.address,
             signature: Arc::clone(&self.signature),
-            cells:     self.prepare(ctx, arguments)?,
-            library:   self.library.share(ctx)?,
+            cells:     prepared.cells,
+            mapped:    prepared.mapped,
         })
     }
+}
+
+/// One call's arguments, marshalled: the plain data C is handed, the JS
+/// handles behind whichever of those are addresses, and the library shares
+/// that keep every one of those addresses mapped for the length of the call.
+#[derive(Default)]
+struct Prepared<'js> {
+    cells:    Vec<ArgumentCell>,
+    borrowed: Vec<(usize, Borrowed<'js>)>,
+    mapped:   Vec<Mapped>,
 }
 
 /// One `nonblocking` call in flight: plain data, plus the share of the library
@@ -204,7 +242,10 @@ struct ForeignCall {
     address:   usize,
     signature: Arc<FnSig>,
     cells:     Vec<ArgumentCell>,
-    library:   Arc<dlopen2::raw::Library>,
+    /// The bound symbol's own library, and one share per library an argument's
+    /// address belongs to: JS keeps running while this call is on its worker,
+    /// so any of them can be disposed underneath it.
+    mapped:    Vec<Mapped>,
 }
 
 impl ForeignCall {
@@ -227,7 +268,7 @@ impl ForeignCall {
         // Explicit, because this is the field's whole job: the `dlclose` a
         // concurrent `Symbol.dispose` asked for happens here, after the call,
         // rather than under it.
-        drop(self.library);
+        drop(self.mapped);
         cell
     }
 }

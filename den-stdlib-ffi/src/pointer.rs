@@ -16,7 +16,11 @@ use rquickjs::{
     function::Opt,
 };
 
-use crate::{error::ErrorKind, library::LoadedLibrary, marshal};
+use crate::{
+    error::ErrorKind,
+    library::{LoadedLibrary, Mapped},
+    marshal,
+};
 
 /// How far `cstring` scans when the caller names no bound. A C string with no
 /// NUL in four kibibytes is a bug, and an unbounded scan is a fault waiting for
@@ -55,15 +59,25 @@ impl Pointer {
     /// A pointer argument. `null` is the null pointer; anything that is not a
     /// `Pointer` is refused rather than coerced, and a `Pointer` whose library
     /// is gone is `Closed` rather than a call into unmapped pages.
-    pub fn marshal<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<usize> {
+    ///
+    /// The handle comes back so that the caller can take the address again
+    /// once the rest of the argument list has been marshalled
+    /// ([`crate::marshal::Borrowed`]), and `mapped` collects the share of the
+    /// library that keeps this address mapped for the whole call — including a
+    /// `nonblocking` one, which JS keeps running underneath.
+    pub fn marshal<'js>(
+        ctx: &Ctx<'js>, value: &Value<'js>, mapped: &mut Vec<Mapped>,
+    ) -> Result<(usize, Option<Class<'js, Self>>)> {
         if value.is_null() {
-            return Ok(0);
+            return Ok((0, None));
         }
         let instance = Self::from_value(ctx, value)?;
-        instance.borrow().live(ctx)
+        let address = instance.borrow().live(ctx)?;
+        mapped.extend(instance.borrow().mapped());
+        Ok((address, Some(instance)))
     }
 
-    fn from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Class<'js, Self>> {
+    pub fn from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Class<'js, Self>> {
         value
             .as_object()
             .and_then(Class::<Self>::from_object)
@@ -75,8 +89,13 @@ impl Pointer {
             })
     }
 
+    /// A share of the handle this address lives in, when den knows which one
+    /// that is: holding it defers the `dlclose` a concurrent `Symbol.dispose`
+    /// asks for until after C is done with the address.
+    fn mapped(&self) -> Option<Mapped> { self.library.as_ref()?.mapped() }
+
     /// The address, if the library that produced it is still mapped.
-    fn live(&self, ctx: &Ctx<'_>) -> Result<usize> {
+    pub fn live(&self, ctx: &Ctx<'_>) -> Result<usize> {
         match &self.library {
             Some(library) if !library.is_live() => {
                 Err(ErrorKind::Closed.throw_at(

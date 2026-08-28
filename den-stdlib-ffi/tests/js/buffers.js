@@ -51,9 +51,56 @@ const growable = new Uint8Array(new ArrayBuffer(8, { maxByteLength: 16 }));
 assertEquals(growable.buffer.resizable, true, "den can still build one");
 refuses(() => probe.fill_bytes(growable, 4n), "resizable ArrayBuffer");
 
+// Neither refusal above is a property read a script can talk den out of: the
+// shared one is a class-id check on the buffer itself (`JS_IsArrayBuffer`), so
+// a replaced global and a `Symbol.hasInstance` of one's own both change
+// nothing.
+const realShared = SharedArrayBuffer;
+globalThis.SharedArrayBuffer = class {};
+refuses(
+  () => probe.fill_bytes(new Uint8Array(new realShared(8)), 4n),
+  "SharedArrayBuffer",
+);
+Object.defineProperty(realShared, Symbol.hasInstance, { value: () => false });
+refuses(
+  () => probe.fill_bytes(new Uint8Array(new realShared(8)), 4n),
+  "SharedArrayBuffer",
+);
+globalThis.SharedArrayBuffer = realShared;
+
+// Marshalling a *later* argument runs JS, so the address den took for this
+// buffer has to be taken again once the whole list is marshalled. Here the
+// struct's field getter detaches the store in between: the call is refused,
+// rather than made through an address JS has already freed.
+const late = open(library, {
+  fill_then_padded: {
+    params: ["buffer", "usize", { struct: { b: "i8", n: "i32" } }],
+    result: "void",
+  },
+}, capability);
+
+const stable = new Uint8Array(8);
+late.fill_then_padded(stable, 8n, { b: 1, n: 2 });
+assertEquals(Array.from(stable), [3, 3, 3, 3, 3, 3, 3, 3]);
+
+const stolen = new ArrayBuffer(8);
+const doomed = new Uint8Array(stolen);
+refuses(
+  () =>
+    late.fill_then_padded(doomed, 8n, {
+      b: 1,
+      get n() {
+        stolen.transfer();
+        return 2;
+      },
+    }),
+  "detached",
+);
+late[Symbol.dispose]();
+
 // Zero-copy is a synchronous capability: copying in and silently not copying
-// back is the failure mode den refuses to have. `nonblocking` is not a legal
-// key at all yet, so the whole entry is refused, naming the symbol.
+// back is the failure mode den refuses to have. A `buffer` argument and
+// `nonblocking: true` are refused together, naming the symbol.
 const rejected = assertThrows(
   () => open(library, { fill_bytes: { ...fill, nonblocking: true } }, capability),
 );

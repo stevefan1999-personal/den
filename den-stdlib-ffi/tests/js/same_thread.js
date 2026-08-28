@@ -16,12 +16,27 @@ const probe = open(library, {
     nonblocking: true,
   },
   fire_stored: { params: ["i32"], result: "i32" },
+  fill_then_fire: { params: ["buffer", "usize", "i32"], result: "i32" },
 }, grant());
 
-using double = callback({ params: ["i32"], result: "i32" }, (n) => n * 2);
+let fired = 0;
+using double = callback({ params: ["i32"], result: "i32" }, (n) => {
+  fired++;
+  return n * 2;
+});
 await probe.store_callback(double);
 
 // Re-entrant: JS → C → JS, all on one thread, all under one runtime lock.
 assertEquals(probe.fire_stored(21), 42);
+assertEquals(fired, 1);
+
+// …but not while C is holding the address of a JS buffer's own bytes: this
+// callback could detach that store, and C writes into it the moment it
+// returns. den refuses to run JS here — C gets the zero value and a line on
+// stderr — and the buffer is still there to be written (§4.6).
+const lent = new Uint8Array(8);
+assertEquals(probe.fill_then_fire(lent, 8n, 21), 0);
+assertEquals(fired, 1, "JS must not run while a buffer is lent to C");
+assertEquals(Array.from(lent), [66, 66, 66, 66, 66, 66, 66, 66]);
 
 probe[Symbol.dispose]();

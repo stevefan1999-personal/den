@@ -185,3 +185,29 @@ int32_t nested_sum(Nested nested) {
 
 /* An exported struct variable, for the `{ type: { struct } }` form. */
 Point base_point = {2, 3};
+
+/* Marshalling an argument runs JS — a struct field is an ordinary property
+ * read — so these three exist to put a JS-running argument *after* one whose
+ * cell is an address den has already taken. */
+void fill_then_padded(uint8_t *out, size_t length, Padded amount) {
+  for (size_t index = 0; index < length; index++) {
+    out[index] = (uint8_t)(amount.b + amount.n);
+  }
+}
+
+int32_t read_i32_after(const int32_t *address, Padded ignored) {
+  (void)ignored;
+  return *address;
+}
+
+/* The re-entrancy seam with a buffer in flight: C fires the callback it stored
+ * earlier and then writes into the buffer den lent it. Running JS there could
+ * detach that store, so den refuses and this returns the zero the trampoline
+ * wrote. */
+int32_t fill_then_fire(uint8_t *out, size_t length, int32_t value) {
+  int32_t answer = stored ? stored(value) : -1;
+  for (size_t index = 0; index < length; index++) {
+    out[index] = 0x42;
+  }
+  return answer;
+}

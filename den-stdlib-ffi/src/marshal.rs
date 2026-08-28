@@ -14,12 +14,12 @@ use libffi::{
     low::{ffi_arg, ffi_sarg},
     middle::{Arg, Cif, CodePtr, Ret},
 };
-use rquickjs::{BigInt, Coerced, Ctx, FromJs as _, Object, Result, TypedArray, Value};
+use rquickjs::{BigInt, Class, Coerced, Ctx, FromJs as _, Object, Result, TypedArray, Value, qjs};
 
 use crate::{
     callback::Callback,
     error::ErrorKind,
-    library::LoadedLibrary,
+    library::{LoadedLibrary, Mapped},
     pointer::Pointer,
     schema::{CallMode, NativeType, ParamType, StructLayout},
 };
@@ -145,13 +145,69 @@ pub enum ArgumentCell {
     Struct(Bytes),
 }
 
+/// An argument whose cell holds an *address*, kept alive so that den can take
+/// that address again once the last JS of the call has run.
+///
+/// Marshalling any argument runs script — a struct field is an ordinary
+/// property read, and so is the `resizable` check on a buffer — so an address
+/// taken for argument N is only still true until argument N+1 is marshalled.
+/// In between, JS can detach a buffer or dispose the library a pointer came
+/// from, and libffi would then hand C an address den has already been told is
+/// dead. [`Self::settle`] is the second pass that closes that window: it runs
+/// after the whole argument list is marshalled and before anything else can
+/// run (§4.6).
+pub enum Borrowed<'js> {
+    /// A `Uint8Array` whose store JS may detach, transfer or resize.
+    Buffer(TypedArray<'js, u8>),
+    /// A `Pointer` whose library JS may dispose.
+    Pointer(Class<'js, Pointer>),
+}
+
+impl<'js> Borrowed<'js> {
+    /// Take every borrowed address again, into the cells C is about to be
+    /// handed. A buffer that is detached by now is `BadArgument` and a pointer
+    /// whose library is closed by now is `Closed` — the same refusals the
+    /// first pass makes, at the only moment they are guaranteed to still hold.
+    ///
+    /// Nothing here runs script: `as_raw` is `JS_GetTypedArrayBuffer` and a
+    /// pointer's liveness is a Rust flag, so no fourth party can invalidate an
+    /// argument between this and the call.
+    pub fn settle(
+        ctx: &Ctx<'js>, cells: &mut [ArgumentCell], borrowed: &[(usize, Self)],
+    ) -> Result<()> {
+        for (position, handle) in borrowed {
+            let address = match handle {
+                Self::Buffer(view) => ArgumentCell::address_of(ctx, view)?,
+                Self::Pointer(pointer) => pointer.borrow().live(ctx)?,
+            };
+            // `position` came from enumerating these same cells, so the miss
+            // is unreachable; refusing the call is still better than a panic
+            // on a path JS can reach.
+            *cells.get_mut(*position).ok_or_else(|| {
+                ErrorKind::BadArgument.throw(ctx, "an argument went missing before the call")
+            })? = ArgumentCell::Pointer(address);
+        }
+        Ok(())
+    }
+}
+
 impl ArgumentCell {
+    /// One argument's cell, plus the JS handle behind it when that cell is an
+    /// address [`Borrowed::settle`] must take again.
     pub fn marshal<'js>(
         ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>, site: CallSite<'_>,
-    ) -> Result<Self> {
+        mapped: &mut Vec<Mapped>,
+    ) -> Result<(Self, Option<Borrowed<'js>>)> {
         match declared {
-            ParamType::Value(declared) => Self::value(ctx, declared, value),
-            ParamType::Buffer => Ok(Self::Pointer(Self::buffer(ctx, value)?)),
+            ParamType::Value(NativeType::Pointer) => {
+                let (address, handle) = Pointer::marshal(ctx, value, mapped)?;
+                Ok((Self::Pointer(address), handle.map(Borrowed::Pointer)))
+            }
+            ParamType::Value(declared) => Ok((Self::value(ctx, declared, value, mapped)?, None)),
+            ParamType::Buffer => {
+                let (address, view) = Self::buffer(ctx, value)?;
+                Ok((Self::Pointer(address), Some(Borrowed::Buffer(view))))
+            }
             // §4.7, and the whole of fact 6: a C function handed a callback is
             // free to spawn a thread, call it and join. On the realm thread
             // that is an unbreakable deadlock — the realm is inside C, so it
@@ -170,12 +226,10 @@ impl ArgumentCell {
                 ))
             }
             ParamType::Callback(signature) => {
-                Ok(Self::Pointer(Callback::code_pointer(
-                    ctx,
-                    signature,
-                    value,
-                    site.origin,
-                )?))
+                Ok((
+                    Self::Pointer(Callback::code_pointer(ctx, signature, value, site.origin)?),
+                    None,
+                ))
             }
         }
     }
@@ -189,10 +243,10 @@ impl ArgumentCell {
     /// move or be mutated while C holds the address need their own reads
     /// (§4.6).
     ///
-    /// The address is never stored: the `Value` this reads lives in the
-    /// caller's argument list for the whole of `BoundFn::call`, and the
-    /// cell dies with the call.
-    fn buffer<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<usize> {
+    /// The view itself comes back with the address, because the address alone
+    /// is only true until the *next* argument's JS runs — [`Borrowed::settle`]
+    /// takes it again once nothing more can run.
+    fn buffer<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<(usize, TypedArray<'js, u8>)> {
         let view = value
             .as_object()
             .cloned()
@@ -204,10 +258,11 @@ impl ArgumentCell {
         // checked first because the reads below need a buffer to ask about.
         Self::address_of(ctx, &view)?;
         Self::refuse_unstable_store(ctx, &view)?;
-        // The address is taken only now: `Symbol.hasInstance` on the realm's
-        // `SharedArrayBuffer` is a JS hook, and JS can detach a buffer — so an
-        // address read before that check could already be dangling here.
-        Self::address_of(ctx, &view)
+        // The address is taken only now: the `resizable` read above is a JS
+        // getter, and JS can detach a buffer — so an address read before that
+        // check could already be dangling here.
+        let address = Self::address_of(ctx, &view)?;
+        Ok((address, view))
     }
 
     /// The address of the view's first byte, or the typed refusal for a
@@ -231,25 +286,35 @@ impl ArgumentCell {
     /// `JS_GetTypedArrayBuffer` rather than a `.buffer` property read, so an
     /// own property on the view cannot aim this at a different store.
     ///
-    /// ponytail: `resizable` is still read through the prototype getter, so a
-    /// script that shadows it on its own buffer defeats this one check. The
-    /// unspoofable version is a `JS_GetAnyOpaque` through `rquickjs-sys`, which
-    /// is a new dependency for a hole a caller can only dig for itself.
+    /// Sharedness is asked of the engine, not of the realm:
+    /// `JS_IsArrayBuffer` is `JS_GetClassID(obj) == JS_CLASS_ARRAY_BUFFER`
+    /// (`quickjs.c:57843`), so neither a replaced
+    /// `globalThis.SharedArrayBuffer` nor a `Symbol.hasInstance` of one's
+    /// own can make a shared store read as unshared — which an `instanceof`
+    /// test could.
+    ///
+    /// ponytail: `resizable` is still read through the prototype getter, and an
+    /// own data property on the buffer shadows it. quickjs-ng exports no
+    /// `max_byte_length` accessor, so the unspoofable version means reading a
+    /// private struct field through `JS_GetAnyOpaque`. Spoofing it is not a
+    /// memory-safety hole by itself: a store only moves when script runs, and
+    /// no script runs between [`Borrowed::settle`] and the call — a re-entrant
+    /// callback is refused for exactly that reason
+    /// ([`crate::callback::InsideCall`]).
     fn refuse_unstable_store<'js>(ctx: &Ctx<'js>, view: &TypedArray<'js, u8>) -> Result<()> {
         let buffer = view.arraybuffer()?;
-        let buffer = buffer.as_object();
-        if let Some(shared) = ctx
-            .globals()
-            .get::<_, Option<Object<'js>>>("SharedArrayBuffer")?
-            && buffer.is_instance_of(shared)
-        {
+        // SAFETY: `buffer` is a live value of this realm, and `JS_IsArrayBuffer`
+        // only reads its class id — it neither takes a reference nor runs JS,
+        // so passing the borrowed raw value is enough.
+        if !unsafe { qjs::JS_IsArrayBuffer(buffer.as_value().as_raw()) } {
             return Err(ErrorKind::BadArgument.throw(
                 ctx,
                 "a SharedArrayBuffer cannot back a `buffer` argument — another agent could write \
                  it while C holds the address",
             ));
         }
-        if buffer.get::<_, Option<bool>>("resizable")? == Some(true) {
+        let buffer = buffer.as_object();
+        if buffer.get::<_, Value<'js>>("resizable")?.as_bool() == Some(true) {
             return Err(ErrorKind::BadArgument.throw(
                 ctx,
                 "a resizable ArrayBuffer cannot back a `buffer` argument — resizing moves the \
@@ -262,7 +327,16 @@ impl ArgumentCell {
     /// One struct's own bytes, packed field by field at den's computed
     /// offsets. A field the object does not carry is a `Schema` error naming
     /// it: den will not invent a zero for something the caller forgot (§4.4).
-    fn structure<'js>(ctx: &Ctx<'js>, layout: &StructLayout, value: &Value<'js>) -> Result<Bytes> {
+    ///
+    /// ponytail: a `pointer` field is packed as it is read, and reading a later
+    /// field runs JS, so a nested address is not re-taken the way a top-level
+    /// one is ([`Borrowed::settle`]). What holds instead is `mapped`: the share
+    /// of the library taken here keeps the pages mapped for the whole call, so
+    /// the worst a mid-marshal `Symbol.dispose` can do is deprive C of the
+    /// `Closed` throw. Re-packing the bytes is what it would take to do better.
+    fn structure<'js>(
+        ctx: &Ctx<'js>, layout: &StructLayout, value: &Value<'js>, mapped: &mut Vec<Mapped>,
+    ) -> Result<Bytes> {
         let object = value.as_object().ok_or_else(|| {
             ErrorKind::BadArgument.throw(ctx, "expected an object for a `struct` argument")
         })?;
@@ -277,7 +351,7 @@ impl ArgumentCell {
                         &field.name,
                     )
                 })?;
-            let cell = Self::value(ctx, &field.declared, &declared)?;
+            let cell = Self::value(ctx, &field.declared, &declared, mapped)?;
             // SAFETY: `offset + size` of every field is at most `layout.size`
             // by construction, and `bytes` is that many bytes of den's own
             // memory.
@@ -286,7 +360,13 @@ impl ArgumentCell {
         Ok(bytes)
     }
 
-    pub fn value<'js>(ctx: &Ctx<'js>, declared: &NativeType, value: &Value<'js>) -> Result<Self> {
+    /// `mapped` collects a share of the library behind every `pointer` this
+    /// reads, so that a `Symbol.dispose` cannot unmap an address C is already
+    /// holding. A callback's *return* value passes a scratch vector: den's
+    /// involvement with that address ends as the trampoline returns.
+    pub fn value<'js>(
+        ctx: &Ctx<'js>, declared: &NativeType, value: &Value<'js>, mapped: &mut Vec<Mapped>,
+    ) -> Result<Self> {
         let name = declared.name();
         Ok(match declared {
             NativeType::I8 => Self::I8(integer(ctx, name, value)?),
@@ -308,8 +388,10 @@ impl ArgumentCell {
                     ErrorKind::BadArgument.throw(ctx, "expected a boolean for `bool`")
                 })?))
             }
-            NativeType::Pointer => Self::Pointer(Pointer::marshal(ctx, value)?),
-            NativeType::Struct(layout) => Self::Struct(Self::structure(ctx, layout, value)?),
+            NativeType::Pointer => Self::Pointer(Pointer::marshal(ctx, value, mapped)?.0),
+            NativeType::Struct(layout) => {
+                Self::Struct(Self::structure(ctx, layout, value, mapped)?)
+            }
             NativeType::Void => {
                 return Err(
                     ErrorKind::Schema.throw(ctx, "`void` is a result type, not a parameter type")
