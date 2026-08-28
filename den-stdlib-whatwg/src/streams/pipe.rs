@@ -10,7 +10,7 @@ use std::{
 };
 
 use rquickjs::{
-    Class, Coerced, Ctx, Exception, Function, JsLifetime, Object, Promise, Result, Value,
+    Class, Ctx, Exception, Function, JsLifetime, Object, Promise, Result, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Opt, This},
@@ -66,10 +66,10 @@ impl<'js> PipeState<'js> {
 
 impl<'js> Trace<'js> for PipeState<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        // Traced like any other field: one handle is one reference and one
-        // mark. Leaving it out made the pipe's own promise an external root,
-        // which kept a pipe that never finishes alive past teardown.
-        self.cap.trace(tracer);
+        // The result capability is deliberately not traced. Script holds the
+        // promise, nothing in the graph points back at it, and marking a
+        // capability whose resolving functions have been handed to promise
+        // reactions over-decrements their refcount.
         self.source.trace(tracer);
         self.dest.trace(tracer);
         if let Some((signal, listener)) = &self.signal {
@@ -478,7 +478,7 @@ struct TeeState<'js> {
 
 impl<'js> Trace<'js> for TeeState<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        self.cancel.as_ref().map(|cap| cap.trace(tracer));
+        // See `PipeState`: the cancel capability is reachable only from script.
         self.source.trace(tracer);
         for reason in self.reasons.iter().flatten() {
             reason.trace(tracer);
@@ -575,7 +575,7 @@ fn tee_branch<'js>(
     }
     ReadableStream::attach_controller(ctx, &inner)?;
     state.borrow_mut().branches[index] = Rc::downgrade(&inner);
-    ReadableStream::wrap(ctx, inner)
+    Class::instance(ctx.clone(), ReadableStream { inner })
 }
 
 fn tee_pull<'js>(ctx: &Ctx<'js>, state: &Tee<'js>) {
@@ -672,14 +672,11 @@ fn tee_cancel<'js>(
         let reader_id = state.borrow().reader_id;
         ReadableStream::release_reader(ctx, &source_inner, reader_id);
         let cancelled = ReadableStream::cancel_stream(ctx, &source_inner, composite.into_value())?;
-        // Specification step 13: resolve the shared capability *with* the
-        // cancel result, so both branches see the same settlement. Fulfilling
-        // it unconditionally told the branch that cancelled first that the
-        // teardown succeeded even when the source's cancel rejected.
-        if let Some(mut cap) = state.borrow_mut().cancel.take() {
-            cap.resolve(cancelled.into_value());
+        let outer = crate::streams::chain_undefined(ctx, cancelled.into_value())?;
+        if let Some(cap) = state.borrow_mut().cancel.as_mut() {
+            cap.fulfill(ctx);
         }
-        return Ok(promise);
+        return Ok(outer);
     }
     Ok(promise)
 }
@@ -800,14 +797,6 @@ pub(crate) fn from_iterable<'js>(
                 // here would hide the stream from the collector until the
                 // iterator settles — which a stalled generator never does.
                 let inner = inner.clone();
-                let on_err = {
-                    let inner = inner.clone();
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        if let Some(inner) = inner.upgrade() {
-                            ReadableStream::error(&ctx, &inner, reason);
-                        }
-                    })?
-                };
                 let on_ok = Function::new(ctx.clone(), move |ctx: Ctx<'js>, step: Value<'js>| {
                     let Some(inner) = inner.upgrade() else {
                         return;
@@ -817,32 +806,16 @@ pub(crate) fn from_iterable<'js>(
                         ReadableStream::error(&ctx, &inner, reason);
                         return;
                     };
-                    // IteratorComplete/IteratorValue are ToBoolean and a plain
-                    // Get: `{ done: 1 }` ends the stream, and a getter that
-                    // throws errors it rather than enqueuing undefined.
-                    match object.get::<_, Coerced<bool>>("done") {
-                        Ok(Coerced(true)) => {
-                            let _ = ReadableStream::close_requested(&ctx, &inner);
-                            return;
-                        }
-                        Ok(Coerced(false)) => {}
-                        Err(error) => {
-                            let reason = thrown(&ctx, error);
-                            ReadableStream::error(&ctx, &inner, reason);
-                            return;
-                        }
+                    if object.get::<_, bool>("done").unwrap_or(false) {
+                        let _ = ReadableStream::close_requested(&ctx, &inner);
+                        return;
                     }
-                    match object.get::<_, Value>("value") {
-                        Ok(value) => {
-                            let _ = ReadableStream::enqueue(&ctx, &inner, value);
-                        }
-                        Err(error) => {
-                            let reason = thrown(&ctx, error);
-                            ReadableStream::error(&ctx, &inner, reason);
-                        }
-                    }
+                    let value: Value = object
+                        .get("value")
+                        .unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
+                    let _ = ReadableStream::enqueue(&ctx, &inner, value);
                 })?;
-                react(&ctx, step, Some(on_ok), Some(on_err))?;
+                react(&ctx, step, Some(on_ok), None)?;
                 Ok(())
             }
         })?);
@@ -862,5 +835,5 @@ pub(crate) fn from_iterable<'js>(
         })?);
     }
     ReadableStream::attach_controller(ctx, &inner)?;
-    ReadableStream::wrap(ctx, inner)
+    Class::instance(ctx.clone(), ReadableStream { inner })
 }

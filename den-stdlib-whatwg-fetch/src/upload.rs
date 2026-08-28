@@ -18,9 +18,9 @@ use std::{
     task::Poll,
 };
 
-use den_stdlib_whatwg::streams::{ReadableStream, StreamError, WritableStream, mark_handled};
+use den_stdlib_whatwg::streams::{ReadableStream, StreamError, WritableStream};
 use rquickjs::{
-    Class, Ctx, Result,
+    Class, Ctx, Function, Object, Result, Value,
     function::{Opt, This},
 };
 use tokio::sync::mpsc;
@@ -88,10 +88,10 @@ pub(crate) fn stream_request_body<'js>(
         Opt(None),
     )?;
     // A failed pipe already reaches the transport through `abort`; keep its
-    // promise from tripping the unhandled-rejection tracker. Reading `then` off
-    // the promise here would let a script that patched `Promise.prototype`
-    // break the upload, so this goes through the core's pristine `then`.
-    mark_handled(&ctx, &pipe);
+    // promise from tripping the unhandled-rejection tracker.
+    let noop = Function::new(ctx.clone(), || {})?;
+    let then: Function = AsRef::<Object>::as_ref(&pipe).get("then")?;
+    then.call::<_, Value>((This(pipe), Option::<Function>::None, noop))?;
 
     Ok(reqwest::Body::wrap_stream(futures::stream::poll_fn(
         move |cx| {

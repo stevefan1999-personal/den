@@ -12,6 +12,15 @@ use rquickjs::{Array, Ctx, Object, Result, Value};
 
 use crate::error::ErrorKind;
 
+/// How deep a `{ struct }` may nest before den calls the schema malformed.
+///
+/// The schema is an ordinary JS object, so `const s = {}; s.struct = { a: s }`
+/// is a cycle, and a recursive descent through one overflows the stack — which
+/// aborts the process rather than throwing. Sixteen is past any C struct
+/// anybody nests by hand, and `layout()` needs no grant, so this bound is what
+/// keeps an ungranted module from taking the host down (§5.3).
+const MAX_STRUCT_DEPTH: usize = 16;
+
 /// One C value type: a scalar, `void`, or a struct passed by value.
 ///
 /// Every scalar width is distinct even where two share a Rust type on this
@@ -40,6 +49,14 @@ pub enum NativeType {
 impl NativeType {
     /// The declared type of one result, one static or one struct field.
     pub fn parse<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>) -> Result<Self> {
+        Self::nested(ctx, symbol, declared, 0)
+    }
+
+    /// [`Self::parse`], carrying how many `{ struct }` wrappers it is already
+    /// inside — see [`MAX_STRUCT_DEPTH`].
+    fn nested<'js>(
+        ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>, depth: usize,
+    ) -> Result<Self> {
         if let Some(name) = Self::type_name(declared)? {
             return Self::named(ctx, symbol, &name);
         }
@@ -47,8 +64,20 @@ impl NativeType {
             && let Some(fields) = object.get::<_, Option<Object<'js>>>("struct")?
         {
             refuse_unknown_keys(ctx, symbol, object, &["struct"])?;
+            if depth >= MAX_STRUCT_DEPTH {
+                return Err(ErrorKind::Schema.throw_for(
+                    ctx,
+                    format_args!(
+                        "symbol `{symbol}`: a struct type may not nest more than                          {MAX_STRUCT_DEPTH} deep — this one is either enormous or cyclic"
+                    ),
+                    symbol,
+                ));
+            }
             return Ok(Self::Struct(Arc::new(StructLayout::parse(
-                ctx, symbol, &fields,
+                ctx,
+                symbol,
+                &fields,
+                depth + 1,
             )?)));
         }
         Err(ErrorKind::Schema.throw_for(
@@ -113,8 +142,10 @@ impl NativeType {
     /// The declared type of one parameter or one struct field. `void` is a
     /// result type only: a C function takes no `void` argument, and accepting
     /// one would make the CIF disagree with the argument array.
-    fn parse_value<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>) -> Result<Self> {
-        match Self::parse(ctx, symbol, declared)? {
+    fn parse_value<'js>(
+        ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>, depth: usize,
+    ) -> Result<Self> {
+        match Self::nested(ctx, symbol, declared, depth)? {
             Self::Void => {
                 Err(ErrorKind::Schema.throw_for(
                     ctx,
@@ -228,11 +259,13 @@ impl StructLayout {
     /// `offset = align_up(cursor, align_of(field))`, `align = max(field
     /// aligns)`, `size = align_up(cursor, align)` — the C rule, and then
     /// libffi is asked whether it agrees.
-    fn parse<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Object<'js>) -> Result<Self> {
+    fn parse<'js>(
+        ctx: &Ctx<'js>, symbol: &str, declared: &Object<'js>, depth: usize,
+    ) -> Result<Self> {
         let (mut fields, mut cursor, mut align) = (Vec::new(), 0_usize, 1_usize);
         for entry in declared.props::<String, Value<'js>>() {
             let (name, declared) = entry?;
-            let declared = NativeType::parse_value(ctx, symbol, &declared)?;
+            let declared = NativeType::parse_value(ctx, symbol, &declared, depth)?;
             let offset = cursor.next_multiple_of(declared.align());
             cursor = offset + declared.size();
             align = align.max(declared.align());
@@ -373,7 +406,9 @@ impl ParamType {
         if NativeType::type_name(declared)?.as_deref() == Some("buffer") {
             return Ok(Self::Buffer);
         }
-        Ok(Self::Value(NativeType::parse_value(ctx, symbol, declared)?))
+        Ok(Self::Value(NativeType::parse_value(
+            ctx, symbol, declared, 0,
+        )?))
     }
 
     /// Both a buffer and a callback reach C as an address.
@@ -433,7 +468,7 @@ impl FnSig {
                         symbol,
                     ));
                 }
-                let parsed = NativeType::parse_value(ctx, symbol, &declared)?;
+                let parsed = NativeType::parse_value(ctx, symbol, &declared, 0)?;
                 Self::refuse_struct(ctx, symbol, &parsed, "parameter")?;
                 Ok(parsed)
             })

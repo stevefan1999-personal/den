@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "den:assert";
-import { grant, open } from "den:ffi";
+import { grant, layout, open } from "den:ffi";
 import { library } from "./probe.js";
 
 const capability = grant();
@@ -67,3 +67,15 @@ for (const broken of [
   assertEquals(error.kind, "Schema");
   assertEquals(error.symbol, "add");
 }
+
+// A schema is an ordinary object, so it can be cyclic. `layout` needs no grant
+// — it is the calibration knob any module may ask — so an unbounded descent
+// here would let an ungranted import abort the host on a stack overflow.
+const cyclic = {};
+cyclic.struct = { a: cyclic };
+assertEquals(assertThrows(() => layout(cyclic)).kind, "Schema");
+assertEquals(
+  assertThrows(() => open(library, { add: { params: [cyclic], result: "i32" } }, capability))
+    .kind,
+  "Schema",
+);
