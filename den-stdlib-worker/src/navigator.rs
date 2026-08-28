@@ -4,9 +4,8 @@
 
 use std::num::NonZero;
 
-use indexmap::indexmap;
 use rquickjs::{
-    Array, Class, Ctx, Exception, IntoJs, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    Array, Class, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
     class::Trace, object::Property,
 };
 
@@ -179,8 +178,11 @@ fn frozen_brands<'js>(ctx: &Ctx<'js>, brand: &str, version: &str) -> Result<Arra
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct NavigatorUAData<'js> {
+    #[qjs(get)]
     brands:   Array<'js>,
+    #[qjs(get)]
     mobile:   bool,
+    #[qjs(get)]
     platform: String,
     #[qjs(skip_trace)]
     host:     HostInfo,
@@ -204,15 +206,6 @@ impl<'js> NavigatorUAData<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>) -> Result<Self> { Self::from_host(&ctx, HostInfo::capture()) }
 
-    #[qjs(get)]
-    pub fn brands(&self) -> Array<'js> { self.brands.clone() }
-
-    #[qjs(get)]
-    pub fn mobile(&self) -> bool { self.mobile }
-
-    #[qjs(get)]
-    pub fn platform(&self) -> String { self.platform.clone() }
-
     pub fn get_high_entropy_values(
         &self, ctx: Ctx<'js>, hints: Value<'js>,
     ) -> Result<rquickjs::Promise<'js>> {
@@ -222,11 +215,10 @@ impl<'js> NavigatorUAData<'js> {
             let _ = reject.call::<_, ()>((ctx.catch(),));
             return Ok(promise);
         }
-        let mut result = indexmap! {
-            "brands" => self.brands.clone().into_js(&ctx)?,
-            "mobile" => self.mobile.into_js(&ctx)?,
-            "platform" => self.platform.clone().into_js(&ctx)?,
-        };
+        let result = Object::new(ctx.clone())?;
+        result.set("brands", self.brands.clone())?;
+        result.set("mobile", self.mobile)?;
+        result.set("platform", self.platform.clone())?;
         let hints = hints.as_array().expect("checked");
         for index in 0..hints.len() {
             let hint: String = match hints.get(index) {
@@ -235,50 +227,46 @@ impl<'js> NavigatorUAData<'js> {
             };
             match hint.as_str() {
                 "architecture" => {
-                    result.insert("architecture", self.host.architecture().into_js(&ctx)?);
+                    result.set("architecture", self.host.architecture())?;
                 }
                 "bitness" => {
-                    result.insert("bitness", self.host.bitness.clone().into_js(&ctx)?);
+                    result.set("bitness", self.host.bitness.clone())?;
                 }
                 "fullVersionList" => {
-                    result.insert(
+                    result.set(
                         "fullVersionList",
-                        frozen_brands(&ctx, "den", &self.host.version)?.into_js(&ctx)?,
-                    );
+                        frozen_brands(&ctx, "den", &self.host.version)?,
+                    )?;
                 }
                 "model" => {
-                    result.insert("model", "".into_js(&ctx)?);
+                    result.set("model", "")?;
                 }
                 "platformVersion" => {
-                    result.insert(
-                        "platformVersion",
-                        self.host.platform_version().into_js(&ctx)?,
-                    );
+                    result.set("platformVersion", self.host.platform_version())?;
                 }
                 "wow64" => {
-                    result.insert("wow64", false.into_js(&ctx)?);
+                    result.set("wow64", false)?;
                 }
                 "formFactors" => {
                     let factors = Array::new(ctx.clone())?;
                     factors.set(0, "Desktop")?;
                     freeze(&ctx, factors.as_value())?;
-                    result.insert("formFactors", factors.into_js(&ctx)?);
+                    result.set("formFactors", factors)?;
                 }
                 _ => {}
             }
         }
-        let _ = resolve.call::<_, ()>((result.into_js(&ctx)?,));
+        let _ = resolve.call::<_, ()>((result,));
         Ok(promise)
     }
 
     #[qjs(rename = "toJSON")]
     pub fn to_json(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        indexmap! {
-            "brands" => self.brands.clone().into_js(&ctx)?,
-            "mobile" => self.mobile.into_js(&ctx)?,
-            "platform" => self.platform.clone().into_js(&ctx)?,
-        }
-        .into_js(&ctx)
+        let value = Object::new(ctx)?;
+        value.set("brands", self.brands.clone())?;
+        value.set("mobile", self.mobile)?;
+        value.set("platform", self.platform.clone())?;
+        Ok(value.into_value())
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
@@ -290,6 +278,7 @@ impl<'js> NavigatorUAData<'js> {
 pub struct Navigator<'js> {
     #[qjs(skip_trace)]
     host:            HostInfo,
+    #[qjs(get, rename = "userAgentData")]
     user_agent_data: Class<'js, NavigatorUAData<'js>>,
 }
 
@@ -318,11 +307,6 @@ impl<'js> Navigator<'js> {
 
     #[qjs(get)]
     pub fn platform(&self) -> String { self.host.navigator_platform() }
-
-    #[qjs(get)]
-    pub fn user_agent_data(&self) -> Class<'js, NavigatorUAData<'js>> {
-        self.user_agent_data.clone()
-    }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
     pub fn to_string_tag() -> &'static str { "Navigator" }

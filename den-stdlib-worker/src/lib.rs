@@ -14,14 +14,14 @@ pub mod message;
 pub mod navigator;
 pub mod performance;
 pub mod port;
-pub mod report;
+pub use den_stdlib_core::exceptions as report;
 pub mod transport;
 pub mod worker;
 
+pub use den_stdlib_core::exceptions::report_exception;
 pub use host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost, WorkerHostError};
 pub use message::{Message, throw_data_clone};
 pub use port::NativePort;
-pub use report::report_exception;
 pub use transport::{Envelope, PortHandle};
 
 pub use crate::js_worker_module as js_worker;
@@ -167,28 +167,5 @@ pub mod worker_module {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn api_list_has_not_drifted() {
-        assert_eq!(crate::API.len(), 17);
-        assert_eq!(crate::API, [
-            "AbortController",
-            "AbortSignal",
-            "BroadcastChannel",
-            "CustomEvent",
-            "ErrorEvent",
-            "Event",
-            "EventTarget",
-            "MessageChannel",
-            "MessageEvent",
-            "MessagePort",
-            "NavigatorUAData",
-            "PromiseRejectionEvent",
-            "Worker",
-            "navigator",
-            "performance",
-            "reportError",
-            "structuredClone",
-        ]);
-    }
-}
+#[path = "../tests/unit/lib.rs"]
+mod tests;

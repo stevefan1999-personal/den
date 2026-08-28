@@ -1,0 +1,22 @@
+---
+source: den-stdlib-worker/tests/workers.rs
+assertion_line: 233
+expression: report
+---
+primitives:undefined|null|true|0|NaN|Infinity|1.5|text
+negativeZero:true
+big:9007199254740993:bigint
+date:true:86400000
+regexp:ab+c:gi:0
+map:true:1
+set:true:1|two
+error:true:typed
+domException:NotAllowedError:denied
+buffer:1|2|3|4
+view:true:2:1
+dataView:1:2
+holes:3:undefined:true
+nested:3
+cycle:true
+aliased:true
+detached:false

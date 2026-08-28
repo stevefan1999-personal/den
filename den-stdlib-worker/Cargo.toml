@@ -1,5 +1,6 @@
 [package]
 name = "den-stdlib-worker"
+autotests = false
 description = "Web Workers API for den"
 version.workspace = true
 edition.workspace = true
@@ -15,8 +16,7 @@ den-stdlib-core.workspace = true
 den-transpiler-oxc = { workspace = true, optional = true }
 den-util.workspace = true
 dashmap.workspace = true
-indexmap.workspace = true
-rquickjs = { workspace = true, features = ["macro", "futures", "indexmap"] }
+rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util.workspace = true
 tracing.workspace = true
@@ -27,12 +27,23 @@ libc.workspace = true
 
 [dev-dependencies]
 color-eyre.workspace = true
-den-core = { workspace = true, features = ["stdlib", "typescript", "react", "wasm", "jit"] }
+den-core = { workspace = true, features = [
+    "stdlib-assert",
+    "stdlib-timer",
+    "stdlib-worker",
+    "typescript",
+    "wasm",
+] }
+insta.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = ["transpile"]
 transpile = ["dep:den-transpiler-oxc"]
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
 
 [lints]
 workspace = true

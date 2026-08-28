@@ -10,13 +10,24 @@ fn case(name: &str) -> PathBuf {
 }
 
 async fn run(name: &str) -> eyre::Result<()> {
-    Engine::new().await.run_file::<()>(case(name)).await?;
+    let engine = Engine::new().await;
+    engine.run_file(case(name)).await?;
+    engine.shutdown().await;
     Ok(())
+}
+
+async fn snapshot(name: &str) -> eyre::Result<String> {
+    let engine = Engine::new().await;
+    engine.run_file(case(name)).await?;
+    let report = engine.eval("globalThis.snapshot").await?;
+    engine.shutdown().await;
+    Ok(report)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn den_worker_exports_and_installs_every_documented_name() -> eyre::Result<()> {
-    run("exports.js").await
+    insta::assert_snapshot!(snapshot("exports.js").await?);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -56,4 +67,9 @@ async fn every_platform_class_brands_itself_with_a_to_string_tag() -> eyre::Resu
 #[tokio::test(flavor = "multi_thread")]
 async fn a_promise_rejection_event_carries_its_promise_and_reason() -> eyre::Result<()> {
     run("promise_rejection.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn message_and_broadcast_channels_deliver_through_the_installed_api() -> eyre::Result<()> {
+    run("channels.js").await
 }

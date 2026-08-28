@@ -1404,7 +1404,7 @@ dependencies = [
  "den-stdlib-core",
  "den-transpiler-oxc",
  "den-util",
- "indexmap",
+ "insta",
  "libc",
  "rquickjs",
  "tokio",
