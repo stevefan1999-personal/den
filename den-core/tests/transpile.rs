@@ -14,13 +14,7 @@ use den_core::engine::Engine;
 async fn eval_strips_typescript_type_annotations() -> eyre::Result<()> {
     let engine = Engine::new().await;
     let greeting: String = engine
-        .eval(
-            r#"
-              interface Greeter { name: string }
-              const greet = (who: Greeter): string => `hello ${who.name}`;
-              greet({ name: "den" } as Greeter)
-            "#,
-        )
+        .eval(include_str!("fixtures/transpile/typescript.ts"))
         .await?;
     assert_eq!(greeting, "hello den");
     Ok(())
@@ -35,12 +29,7 @@ async fn eval_strips_typescript_type_annotations() -> eyre::Result<()> {
 async fn eval_lowers_a_typescript_enum_to_a_runtime_object() -> eyre::Result<()> {
     let engine = Engine::new().await;
     let mapped: String = engine
-        .eval(
-            r#"
-              enum Level { Warn = 1, Error }
-              `${Level.Error}|${Level[1]}`
-            "#,
-        )
+        .eval(include_str!("fixtures/transpile/enum.ts"))
         .await?;
     assert_eq!(mapped, "2|Warn");
     Ok(())
@@ -54,18 +43,7 @@ async fn eval_lowers_a_typescript_enum_to_a_runtime_object() -> eyre::Result<()>
 async fn eval_compiles_jsx_to_classic_create_element_calls() -> eyre::Result<()> {
     let engine = Engine::new().await;
     let rendered: String = engine
-        .eval(
-            r#"
-              globalThis.React = {
-                createElement: (tag, props, ...children) =>
-                  typeof tag === "function"
-                    ? tag({ ...props, children })
-                    : `<${tag}${props?.id ? ` id="${props.id}"` : ""}>${children.join("")}</${tag}>`,
-              };
-              const Item = ({ label }) => <li>{label}</li>;
-              String(<ul id="list"><Item label="den" /></ul>)
-            "#,
-        )
+        .eval(include_str!("fixtures/transpile/jsx.tsx"))
         .await?;
     assert_eq!(rendered, r#"<ul id="list"><li>den</li></ul>"#);
     Ok(())

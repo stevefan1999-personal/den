@@ -1,0 +1,13 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "transpiled(include_str!(\"fixtures/enum.ts\"),\nsource_type(\"ts\").with_script(true),)"
+---
+var E = /* @__PURE__ */ function(E) {
+	E[E["A"] = 0] = "A";
+	E[E["B"] = 1] = "B";
+	return E;
+}(E || {});
+let N;
+(function(_N) {
+	const q = _N.q = 1;
+})(N || (N = {}));

@@ -1,0 +1,1 @@
+globalThis.absoluteRan = 7;

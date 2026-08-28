@@ -1,0 +1,8 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "transpiled(include_str!(\"fixtures/class_fields.ts\"),\nsource_type(\"ts\").with_module(true),)"
+---
+class Example {
+	x = 1;
+	z;
+}

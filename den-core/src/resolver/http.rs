@@ -1,15 +1,10 @@
-use matchit::{MatchError, Router};
 use rquickjs::{
     Ctx, Error, Result,
     loader::{ImportAttributes, Resolver},
 };
 use url::{ParseError, Url};
 
-#[derive(Default)]
-pub struct HttpResolver {
-    pub(crate) allowlist: Option<Router<String>>,
-    pub(crate) denylist:  Option<Router<String>>,
-}
+pub struct HttpResolver;
 
 impl Resolver for HttpResolver {
     fn resolve<'js>(
@@ -35,22 +30,6 @@ impl Resolver for HttpResolver {
             _ => Err(()),
         }
         .map_err(|_| Error::new_resolving_message(base_path, path, "path is invalid"))?;
-
-        // If an allow list exists and the current path is not in it, deny
-        if let Some(allow) = &self.allowlist
-            && let Err(MatchError::NotFound) = allow.at(name.as_str())
-        {
-            let msg = format!("{name} is not allowed");
-            return Err(Error::new_resolving_message(base_path, path, msg));
-        }
-
-        // If a deny list exists and the current path is in it, deny
-        if let Some(deny) = &self.denylist
-            && deny.at(name.as_str()).is_ok()
-        {
-            let msg = format!("{name} is denied");
-            return Err(Error::new_resolving_message(base_path, path, msg));
-        }
 
         match name.scheme().to_ascii_lowercase().as_str() {
             "http" | "https" => Ok(name.into()),

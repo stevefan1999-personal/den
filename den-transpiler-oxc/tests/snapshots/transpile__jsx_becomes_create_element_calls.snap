@@ -1,0 +1,5 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "transpiled(include_str!(\"fixtures/component.jsx\"),\nsource_type(\"jsx\").with_module(true),)"
+---
+export const view = /* @__PURE__ */ React.createElement("div", { x: 1 }, "hi");

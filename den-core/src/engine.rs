@@ -1,4 +1,4 @@
-#[cfg(any(feature = "stdlib-worker", feature = "transpile"))]
+#[cfg(feature = "stdlib-worker")]
 use std::sync::Arc;
 use std::{
     cell::{Cell, RefCell},
@@ -8,8 +8,7 @@ use std::{
 
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{
-    EasyOxcTranspiler, EasyOxcTranspilerError, IsModule, SourceMap, Syntax, get_best_transpiling,
-    infer_transpile_syntax_by_extension,
+    EasyOxcTranspilerError, get_best_transpiling, infer_transpile_syntax_by_extension, transpile,
 };
 use derive_more::{Debug, Display, Error, From};
 use rquickjs::{
@@ -17,7 +16,7 @@ use rquickjs::{
     Promise, Value,
     context::EvalOptions,
     function::{Constructor, This},
-    loader::{BuiltinLoader, BuiltinResolver, FileResolver, ModuleLoader},
+    loader::{BuiltinLoader, BuiltinResolver, Bundle, FileResolver, ModuleLoader},
     runtime::UserDataError,
 };
 use tokio::task::yield_now;
@@ -87,7 +86,9 @@ unsafe impl<'js> JsLifetime<'js> for PendingRejections {
 /// is the worker crate's business: it owns the token and installs the interrupt
 /// handler on the runtime this hands back.
 #[cfg(feature = "stdlib-worker")]
-struct DenWorkerHost;
+struct DenWorkerHost {
+    bundle: Bundle,
+}
 
 #[cfg(feature = "stdlib-worker")]
 impl WorkerHost for DenWorkerHost {
@@ -96,9 +97,10 @@ impl WorkerHost for DenWorkerHost {
         // multi-threaded runtime: `block_in_place` + `block_on` is what lets a
         // synchronous trait method reach an async constructor, and it is the
         // same pair den's module loaders already use one layer down.
+        let bundle = self.bundle;
         let engine = block_in_place(|| {
             Handle::current().block_on(async move {
-                let engine = Engine::new().await;
+                let engine = Engine::build(bundle).await;
                 // Signals belong to the process, and only the realm running the
                 // root event loop can deliver them: a worker's loop is `idle()`
                 // and never drains an inbox.
@@ -198,14 +200,12 @@ impl WorkerHost for DenWorkerHost {
 /// `den:process`'s `addSignalListener`. See `ARCHITECTURE.md` §2.
 #[derive(Clone)]
 pub struct Engine {
-    #[cfg(feature = "transpile")]
-    pub transpiler: Arc<EasyOxcTranspiler>,
-    pub runtime:    AsyncRuntime,
-    pub context:    AsyncContext,
+    pub runtime: AsyncRuntime,
+    pub context: AsyncContext,
 }
 
-#[allow(dead_code)]
 impl Engine {
+    const EMPTY_BUNDLE: Bundle = rquickjs::loader::bundle::Bundle(&rquickjs::phf::Map::new());
     /// What a script with no file of its own is called.
     const EVAL_SCRIPT_NAME: &'static str = "<eval>";
     /// How many reported rejections stay remembered, so that a handler attached
@@ -232,10 +232,18 @@ impl Engine {
         "{}.tsx",
     ];
 
-    pub async fn new() -> Engine {
-        #[cfg(feature = "transpile")]
-        let transpiler = Arc::new(EasyOxcTranspiler);
+    pub async fn new() -> Engine { Self::build(Self::EMPTY_BUNDLE).await }
 
+    /// Build an engine that resolves application-owned modules from bytecode
+    /// produced by [`rquickjs::embed!`].
+    ///
+    /// rquickjs compiles inputs in declaration order on the build host, so
+    /// static dependencies must precede their importers. Cross-compiled
+    /// bytecode requires the target to use the same QuickJS version and
+    /// endianness as the host.
+    pub async fn new_with_bundle(bundle: Bundle) -> Engine { Self::build(bundle).await }
+
+    async fn build(bundle: Bundle) -> Engine {
         let runtime = AsyncRuntime::new().unwrap();
         runtime.set_max_stack_size(0).await;
 
@@ -261,6 +269,10 @@ impl Engine {
                     #[cfg(feature = "stdlib-networking")]
                     {
                         resolver = resolver.with_module("den:networking");
+                    }
+                    #[cfg(feature = "stdlib-path")]
+                    {
+                        resolver = resolver.with_module("den:path");
                     }
                     #[cfg(feature = "stdlib-text")]
                     {
@@ -312,7 +324,8 @@ impl Engine {
                     }
                     resolver
                 },
-                HttpResolver::default(),
+                bundle,
+                HttpResolver,
                 // Ahead of `FileResolver`, which reads every name as relative
                 // to the working directory and so can answer neither for an
                 // absolute path nor for anything imported from one.
@@ -347,6 +360,10 @@ impl Engine {
                     {
                         loader = loader
                             .with_module("den:networking", den_stdlib_networking::js_networking);
+                    }
+                    #[cfg(feature = "stdlib-path")]
+                    {
+                        loader = loader.with_module("den:path", den_stdlib_path::js_path);
                     }
 
                     #[cfg(feature = "stdlib-text")]
@@ -405,32 +422,10 @@ impl Engine {
                     }
                     loader
                 },
+                bundle,
+                HttpLoader,
                 {
-                    let builder = HttpLoader::builder();
-                    #[cfg(feature = "transpile")]
-                    {
-                        builder.transpiler(transpiler.clone())
-                    }
-                    #[cfg(not(feature = "transpile"))]
-                    {
-                        builder
-                    }
-                }
-                .build(),
-                {
-                    #[allow(unused_mut)]
-                    let mut loader = {
-                        let mut builder = MmapScriptLoader::builder();
-                        #[cfg(feature = "transpile")]
-                        {
-                            builder.transpiler(transpiler.clone())
-                        }
-                        #[cfg(not(feature = "transpile"))]
-                        {
-                            builder
-                        }
-                    }
-                    .build();
+                    let mut loader = MmapScriptLoader::default();
 
                     loader = loader.with_extension("js");
                     loader = loader.with_extension("mjs");
@@ -524,7 +519,7 @@ impl Engine {
                     // makes a worker able to spawn workers of its own.
                     Self::store_userdata(
                         &ctx,
-                        den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost)),
+                        den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost { bundle })),
                     )?;
                     Self::store_userdata(&ctx, Self::working_directory_url())?;
                 }
@@ -541,17 +536,10 @@ impl Engine {
             .await
             .unwrap();
 
-        Self {
-            #[cfg(feature = "transpile")]
-            transpiler,
-            runtime,
-            context,
-        }
+        Self { runtime, context }
     }
 
-    pub async fn run_file<U: for<'a> FromJs<'a> + Sync + Send + 'static>(
-        &self, filename: PathBuf,
-    ) -> Result<U, EngineError> {
+    pub async fn run_file(&self, filename: PathBuf) -> Result<(), EngineError> {
         // `den file:///home/me/app.js` is the same request as
         // `den /home/me/app.js`, and the URL shape is what a worker's module
         // specifier arrives as.
@@ -565,7 +553,6 @@ impl Engine {
         // `AbsolutePathResolver` is what makes the import below find it.
         let path = from_url.unwrap_or(filename);
         let path = path.canonicalize().unwrap_or(path);
-        let file_url = Url::from_file_path(&path).ok();
 
         #[cfg(feature = "stdlib-worker")]
         if let Some(directory) = path
@@ -575,48 +562,36 @@ impl Engine {
             self.set_base_url(BaseUrl(directory.into())).await?;
         }
 
-        // A backslash starts an escape sequence inside a template literal, and
-        // a Windows path is made of them; every file API here takes `/` too.
         let specifier = path.to_string_lossy().replace('\\', "/");
-        let script_name = file_url.map_or_else(|| specifier.clone(), String::from);
+        self.run_module(&specifier).await
+    }
 
-        let entry = self
-            .context
-            .async_with(async |ctx| {
-                // Evil hack by using top-level await, so that the eval will transfer the import
-                // to our file resolver then we can use it to transpile
-                // Typescript and other stuff However, this is the problem
-                // because rather than returning the underlying value,
-                // the implementation of QuickJS decided to make this a {"value": <TLA
-                // evaluation value>} so we have to directly fetch the "value"
-                // key and so we can transmigrate within Technically we can do
-                // an optimization to just run the future and discard the returned value,
-                // since we run under an assumption of running this function on a file
-                // However, with REPL continuation, things could change
-                let src = format!(r#"await import(`{specifier}`)"#);
-                ctx.eval_with_options::<Promise, _>(src, {
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.promise = true;
-                    options.strict = true;
-                    // Without a name of its own this wrapper — and every stack
-                    // trace and `script_or_module_name` under it — is called
-                    // `eval_script`.
-                    options.filename = Some(script_name);
-                    options
-                })?
-                .into_future::<Object>()
-                .await?
-                .get("value")
-            });
+    /// Import an entry module by specifier and wait for its top-level promise.
+    ///
+    /// This is the entry point for modules supplied through
+    /// [`rquickjs::embed!`]. File entry points should continue to use
+    /// [`Self::run_file`], which canonicalizes the path and establishes its
+    /// worker base URL.
+    pub async fn run_module(&self, specifier: &str) -> Result<(), EngineError> {
+        #[cfg(feature = "stdlib-worker")]
+        if let Ok(url) = Url::parse(specifier)
+            && let Ok(directory) = url.join(".")
+        {
+            self.set_base_url(BaseUrl(directory.into())).await?;
+        }
 
+        let specifier = specifier.to_owned();
+        let entry = self.context.async_with(async |ctx| {
+            let _: Object = Module::import(&ctx, specifier)?.into_future().await?;
+            Ok::<_, rquickjs::Error>(())
+        });
         // A server spends its whole life inside the entry module's top-level
         // await, so a signal that lands there has to reach JS there.
         #[cfg(feature = "stdlib-process")]
-        let value = den_stdlib_process::signal::SignalHub::deliver_while(&self.context, entry);
+        den_stdlib_process::signal::SignalHub::deliver_while(&self.context, entry).await?;
         #[cfg(not(feature = "stdlib-process"))]
-        let value = entry;
-        Ok(value.await?)
+        entry.await?;
+        Ok(())
     }
 
     /// Run this realm's event loop until nothing is left spawned, delivering
@@ -632,27 +607,22 @@ impl Engine {
         self.runtime.idle().await;
     }
 
-    #[cfg(feature = "transpile")]
-    pub fn transpile(
-        &self, src: &str, syntax: Syntax, module: IsModule,
-    ) -> Result<(String, Option<SourceMap>), EasyOxcTranspilerError> {
-        self.transpiler.transpile(src, syntax, module, false)
-    }
-
     /// Transpile a REPL/eval snippet when this engine was built with the
     /// transpiler; otherwise the source is used as-is. Independent of the
     /// runtime lock, so a `ctx.spawn`ed pump can prepare a line without
     /// waiting for `idle()`.
     pub fn prepare_eval_source(&self, src: &str) -> Result<String, EngineError> {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "transpile")] {
-                let syntax = infer_transpile_syntax_by_extension(get_best_transpiling()).unwrap_or_default();
-                let (src, _) = self.transpile(src, syntax, IsModule::Unknown)?;
-                Ok(src)
-            } else {
-                let _ = self;
-                Ok(src.to_owned())
-            }
+        #[cfg(feature = "transpile")]
+        {
+            let source_type = infer_transpile_syntax_by_extension(get_best_transpiling())
+                .unwrap_or_default()
+                .with_unambiguous(true);
+            Ok(transpile(src, source_type)?)
+        }
+        #[cfg(not(feature = "transpile"))]
+        {
+            let _ = self;
+            Ok(src.to_owned())
         }
     }
 
@@ -975,402 +945,8 @@ pub enum EngineError {
     Rquickjs(rquickjs::Error),
     #[from]
     ImportMap(ImportMapError),
-    #[cfg(feature = "transpile")]
-    #[from]
-    InferTranspileSyntaxError(den_transpiler_oxc::InferTranspileSyntaxError),
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{env::temp_dir, fs, path::PathBuf, process};
-
-    use color_eyre::eyre;
-
-    use crate::engine::{Engine, EngineError, PendingRejections};
-
-    /// A script written outside the working directory, so that running it
-    /// proves the absolute path was resolved rather than joined onto `./`.
-    /// Named after the test and the process so that two of them never collide.
-    fn write_script(name: &str, source: &str) -> PathBuf {
-        let path = temp_dir().join(format!("den-engine-{}-{name}.js", process::id()));
-        fs::write(&path, source).expect("the temporary directory is writable");
-        path
-    }
-
-    /// Let every spawned task run to a standstill, then ask the realm how many
-    /// unhandled rejections it decided to report. Reporting itself goes to
-    /// stderr, which this process cannot read back.
-    async fn reported_rejections(engine: &Engine) -> usize {
-        engine.runtime.idle().await;
-        engine
-            .context
-            .with(|ctx| {
-                ctx.userdata::<PendingRejections>()
-                    .map_or(0, |pending| pending.reported.get())
-            })
-            .await
-    }
-
-    /// The other half of the absolute entry point: everything it imports is
-    /// named relative to *it*, extension optional, exactly as it would be for
-    /// an entry point named relative to the working directory.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn an_absolute_entry_point_resolves_its_relative_siblings() -> eyre::Result<()> {
-        let library = write_script("sibling-lib", "export const answer = 42;\n");
-        let stem = library
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("the fixture name is text")
-            .to_owned();
-        let entry = write_script(
-            "sibling-main",
-            &format!(
-                "import {{ answer }} from \"./{stem}\";\nglobalThis.siblingAnswer = answer;\n"
-            ),
-        );
-
-        let engine = Engine::new().await;
-        engine.run_file::<()>(entry.clone()).await?;
-        assert_eq!(engine.eval::<usize>("globalThis.siblingAnswer").await?, 42);
-
-        fs::remove_file(entry)?;
-        fs::remove_file(library)?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_file_accepts_an_absolute_path() -> eyre::Result<()> {
-        let path = write_script("absolute", "globalThis.absoluteRan = 7;\n");
-        let engine = Engine::new().await;
-        engine.run_file::<()>(path.clone()).await?;
-        assert_eq!(engine.eval::<usize>("globalThis.absoluteRan").await?, 7);
-        fs::remove_file(path)?;
-        Ok(())
-    }
-
-    /// The base URL is what `new Worker("./child.js")` resolves against, so it
-    /// has to follow the entry point rather than the working directory.
-    #[cfg(feature = "stdlib-worker")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_file_points_the_base_url_at_the_entry_points_directory() -> eyre::Result<()> {
-        use den_stdlib_worker::BaseUrl;
-        use url::Url;
-
-        let path = write_script("base-url", "globalThis.baseUrlRan = true;\n");
-        let engine = Engine::new().await;
-        engine.run_file::<()>(path.clone()).await?;
-
-        let directory = path.canonicalize()?;
-        let directory = directory.parent().expect("a file has a parent").to_owned();
-        let expected = Url::from_directory_path(directory).expect("an absolute directory");
-        let actual = engine
-            .context
-            .with(|ctx| ctx.userdata::<BaseUrl>().map(|base| base.0.clone()))
-            .await;
-
-        assert_eq!(actual.as_deref(), Some(expected.as_str()));
-        fs::remove_file(path)?;
-        Ok(())
-    }
-
-    /// How long a worker's error is given to climb back to its parent before
-    /// the test calls the chain broken. Generous: it is a thread spawn, an
-    /// engine build and a module load, on whatever the CI box is doing.
-    #[cfg(all(feature = "stdlib-worker", feature = "stdlib-timer"))]
-    const WORKER_FAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-    /// `den:worker` already made the main global an EventTarget, so the tests
-    /// that want the event listen — they do not stand up a JS Event class.
-    const REJECTION_HARNESS: &str = r#"
-        globalThis.seen = [];
-        const record = (event) => {
-          globalThis.seen.push(`${event.type}:${event.reason.message}`);
-          if (globalThis.claim) event.preventDefault();
-        };
-        addEventListener("unhandledrejection", record);
-        addEventListener("rejectionhandled", record);
-    "#;
-
-    /// An uncaught error in the main script used to print twice: once from
-    /// `main.rs`, which is handed the failure, and once from the rejection
-    /// tracker, which sees the promise QuickJS rejects for the module body and
-    /// then frees without ever attaching a handler to it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_top_level_throw_is_not_also_an_unhandled_rejection() -> eyre::Result<()> {
-        let path = write_script("top-level-throw", "throw new Error('boom');\n");
-        let engine = Engine::new().await;
-        let outcome = engine.run_file::<()>(path.clone()).await;
-
-        assert!(matches!(outcome, Err(EngineError::Rquickjs(_))));
-        assert_eq!(reported_rejections(&engine).await, 0);
-        fs::remove_file(path)?;
-        Ok(())
-    }
-
-    /// The other direction of the same fix: suppressing the module's own
-    /// duplicate must not suppress a rejection the script really did leave
-    /// lying around.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_rejection_the_entry_point_leaves_behind_is_still_reported() -> eyre::Result<()> {
-        let path = write_script(
-            "entry-point-rejection",
-            "Promise.reject(new Error('nobody claims this'));\nexport const ran = true;\n",
-        );
-        let engine = Engine::new().await;
-        engine.run_file::<()>(path.clone()).await?;
-
-        assert_eq!(reported_rejections(&engine).await, 1);
-        fs::remove_file(path)?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_realm_that_cancels_unhandledrejection_stops_the_report() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>(&format!(
-                "{REJECTION_HARNESS}
-                 globalThis.claim = true;
-                 Promise.reject(new Error('claimed by the realm'));
-                 undefined;"
-            ))
-            .await?;
-
-        assert_eq!(reported_rejections(&engine).await, 0);
-        assert_eq!(
-            engine.eval::<String>("globalThis.seen.join(',')").await?,
-            "unhandledrejection:claimed by the realm"
-        );
-        Ok(())
-    }
-
-    /// And a realm that hears the event out without cancelling it gets the
-    /// print anyway, plus the `rejectionhandled` that a handler arriving after
-    /// the report owes it (HTML §8.1.7.5).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_handler_attached_after_the_report_fires_rejectionhandled() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>(&format!(
-                "{REJECTION_HARNESS}
-                 globalThis.late = Promise.reject(new Error('late'));
-                 undefined;"
-            ))
-            .await?;
-        assert_eq!(reported_rejections(&engine).await, 1);
-
-        engine
-            .eval::<()>("globalThis.late.catch(() => {});\nundefined;")
-            .await?;
-        engine.runtime.idle().await;
-
-        assert_eq!(
-            engine.eval::<String>("globalThis.seen.join(',')").await?,
-            "unhandledrejection:late,rejectionhandled:late"
-        );
-        Ok(())
-    }
-
-    /// The whole error chain, end to end: an exception thrown from a timer
-    /// callback inside a worker is reported by *Rust*, and used to stop there —
-    /// on stderr — because only the JS-side reporters went through the worker
-    /// scope's escalation. Now every reporter resolves the realm's sink, so it
-    /// fires the worker's own `error` event and, uncancelled, the parent's.
-    #[cfg(all(feature = "stdlib-worker", feature = "stdlib-timer"))]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_throwing_timer_in_a_worker_reaches_the_parents_onerror() -> eyre::Result<()> {
-        let child = write_script(
-            "timer-fault-child",
-            "setTimeout(() => { throw new Error('from the timer') }, 1);\n",
-        );
-        let name = child
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("the fixture name is text")
-            .to_owned();
-        let parent = write_script(
-            "timer-fault-parent",
-            &format!(
-                "globalThis.seen = 'nothing';
-                 const worker = new Worker('./{name}');
-                 worker.onerror = (event) => {{
-                   event.preventDefault();
-                   globalThis.seen = event.message;
-                   worker.terminate();
-                 }};\n"
-            ),
-        );
-
-        let engine = Engine::new().await;
-        engine.run_file::<()>(parent.clone()).await?;
-        // The worker's fault travels over a channel into a task this realm
-        // spawned, so draining the realm is what delivers it. Bounded, because
-        // a chain that stays broken would otherwise hang the suite.
-        let drained = tokio::time::timeout(WORKER_FAULT_TIMEOUT, engine.runtime.idle()).await;
-        assert!(drained.is_ok(), "the worker never finished");
-
-        assert_eq!(
-            engine.eval::<String>("globalThis.seen").await?,
-            "from the timer"
-        );
-        engine.shutdown().await;
-        fs::remove_file(parent)?;
-        fs::remove_file(child)?;
-        Ok(())
-    }
-
-    /// Cancellation of a pending timer is drop, not a flag: the runtime clears
-    /// its spawner before `JS_FreeRuntime`, so an embedder that drops the
-    /// `Engine` never waits out a 60-second `setTimeout`.
-    #[cfg(feature = "stdlib-timer")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn dropping_an_engine_with_a_pending_timer_returns_promptly() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>("setTimeout(() => {}, 60000);\nundefined;")
-            .await?;
-
-        let started = std::time::Instant::now();
-        drop(engine);
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "dropping the engine waited {elapsed:?} for the timer"
-        );
-        Ok(())
-    }
-
-    /// The embedder recipe cancels by dropping the `Engine`, and a server
-    /// spends its life inside the entry module's top-level await — so the drop
-    /// lands mid-`async_with`, with the module's promise and the op it is
-    /// parked on both still pending. QuickJS has to free that context without
-    /// waiting for them. `multi_thread` so the stop can arrive while the JS
-    /// loop owns the runtime.
-    #[cfg(feature = "stdlib-timer")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn hosts_token_drops_an_engine_parked_on_a_top_level_await() -> eyre::Result<()> {
-        let entry = write_script(
-            "parked-on-a-long-await",
-            "await new Promise((resolve) => setTimeout(resolve, 60000));\n",
-        );
-        let engine = Engine::new().await;
-
-        // Stands in for the host's stop signal (a `watch` flip, a Ctrl-C, an
-        // admin endpoint): whatever it is, it only ever races the program
-        // future.
-        let started = std::time::Instant::now();
-        let stopped_the_program = tokio::select! {
-            _ = engine.run_file::<()>(entry) => false,
-            () = tokio::time::sleep(std::time::Duration::from_millis(100)) => true,
-        };
-        drop(engine);
-        let elapsed = started.elapsed();
-
-        assert!(
-            stopped_the_program,
-            "the entry module returned instead of staying parked"
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "stopping a parked engine took {elapsed:?}"
-        );
-        Ok(())
-    }
-
-    #[cfg(feature = "stdlib-timer")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn set_timeout_returns_a_number_and_clear_timeout_is_a_function() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        let report: String = engine
-            .eval(
-                r#"
-                  const id = setTimeout("x", 0);
-                  [typeof clearTimeout, typeof id].join(",")
-                "#,
-            )
-            .await?;
-        assert_eq!(report, "function,number");
-        Ok(())
-    }
-
-    /// `setInterval(f, 0)` reached `tokio::time::interval`, which panics on a
-    /// zero period — on the main thread, that is the whole process.
-    #[cfg(feature = "stdlib-timer")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_zero_delay_timer_is_clamped_instead_of_panicking() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>(
-                "globalThis.ticks = 0;
-                 const handle = setInterval(() => {
-                   if (++globalThis.ticks >= 2) clearInterval(handle);
-                 }, 0);
-                 setTimeout(() => { globalThis.timedOut = true }, 0);
-                 undefined;",
-            )
-            .await?;
-        engine.runtime.idle().await;
-
-        assert_eq!(engine.eval::<usize>("globalThis.ticks").await?, 2);
-        assert!(engine.eval::<bool>("globalThis.timedOut === true").await?);
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn an_unhandled_rejection_is_reported_after_the_turn_ends() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>("Promise.reject(new Error('nobody claims this'));\nundefined;")
-            .await?;
-        assert_eq!(reported_rejections(&engine).await, 1);
-        Ok(())
-    }
-
-    /// The other half of the same decision: QuickJS reports the rejection
-    /// first and the handler second, so reporting eagerly would make every
-    /// `const p = Promise.reject(…); p.catch(…)` a false alarm.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_rejection_handled_later_in_the_turn_is_not_reported() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>(
-                "const p = Promise.reject(new Error('claimed')); p.catch(() => {});\nundefined;",
-            )
-            .await?;
-        assert_eq!(reported_rejections(&engine).await, 0);
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn eval_runs_script_and_converts_result_to_rust_type() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        engine
-            .eval::<()>(
-                r#"
-            console.log("hello world")
-        "#,
-            )
-            .await?;
-        assert_eq!(engine.eval::<String>(r#"null ?? "123""#).await?, "123");
-        assert_eq!(engine.eval::<usize>(r#"null ?? 123"#).await?, 123);
-        Ok(())
-    }
-
-    // `Engine::eval` deliberately evaluates as global script code (that is what a
-    // REPL line is), so module syntax is a QuickJS error rather than a panic.
-    // Loading a module goes through `Engine::run_file`, which imports instead
-    // of evaluating.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn eval_rejects_module_syntax_as_a_recoverable_error() -> eyre::Result<()> {
-        let engine = Engine::new().await;
-        let outcome = engine
-            .eval::<()>(
-                r#"
-            export const hello = "world"
-        "#,
-            )
-            .await;
-        assert!(matches!(outcome, Err(EngineError::Rquickjs(_))));
-        Ok(())
-    }
-}
+#[path = "../tests/unit/engine.rs"]
+mod tests;

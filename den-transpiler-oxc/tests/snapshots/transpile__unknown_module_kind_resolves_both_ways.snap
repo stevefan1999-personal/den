@@ -1,0 +1,9 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "format!(\"script:\\n{script}\\nmodule:\\n{module}\")"
+---
+script:
+var a = 1;
+
+module:
+export const a = 1;
