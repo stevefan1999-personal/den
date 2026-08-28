@@ -21,6 +21,20 @@ use rquickjs::{
     qjs,
 };
 
+#[cfg(test)]
+pub(crate) fn install_test_wat2wasm(ctx: Ctx<'_>) -> Result<()> {
+    fn assemble<'js>(source: String, ctx: Ctx<'js>) -> Result<rquickjs::TypedArray<'js, u8>> {
+        let bytes = wat::parse_str(&source)
+            .map_err(|error| Exception::throw_type(&ctx, &format!("wat2wasm error: {error}")))?;
+        rquickjs::TypedArray::new_copy(ctx, bytes)
+    }
+
+    ctx.globals().set(
+        "wat2wasm",
+        Function::new(ctx.clone(), assemble)?.with_name("wat2wasm")?,
+    )
+}
+
 /// The one `JSTag` instance, looked up from userdata so the getter captures
 /// no JS value the cycle GC cannot trace.
 #[derive(JsLifetime)]
@@ -210,7 +224,7 @@ fn shape_interface<'js>(ctx: &Ctx<'js>, namespace: &Object<'js>, name: &str) -> 
 /// slots, and a throw here would keep `den:wasm` from evaluating at all (every
 /// spec_core file shares that evaluate hook).
 fn shape_namespace<'js>(
-    ctx: &Ctx<'js>, namespace: &Object<'js>, interfaces: &[&str], supports_tags: bool,
+    ctx: &Ctx<'js>, namespace: &Object<'js>, interfaces: &[&str],
 ) -> Result<()> {
     let names: Vec<String> = namespace
         .own_keys(Filter::new().string())
@@ -258,24 +272,21 @@ fn shape_namespace<'js>(
         "WebAssembly",
         spec_data(ctx, namespace.clone(), true, false, true)?,
     );
-    if supports_tags {
-        let tag_ctor: Constructor = namespace.get("Tag")?;
-        let descriptor = Object::new(ctx.clone())?;
-        descriptor.set("parameters", vec!["externref"])?;
-        let js_tag: Value = tag_ctor.construct((descriptor,))?;
-        ctx.store_userdata(WasmJsTag(js_tag)).map_err(|_error| {
-            Exception::throw_internal(ctx, "WebAssembly.JSTag is already in use")
-        })?;
-        let _ = namespace.prop(
-            "JSTag",
-            Accessor::from(|ctx: Ctx<'js>| -> Result<Value<'js>> {
-                ctx.userdata::<WasmJsTag>()
-                    .map(|tag| tag.0.clone())
-                    .ok_or_else(|| Exception::throw_internal(&ctx, "WebAssembly.JSTag is missing"))
-            })
-            .configurable(),
-        );
-    }
+    let tag_ctor: Constructor = namespace.get("Tag")?;
+    let descriptor = Object::new(ctx.clone())?;
+    descriptor.set("parameters", vec!["externref"])?;
+    let js_tag: Value = tag_ctor.construct((descriptor,))?;
+    ctx.store_userdata(WasmJsTag(js_tag))
+        .map_err(|_error| Exception::throw_internal(ctx, "WebAssembly.JSTag is already in use"))?;
+    let _ = namespace.prop(
+        "JSTag",
+        Accessor::from(|ctx: Ctx<'js>| -> Result<Value<'js>> {
+            ctx.userdata::<WasmJsTag>()
+                .map(|tag| tag.0.clone())
+                .ok_or_else(|| Exception::throw_internal(&ctx, "WebAssembly.JSTag is missing"))
+        })
+        .configurable(),
+    );
     Ok(())
 }
 
@@ -383,18 +394,23 @@ fn install_streaming<'js>(ctx: &Ctx<'js>, namespace: &Object<'js>) -> Result<()>
 #[rquickjs::module]
 pub mod wasm {
     use den_util::{BufferSource, Probe};
+    #[cfg(feature = "wasi")] use rquickjs::Function;
     use rquickjs::{
-        Class, Ctx, Exception, IntoJs, Object, Promise, Result, TypedArray, Value, module::Exports,
-        prelude::Opt, promise::Promised,
+        Class, Ctx, Exception, IntoJs, Object, Promise, Result, Value,
+        module::{Declarations, Exports},
+        prelude::Opt,
+        promise::Promised,
     };
 
+    #[cfg(feature = "wasi")]
+    use crate::store::WasiImports;
     use crate::{
         backend,
         engine::Engine,
         error::WebAssemblyErrors,
         instance::ImportedFunctions,
         memory::MemoryBuffers,
-        store::{Store, WasiImports},
+        store::{ActiveHostCall, Store},
     };
     pub use crate::{
         exception::Exception as WasmException, global::Global, instance::Instance, memory::Memory,
@@ -515,33 +531,34 @@ pub mod wasm {
     /// host's stdio and environment a decision somebody took. See
     /// [`WasiImports`] for what the returned object is, and for the one hook in
     /// `Instance::read_imports` that still has to honour it.
-    #[rquickjs::function(rename = "wasiImports")]
-    #[qjs(rename = "wasiImports")]
-    pub fn wasi_imports<'js>(ctx: Ctx<'js>) -> Result<Value<'js>> { WasiImports::namespace(&ctx) }
+    #[cfg(feature = "wasi")]
+    fn wasi_imports(ctx: Ctx<'_>) -> Result<Value<'_>> { WasiImports::namespace(&ctx) }
 
-    /// den extension: assemble WebAssembly Text, so tests and scripts need no
-    /// checked-in binaries.
-    #[rquickjs::function]
-    pub fn wat2wasm(source: String, ctx: Ctx<'_>) -> Result<TypedArray<'_, u8>> {
-        match wat::parse_str(&source) {
-            // `new_copy`, never `new`: `new` lends QuickJS a Rust `Vec` plus a
-            // free hook that QuickJS calls twice on detach (quickjs.c:58037
-            // and :57935), and `transfer` reallocs a pointer its allocator
-            // never produced — `wat2wasm("(module)").buffer.transfer(4)` alone
-            // aborted the process. One copy of a wat blob buys a buffer script
-            // can detach and transfer like any other.
-            Ok(bytes) => TypedArray::new_copy(ctx.clone(), bytes),
-            Err(err) => {
-                Err(Exception::throw_type(
-                    &ctx,
-                    &format!("wat2wasm error: {err}"),
-                ))
-            }
-        }
+    #[qjs(declare)]
+    #[cfg_attr(
+        not(feature = "wasi"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the matching WASI hook calls a non-const declaration API"
+        )
+    )]
+    pub fn declare(declarations: &Declarations<'_>) -> Result<()> {
+        #[cfg(not(feature = "wasi"))]
+        let _ = declarations;
+        #[cfg(feature = "wasi")]
+        declarations.declare("wasiImports")?;
+        Ok(())
     }
 
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
+        #[cfg(not(feature = "wasi"))]
+        let _ = exports;
+        #[cfg(feature = "wasi")]
+        exports.export(
+            "wasiImports",
+            Function::new(ctx.clone(), wasi_imports)?.with_name("wasiImports")?,
+        )?;
         let engine = Engine::new().map_err(|err| {
             Exception::throw_internal(ctx, &format!("cannot create a WebAssembly engine: {err}"))
         })?;
@@ -551,6 +568,8 @@ pub mod wasm {
         ctx.store_userdata(engine).map_err(|_| in_use("engine"))?;
         let store = Store::new(&Engine::from_ctx(ctx)?, ctx);
         ctx.store_userdata(store).map_err(|_| in_use("store"))?;
+        ctx.store_userdata(ActiveHostCall::default())
+            .map_err(|_| in_use("host-call stack"))?;
         ctx.store_userdata(ImportedFunctions::default())
             .map_err(|_| in_use("import registry"))?;
         ctx.store_userdata(MemoryBuffers::default())
@@ -586,7 +605,7 @@ pub mod wasm {
         ctx.globals().set("WebAssembly", namespace.clone())?;
         // After the global is installed, so shape can correct the property
         // attributes of `globalThis.WebAssembly` itself.
-        crate::shape_namespace(ctx, &namespace, &interface_names, backend::SUPPORTS_TAGS)?;
+        crate::shape_namespace(ctx, &namespace, &interface_names)?;
         Ok(())
     }
 }

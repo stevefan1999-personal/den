@@ -128,8 +128,15 @@ typed-builder = "0.23.2"
 url = "2.5.8"
 urlpattern = "0.6"
 uuid = "1.24.1"
-wasmtime = "48.0.0"
-wasmtime-wasi = "48.0.0"
+wasmtime = { version = "48.0.0", default-features = false, features = [
+    "cranelift",
+    "gc-copying",
+    "parallel-compilation",
+    "pulley",
+    "reexport-wasmparser",
+    "runtime",
+] }
+wasmtime-wasi = { version = "48.0.0", default-features = false, features = ["p1"] }
 wast = "257.0.1"
 wat = "1.257.1"
 windows-sys = "0.61"
@@ -694,7 +701,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm", "jit", "mimalloc"]
+default = ["stdlib", "typescript", "react", "wasm", "wasi", "jit", "mimalloc"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
@@ -721,6 +728,7 @@ stdlib-worker = ["den-core/stdlib-worker"]
 
 wasm = ["den-core/wasm"]
 jit = ["den-core/jit"]
+wasi = ["den-core/wasi"]
 
 mimalloc = ["dep:mimalloc"]
 

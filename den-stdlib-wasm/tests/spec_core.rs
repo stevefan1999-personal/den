@@ -113,8 +113,8 @@ fn run_wast_file(wast_path: &Path, relative: &str) -> Result<(), Failed> {
                 .join(",");
             engine
                 .eval::<()>(&format!(
-                    "const WASM = new Uint8Array([{literal}]); if (!WebAssembly.validate(WASM)) \
-                     throw new Error('WebAssembly.validate returned false');"
+                    "if (!WebAssembly.validate(new Uint8Array([{literal}]))) throw new \
+                     Error('WebAssembly.validate returned false');"
                 ))
                 .await
                 .map_err(|error| error.to_string())?;

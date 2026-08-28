@@ -1,14 +1,16 @@
 //! The single wasm store of a JS context.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, ptr::NonNull, rc::Rc};
 
-use den_util::Probe;
-use rquickjs::{Class, Ctx, Exception, JsLifetime, Object, Result, Value, class::Trace};
+#[cfg(feature = "wasi")] use den_util::Probe;
+#[cfg(feature = "wasi")]
+use rquickjs::{Class, Object, Value, class::Trace};
+use rquickjs::{Ctx, Exception, JsLifetime, Result};
+use wasmtime::{AsContext, AsContextMut, Func, StoreContext, Val};
 
-use crate::{
-    backend,
-    error::{throw_link_error, throw_runtime_error},
-};
+#[cfg(feature = "wasi")]
+use crate::error::throw_link_error;
+use crate::{backend, error::throw_runtime_error};
 
 /// Handle to the one wasmtime [`backend::Store`] a JS context owns.
 ///
@@ -52,20 +54,152 @@ impl Store {
     /// to get here twice is from JS — a host function called by a running
     /// export — so a `borrow_mut` would be a JS-reachable abort.
     ///
-    /// ponytail: one `RefCell` for the whole store, so *every* wasm → JS → wasm
-    /// re-entry is refused, including the legitimate ones (a host callback
-    /// touching an unrelated `Memory`, or calling an export of a different
-    /// instance). Lifting it needs the borrow scoped per call frame rather than
-    /// per outermost call — either by handing host callbacks the `Caller`'s own
-    /// store context instead of reaching back into this `RefCell`, or by
-    /// splitting the store per instance and giving up on imports being
-    /// interchangeable between them.
+    /// ponytail: creating a Memory / Table / Global / Tag still needs
+    /// [`Self::with_mut`] and is refused from a host callback. Calling another
+    /// export goes through [`Self::invoke`], which uses the parked `Caller`.
     pub fn with_mut<R>(
         &self, ctx: &Ctx<'_>, f: impl FnOnce(&mut backend::Store) -> Result<R>,
     ) -> Result<R> {
         match self.inner.try_borrow_mut() {
             Ok(mut store) => f(&mut store),
-            Err(_) => Err(throw_runtime_error(ctx, Self::REENTRY_REFUSED)),
+            Err(_) => Err(Self::refuse_reentry(ctx)),
+        }
+    }
+
+    pub(crate) fn refuse_reentry(ctx: &Ctx<'_>) -> rquickjs::Error {
+        throw_runtime_error(ctx, Self::REENTRY_REFUSED)
+    }
+
+    /// A store context, including from inside a host callback.
+    ///
+    /// A running export holds the `RefCell` for the whole call, so
+    /// [`Self::with_mut`] cannot succeed from a host function. The `Caller`
+    /// wasmtime handed that function *is* that borrow; [`ActiveHostCall`]
+    /// parks it so wrappers that only need [`AsContext`] — `Memory.buffer`
+    /// being the one JS WASI shims actually hit — can still see linear
+    /// memory.
+    pub fn with_context<R>(
+        &self, ctx: &Ctx<'_>, f: impl FnOnce(StoreContext<'_, backend::StoreData>) -> Result<R>,
+    ) -> Result<R> {
+        match self.inner.try_borrow() {
+            Ok(store) => f(store.as_context()),
+            Err(_) => {
+                ActiveHostCall::with_caller(ctx, |caller| f(caller.as_context()))
+                    .unwrap_or_else(|| Err(Self::refuse_reentry(ctx)))
+            }
+        }
+    }
+
+    /// Call `func`, including from inside a host callback.
+    ///
+    /// The outer export still holds the `RefCell`. wasmtime already handed that
+    /// frame a `Caller`; [`ActiveHostCall`] parks it so a host function can
+    /// invoke another export (`Memory.buffer` is the read-only cousin).
+    pub fn invoke(
+        &self, ctx: &Ctx<'_>, func: &Func, params: &[Val], results: &mut [Val],
+    ) -> core::result::Result<(), wasmtime::Error> {
+        match self.inner.try_borrow_mut() {
+            Ok(mut store) => func.call(&mut *store, params, results),
+            Err(_) => {
+                match ActiveHostCall::with_caller_mut(ctx, |caller| {
+                    func.call(caller.as_context_mut(), params, results)
+                }) {
+                    Some(result) => result,
+                    None => Err(wasmtime::Error::msg(Self::REENTRY_REFUSED)),
+                }
+            }
+        }
+    }
+}
+
+/// The `Caller` of each host callback currently on the stack.
+///
+/// Parked as context userdata rather than on [`Store`]: the store's `RefCell`
+/// is already mutably borrowed for the export that called out, so nothing
+/// inside it is reachable from JS.
+#[derive(Default)]
+pub struct ActiveHostCall {
+    stack: RefCell<Vec<NonNull<backend::Caller<'static>>>>,
+}
+
+// SAFETY: the stack holds pointers into `HostFunction::run` frames, not JS
+// values; the `'js` lifetime on the impl is only what userdata requires.
+unsafe impl<'js> JsLifetime<'js> for ActiveHostCall {
+    type Changed<'to> = ActiveHostCall;
+}
+
+/// Pops the `Caller` [`ActiveHostCall::enter`] pushed, even if the host
+/// function throws.
+pub struct ActiveHostCallGuard<'js> {
+    ctx: Ctx<'js>,
+}
+
+impl ActiveHostCall {
+    fn install(ctx: &Ctx<'_>) -> Result<()> {
+        if ctx.userdata::<Self>().is_some() {
+            return Ok(());
+        }
+        ctx.store_userdata(Self::default())
+            .map_err(|_| {
+                Exception::throw_internal(ctx, "the WebAssembly host-call stack is already in use")
+            })
+            .map(|_| ())
+    }
+
+    /// Remember `caller` for the JS frame that is about to run.
+    pub fn enter<'js>(
+        ctx: &Ctx<'js>, caller: &backend::Caller<'_>,
+    ) -> Result<ActiveHostCallGuard<'js>> {
+        Self::install(ctx)?;
+        let slot = ctx.userdata::<Self>().ok_or_else(|| {
+            Exception::throw_internal(
+                ctx,
+                "the WebAssembly host-call stack is missing from this context",
+            )
+        })?;
+        let ptr = NonNull::from(caller).cast::<backend::Caller<'static>>();
+        slot.stack
+            .try_borrow_mut()
+            .map_err(|_| {
+                Exception::throw_internal(ctx, "the WebAssembly host-call stack is already in use")
+            })?
+            .push(ptr);
+        Ok(ActiveHostCallGuard { ctx: ctx.clone() })
+    }
+
+    fn current(ctx: &Ctx<'_>) -> Option<NonNull<backend::Caller<'static>>> {
+        let slot = ctx.userdata::<Self>()?;
+        let stack = slot.stack.try_borrow().ok()?;
+        stack.last().copied()
+    }
+
+    /// The innermost parked `Caller`, if a host callback is on the stack.
+    fn with_caller<R>(
+        ctx: &Ctx<'_>, f: impl FnOnce(&backend::Caller<'_>) -> Result<R>,
+    ) -> Option<Result<R>> {
+        let ptr = Self::current(ctx)?;
+        // SAFETY: `enter` pushed a pointer to the `Caller` still on
+        // `HostFunction::run`'s stack; the matching guard has not dropped.
+        Some(f(unsafe { ptr.as_ref() }))
+    }
+
+    /// Mutable cousin of [`Self::with_caller`], for calling another export.
+    fn with_caller_mut<R>(
+        ctx: &Ctx<'_>, f: impl FnOnce(&mut backend::Caller<'_>) -> R,
+    ) -> Option<R> {
+        let mut ptr = Self::current(ctx)?;
+        // SAFETY: same as [`Self::with_caller`]; the `RefCell` is not held
+        // across `f`, so a nested host frame can `enter`.
+        Some(f(unsafe { ptr.as_mut() }))
+    }
+}
+
+impl Drop for ActiveHostCallGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(slot) = self.ctx.userdata::<ActiveHostCall>()
+            && let Ok(mut stack) = slot.stack.try_borrow_mut()
+        {
+            stack.pop();
         }
     }
 }
@@ -86,24 +220,19 @@ impl Store {
 ///
 /// It lives on `den:wasm` rather than on `WebAssembly`, which is exactly the
 /// namespace the spec says it is and nothing more.
+#[cfg(feature = "wasi")]
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct WasiImports {}
 
+#[cfg(feature = "wasi")]
 impl WasiImports {
-    /// `wasiImports()`: the marker, or a `TypeError` if this build has no
-    /// WASI to give.
+    /// `wasiImports()`: the marker for Wasmtime's preview1 implementation.
     ///
     /// Nothing is built here — the host's stdio and environment are inherited
     /// by [`backend::link_wasi`], at instantiation — so holding the marker
     /// grants nothing on its own.
     pub fn namespace<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        if !backend::SUPPORTS_WASI {
-            return Err(Exception::throw_type(
-                ctx,
-                "WASI is not available in this build",
-            ));
-        }
         Ok(Class::instance(ctx.clone(), Self {})?.into_value())
     }
 
@@ -134,172 +263,5 @@ impl WasiImports {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::testing::with_wasm_context;
-
-    /// The `name` and `message` of the pending JS error.
-    fn pending_error(ctx: &Ctx<'_>) -> (String, String) {
-        let thrown = ctx.catch();
-        let exception = thrown.as_exception().expect("a JS error was thrown");
-        (
-            exception.get("name").expect("name"),
-            exception.get("message").expect("message"),
-        )
-    }
-
-    #[test]
-    fn a_second_borrow_of_the_store_is_a_runtime_error_rather_than_a_panic() {
-        with_wasm_context(|ctx| {
-            let store = Store::from_ctx(ctx).expect("store");
-            let refused = store.with_mut(ctx, |_| {
-                // Exactly what a host callback reaching any wasm object does.
-                store.with_mut(ctx, |_| Ok(()))
-            });
-            assert!(refused.is_err());
-
-            let (name, message) = pending_error(ctx);
-            assert_eq!(name, "RuntimeError");
-            assert!(
-                message.contains("called back into JS") && message.contains("another export"),
-                "the refusal does not say what re-entered: {message}"
-            );
-        })
-    }
-
-    #[test]
-    fn wasi_imports_hands_out_a_marker_object() {
-        with_wasm_context(|ctx| {
-            let marker = WasiImports::namespace(ctx).expect("WASI is supported");
-            let marker = marker.into_object().expect("wasiImports() is an object");
-            assert!(WasiImports::is_marker(ctx, &marker));
-            // The probe must recognise an ordinary import namespace as *not*
-            // the marker, and leave no `TypeError` pending when it does.
-            let ordinary = Object::new(ctx.clone()).expect("an object");
-            assert!(!WasiImports::is_marker(ctx, &ordinary));
-            assert!(!ctx.has_exception(), "the probe left an exception pending");
-        })
-    }
-
-    /// The namespace is part of what `wasiImports()` implements, so handing it
-    /// to some other one is a `LinkError` that says so rather than a module
-    /// whose real imports silently go missing.
-    #[test]
-    fn wasi_imports_refuses_to_stand_in_for_another_namespace() {
-        with_wasm_context(|ctx| {
-            let engine = backend::new_engine().expect("engine");
-            let mut linker = backend::Linker::new(&engine);
-            let refused = WasiImports::link(ctx, &mut linker, "env");
-            assert!(refused.is_err());
-
-            let (name, message) = pending_error(ctx);
-            assert_eq!(name, "LinkError");
-            assert!(
-                message.contains("wasi_snapshot_preview1") && message.contains("\"env\""),
-                "the refusal does not name both namespaces: {message}"
-            );
-        })
-    }
-
-    /// A module that asks WASI for something only the engine can answer: the
-    /// environment count is written into the *caller's* linear memory, which is
-    /// why preview1 cannot be a bag of JS functions in the first place. The
-    /// return value is the errno, `0` for success.
-    const CALLS_WASI: &str = r#"
-      (module
-        (import "wasi_snapshot_preview1" "environ_sizes_get" (func $sizes (param i32 i32) (result i32)))
-        (memory (export "memory") 1)
-        (func (export "run") (result i32) (call $sizes (i32.const 0) (i32.const 8))))
-    "#;
-
-    /// End to end through wasmtime, one layer below the JS path that
-    /// `instance.rs` covers. Links twice on purpose: `read_imports` reaches the
-    /// namespace once per WASI import, and `add_to_linker_sync` defines the
-    /// whole namespace each time.
-    #[test]
-    fn wasi_imports_links_a_preview1_module_that_writes_its_own_memory() {
-        with_wasm_context(|ctx| {
-            let engine = Store::from_ctx(ctx)
-                .expect("store")
-                .inner
-                .borrow()
-                .engine()
-                .clone();
-            let mut linker = backend::Linker::new(&engine);
-            for _ in 0..2 {
-                WasiImports::link(ctx, &mut linker, backend::WASI_NAMESPACE)
-                    .expect("wasi links, idempotently");
-            }
-
-            let bytes = wat::parse_str(CALLS_WASI).expect("the fixture assembles");
-            let module = backend::compile_module(&engine, &bytes).expect("the fixture compiles");
-            let errno = Store::from_ctx(ctx)
-                .expect("store")
-                .with_mut(ctx, |backend_store| {
-                    let instance = linker
-                        .instantiate(&mut *backend_store, &module)
-                        .expect("the module instantiates against WASI");
-                    let run = instance
-                        .get_export(&mut *backend_store, "run")
-                        .and_then(wasmtime::Extern::into_func)
-                        .expect("the run export");
-                    let mut results = [wasmtime::Val::I32(-1)];
-                    run.call(&mut *backend_store, &[], &mut results)
-                        .expect("the export calls WASI");
-                    Ok(results[0].i32())
-                })
-                .expect("the call completes");
-            assert_eq!(errno, Some(0), "environ_sizes_get did not report success");
-        })
-    }
-
-    /// The documented ceiling, pinned end to end: a host function called by a
-    /// running export cannot reach a *different* export either, even though
-    /// nothing about that is unsound. Flip this test when the store learns to
-    /// hand out per-frame borrows.
-    const REENTERS_FROM_A_HOST_CALL: &str = r#"
-      const bytes = denWasm.wat2wasm(`(module
-        (import "env" "reenter" (func $reenter))
-        (func (export "run") (call $reenter))
-        (func (export "other") (result i32) (i32.const 1)))`);
-
-      let instance;
-      let caught = null;
-      instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
-        env: {
-          reenter: () => {
-            try {
-              instance.exports.other();
-            } catch (error) {
-              caught = error;
-            }
-          },
-        },
-      });
-      instance.exports.run();
-      [caught === null ? "no error" : caught.name, caught === null ? "" : caught.message]
-    "#;
-
-    #[test]
-    fn a_host_callback_cannot_reach_another_export_of_the_same_store() {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(async {
-                let engine = den_core::engine::Engine::new().await;
-                let caught: Vec<String> = engine
-                    .eval(&format!(
-                        "const denWasm = await import('den:wasm');\n{REENTERS_FROM_A_HOST_CALL}"
-                    ))
-                    .await
-                    .expect("the module runs");
-                let [name, message] = <[String; 2]>::try_from(caught).expect("name and message");
-                assert_eq!(name, "RuntimeError");
-                assert!(
-                    message.contains("called back into JS"),
-                    "the refusal does not say what re-entered: {message}"
-                );
-            })
-    }
-}
+#[path = "../tests/unit/store.rs"]
+mod tests;

@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre;
-use den_core::engine::Engine;
+
+mod common;
 
 fn case(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -12,7 +13,7 @@ fn case(name: &str) -> PathBuf {
 }
 
 async fn run(name: &str) -> eyre::Result<()> {
-    Engine::new().await.run_file::<()>(case(name)).await?;
+    common::engine().await.run_file(case(name)).await?;
     Ok(())
 }
 
@@ -44,6 +45,11 @@ async fn instantiating_a_compiled_module_yields_a_bare_instance() -> eyre::Resul
 #[tokio::test(flavor = "multi_thread")]
 async fn an_imported_js_function_receives_the_wasm_arguments() -> eyre::Result<()> {
     run("import_js.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_callback_can_write_through_memory_buffer() -> eyre::Result<()> {
+    run("host_memory.js").await
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -84,6 +90,12 @@ async fn the_exports_object_is_frozen_with_a_null_prototype() -> eyre::Result<()
 #[tokio::test(flavor = "multi_thread")]
 async fn the_namespace_exposes_every_spec_member() -> eyre::Result<()> { run("namespace.js").await }
 
+#[cfg(not(feature = "wasi"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn wasi_imports_is_absent_without_the_feature() -> eyre::Result<()> {
+    run("no_wasi.js").await
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn module_and_instance_are_real_constructors() -> eyre::Result<()> {
     run("constructors.js").await
@@ -113,6 +125,7 @@ async fn grow_inside_wasm_and_aliased_wrappers_detach() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "wasi")]
 async fn wasi_imports_satisfies_preview1() -> eyre::Result<()> { run("wasi.js").await }
 
 #[tokio::test(flavor = "multi_thread")]

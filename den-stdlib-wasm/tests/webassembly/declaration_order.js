@@ -1,7 +1,6 @@
 import { assertEquals } from "den:assert";
-import { wat2wasm } from "den:wasm";
 
-const WASM = wat2wasm(`
+const WASM = globalThis.wat2wasm(`
     (module
       (import "env" "zebra" (func $zebra))
       (import "env" "apple" (global i32))

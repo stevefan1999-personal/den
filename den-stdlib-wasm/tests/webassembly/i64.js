@@ -1,7 +1,6 @@
 import { assert, assertEquals, assertThrows } from "den:assert";
-import { wat2wasm } from "den:wasm";
 
-const WASM = wat2wasm(`
+const WASM = globalThis.wat2wasm(`
     (module
       (func (export "echo") (param i64) (result i64) local.get 0)
       (func (export "beyond") (result i64) i64.const 9007199254740993))

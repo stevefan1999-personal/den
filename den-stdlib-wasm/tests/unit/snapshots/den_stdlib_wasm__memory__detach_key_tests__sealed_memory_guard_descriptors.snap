@@ -1,0 +1,8 @@
+---
+source: den-stdlib-wasm/src/../tests/unit/memory_detach_key.rs
+expression: descriptors
+---
+transfer: writable=false, configurable=false, enumerable=false
+transferToFixedLength: writable=false, configurable=false, enumerable=false
+transferToImmutable: writable=false, configurable=false, enumerable=false
+resize: writable=false, configurable=false, enumerable=false

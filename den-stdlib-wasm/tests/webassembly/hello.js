@@ -1,6 +1,4 @@
-import { wat2wasm } from "den:wasm";
-
-export const WASM = wat2wasm(`
+export const WASM = globalThis.wat2wasm(`
     (module
       (@custom "hello" "world")
       (func (export "nothing"))

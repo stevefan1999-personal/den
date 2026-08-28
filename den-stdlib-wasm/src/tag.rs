@@ -6,10 +6,7 @@ use rquickjs::{
 };
 use wasmtime::ValType;
 
-use crate::{
-    backend,
-    memory::{DescriptorObject, ValueTypeName},
-};
+use crate::memory::{DescriptorObject, ValueTypeName};
 
 /// A `TagType`: the parameter types an exception thrown with this tag carries.
 #[derive(Clone, Debug)]
@@ -23,9 +20,7 @@ impl<'js> FromJs<'js> for TagType {
         let parameters: Vec<String> = object.required(ctx, "parameters")?;
         parameters
             .iter()
-            .map(|name| {
-                ValueTypeName::resolve(ctx, name, ValueTypeName::GLOBAL, "tag parameter type")
-            })
+            .map(|name| ValueTypeName::value(ctx, name, "tag parameter type"))
             .collect::<Result<Vec<_>>>()
             .map(|parameters| Self { parameters })
     }
@@ -79,7 +74,7 @@ impl Tag {
     pub fn tag_type<'js>(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
         let parameters = Array::new(ctx.clone())?;
         for (index, ty) in self.parameters(&ctx)?.iter().enumerate() {
-            let name = backend::val_type_name(ty).ok_or_else(|| {
+            let name = ValueTypeName::get(ty).ok_or_else(|| {
                 Exception::throw_type(&ctx, "this tag parameter type has no JS name")
             })?;
             parameters.set(index, name)?;
@@ -94,40 +89,5 @@ impl Tag {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::testing::{js, pending_error_name, with_wasm_context};
-
-    fn tag(ctx: &Ctx<'_>, ty: &str) -> core::result::Result<Tag, String> {
-        TagType::from_js(ctx, js(ctx, ty))
-            .and_then(|ty| Tag::new(ty, ctx.clone()))
-            .map_err(|_| pending_error_name(ctx))
-    }
-
-    #[test]
-    fn a_tag_reports_the_parameter_types_it_was_created_with() {
-        with_wasm_context(|ctx| {
-            let created = tag(ctx, "({ parameters: ['i32', 'f64'] })");
-            let ty = created.expect("tag").tag_type(ctx.clone()).expect("type()");
-            ctx.globals().set("type", ty).expect("bind");
-            let parameters: String = ctx
-                .eval("type.parameters.join(',')")
-                .expect("parameters is an array");
-            assert_eq!(parameters, "i32,f64");
-        })
-    }
-
-    #[test]
-    fn a_tag_type_with_an_unknown_parameter_type_is_a_type_error() {
-        with_wasm_context(|ctx| {
-            for ty in [
-                "({ parameters: ['nope'] })",
-                "({ parameters: ['v128'] })",
-                "({})",
-                "(1)",
-            ] {
-                assert_eq!(tag(ctx, ty).unwrap_err(), "TypeError", "{ty}");
-            }
-        })
-    }
-}
+#[path = "../tests/unit/tag.rs"]
+mod tests;

@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use color_eyre::eyre;
 use den_core::engine::Engine;
 
+mod common;
+
 /// Enough repetitions that a per-engine leak is visible in RSS and a teardown
 /// abort is certain rather than lucky; still under a second in total.
 const ENGINE_CHURN: usize = 25;
@@ -48,9 +50,9 @@ async fn engines_that_never_touch_webassembly_survive_repeated_teardown() -> eyr
 #[tokio::test(flavor = "multi_thread")]
 async fn engines_that_instantiate_and_touch_memory_survive_repeated_teardown() -> eyre::Result<()> {
     for round in 0..ENGINE_CHURN {
-        Engine::new()
+        common::engine()
             .await
-            .run_file::<()>(case("lifetime_memory.js"))
+            .run_file(case("lifetime_memory.js"))
             .await
             .map_err(|error| eyre::eyre!("round {round}: {error}"))?;
     }
@@ -63,9 +65,9 @@ async fn engines_that_instantiate_and_touch_memory_survive_repeated_teardown() -
 #[tokio::test(flavor = "multi_thread")]
 async fn engines_holding_an_imported_js_closure_survive_repeated_teardown() -> eyre::Result<()> {
     for round in 0..ENGINE_CHURN {
-        Engine::new()
+        common::engine()
             .await
-            .run_file::<()>(case("lifetime_import.js"))
+            .run_file(case("lifetime_import.js"))
             .await
             .map_err(|error| eyre::eyre!("round {round}: {error}"))?;
     }

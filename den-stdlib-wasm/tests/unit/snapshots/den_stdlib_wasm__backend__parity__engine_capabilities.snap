@@ -1,0 +1,22 @@
+---
+source: den-stdlib-wasm/src/../tests/unit/backend_parity.rs
+expression: "observed.join(\"\\n\")"
+---
+a shared memory: TypeError
+a shared memory without a maximum: TypeError
+a module with a shared memory: false
+a module using atomics: false
+an anyref global: TypeError
+a v128 global: TypeError
+a module using anyref: true
+a module using v128: true
+a module with a tag: true
+a tag: true
+a module using tail calls: true
+a module using extended const: true
+a module with two memories: true
+a module using memory64: true
+a module using custom page sizes: false
+a module using bulk memory: true
+an exported function: 3
+a trapping export: RuntimeError

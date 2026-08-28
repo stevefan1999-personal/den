@@ -1,7 +1,6 @@
 import { assert, assertEquals, assertThrows } from "den:assert";
-import { wat2wasm } from "den:wasm";
 
-const WASM = wat2wasm(`
+const WASM = globalThis.wat2wasm(`
     (module
       (table (export "table") 1 funcref)
       (global (export "counter") (mut i32) (i32.const 7)))

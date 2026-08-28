@@ -1,13 +1,12 @@
 import { assertEquals } from "den:assert";
-import { wat2wasm } from "den:wasm";
 
-const GROWS = wat2wasm(`
+const GROWS = globalThis.wat2wasm(`
     (module
       (memory (export "mem") 1)
       (func (export "boom") unreachable)
       (func (export "grow") (drop (memory.grow (i32.const 1)))))
 `);
-const REEXPORTS = wat2wasm(`
+const REEXPORTS = globalThis.wat2wasm(`
     (module
       (import "env" "mem" (memory 1))
       (export "mem" (memory 0)))
@@ -44,7 +43,7 @@ const reexported = (await WebAssembly.instantiate(REEXPORTS, { env: { mem: impor
   .instance.exports.mem;
 const otherStale = reexported.buffer;
 imported.grow(1);
-assertEquals(reexported !== imported, true);
+assertEquals(reexported === imported, true);
 assertEquals(otherStale.byteLength, 0);
 assertEquals(reexported.buffer.byteLength, 131072);
 assertEquals(reexported.buffer === imported.buffer, true);
