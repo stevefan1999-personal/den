@@ -14,17 +14,17 @@ use temporal_rs::{
     },
     parsed_intermediates::ParsedZonedDateTime,
     parsers::Precision,
-    partial::{PartialDuration, PartialTime, PartialZonedDateTime},
+    partial::{PartialTime, PartialZonedDateTime},
     provider::TransitionDirection,
 };
 
 use crate::{
     convert::{
         calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
-        optional_integral_i64, optional_integral_i128, optional_truncated_i32,
-        optional_truncated_u8, optional_truncated_u16, options_object, ordering_i32, probe_class,
-        reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
-        to_number, to_time_zone, to_zoned_date_time, truncated_u8, truncated_u16, unwrap_temporal,
+        optional_truncated_i32, optional_truncated_u8, optional_truncated_u16, options_object,
+        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_big_int_i128,
+        to_calendar, to_duration, to_number, to_time_zone, to_zoned_date_time, truncated_u8,
+        truncated_u16, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -170,7 +170,7 @@ impl ZonedDateTime {
     pub fn add<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let duration = duration_like_value(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         let overflow = overflow_option(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.add(&duration, overflow)).map(Self::wrap)
     }
@@ -178,7 +178,7 @@ impl ZonedDateTime {
     pub fn subtract<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let duration = duration_like_value(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         let overflow = overflow_option(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.subtract(&duration, overflow)).map(Self::wrap)
     }
@@ -618,28 +618,6 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
         None => Ok(None),
         Some(value) => overflow_from_value(ctx, &value).map(Some),
     }
-}
-
-fn duration_like_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
-    if probe_class::<Duration>(ctx, value).is_some() || !value.is_object() {
-        return to_duration(ctx, value);
-    }
-    let Some(object) = value.as_object() else {
-        return to_duration(ctx, value);
-    };
-    let partial = PartialDuration {
-        days:         optional_integral_i64(ctx, object, "days")?,
-        hours:        optional_integral_i64(ctx, object, "hours")?,
-        microseconds: optional_integral_i128(ctx, object, "microseconds")?,
-        milliseconds: optional_integral_i64(ctx, object, "milliseconds")?,
-        minutes:      optional_integral_i64(ctx, object, "minutes")?,
-        months:       optional_integral_i64(ctx, object, "months")?,
-        nanoseconds:  optional_integral_i128(ctx, object, "nanoseconds")?,
-        seconds:      optional_integral_i64(ctx, object, "seconds")?,
-        weeks:        optional_integral_i64(ctx, object, "weeks")?,
-        years:        optional_integral_i64(ctx, object, "years")?,
-    };
-    unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
 
 fn difference_settings<'js>(

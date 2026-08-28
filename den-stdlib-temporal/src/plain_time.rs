@@ -10,14 +10,14 @@ use temporal_rs::{
         ToStringRoundingOptions, Unit,
     },
     parsers::Precision,
-    partial::{PartialDuration, PartialTime},
+    partial::PartialTime,
 };
 
 use crate::{
     convert::{
-        calendar_slot, fractional_second_digits, get_defined, js_to_string, optional_integral_i64,
-        optional_integral_i128, optional_truncated_i128, options_object, ordering_i32, probe_class,
-        require_object, throw_value_of, to_number, truncated_u8_or_zero, truncated_u16_or_zero,
+        calendar_slot, fractional_second_digits, get_defined, js_to_string,
+        optional_truncated_i128, options_object, ordering_i32, probe_class, require_object,
+        throw_value_of, to_duration, to_number, truncated_u8_or_zero, truncated_u16_or_zero,
         unwrap_temporal,
     },
     duration::Duration,
@@ -101,12 +101,12 @@ impl PlainTime {
     pub fn nanosecond(&self) -> u16 { self.inner.nanosecond() }
 
     pub fn add<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let duration = to_duration_like(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         unwrap_temporal(&ctx, self.inner.add(&duration)).map(Self::wrap)
     }
 
     pub fn subtract<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let duration = to_duration_like(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         unwrap_temporal(&ctx, self.inner.subtract(&duration)).map(Self::wrap)
     }
 
@@ -341,42 +341,6 @@ fn time_from_record(
     unwrap_temporal(
         ctx,
         temporal_rs::PlainTime::from_partial(partial, Some(overflow)),
-    )
-}
-
-fn to_duration_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
-    if let Some(duration) = probe_class::<Duration>(ctx, value) {
-        return Ok(duration.inner);
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
-    }
-    let object = require_object(ctx, value, "cannot convert value to Temporal.Duration")?;
-    let days = optional_integral_i64(ctx, &object, "days")?;
-    let hours = optional_integral_i64(ctx, &object, "hours")?;
-    let microseconds = optional_integral_i128(ctx, &object, "microseconds")?;
-    let milliseconds = optional_integral_i64(ctx, &object, "milliseconds")?;
-    let minutes = optional_integral_i64(ctx, &object, "minutes")?;
-    let months = optional_integral_i64(ctx, &object, "months")?;
-    let nanoseconds = optional_integral_i128(ctx, &object, "nanoseconds")?;
-    let seconds = optional_integral_i64(ctx, &object, "seconds")?;
-    let weeks = optional_integral_i64(ctx, &object, "weeks")?;
-    let years = optional_integral_i64(ctx, &object, "years")?;
-    unwrap_temporal(
-        ctx,
-        temporal_rs::Duration::from_partial_duration(PartialDuration {
-            years,
-            months,
-            weeks,
-            days,
-            hours,
-            minutes,
-            seconds,
-            milliseconds,
-            microseconds,
-            nanoseconds,
-        }),
     )
 }
 

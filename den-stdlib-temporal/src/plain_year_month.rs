@@ -10,15 +10,15 @@ use temporal_rs::{
     options::{
         DifferenceSettings, DisplayCalendar, Overflow, RoundingIncrement, RoundingMode, Unit,
     },
-    partial::{PartialDuration, PartialYearMonth},
+    partial::PartialYearMonth,
 };
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_integral_i64,
-        optional_integral_i128, optional_truncated_i32, optional_truncated_i128, options_object,
-        ordering_i32, probe_class, reject_calendar_or_time_zone, reject_illformed_month_code,
-        throw_value_of, to_integer_with_truncation, to_number, truncated_u8, unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_truncated_i32,
+        optional_truncated_i128, options_object, ordering_i32, probe_class,
+        reject_calendar_or_time_zone, reject_illformed_month_code, throw_value_of, to_duration,
+        to_integer_with_truncation, to_number, truncated_u8, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -104,7 +104,7 @@ impl PlainYearMonth {
     pub fn add<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let duration = to_duration_like(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         let overflow = overflow_option(&ctx, options)?.unwrap_or_default();
         unwrap_temporal(&ctx, self.inner.add(&duration, overflow)).map(Self::wrap)
     }
@@ -112,7 +112,7 @@ impl PlainYearMonth {
     pub fn subtract<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let duration = to_duration_like(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         let overflow = overflow_option(&ctx, options)?.unwrap_or_default();
         unwrap_temporal(&ctx, self.inner.subtract(&duration, overflow)).map(Self::wrap)
     }
@@ -197,7 +197,7 @@ impl PlainYearMonth {
     }
 
     #[qjs(rename = "toJSON")]
-    pub fn to_json_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
+    pub fn to_json(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainYearMonth"))
@@ -392,35 +392,6 @@ fn optional_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Opt
     } else {
         parse_enum(ctx, value, "invalid roundingMode").map(Some)
     }
-}
-
-fn to_duration_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
-    if let Some(duration) = probe_class::<Duration>(ctx, value) {
-        return Ok(duration.inner);
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
-    }
-    let Some(object) = value.as_object() else {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert value to Temporal.Duration",
-        ));
-    };
-    let partial = PartialDuration {
-        days:         optional_integral_i64(ctx, object, "days")?,
-        hours:        optional_integral_i64(ctx, object, "hours")?,
-        microseconds: optional_integral_i128(ctx, object, "microseconds")?,
-        milliseconds: optional_integral_i64(ctx, object, "milliseconds")?,
-        minutes:      optional_integral_i64(ctx, object, "minutes")?,
-        months:       optional_integral_i64(ctx, object, "months")?,
-        nanoseconds:  optional_integral_i128(ctx, object, "nanoseconds")?,
-        seconds:      optional_integral_i64(ctx, object, "seconds")?,
-        weeks:        optional_integral_i64(ctx, object, "weeks")?,
-        years:        optional_integral_i64(ctx, object, "years")?,
-    };
-    unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
 
 fn parse_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<T> {

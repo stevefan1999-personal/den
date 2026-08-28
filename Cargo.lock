@@ -1278,7 +1278,6 @@ dependencies = [
  "color-eyre",
  "den-core",
  "den-util",
- "indexmap",
  "libtest-mimic",
  "rquickjs",
  "temporal_rs",

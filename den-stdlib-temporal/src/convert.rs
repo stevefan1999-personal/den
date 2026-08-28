@@ -1,13 +1,11 @@
 //! JS value → `temporal_rs` conversions.
 //!
-//! Options bags go through [`IndexMap`] so a dictionary is a dictionary, not an
-//! ad-hoc `Object::set` loop. Slot-bearing Temporal objects are probed without
-//! leaving a `TypeError` pending when the value is simply the wrong class.
+//! Slot-bearing Temporal objects are probed without leaving a `TypeError`
+//! pending when the value is simply the wrong class.
 
 use std::{cmp::Ordering, str::FromStr};
 
 use den_util::Probe as _;
-use indexmap::IndexMap;
 use rquickjs::{
     BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Value,
     atom::PredefinedAtom, class::JsClass, function::This, prelude::Opt,
@@ -109,10 +107,6 @@ pub fn reject_calendar_or_time_zone<'js>(
         return Err(Exception::throw_type(ctx, time_zone_message));
     }
     Ok(())
-}
-
-fn bag_value<'js, 'a>(bag: &'a IndexMap<String, Value<'js>>, key: &str) -> Option<&'a Value<'js>> {
-    bag.get(key).filter(|value| !value.is_undefined())
 }
 
 /// ISO month codes are `M` + two digits + optional `L`. Syntax is checked
@@ -499,9 +493,20 @@ pub fn to_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_r
         let string = value.get::<String>()?;
         return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
     }
-    if value.is_object() {
-        let bag = IndexMap::from_js(ctx, value.clone())?;
-        return duration_from_bag(ctx, &bag);
+    if let Some(object) = value.as_object() {
+        let partial = PartialDuration {
+            days:         optional_integral_i64(ctx, object, "days")?,
+            hours:        optional_integral_i64(ctx, object, "hours")?,
+            microseconds: optional_integral_i128(ctx, object, "microseconds")?,
+            milliseconds: optional_integral_i64(ctx, object, "milliseconds")?,
+            minutes:      optional_integral_i64(ctx, object, "minutes")?,
+            months:       optional_integral_i64(ctx, object, "months")?,
+            nanoseconds:  optional_integral_i128(ctx, object, "nanoseconds")?,
+            seconds:      optional_integral_i64(ctx, object, "seconds")?,
+            weeks:        optional_integral_i64(ctx, object, "weeks")?,
+            years:        optional_integral_i64(ctx, object, "years")?,
+        };
+        return unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial));
     }
     Err(Exception::throw_type(
         ctx,
@@ -509,97 +514,21 @@ pub fn to_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_r
     ))
 }
 
-fn duration_from_bag<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
-) -> Result<temporal_rs::Duration> {
-    let partial = PartialDuration {
-        years:        bag_optional_i64(ctx, bag, "years")?,
-        months:       bag_optional_i64(ctx, bag, "months")?,
-        weeks:        bag_optional_i64(ctx, bag, "weeks")?,
-        days:         bag_optional_i64(ctx, bag, "days")?,
-        hours:        bag_optional_i64(ctx, bag, "hours")?,
-        minutes:      bag_optional_i64(ctx, bag, "minutes")?,
-        seconds:      bag_optional_i64(ctx, bag, "seconds")?,
-        milliseconds: bag_optional_i64(ctx, bag, "milliseconds")?,
-        microseconds: bag_optional_i128(ctx, bag, "microseconds")?,
-        nanoseconds:  bag_optional_i128(ctx, bag, "nanoseconds")?,
-    };
-    unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
-}
-
-fn bag_optional_i64<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
-) -> Result<Option<i64>> {
-    match bag_value(bag, key) {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral_i64(ctx, value).map(Some),
-    }
-}
-
-fn bag_optional_i128<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
-) -> Result<Option<i128>> {
-    match bag_value(bag, key) {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral(ctx, value).map(Some),
-    }
-}
-
-fn bag_optional_truncated_i32<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
-) -> Result<Option<i32>> {
-    match bag_value(bag, key) {
-        None => Ok(None),
-        Some(value) => {
-            let integer = to_integer_with_truncation(ctx, value)?;
-            i32::try_from(integer)
-                .map(Some)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
-    }
-}
-
-fn bag_optional_truncated_u8<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
-) -> Result<Option<u8>> {
-    match bag_optional_truncated_i32(ctx, bag, key)? {
-        None => Ok(None),
-        Some(integer) => {
-            u8::try_from(integer)
-                .map(Some)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
-    }
-}
-
-fn bag_optional_truncated_u16<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, key: &str,
-) -> Result<Option<u16>> {
-    match bag_optional_truncated_i32(ctx, bag, key)? {
-        None => Ok(None),
-        Some(integer) => {
-            u16::try_from(integer)
-                .map(Some)
-                .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
-        }
-    }
-}
-
-fn calendar_fields_from_bag<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
+fn calendar_fields_from_object<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>,
 ) -> Result<CalendarFields> {
     let mut fields = CalendarFields::new();
-    if let Some(year) = bag_optional_truncated_i32(ctx, bag, "year")? {
+    if let Some(year) = optional_truncated_i32(ctx, object, "year")? {
         fields = fields.with_year(year);
     }
-    if let Some(month) = bag_optional_truncated_u8(ctx, bag, "month")? {
+    if let Some(month) = optional_truncated_u8(ctx, object, "month")? {
         fields = fields.with_month(month);
     }
-    if let Some(day) = bag_optional_truncated_u8(ctx, bag, "day")? {
+    if let Some(day) = optional_truncated_u8(ctx, object, "day")? {
         fields = fields.with_day(day);
     }
-    if let Some(value) = bag_value(bag, "monthCode") {
-        let code = js_to_string(ctx, value)?;
+    if let Some(value) = get_defined(object, "monthCode")? {
+        let code = js_to_string(ctx, &value)?;
         let month_code = temporal_rs::MonthCode::try_from_utf8(code.as_bytes())
             .map_err(|error| throw_temporal(ctx, error))?;
         fields = fields.with_month_code(month_code);
@@ -607,33 +536,29 @@ fn calendar_fields_from_bag<'js>(
     Ok(fields)
 }
 
-fn partial_time_from_bag<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
-) -> Result<PartialTime> {
+fn partial_time_from_object<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<PartialTime> {
     Ok(PartialTime {
-        hour:        bag_optional_truncated_u8(ctx, bag, "hour")?,
-        minute:      bag_optional_truncated_u8(ctx, bag, "minute")?,
-        second:      bag_optional_truncated_u8(ctx, bag, "second")?,
-        millisecond: bag_optional_truncated_u16(ctx, bag, "millisecond")?,
-        microsecond: bag_optional_truncated_u16(ctx, bag, "microsecond")?,
-        nanosecond:  bag_optional_truncated_u16(ctx, bag, "nanosecond")?,
+        hour:        optional_truncated_u8(ctx, object, "hour")?,
+        minute:      optional_truncated_u8(ctx, object, "minute")?,
+        second:      optional_truncated_u8(ctx, object, "second")?,
+        millisecond: optional_truncated_u16(ctx, object, "millisecond")?,
+        microsecond: optional_truncated_u16(ctx, object, "microsecond")?,
+        nanosecond:  optional_truncated_u16(ctx, object, "nanosecond")?,
     })
 }
 
-fn bag_calendar<'js>(ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>) -> Result<Calendar> {
-    match bag_value(bag, "calendar") {
+fn object_calendar<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calendar> {
+    match get_defined(object, "calendar")? {
         None => Ok(Calendar::ISO),
-        Some(value) => to_calendar(ctx, value),
+        Some(value) => to_calendar(ctx, &value),
     }
 }
 
-fn bag_utc_offset<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>,
-) -> Result<Option<UtcOffset>> {
-    match bag_value(bag, "offset") {
+fn object_utc_offset<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<UtcOffset>> {
+    match get_defined(object, "offset")? {
         None => Ok(None),
         Some(value) => {
-            let identifier = js_to_string(ctx, value)?;
+            let identifier = js_to_string(ctx, &value)?;
             UtcOffset::from_str(&identifier)
                 .map(Some)
                 .map_err(|error| throw_temporal(ctx, error))
@@ -641,12 +566,12 @@ fn bag_utc_offset<'js>(
     }
 }
 
-fn month_day_from_bag<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+fn month_day_from_object<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, overflow: Option<Overflow>,
 ) -> Result<temporal_rs::PlainMonthDay> {
     let partial = PartialDate {
-        calendar_fields: calendar_fields_from_bag(ctx, bag)?,
-        calendar:        bag_calendar(ctx, bag)?,
+        calendar_fields: calendar_fields_from_object(ctx, object)?,
+        calendar:        object_calendar(ctx, object)?,
     };
     unwrap_temporal(
         ctx,
@@ -654,21 +579,21 @@ fn month_day_from_bag<'js>(
     )
 }
 
-fn zoned_from_bag<'js>(
-    ctx: &Ctx<'js>, bag: &IndexMap<String, Value<'js>>, overflow: Option<Overflow>,
+fn zoned_from_object<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, overflow: Option<Overflow>,
 ) -> Result<temporal_rs::ZonedDateTime> {
-    let timezone = match bag_value(bag, "timeZone") {
+    let timezone = match get_defined(object, "timeZone")? {
         None => None,
-        Some(value) => Some(to_time_zone(ctx, value)?),
+        Some(value) => Some(to_time_zone(ctx, &value)?),
     };
     let partial = PartialZonedDateTime {
         fields: ZonedDateTimeFields {
-            calendar_fields: calendar_fields_from_bag(ctx, bag)?,
-            time:            partial_time_from_bag(ctx, bag)?,
-            offset:          bag_utc_offset(ctx, bag)?,
+            calendar_fields: calendar_fields_from_object(ctx, object)?,
+            time:            partial_time_from_object(ctx, object)?,
+            offset:          object_utc_offset(ctx, object)?,
         },
         timezone,
-        calendar: bag_calendar(ctx, bag)?,
+        calendar: object_calendar(ctx, object)?,
     };
     unwrap_temporal(
         ctx,
@@ -698,9 +623,8 @@ pub fn to_plain_month_day<'js>(
             temporal_rs::PlainMonthDay::from_utf8(string.as_bytes()),
         );
     }
-    if value.is_object() {
-        let bag = IndexMap::from_js(ctx, value.clone())?;
-        return month_day_from_bag(ctx, &bag, None);
+    if let Some(object) = value.as_object() {
+        return month_day_from_object(ctx, object, None);
     }
     Err(Exception::throw_type(
         ctx,
@@ -725,9 +649,8 @@ pub fn to_zoned_date_time<'js>(
             ),
         );
     }
-    if value.is_object() {
-        let bag = IndexMap::from_js(ctx, value.clone())?;
-        return zoned_from_bag(ctx, &bag, None);
+    if let Some(object) = value.as_object() {
+        return zoned_from_object(ctx, object, None);
     }
     Err(Exception::throw_type(
         ctx,

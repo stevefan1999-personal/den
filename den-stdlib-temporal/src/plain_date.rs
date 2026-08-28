@@ -12,15 +12,15 @@ use temporal_rs::{
     options::{
         DifferenceSettings, DisplayCalendar, Overflow, RoundingIncrement, RoundingMode, Unit,
     },
-    partial::{PartialDate, PartialDuration, PartialTime},
+    partial::{PartialDate, PartialTime},
 };
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_integral_i64,
-        optional_integral_i128, optional_truncated_i32, optional_truncated_i128,
-        optional_truncated_u8, optional_truncated_u16, options_object, ordering_i32, probe_class,
-        reject_illformed_month_code, throw_value_of, to_number, to_time_zone, unwrap_temporal,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_truncated_i32,
+        optional_truncated_i128, optional_truncated_u8, optional_truncated_u16, options_object,
+        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_duration,
+        to_number, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -390,44 +390,6 @@ fn to_temporal_date<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
     date_from_partial(ctx, bag, Overflow::Constrain)
 }
 
-fn to_temporal_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
-    if let Some(duration) = probe_class::<Duration>(ctx, value) {
-        return Ok(duration.inner);
-    }
-    if value.is_string() {
-        let string: String = value.get()?;
-        return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| Exception::throw_type(ctx, "cannot convert value to Temporal.Duration"))?;
-    let days = optional_integral_i64(ctx, object, "days")?;
-    let hours = optional_integral_i64(ctx, object, "hours")?;
-    let microseconds = optional_integral_i128(ctx, object, "microseconds")?;
-    let milliseconds = optional_integral_i64(ctx, object, "milliseconds")?;
-    let minutes = optional_integral_i64(ctx, object, "minutes")?;
-    let months = optional_integral_i64(ctx, object, "months")?;
-    let nanoseconds = optional_integral_i128(ctx, object, "nanoseconds")?;
-    let seconds = optional_integral_i64(ctx, object, "seconds")?;
-    let weeks = optional_integral_i64(ctx, object, "weeks")?;
-    let years = optional_integral_i64(ctx, object, "years")?;
-    unwrap_temporal(
-        ctx,
-        temporal_rs::Duration::from_partial_duration(PartialDuration {
-            years,
-            months,
-            weeks,
-            days,
-            hours,
-            minutes,
-            seconds,
-            milliseconds,
-            microseconds,
-            nanoseconds,
-        }),
-    )
-}
-
 fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
     if let Some(time) = probe_class::<PlainTime>(ctx, value) {
         return Ok(time.inner);
@@ -582,7 +544,7 @@ impl PlainDate {
     pub fn add<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let duration = to_temporal_duration(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         let overflow = overflow_option(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.add(&duration, overflow)).map(Self::wrap)
     }
@@ -590,7 +552,7 @@ impl PlainDate {
     pub fn subtract<'js>(
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
-        let duration = to_temporal_duration(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         let overflow = overflow_option(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.subtract(&duration, overflow)).map(Self::wrap)
     }
