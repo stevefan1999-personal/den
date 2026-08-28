@@ -1,6 +1,5 @@
 use std::net::IpAddr;
 
-use delegate_attr::delegate;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::{JsLifetime, class::Trace};
 
@@ -14,26 +13,20 @@ pub struct IpAddrWrapper {
 #[rquickjs::methods]
 impl IpAddrWrapper {
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_unspecified(&self) -> bool {}
+    pub const fn is_unspecified(&self) -> bool { self.addr.is_unspecified() }
 
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_loopback(&self) -> bool {}
+    pub const fn is_loopback(&self) -> bool { self.addr.is_loopback() }
 
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_multicast(&self) -> bool {}
+    pub const fn is_multicast(&self) -> bool { self.addr.is_multicast() }
 
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_ipv4(&self) -> bool {}
+    pub const fn is_ipv4(&self) -> bool { self.addr.is_ipv4() }
 
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_ipv6(&self) -> bool {}
+    pub const fn is_ipv6(&self) -> bool { self.addr.is_ipv6() }
 
     #[qjs(rename = "toString")]
-    #[delegate(self.addr)]
-    pub fn to_string(&self) -> String {}
+    pub fn as_string(&self) -> String { self.addr.to_string() }
 }

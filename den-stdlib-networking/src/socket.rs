@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::{Ctx, Error, JsLifetime, Result, TypedArray, class::Trace, convert::List};
@@ -24,8 +24,9 @@ impl_stream_wrapper! {
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<SocketAddrWrapper> {
-        let this = self.stream.try_read().map_err(|_| Error::Unknown)?;
+        let this = self.stream.try_read().map_err(|_error| Error::Unknown)?;
         let addr = this.local_addr()?;
+        drop(this);
         Ok(addr.into())
     }
 
@@ -48,18 +49,18 @@ impl TcpListenerWrapper {
     // rquickjs only attaches `#[qjs(static)]` members to a class that
     // declares a constructor, and a `()` return makes `new TcpListener()`
     // throw: instances only ever come from `TcpListener.listen`.
-    #[allow(
+    #[expect(
         clippy::new_ret_no_self,
         reason = "`#[qjs(constructor)]` marker; not constructible from JS"
     )]
     #[qjs(constructor)]
-    pub fn new() {}
+    pub const fn new() {}
 
     #[qjs(get, enumerable)]
-    pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.deref().local_addr()?.into()) }
+    pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.listener.local_addr()?.into()) }
 
     pub async fn accept(self) -> Result<List<(TcpStreamWrapper, SocketAddrWrapper)>> {
-        let (stream, addr) = self.deref().accept().await?;
+        let (stream, addr) = self.listener.accept().await?;
         let stream = Arc::new(RwLock::new(stream));
         Ok(List((stream.into(), addr.into())))
     }

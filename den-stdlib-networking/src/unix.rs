@@ -11,24 +11,20 @@ use tokio::{
 use crate::io::{AsyncReadWrapper, AsyncWriteWrapper};
 use crate::io::{JsByteBuf, impl_stream_wrapper};
 
-struct Unix;
+#[cfg(unix)]
+fn unix_pathname(addr: &tokio::net::unix::SocketAddr) -> String {
+    addr.as_pathname()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
 
-impl Unix {
-    #[cfg(unix)]
-    fn pathname(addr: &tokio::net::unix::SocketAddr) -> String {
-        addr.as_pathname()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    }
-
-    #[cfg(not(unix))]
-    fn unsupported() -> Error {
-        std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Unix domain sockets are not supported on this platform",
-        )
-        .into()
-    }
+#[cfg(not(unix))]
+fn unix_unsupported() -> Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Unix domain sockets are not supported on this platform",
+    )
+    .into()
 }
 
 #[derive(Trace, JsLifetime, Clone, Debug)]
@@ -41,19 +37,22 @@ pub struct UnixStreamWrapper {
 
 impl_stream_wrapper! {
     UnixStreamWrapper,
-    unsupported: Unix::unsupported,
+    unsupported: unix_unsupported,
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<String> {
         #[cfg(unix)]
         {
-            let this = self.stream.try_read().map_err(|_| Error::Unknown)?;
-            Ok(Unix::pathname(&this.local_addr()?))
+            let this = self
+                .stream
+                .try_read()
+                .map_err(|_error| Error::Unknown)?;
+            Ok(unix_pathname(&this.local_addr()?))
         }
         #[cfg(not(unix))]
         {
             let _ = self;
-            Err(Unix::unsupported())
+            Err(unix_unsupported())
         }
     }
 
@@ -69,7 +68,7 @@ impl_stream_wrapper! {
         #[cfg(not(unix))]
         {
             let _ = path;
-            Err(Unix::unsupported())
+            Err(unix_unsupported())
         }
     }
 }
@@ -87,23 +86,23 @@ impl UnixListenerWrapper {
     // rquickjs only attaches `#[qjs(static)]` members to a class that
     // declares a constructor, and a `()` return makes `new UnixListener()`
     // throw: instances only ever come from `UnixListener.listen`.
-    #[allow(
+    #[expect(
         clippy::new_ret_no_self,
         reason = "`#[qjs(constructor)]` marker; not constructible from JS"
     )]
     #[qjs(constructor)]
-    pub fn new() {}
+    pub const fn new() {}
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<String> {
         #[cfg(unix)]
         {
-            Ok(Unix::pathname(&self.listener.local_addr()?))
+            Ok(unix_pathname(&self.listener.local_addr()?))
         }
         #[cfg(not(unix))]
         {
             let _ = self;
-            Err(Unix::unsupported())
+            Err(unix_unsupported())
         }
     }
 
@@ -115,13 +114,13 @@ impl UnixListenerWrapper {
                 UnixStreamWrapper {
                     stream: Arc::new(RwLock::new(stream)),
                 },
-                Unix::pathname(&addr),
+                unix_pathname(&addr),
             )))
         }
         #[cfg(not(unix))]
         {
             let _ = self;
-            Err(Unix::unsupported())
+            Err(unix_unsupported())
         }
     }
 
@@ -137,85 +136,11 @@ impl UnixListenerWrapper {
         #[cfg(not(unix))]
         {
             let _ = path;
-            Err(Unix::unsupported())
+            Err(unix_unsupported())
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{UnixListenerWrapper, UnixStreamWrapper};
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn listen_connect_write_read_round_trips() {
-        use den_core::engine::Engine;
-        use either::Either;
-        use rquickjs::{CatchResultExt, convert::List};
-
-        let engine = Engine::new().await;
-        let outcome: String = engine
-            .context
-            .async_with(async |ctx| {
-                let run = async {
-                    let (path, _unlink) = sock_path();
-                    let listener = UnixListenerWrapper::listen(path.clone()).await?;
-                    let connecting = UnixStreamWrapper::connect(path);
-                    let accepting = listener.accept();
-                    let (client, accepted) = tokio::join!(connecting, accepting);
-                    let client = client?;
-                    let List((server, _)) = accepted?;
-                    client
-                        .clone()
-                        .write_all(Either::Right(Either::Left(b"ping".to_vec())))
-                        .await?;
-                    let received = {
-                        let chunk = server.read(4, ctx.clone()).await?;
-                        chunk
-                            .as_bytes()
-                            .expect("the chunk is still attached")
-                            .to_vec()
-                    };
-                    Ok::<_, rquickjs::Error>(format!("bytes:{}", received == b"ping"))
-                };
-                run.await.catch(&ctx).map_err(|err| err.to_string())
-            })
-            .await
-            .expect("the unix stream round-trips");
-        assert_eq!(outcome, "bytes:true");
-    }
-
-    #[cfg(not(unix))]
-    #[tokio::test]
-    async fn unix_stream_connect_is_unsupported() {
-        let error = UnixStreamWrapper::connect("/tmp/den.sock".into())
-            .await
-            .expect_err("windows has no unix-domain sockets");
-        let message = error.to_string();
-        assert!(
-            message.contains("not supported"),
-            "unexpected error: {message}"
-        );
-    }
-
-    #[cfg(unix)]
-    fn sock_path() -> (String, UnlinkOnDrop) {
-        static UNIQUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "den-unix-{}-{}.sock",
-            std::process::id(),
-            UNIQUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_file(&path);
-        let displayed = path.to_string_lossy().into_owned();
-        (displayed, UnlinkOnDrop(path))
-    }
-
-    #[cfg(unix)]
-    struct UnlinkOnDrop(std::path::PathBuf);
-
-    #[cfg(unix)]
-    impl Drop for UnlinkOnDrop {
-        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
-    }
-}
+#[path = "../tests/unit/unix.rs"]
+mod tests;
