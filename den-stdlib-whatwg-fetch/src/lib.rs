@@ -6,16 +6,15 @@ use std::{
 };
 
 use den_stdlib_whatwg::streams::ReadableStream;
-use derive_more::derive::{From, Into};
 use futures::{Stream, StreamExt};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
     Promise, Result, TypedArray, Value as JsValue,
     class::Trace,
     function::{Constructor, FuncArg, Opt as JsOpt, Rest, This},
 };
-use serde_json::Value;
 use tokio::sync::Notify;
+use typed_builder::TypedBuilder;
 
 mod body;
 mod data_url;
@@ -25,89 +24,6 @@ mod request;
 
 pub use headers::Headers;
 pub use request::Request;
-
-#[derive(From, Into, Clone, Eq, PartialEq, Hash)]
-pub struct SerdeJsonValue(pub serde_json::Value);
-
-impl<'js> FromJs<'js> for SerdeJsonValue {
-    fn from_js(ctx: &Ctx<'js>, v: JsValue<'js>) -> Result<Self> {
-        let value = match v.type_of() {
-            rquickjs::Type::Null | rquickjs::Type::Uninitialized | rquickjs::Type::Undefined => {
-                serde_json::Value::Null
-            }
-            rquickjs::Type::Bool => serde_json::json!(v.as_bool().unwrap_or_default()),
-            rquickjs::Type::Int => serde_json::json!(v.as_int().unwrap_or_default()),
-            rquickjs::Type::Float => serde_json::json!(v.as_float().unwrap_or_default()),
-            rquickjs::Type::String => {
-                serde_json::json!(
-                    v.as_string()
-                        .unwrap_or(&rquickjs::String::from_str(ctx.clone(), "")?)
-                        .to_string()
-                        .unwrap_or(String::from(""))
-                )
-            }
-            rquickjs::Type::Array => {
-                if let Some(arr) = v.as_array() {
-                    let mut values = Vec::with_capacity(arr.len());
-                    for entry in arr.clone().into_iter() {
-                        values.push(SerdeJsonValue::from_js(ctx, entry?)?.0);
-                    }
-                    serde_json::Value::Array(values)
-                } else {
-                    serde_json::Value::Array(vec![])
-                }
-            }
-            // rquickjs 0.12 reports a JS `Proxy` as its own type; it is still an object and
-            // walking it lets its traps answer, which is what 0.8 did.
-            rquickjs::Type::Object | rquickjs::Type::Proxy => {
-                let mut map = serde_json::Map::<String, Value>::new();
-                if let Some(obj) = v.as_object() {
-                    for entry in obj.clone().into_iter() {
-                        let (key, value) = entry?;
-                        map.insert(
-                            key.clone().to_string()?,
-                            SerdeJsonValue::from_js(ctx, value)?.0,
-                        );
-                    }
-                }
-                serde_json::Value::Object(map)
-            }
-            // Functions, symbols and bigints have no JSON representation — the same values
-            // `JSON.stringify` refuses. Report the conversion failure instead of panicking.
-            other => return Err(Error::new_from_js(other.as_str(), "json value")),
-        };
-        Ok(SerdeJsonValue(value))
-    }
-}
-
-impl<'js> IntoJs<'js> for SerdeJsonValue {
-    fn into_js(self, ctx: &Ctx<'js>) -> Result<JsValue<'js>> {
-        let ctx = ctx.clone();
-        match self.0 {
-            Value::Null => Ok(JsValue::new_null(ctx)),
-            Value::Bool(x) => x.into_js(&ctx),
-            Value::Number(x) if x.is_f64() => x.as_f64().unwrap().into_js(&ctx),
-            Value::Number(x) if x.is_i64() => x.as_i64().unwrap().into_js(&ctx),
-            Value::Number(x) if x.is_u64() => x.as_u64().unwrap().into_js(&ctx),
-            Value::String(x) => x.into_js(&ctx),
-            Value::Array(x) => {
-                let arr = Array::new(ctx.clone())?;
-                for (index, value) in x.into_iter().enumerate() {
-                    arr.set(index, SerdeJsonValue(value).into_js(&ctx)?)?;
-                }
-                Ok(arr.into_value())
-            }
-            Value::Object(map) => {
-                let obj = Object::new(ctx.clone())?;
-                for (key, value) in map.into_iter() {
-                    obj.set(key, SerdeJsonValue(value).into_js(&ctx)?)?;
-                }
-                Ok(obj.into_value())
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
 
 type BodyStream = Pin<Box<dyn Stream<Item = std::result::Result<Vec<u8>, String>> + Send>>;
 
@@ -120,25 +36,40 @@ enum ResponseBody {
     Taken,
 }
 
-#[derive(Trace, JsLifetime, Clone)]
+#[derive(Trace, JsLifetime, Clone, TypedBuilder)]
+#[builder(
+    builder_method(vis = "pub(crate)"),
+    builder_type(vis = "pub(crate)"),
+    build_method(vis = "pub(crate)")
+)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response<'js> {
+    #[qjs(get, enumerable)]
     pub(crate) status:       u16,
+    #[qjs(get, enumerable)]
+    #[builder(default)]
     pub(crate) redirected:   bool,
-    #[qjs(skip_trace)]
+    #[qjs(get, enumerable, rename = "statusText", skip_trace)]
+    #[builder(default, setter(into))]
     pub(crate) status_text:  String,
-    #[qjs(skip_trace)]
+    #[qjs(get, enumerable, skip_trace)]
+    #[builder(default, setter(into))]
     pub(crate) url:          String,
-    #[qjs(skip_trace)]
+    #[qjs(get, enumerable, rename = "type", skip_trace)]
+    #[builder(default_code = r#""default".to_owned()"#, setter(into))]
     pub(crate) kind:         String,
+    #[qjs(get, enumerable)]
     pub(crate) headers:      Class<'js, Headers>,
+    #[builder(default)]
     body_stream:             Option<JsValue<'js>>,
     #[qjs(skip_trace)]
     inner:                   Rc<RefCell<ResponseBody>>,
     #[qjs(skip_trace)]
+    #[builder(default)]
     consume_started:         Cell<bool>,
     pub(crate) abort_signal: JsValue<'js>,
     #[qjs(skip_trace)]
+    #[builder(default)]
     pub(crate) abort_notify: Option<Arc<Notify>>,
 }
 
@@ -159,19 +90,15 @@ impl<'js> Response<'js> {
             .collect::<Vec<_>>();
         let mut header_obj = Headers::from_pairs(headers);
         header_obj.set_guard(headers::Guard::Immutable);
-        Ok(Self {
-            status:          status.as_u16(),
-            redirected:      false,
-            status_text:     status.canonical_reason().unwrap_or("").to_string(),
-            url:             response.url().to_string(),
-            kind:            kind.to_string(),
-            headers:         Class::instance(ctx.clone(), header_obj)?,
-            body_stream:     None,
-            inner:           Rc::new(RefCell::new(ResponseBody::Live(response))),
-            consume_started: Cell::new(false),
-            abort_signal:    JsValue::new_null(ctx.clone()),
-            abort_notify:    None,
-        })
+        Ok(Self::builder()
+            .status(status.as_u16())
+            .status_text(status.canonical_reason().unwrap_or(""))
+            .url(response.url().to_string())
+            .kind(kind)
+            .headers(Class::instance(ctx.clone(), header_obj)?)
+            .inner(Rc::new(RefCell::new(ResponseBody::Live(response))))
+            .abort_signal(JsValue::new_null(ctx.clone()))
+            .build())
     }
 
     pub(crate) fn from_bytes(
@@ -182,19 +109,15 @@ impl<'js> Response<'js> {
             None => ResponseBody::None,
             Some(bytes) => ResponseBody::Bytes(bytes),
         };
-        Ok(Self {
-            status,
-            redirected: false,
-            status_text,
-            url,
-            kind: kind.to_string(),
-            headers,
-            body_stream: None,
-            inner: Rc::new(RefCell::new(inner)),
-            consume_started: Cell::new(false),
-            abort_signal: JsValue::new_null(ctx.clone()),
-            abort_notify: None,
-        })
+        Ok(Self::builder()
+            .status(status)
+            .status_text(status_text)
+            .url(url)
+            .kind(kind)
+            .headers(headers)
+            .inner(Rc::new(RefCell::new(inner)))
+            .abort_signal(JsValue::new_null(ctx.clone()))
+            .build())
     }
 
     fn content_type(&self) -> String {
@@ -357,19 +280,15 @@ impl<'js> Response<'js> {
         ctx: &Ctx<'js>, status: u16, status_text: String, url: String, kind: &str,
         headers: Class<'js, Headers>, message: String,
     ) -> Result<Self> {
-        Ok(Self {
-            status,
-            redirected: false,
-            status_text,
-            url,
-            kind: kind.to_string(),
-            headers,
-            body_stream: None,
-            inner: Rc::new(RefCell::new(ResponseBody::Failed(message))),
-            consume_started: Cell::new(false),
-            abort_signal: JsValue::new_null(ctx.clone()),
-            abort_notify: None,
-        })
+        Ok(Self::builder()
+            .status(status)
+            .status_text(status_text)
+            .url(url)
+            .kind(kind)
+            .headers(headers)
+            .inner(Rc::new(RefCell::new(ResponseBody::Failed(message))))
+            .abort_signal(JsValue::new_null(ctx.clone()))
+            .build())
     }
 
     pub(crate) fn abort_fetch_body(&self, _ctx: &Ctx<'js>, reason: JsValue<'js>) {
@@ -557,37 +476,26 @@ impl<'js> Response<'js> {
                 }
             }
         };
-        Ok(Self {
-            status,
-            redirected: false,
-            status_text,
-            url: String::new(),
-            kind: "default".to_string(),
-            headers,
-            body_stream,
-            inner: Rc::new(RefCell::new(inner)),
-            consume_started: Cell::new(false),
-            abort_signal: JsValue::new_null(ctx.clone()),
-            abort_notify: None,
-        })
+        Ok(Self::builder()
+            .status(status)
+            .status_text(status_text)
+            .headers(headers)
+            .body_stream(body_stream)
+            .inner(Rc::new(RefCell::new(inner)))
+            .abort_signal(JsValue::new_null(ctx.clone()))
+            .build())
     }
 
     #[qjs(static)]
     pub fn error(ctx: Ctx<'js>) -> Result<Self> {
         let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        Ok(Self {
-            status: 0,
-            redirected: false,
-            status_text: String::new(),
-            url: String::new(),
-            kind: "error".to_string(),
-            headers,
-            body_stream: None,
-            inner: Rc::new(RefCell::new(ResponseBody::None)),
-            consume_started: Cell::new(false),
-            abort_signal: JsValue::new_null(ctx.clone()),
-            abort_notify: None,
-        })
+        Ok(Self::builder()
+            .status(0)
+            .kind("error")
+            .headers(headers)
+            .inner(Rc::new(RefCell::new(ResponseBody::None)))
+            .abort_signal(JsValue::new_null(ctx.clone()))
+            .build())
     }
 
     #[qjs(static)]
@@ -610,19 +518,12 @@ impl<'js> Response<'js> {
             .map
             .insert("location".to_string(), parsed.to_string());
         let headers = Class::instance(ctx.clone(), headers)?;
-        Ok(Self {
-            status: status as u16,
-            redirected: false,
-            status_text: String::new(),
-            url: String::new(),
-            kind: "default".to_string(),
-            headers,
-            body_stream: None,
-            inner: Rc::new(RefCell::new(ResponseBody::None)),
-            consume_started: Cell::new(false),
-            abort_signal: JsValue::new_null(ctx.clone()),
-            abort_notify: None,
-        })
+        Ok(Self::builder()
+            .status(status as u16)
+            .headers(headers)
+            .inner(Rc::new(RefCell::new(ResponseBody::None)))
+            .abort_signal(JsValue::new_null(ctx.clone()))
+            .build())
     }
 
     #[qjs(static, rename = "json")]
@@ -786,35 +687,19 @@ impl<'js> Response<'js> {
     #[qjs(rename = "_cancelBody")]
     pub fn cancel_body(&self) { self.mark_used(); }
 
+    /// `bodyUsed` is "the body's stream is disturbed". Once a stream exists it
+    /// *is* the body and `inner` is only the feed behind it — a clone's tee
+    /// drains that feed while this response's own branch is still untouched.
     #[qjs(enumerable, get)]
     pub fn body_used(&self) -> bool {
-        matches!(*self.inner.borrow(), ResponseBody::Taken)
-            || self
-                .body_stream
-                .as_ref()
-                .is_some_and(Self::stream_disturbed)
+        match &self.body_stream {
+            Some(stream) => Self::stream_disturbed(stream),
+            None => matches!(*self.inner.borrow(), ResponseBody::Taken),
+        }
     }
 
     #[qjs(enumerable, get)]
     pub fn ok(&self) -> bool { (200..300).contains(&self.status) }
-
-    #[qjs(enumerable, get)]
-    pub fn redirected(&self) -> bool { self.redirected }
-
-    #[qjs(enumerable, get)]
-    pub fn status(&self) -> u16 { self.status }
-
-    #[qjs(enumerable, get)]
-    pub fn status_text(&self) -> String { self.status_text.clone() }
-
-    #[qjs(enumerable, get)]
-    pub fn url(&self) -> String { self.url.clone() }
-
-    #[qjs(enumerable, get, rename = "type")]
-    pub fn type_(&self) -> String { self.kind.clone() }
-
-    #[qjs(enumerable, get)]
-    pub fn headers(&self) -> Class<'js, Headers> { self.headers.clone() }
 
     #[qjs(enumerable, get)]
     pub fn body(&mut self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
@@ -872,32 +757,34 @@ impl<'js> Response<'js> {
         {
             return Err(Exception::throw_type(&ctx, "Already read"));
         }
-        if let ResponseBody::Bytes(bytes) = &*response.inner.borrow() {
-            let headers = Class::instance(
-                ctx.clone(),
-                Headers::new(
+        // A stream body wins over `inner`: a `Response` built from a
+        // `ReadableStream` parks an empty `Bytes` placeholder there, so testing
+        // `inner` first would hand back a silently empty clone.
+        if response.body_stream.is_none() {
+            if let ResponseBody::Bytes(bytes) = &*response.inner.borrow() {
+                let headers = Class::instance(
                     ctx.clone(),
-                    rquickjs::function::Opt(Some(response.headers.clone().into_value())),
-                )?,
-            )?;
-            return Ok(Self {
-                status: response.status,
-                redirected: response.redirected,
-                status_text: response.status_text.clone(),
-                url: response.url.clone(),
-                kind: response.kind.clone(),
-                headers,
-                body_stream: None,
-                inner: Rc::new(RefCell::new(ResponseBody::Bytes(bytes.clone()))),
-                consume_started: Cell::new(false),
-                abort_signal: response.abort_signal.clone(),
-                abort_notify: response.abort_notify.clone(),
-            });
-        }
-        if response.body_stream.is_none() && !matches!(*response.inner.borrow(), ResponseBody::None)
-        {
-            let host = Class::instance(ctx.clone(), response.clone())?.into_value();
-            response.body_stream = Some(body::http_chunks_to_stream(&ctx, host)?);
+                    Headers::new(
+                        ctx.clone(),
+                        rquickjs::function::Opt(Some(response.headers.clone().into_value())),
+                    )?,
+                )?;
+                return Ok(Self::builder()
+                    .status(response.status)
+                    .redirected(response.redirected)
+                    .status_text(response.status_text.clone())
+                    .url(response.url.clone())
+                    .kind(response.kind.clone())
+                    .headers(headers)
+                    .inner(Rc::new(RefCell::new(ResponseBody::Bytes(bytes.clone()))))
+                    .abort_signal(response.abort_signal.clone())
+                    .abort_notify(response.abort_notify.clone())
+                    .build());
+            }
+            if !matches!(*response.inner.borrow(), ResponseBody::None) {
+                let host = Class::instance(ctx.clone(), response.clone())?.into_value();
+                response.body_stream = Some(body::http_chunks_to_stream(&ctx, host)?);
+            }
         }
         if let Some(stream) = &response.body_stream {
             let (left, right) = body::tee_stream(&ctx, stream.clone())?;
@@ -909,19 +796,18 @@ impl<'js> Response<'js> {
                     rquickjs::function::Opt(Some(response.headers.clone().into_value())),
                 )?,
             )?;
-            return Ok(Self {
-                status: response.status,
-                redirected: response.redirected,
-                status_text: response.status_text.clone(),
-                url: response.url.clone(),
-                kind: response.kind.clone(),
-                headers,
-                body_stream: Some(right),
-                inner: Rc::new(RefCell::new(ResponseBody::Bytes(Vec::new()))),
-                consume_started: Cell::new(false),
-                abort_signal: response.abort_signal.clone(),
-                abort_notify: response.abort_notify.clone(),
-            });
+            return Ok(Self::builder()
+                .status(response.status)
+                .redirected(response.redirected)
+                .status_text(response.status_text.clone())
+                .url(response.url.clone())
+                .kind(response.kind.clone())
+                .headers(headers)
+                .body_stream(Some(right))
+                .inner(Rc::new(RefCell::new(ResponseBody::Bytes(Vec::new()))))
+                .abort_signal(response.abort_signal.clone())
+                .abort_notify(response.abort_notify.clone())
+                .build());
         }
         let cloned_inner = match &*response.inner.borrow() {
             ResponseBody::None => ResponseBody::None,
@@ -943,19 +829,17 @@ impl<'js> Response<'js> {
                 rquickjs::function::Opt(Some(response.headers.clone().into_value())),
             )?,
         )?;
-        Ok(Self {
-            status: response.status,
-            redirected: response.redirected,
-            status_text: response.status_text.clone(),
-            url: response.url.clone(),
-            kind: response.kind.clone(),
-            headers,
-            body_stream: None,
-            inner: Rc::new(RefCell::new(cloned_inner)),
-            consume_started: Cell::new(false),
-            abort_signal: response.abort_signal.clone(),
-            abort_notify: response.abort_notify.clone(),
-        })
+        Ok(Self::builder()
+            .status(response.status)
+            .redirected(response.redirected)
+            .status_text(response.status_text.clone())
+            .url(response.url.clone())
+            .kind(response.kind.clone())
+            .headers(headers)
+            .inner(Rc::new(RefCell::new(cloned_inner)))
+            .abort_signal(response.abort_signal.clone())
+            .abort_notify(response.abort_notify.clone())
+            .build())
     }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
@@ -1347,103 +1231,5 @@ pub mod whatwg {
 }
 
 #[cfg(test)]
-mod tests {
-    use den_core::engine::Engine;
-    use rquickjs::{CatchResultExt, Class, Promise, Value, prelude::This};
-
-    use super::Response;
-
-    /// A body handed to script has to be a buffer QuickJS itself allocated.
-    /// Lending it a Rust allocation registers a free hook that quickjs-ng runs
-    /// twice on detach (quickjs.c:58037 and :57935), and `transfer` reallocs
-    /// that foreign pointer, so `(await response.arrayBuffer()).transfer(2)`
-    /// aborted the process — an abort that takes this test binary with it, so
-    /// the snippet returning at all is the assertion.
-    #[tokio::test]
-    async fn a_response_body_survives_transfer_and_detach() {
-        let engine = Engine::new().await;
-        let outcome: String = engine
-            .context
-            .async_with(async |ctx| {
-                // Built from an `http::Response`, so the body is real but no
-                // socket is involved. `Response` holds an `Rc`, so it cannot be
-                // captured by the `Send` closure and is made here.
-                let respond = || {
-                    Response::from_reqwest(&ctx, http::Response::new("body").into(), "basic")
-                        .expect("response")
-                };
-                let run = async {
-                    let buffer = Response::array_buffer(
-                        This(Class::instance(ctx.clone(), respond())?),
-                        ctx.clone(),
-                    )?
-                    .into_future::<Value>()
-                    .await?;
-                    let view = Response::bytes(
-                        This(Class::instance(ctx.clone(), respond())?),
-                        ctx.clone(),
-                    )?
-                    .into_future::<Value>()
-                    .await?;
-                    ctx.globals().set("body", buffer)?;
-                    ctx.globals().set("view", view)?;
-                    ctx.eval::<String, _>(
-                        r#"
-                          const moved = body.transfer(2);
-                          const movedView = view.buffer.transfer();
-                          [new Uint8Array(moved).join("-"),
-                           String.fromCharCode(...new Uint8Array(movedView)),
-                           body.detached, view.byteLength].join(",")
-                        "#,
-                    )
-                };
-                run.await.catch(&ctx).map_err(|err| err.to_string())
-            })
-            .await
-            .expect("the snippet evaluates");
-        assert_eq!(outcome, "98-111,body,true,0");
-    }
-
-    #[tokio::test]
-    async fn response_blob_wraps_the_body_when_blob_exists() {
-        let engine = Engine::new().await;
-        let outcome: String = engine
-            .context
-            .async_with(async |ctx| {
-                let run = async {
-                    let response = Response::from_reqwest(
-                        &ctx,
-                        http::Response::builder()
-                            .header("content-type", "text/plain")
-                            .body("hello")
-                            .expect("response")
-                            .into(),
-                        "basic",
-                    )
-                    .expect("from_reqwest");
-                    let blob =
-                        Response::blob(This(Class::instance(ctx.clone(), response)?), ctx.clone())?
-                            .into_future::<Value>()
-                            .await?;
-                    ctx.globals().set("blob", blob)?;
-                    ctx.eval::<Promise, _>(
-                        r#"
-                          (async () => {
-                            return [
-                              blob instanceof Blob,
-                              blob.type,
-                              await blob.text(),
-                            ].join("|");
-                          })()
-                        "#,
-                    )?
-                    .into_future::<String>()
-                    .await
-                };
-                run.await.catch(&ctx).map_err(|err| err.to_string())
-            })
-            .await
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(outcome, "true|text/plain|hello");
-    }
-}
+#[path = "../tests/unit/lib.rs"]
+mod tests;

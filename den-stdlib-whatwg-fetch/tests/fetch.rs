@@ -65,3 +65,8 @@ async fn fetch_aborts_an_in_flight_request() -> eyre::Result<()> {
     }
     run("fetch_abort_inflight.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cloning_a_stream_backed_response_tees_it() -> eyre::Result<()> {
+    run("response_clone_stream.js").await
+}
