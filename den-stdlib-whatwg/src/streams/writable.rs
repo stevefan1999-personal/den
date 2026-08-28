@@ -14,8 +14,8 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, native::NativeSink, range_error, react, readable::extract_strategy, thrown,
-    type_error,
+    Cap, Pins, method, native::NativeSink, optional_object, range_error, react,
+    readable::extract_strategy, thrown, type_error,
 };
 
 pub(crate) enum WsState<'js> {
@@ -881,12 +881,7 @@ impl<'js> WritableStream<'js> {
 impl<'js> WritableStream<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, sink: Opt<Value<'js>>, strategy: Opt<Value<'js>>) -> Result<Self> {
-        let sink_object = match sink.0 {
-            Some(value) if value.is_object() => {
-                value.into_object().unwrap_or(Object::new(ctx.clone())?)
-            }
-            _ => Object::new(ctx.clone())?,
-        };
+        let sink_object = optional_object(&ctx, sink.0, "underlyingSink")?;
         let kind: Value = sink_object.get("type")?;
         if !kind.is_undefined() {
             return Err(Exception::throw_range(

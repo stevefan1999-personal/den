@@ -113,6 +113,9 @@ assert(released, "a released writer must reject");
 for (const build of [
   () => new ReadableStream({ type: "bytes" }),
   () => new ReadableStream({}).getReader({ mode: "byob" }),
+  () => new ReadableStream(null),
+  () => new WritableStream(null),
+  () => new TransformStream(null),
 ]) {
   let threw = false;
   try {

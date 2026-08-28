@@ -288,6 +288,22 @@ pub(crate) fn range_error<'js>(ctx: &Ctx<'js>, message: &str) -> Value<'js> {
     thrown(ctx, error)
 }
 
+/// WebIDL `optional object x = {}`: an omitted or undefined argument is the
+/// default, and anything present that is not an object — `null` above all — is
+/// a TypeError rather than a silently empty bag.
+pub(crate) fn optional_object<'js>(
+    ctx: &Ctx<'js>, value: Option<Value<'js>>, what: &str,
+) -> Result<Object<'js>> {
+    match value {
+        None => Object::new(ctx.clone()),
+        Some(value) if value.is_undefined() => Object::new(ctx.clone()),
+        Some(value) => {
+            value
+                .into_object()
+                .ok_or_else(|| Exception::throw_type(ctx, &format!("{what} must be an object")))
+        }
+    }
+}
 /// Get a method off an options bag exactly once, per the specification's
 /// "let x be ? GetV(...)" steps. A present-but-uncallable member is a
 /// TypeError.

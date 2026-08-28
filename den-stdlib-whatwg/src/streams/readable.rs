@@ -10,7 +10,8 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, native::NativeSource, pipe, range_error, react, thrown, type_error,
+    Cap, Pins, method, native::NativeSource, optional_object, pipe, range_error, react, thrown,
+    type_error,
 };
 
 pub(crate) enum RsState<'js> {
@@ -682,12 +683,7 @@ impl<'js> ReadableStream<'js> {
 impl<'js> ReadableStream<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, source: Opt<Value<'js>>, strategy: Opt<Value<'js>>) -> Result<Self> {
-        let source_object = match source.0.clone() {
-            Some(value) if value.is_object() => {
-                value.into_object().unwrap_or(Object::new(ctx.clone())?)
-            }
-            _ => Object::new(ctx.clone())?,
-        };
+        let source_object = optional_object(&ctx, source.0.clone(), "underlyingSource")?;
         let kind: Value = source_object.get("type")?;
         if !kind.is_undefined() {
             let name = den_util::coerce_string(&ctx, kind)?;
