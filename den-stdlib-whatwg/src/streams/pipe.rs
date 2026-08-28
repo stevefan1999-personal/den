@@ -42,8 +42,8 @@ fn truthy(object: &Object<'_>, name: &str) -> Result<bool> {
 /// do. It is owned and traced by a single [`PipeRecord`] rooted on the source,
 /// so the resulting cycle is one QuickJS can see and collect.
 struct PipeState<'js> {
-    source:         Class<'js, ReadableStream<'js>>,
-    dest:           Class<'js, WritableStream<'js>>,
+    source:         Option<Class<'js, ReadableStream<'js>>>,
+    dest:           Option<Class<'js, WritableStream<'js>>>,
     reader_id:      u64,
     writer_id:      u64,
     prevent_close:  bool,
@@ -55,16 +55,23 @@ struct PipeState<'js> {
 }
 
 impl<'js> PipeState<'js> {
-    fn source_inner(&self) -> Option<RsInner<'js>> { Some(self.source.borrow().inner.clone()) }
+    fn source_inner(&self) -> Option<RsInner<'js>> {
+        Some(self.source.as_ref()?.borrow().inner.clone())
+    }
 
-    fn dest_inner(&self) -> Option<WsInner<'js>> { Some(self.dest.borrow().inner.clone()) }
+    fn dest_inner(&self) -> Option<WsInner<'js>> {
+        Some(self.dest.as_ref()?.borrow().inner.clone())
+    }
 }
 
 impl<'js> Trace<'js> for PipeState<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        // The result capability is deliberately not traced. Script holds the
+        // promise, nothing in the graph points back at it, and marking a
+        // capability whose resolving functions have been handed to promise
+        // reactions over-decrements their refcount.
         self.source.trace(tracer);
         self.dest.trace(tracer);
-        self.cap.trace(tracer);
         if let Some((signal, listener)) = &self.signal {
             signal.trace(tracer);
             listener.trace(tracer);
@@ -127,8 +134,8 @@ pub(crate) fn pipe_to<'js>(
     let cap = Cap::new(ctx)?;
     let promise = cap.promise();
     let state: Pipe<'js> = Rc::new(RefCell::new(PipeState {
-        source: source.clone(),
-        dest,
+        source: Some(source.clone()),
+        dest: Some(dest),
         reader_id,
         writer_id,
         prevent_close,
@@ -170,7 +177,18 @@ pub(crate) fn pipe_to<'js>(
     let record = Class::instance(ctx.clone(), PipeRecord {
         state: Rc::clone(&state),
     })?;
-    source_inner.borrow_mut().roots.push(record.into_value());
+    // Root the pipe on both ends. A running pipe must survive as long as
+    // either stream can be observed, and rooting the destination too is what
+    // keeps `pipeThrough` alive when script holds only the readable side.
+    source_inner
+        .borrow_mut()
+        .roots
+        .push(record.clone().into_value());
+    dest_inner
+        .borrow_mut()
+        .roots
+        .push(record.clone().into_value());
+    let _ = record;
     step(ctx, &state);
     Ok(promise)
 }
@@ -374,12 +392,35 @@ fn shutdown<'js>(ctx: &Ctx<'js>, state: &Pipe<'js>, error: Option<Value<'js>>, a
     }
 }
 
+/// Drop this pipe's root from a stream that outlives it. A finished pipe left
+/// in `roots` keeps its result capability — a JS promise no tracer reaches,
+/// because the reactions holding it are `Function::new` closures — alive for
+/// as long as the stream is, which QuickJS reports as a leak at teardown.
+fn unroot<'js>(roots: &mut Vec<Value<'js>>, state: &Pipe<'js>) {
+    roots.retain(|value| {
+        Class::<PipeRecord<'js>>::from_value(value)
+            .ok()
+            .is_none_or(|record| !Rc::ptr_eq(&record.borrow().state, state))
+    });
+}
+
 fn finalize<'js>(ctx: &Ctx<'js>, state: &Pipe<'js>, error: Option<Value<'js>>) {
     let source_inner = state.borrow().source_inner();
     let dest_inner = state.borrow().dest_inner();
     let reader_id = state.borrow().reader_id;
     let writer_id = state.borrow().writer_id;
     let signal = state.borrow_mut().signal.take();
+    // Drop both ends now the pipe is over: the record stays rooted on the
+    // streams it served, so holding them would keep the whole graph alive
+    // until the streams themselves die.
+    state.borrow_mut().source = None;
+    state.borrow_mut().dest = None;
+    if let Some(inner) = &source_inner {
+        unroot(&mut inner.borrow_mut().roots, state);
+    }
+    if let Some(inner) = &dest_inner {
+        unroot(&mut inner.borrow_mut().roots, state);
+    }
     if let Some((signal, listener)) = signal
         && let Ok(remove) = signal.get::<_, Function>("removeEventListener")
     {
@@ -437,11 +478,11 @@ struct TeeState<'js> {
 
 impl<'js> Trace<'js> for TeeState<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        // See `PipeState`: the cancel capability is reachable only from script.
         self.source.trace(tracer);
         for reason in self.reasons.iter().flatten() {
             reason.trace(tracer);
         }
-        self.cancel.as_ref().map(|cap| cap.trace(tracer));
     }
 }
 

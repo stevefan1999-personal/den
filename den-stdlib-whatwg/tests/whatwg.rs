@@ -39,6 +39,11 @@ async fn readable_stream_yields_enqueued_chunks() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn piping_teeing_and_iterating_move_every_chunk() -> eyre::Result<()> {
+    run("streams_pipe.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn locking_a_response_body_marks_it_used() -> eyre::Result<()> {
     run("response_body_used.js").await
 }
