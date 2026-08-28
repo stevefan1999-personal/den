@@ -274,6 +274,10 @@ impl Engine {
                     {
                         resolver = resolver.with_module("den:fs");
                     }
+                    #[cfg(feature = "stdlib-ffi")]
+                    {
+                        resolver = resolver.with_module("den:ffi");
+                    }
                     #[cfg(feature = "stdlib-sqlite")]
                     {
                         resolver = resolver.with_module("den:sqlite");
@@ -358,6 +362,11 @@ impl Engine {
                     #[cfg(feature = "stdlib-fs")]
                     {
                         loader = loader.with_module("den:fs", den_stdlib_fs::js_fs);
+                    }
+
+                    #[cfg(feature = "stdlib-ffi")]
+                    {
+                        loader = loader.with_module("den:ffi", den_stdlib_ffi::js_ffi);
                     }
 
                     #[cfg(feature = "stdlib-sqlite")]
@@ -724,6 +733,17 @@ impl Engine {
         let map = ImportMap::parse(json, base_dir.as_ref())?;
         self.context
             .with(move |ctx| Self::store_userdata(&ctx, map))
+            .await?;
+        Ok(())
+    }
+
+    /// Hand this realm the FFI capability. Without one, `den:ffi`'s `grant()`
+    /// answers `null` and `open()` refuses every path: the module is
+    /// importable but binds nothing.
+    #[cfg(feature = "stdlib-ffi")]
+    pub async fn set_ffi_grant(&self, grant: den_stdlib_ffi::FfiGrant) -> Result<(), EngineError> {
+        self.context
+            .with(move |ctx| Self::store_userdata(&ctx, grant))
             .await?;
         Ok(())
     }

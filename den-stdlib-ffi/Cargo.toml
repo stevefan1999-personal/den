@@ -1,0 +1,33 @@
+[package]
+name = "den-stdlib-ffi"
+description = "Foreign function interface for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[lib]
+test = false
+
+[dependencies]
+dlopen2.workspace = true
+libffi.workspace = true
+rquickjs = { workspace = true, features = ["macro"] }
+
+# `RTLD_NOW | RTLD_LOCAL`: dlopen2 defaults to `RTLD_LAZY | RTLD_LOCAL`, and a
+# lazy binding turns a missing dependency into a SIGSEGV at the first call.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib", "stdlib-ffi"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

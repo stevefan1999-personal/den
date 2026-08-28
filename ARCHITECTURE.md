@@ -17,6 +17,7 @@ den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
       ├── den-stdlib-console    globalThis.console → tracing
       ├── den-stdlib-core       atob/btoa/gc
       ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
+      ├── den-stdlib-ffi        den:ffi (optional, off by default; dlopen2 + libffi)
       ├── den-stdlib-fs         den:fs
       ├── den-stdlib-networking den:networking (TCP, UDP, Unix, TLS sockets)
       ├── den-stdlib-process    den:process (env, argv, cwd, spawn, signals, DNS)
@@ -148,7 +149,7 @@ builds the whole `WebAssembly` namespace object and installs it;
 all three lists must stay in lockstep — a module registered in one list and not
 the others is the failure mode to watch for.
 
-`den:fs`, `den:networking`, `den:sqlite` and `den:assert` are import-only: they
+`den:fs`, `den:networking`, `den:sqlite`, `den:ffi` and `den:assert` are import-only: they
 appear in the resolver and loader lists but are not `evaluate_def`'d, so they
 contribute no globals. The ones that are — `den:console`, `den:core`, `den:text`,
 `den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:process`, `den:temporal`,
@@ -678,6 +679,7 @@ Nearly every root feature is a pass-through to `den-core`.
 |---|---|
 | `stdlib` | all of `stdlib-console/core/crypto/fs/networking/process/sqlite/temporal/text/timer/whatwg-fetch/whatwg/worker` |
 | `stdlib-*` | one standard-library crate each |
+| `stdlib-ffi` | opt-in `den:ffi`; **not** part of `stdlib`, and still denied at run time without an `--allow-ffi` grant |
 | `transpile` | pulls in `den-transpiler-oxc`; loaders start transpiling |
 | `typescript` | implies `transpile`; `.ts`/`.tsx` and TS lowering |
 | `react` | implies `transpile`; `.jsx`/`.mjsx`/`.tsx` and classic-runtime JSX |
