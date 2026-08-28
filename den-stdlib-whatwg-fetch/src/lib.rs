@@ -45,32 +45,47 @@ enum ResponseBody {
 #[rquickjs::class(rename = "Response")]
 pub struct Response<'js> {
     #[qjs(get, enumerable)]
-    pub(crate) status:       u16,
+    pub(crate) status:          u16,
     #[qjs(get, enumerable)]
     #[builder(default)]
-    pub(crate) redirected:   bool,
+    pub(crate) redirected:      bool,
     #[qjs(get, enumerable, rename = "statusText", skip_trace)]
     #[builder(default, setter(into))]
-    pub(crate) status_text:  String,
+    pub(crate) status_text:     String,
     #[qjs(get, enumerable, skip_trace)]
     #[builder(default, setter(into))]
-    pub(crate) url:          String,
+    pub(crate) url:             String,
     #[qjs(get, enumerable, rename = "type", skip_trace)]
     #[builder(default_code = r#""default".to_owned()"#, setter(into))]
-    pub(crate) kind:         String,
+    pub(crate) kind:            String,
     #[qjs(get, enumerable)]
-    pub(crate) headers:      Class<'js, Headers>,
+    pub(crate) headers:         Class<'js, Headers>,
     #[builder(default)]
-    body_stream:             Option<JsValue<'js>>,
+    body_stream:                Option<JsValue<'js>>,
     #[qjs(skip_trace)]
-    inner:                   Rc<RefCell<ResponseBody>>,
-    #[qjs(skip_trace)]
-    #[builder(default)]
-    consume_started:         Cell<bool>,
-    pub(crate) abort_signal: JsValue<'js>,
+    inner:                      Rc<RefCell<ResponseBody>>,
     #[qjs(skip_trace)]
     #[builder(default)]
-    pub(crate) abort_notify: Option<Arc<Notify>>,
+    consume_started:            Cell<bool>,
+    pub(crate) abort_signal:    JsValue<'js>,
+    #[qjs(skip_trace)]
+    #[builder(default)]
+    pub(crate) abort_notify:    Option<Arc<Notify>>,
+    /// `Content-Length` of a body that is being streamed rather than buffered.
+    /// The buffered path compares lengths once; a streamed one has to count as
+    /// it goes, or a truncated response looks like a clean end of stream.
+    #[qjs(skip_trace)]
+    #[builder(default)]
+    pub(crate) expected_length: Option<u64>,
+    #[qjs(skip_trace)]
+    #[builder(default)]
+    seen_length:                Cell<u64>,
+    /// Cache entries waiting on this body. Filled as the body is read and
+    /// written only when it ends cleanly, so nothing is buffered on behalf of
+    /// a response nobody consumes.
+    #[qjs(skip_trace)]
+    #[builder(default)]
+    pub(crate) cache_fill:      Option<Rc<fetch_op::CacheFill>>,
 }
 
 impl<'js> Response<'js> {
@@ -130,6 +145,10 @@ impl<'js> Response<'js> {
     }
 
     fn mark_used(&self) { *self.inner.borrow_mut() = ResponseBody::Taken; }
+
+    fn has_body(&self) -> bool {
+        self.body_stream.is_some() || !matches!(*self.inner.borrow(), ResponseBody::None)
+    }
 
     fn begin_consume(response: &Class<'js, Response<'js>>, ctx: &Ctx<'js>) -> Result<()> {
         let this = response.borrow();
@@ -258,6 +277,11 @@ impl<'js> Response<'js> {
         };
         match item {
             Some(Ok(chunk)) => {
+                self.seen_length
+                    .set(self.seen_length.get() + chunk.len() as u64);
+                if let Some(fill) = &self.cache_fill {
+                    fill.push(&chunk);
+                }
                 *self.inner.borrow_mut() = if self.url.contains("bad-chunk") {
                     ResponseBody::Failed("network error after response".into())
                 } else {
@@ -268,10 +292,21 @@ impl<'js> Response<'js> {
             Some(Err(err)) => Err(Exception::throw_type(ctx, &err)),
             None => {
                 if self.url.contains("bad-chunk") {
-                    Err(Exception::throw_type(ctx, "network error after response"))
-                } else {
-                    Ok(None)
+                    return Err(Exception::throw_type(ctx, "network error after response"));
                 }
+                if self
+                    .expected_length
+                    .is_some_and(|expected| expected > self.seen_length.get())
+                {
+                    return Err(Exception::throw_type(
+                        ctx,
+                        "response body shorter than Content-Length",
+                    ));
+                }
+                if let Some(fill) = &self.cache_fill {
+                    fill.commit();
+                }
+                Ok(None)
             }
         }
     }
@@ -325,13 +360,37 @@ impl Drop for Response<'_> {
     }
 }
 
+/// A streamed body carries its `Content-Length` forward; the buffered drain has
+/// to make the same short-body call the pre-buffering path used to make.
+fn check_complete<'js>(
+    response: &Class<'js, Response<'js>>, ctx: &Ctx<'js>, bytes: Vec<u8>,
+) -> Result<Vec<u8>> {
+    let this = response.borrow();
+    if this
+        .expected_length
+        .is_some_and(|expected| expected > bytes.len() as u64 + this.seen_length.get())
+    {
+        return Err(Exception::throw_type(
+            ctx,
+            "response body shorter than Content-Length",
+        ));
+    }
+    if let Some(fill) = &this.cache_fill {
+        fill.push(&bytes);
+        fill.commit();
+    }
+    Ok(bytes)
+}
+
 async fn consume_response<'js>(
     response: &Class<'js, Response<'js>>, ctx: &Ctx<'js>,
 ) -> Result<Vec<u8>> {
     let stream = response.borrow().body_stream.clone();
     if let Some(value) = stream {
         if body::is_readable_stream(ctx, &value)? {
-            response.borrow().mark_used();
+            // Do not poison `inner`: it is the feed behind this stream, and a
+            // stream over a live HTTP body still has to pull from it. Reading
+            // the stream is what marks the body used.
             if body::stream_is_locked(&value) {
                 if let Some(object) = value.as_object()
                     && let Some(stream) = Class::<ReadableStream>::from_object(object)
@@ -373,16 +432,17 @@ async fn consume_response<'js>(
             } else {
                 live.bytes().await
             };
-            result
+            let bytes = result
                 .map(|bytes| bytes.to_vec())
-                .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))
+                .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))?;
+            check_complete(response, ctx, bytes)
         }
         ResponseBody::Stream(mut stream) => {
             let mut out = Vec::new();
             while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
                 out.extend(chunk.map_err(|err| Exception::throw_type(ctx, &err))?);
             }
-            Ok(out)
+            check_complete(response, ctx, out)
         }
         ResponseBody::Failed(message) => {
             if message == "aborted" {
@@ -692,10 +752,15 @@ impl<'js> Response<'js> {
     /// drains that feed while this response's own branch is still untouched.
     #[qjs(enumerable, get)]
     pub fn body_used(&self) -> bool {
-        match &self.body_stream {
-            Some(stream) => Self::stream_disturbed(stream),
-            None => matches!(*self.inner.borrow(), ResponseBody::Taken),
-        }
+        // A null body is never used. Otherwise distribution disturbs the body
+        // at once, and that outlives the stream: a finished consume drops
+        // `body_stream` to release it.
+        self.has_body()
+            && (self.consume_started.get()
+                || match &self.body_stream {
+                    Some(stream) => Self::stream_disturbed(stream),
+                    None => matches!(*self.inner.borrow(), ResponseBody::Taken),
+                })
     }
 
     #[qjs(enumerable, get)]
