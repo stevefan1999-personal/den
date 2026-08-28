@@ -14,7 +14,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, method, native::NativeSink, range_error, react, readable::extract_strategy, thrown,
+    Cap, Pins, method, native::NativeSink, range_error, react, readable::extract_strategy, thrown,
     type_error,
 };
 
@@ -448,12 +448,15 @@ impl<'js> WritableStream<'js> {
             Ok(value) => {
                 let promise = abort.cap.promise();
                 let (resolve, reject) = abort.cap.into_parts();
-                let keeper = Self::keeper(inner);
+                // Pinning the controller is what keeps the record's JS values alive
+                // for the length of this operation: see the note on
+                // `ReadableStreamDefaultController`.
+                let pin = Pins::hold(ctx, Self::keeper(inner));
                 let settle = |handler: Option<Function<'js>>| {
-                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
+                    let inner = Rc::clone(inner);
                     let reason = reason.clone();
                     move |ctx: Ctx<'js>, error: Opt<Value<'js>>| {
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         if let Some(handler) = handler.as_ref() {
                             let _ = handler.call::<_, ()>((error
                                 .0
@@ -580,24 +583,18 @@ impl<'js> WritableStream<'js> {
         };
         match outcome {
             Ok(value) => {
-                let keeper = Self::keeper(inner);
+                let pin = Pins::hold(ctx, Self::keeper(inner));
                 let on_ok = {
-                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
+                    let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                        // Holding the controller is what keeps the record's JS values
-                        // alive for the length of this operation: see the note on
-                        // `ReadableStreamDefaultController`.
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         WritableStream::write_settled(&ctx, &inner);
                     })
                 };
                 let on_err = {
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        // Holding the controller is what keeps the record's JS values
-                        // alive for the length of this operation: see the note on
-                        // `ReadableStreamDefaultController`.
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         WritableStream::write_failed(&ctx, &inner, reason);
                     })
                 };
@@ -664,24 +661,18 @@ impl<'js> WritableStream<'js> {
         Self::clear_algorithms(inner);
         match outcome {
             Ok(value) => {
-                let keeper = Self::keeper(inner);
+                let pin = Pins::hold(ctx, Self::keeper(inner));
                 let on_ok = {
-                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
+                    let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                        // Holding the controller is what keeps the record's JS values
-                        // alive for the length of this operation: see the note on
-                        // `ReadableStreamDefaultController`.
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         WritableStream::close_settled(&ctx, &inner);
                     })
                 };
                 let on_err = {
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        // Holding the controller is what keeps the record's JS values
-                        // alive for the length of this operation: see the note on
-                        // `ReadableStreamDefaultController`.
-                        let _keeper = &keeper;
+                        Pins::release(&ctx, pin);
                         WritableStream::close_failed(&ctx, &inner, reason);
                     })
                 };
@@ -863,18 +854,19 @@ impl<'js> WritableStream<'js> {
             Some(start) => start.call::<_, Value>((This(sink), controller.clone()))?,
             None => Value::new_undefined(ctx.clone()),
         };
+        let pin = Pins::hold(ctx, Some(controller.clone()));
         let on_ok = {
-            let (inner, keeper) = (Rc::clone(inner), controller.clone());
+            let inner = Rc::clone(inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                let _keeper = &keeper;
+                Pins::release(&ctx, pin);
                 inner.borrow_mut().started = true;
                 WritableStream::advance_queue(&ctx, &inner);
             })?
         };
         let on_err = {
-            let (inner, keeper) = (Rc::clone(inner), controller.clone());
+            let inner = Rc::clone(inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                let _keeper = &keeper;
+                Pins::release(&ctx, pin);
                 inner.borrow_mut().started = true;
                 WritableStream::clear_algorithms(&inner);
                 WritableStream::deal_with_rejection(&ctx, &inner, reason);

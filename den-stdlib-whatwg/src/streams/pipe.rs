@@ -66,10 +66,10 @@ impl<'js> PipeState<'js> {
 
 impl<'js> Trace<'js> for PipeState<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        // The result capability is deliberately not traced. Script holds the
-        // promise, nothing in the graph points back at it, and marking a
-        // capability whose resolving functions have been handed to promise
-        // reactions over-decrements their refcount.
+        // Traced like any other field: one handle is one reference and one
+        // mark. Leaving it out made the pipe's own promise an external root,
+        // which kept a pipe that never finishes alive past teardown.
+        self.cap.trace(tracer);
         self.source.trace(tracer);
         self.dest.trace(tracer);
         if let Some((signal, listener)) = &self.signal {
@@ -478,7 +478,7 @@ struct TeeState<'js> {
 
 impl<'js> Trace<'js> for TeeState<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        // See `PipeState`: the cancel capability is reachable only from script.
+        self.cancel.as_ref().map(|cap| cap.trace(tracer));
         self.source.trace(tracer);
         for reason in self.reasons.iter().flatten() {
             reason.trace(tracer);
