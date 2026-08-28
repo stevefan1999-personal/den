@@ -5,7 +5,7 @@ use rquickjs::{Ctx, JsLifetime, Result, TypedArray, class::Trace, convert::List}
 use tokio::net::UdpSocket;
 
 use crate::{
-    io::{JsByteBuf, JsBytes},
+    io::{JsByteBuf, js_bytes},
     socket_addr::SocketAddrWrapper,
 };
 
@@ -21,12 +21,12 @@ impl UdpSocketWrapper {
     // rquickjs only attaches `#[qjs(static)]` members to a class that
     // declares a constructor, and a `()` return makes `new UdpSocket()`
     // throw: instances only ever come from `UdpSocket.bind`.
-    #[allow(
+    #[expect(
         clippy::new_ret_no_self,
         reason = "`#[qjs(constructor)]` marker; not constructible from JS"
     )]
     #[qjs(constructor)]
-    pub fn new() {}
+    pub const fn new() {}
 
     #[qjs(get, enumerable, rename = "localAddr")]
     pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.socket.local_addr()?.into()) }
@@ -42,23 +42,23 @@ impl UdpSocketWrapper {
         Ok(())
     }
 
-    pub async fn send<'js>(self, buf: JsByteBuf<'js>) -> Result<usize> {
-        Ok(self.socket.send(JsBytes::as_slice(&buf)?).await?)
+    pub async fn send(self, buf: JsByteBuf<'_>) -> Result<usize> {
+        Ok(self.socket.send(js_bytes(&buf)?).await?)
     }
 
-    pub async fn recv<'js>(self, max: usize, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
+    pub async fn recv(self, max: usize, ctx: Ctx<'_>) -> Result<TypedArray<'_, u8>> {
         TypedArray::new_copy(ctx, self.recv_bytes(max).await?)
     }
 
     #[qjs(rename = "sendTo")]
-    pub async fn send_to<'js>(self, buf: JsByteBuf<'js>, addr: String) -> Result<usize> {
-        Ok(self.socket.send_to(JsBytes::as_slice(&buf)?, addr).await?)
+    pub async fn send_to(self, buf: JsByteBuf<'_>, addr: String) -> Result<usize> {
+        Ok(self.socket.send_to(js_bytes(&buf)?, addr).await?)
     }
 
     #[qjs(rename = "recvFrom")]
-    pub async fn recv_from<'js>(
-        self, max: usize, ctx: Ctx<'js>,
-    ) -> Result<List<(TypedArray<'js, u8>, SocketAddrWrapper)>> {
+    pub async fn recv_from(
+        self, max: usize, ctx: Ctx<'_>,
+    ) -> Result<List<(TypedArray<'_, u8>, SocketAddrWrapper)>> {
         let (payload, addr) = self.recv_from_bytes(max).await?;
         Ok(List((TypedArray::new_copy(ctx, payload)?, addr.into())))
     }
@@ -84,42 +84,5 @@ impl UdpSocketWrapper {
 }
 
 #[cfg(test)]
-mod tests {
-    use den_core::engine::Engine;
-    use either::Either;
-    use rquickjs::{CatchResultExt, convert::List};
-
-    use super::UdpSocketWrapper;
-
-    #[tokio::test]
-    async fn bind_send_to_self_recv_from_round_trips() {
-        let engine = Engine::new().await;
-        let outcome: String = engine
-            .context
-            .async_with(async |ctx| {
-                let run = async {
-                    let socket = UdpSocketWrapper::bind("127.0.0.1:0".into()).await?;
-                    let dest = socket.local_addr()?.to_string();
-                    let payload = b"ping".to_vec();
-                    socket
-                        .clone()
-                        .send_to(Either::Right(Either::Left(payload.clone())), dest.clone())
-                        .await?;
-                    let List((chunk, from)) = socket.recv_from(64, ctx.clone()).await?;
-                    let received = chunk
-                        .as_bytes()
-                        .expect("the chunk is still attached")
-                        .to_vec();
-                    Ok::<_, rquickjs::Error>(format!(
-                        "bytes:{} from:{}",
-                        received == payload,
-                        from.to_string() == dest
-                    ))
-                };
-                run.await.catch(&ctx).map_err(|err| err.to_string())
-            })
-            .await
-            .expect("the datagram round-trips");
-        assert_eq!(outcome, "bytes:true from:true");
-    }
-}
+#[path = "../tests/unit/udp.rs"]
+mod tests;

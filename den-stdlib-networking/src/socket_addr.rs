@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 
-use delegate_attr::delegate;
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::{JsLifetime, class::Trace};
 
@@ -16,30 +15,23 @@ pub struct SocketAddrWrapper {
 #[rquickjs::methods]
 impl SocketAddrWrapper {
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn port(&self) -> u16 {}
+    pub const fn port(&self) -> u16 { self.addr.port() }
 
     #[qjs(set, rename = "port")]
-    #[delegate(self.addr)]
-    pub fn set_port(mut self, new_port: u16) {}
+    pub const fn set_port(mut self, new_port: u16) { self.addr.set_port(new_port) }
 
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_ipv4(&self) -> bool {}
+    pub const fn is_ipv4(&self) -> bool { self.addr.is_ipv4() }
 
     #[qjs(get, enumerable)]
-    #[delegate(self.addr)]
-    pub fn is_ipv6(&self) -> bool {}
+    pub const fn is_ipv6(&self) -> bool { self.addr.is_ipv6() }
 
     #[qjs(get, rename = "ip", enumerable)]
-    #[delegate(self.addr)]
-    #[into]
-    pub fn ip(&self) -> IpAddrWrapper {}
+    pub fn ip(&self) -> IpAddrWrapper { self.addr.ip().into() }
 
     #[qjs(set, rename = "ip", enumerable)]
     pub fn set_ip(mut self, ip: IpAddrWrapper) { self.addr.set_ip(ip.into()) }
 
     #[qjs(rename = "toString")]
-    #[delegate(self.addr)]
-    pub fn to_string(&self) -> String {}
+    pub fn as_string(&self) -> String { self.addr.to_string() }
 }
