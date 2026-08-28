@@ -16,7 +16,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, react,
+    Cap, Pins, method, optional_object, react,
     readable::{Inner as RsInner, ReadableStream, extract_strategy},
     thrown, type_error,
     writable::{Inner as WsInner, WritableStream},
@@ -240,12 +240,7 @@ impl<'js> TransformStream<'js> {
         ctx: Ctx<'js>, transformer: Opt<Value<'js>>, writable_strategy: Opt<Value<'js>>,
         readable_strategy: Opt<Value<'js>>,
     ) -> Result<Self> {
-        let transformer_object = match transformer.0 {
-            Some(value) if value.is_object() => {
-                value.into_object().unwrap_or(Object::new(ctx.clone())?)
-            }
-            _ => Object::new(ctx.clone())?,
-        };
+        let transformer_object = optional_object(&ctx, transformer.0, "transformer")?;
         for reserved in ["readableType", "writableType"] {
             let value: Value = transformer_object.get(reserved)?;
             if !value.is_undefined() {
