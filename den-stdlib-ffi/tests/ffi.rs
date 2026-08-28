@@ -9,7 +9,8 @@ use std::{
     fs, iter,
     path::{Path, PathBuf},
     process::Command,
-    sync::OnceLock,
+    sync::{OnceLock, mpsc},
+    thread,
     time::Duration,
 };
 
@@ -126,7 +127,9 @@ async fn realm(probe: &Probe, name: &str, grant: Option<FfiGrant>) -> eyre::Resu
             })
             .await;
     }
-    outcome?;
+    // Annotated, not inferred: `run_file` is generic over what it converts the
+    // module's value into, and `()` is the only answer a fixture has.
+    let _: () = outcome?;
     Ok(engine)
 }
 
@@ -217,21 +220,35 @@ async fn a_stored_callback_fires_on_the_realm_thread() -> eyre::Result<()> {
 /// foreign-thread wait is bounded, so a callback fired into a synchronous call
 /// stalls for the timeout and then hands C the zero value.
 ///
-/// The outer timeout is what makes a regression a *failure* rather than a hung
-/// test process — an unbounded `blocking_recv` here is `[exit=124]`.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_callback_fired_into_a_synchronous_call_stalls_and_recovers() -> eyre::Result<()> {
+/// The watchdog is a plain thread and a `recv_timeout`, deliberately not
+/// `tokio::time::timeout` around the fixture: the realm parks inside a C frame
+/// for the whole stall, so a task awaiting a timeout future beside it never
+/// yields and the deadline is never polled — a regression that removed the
+/// bound would hang the suite instead of failing it. The fixture's thread is
+/// detached for the same reason: if it never comes back, this test still
+/// reports the failure and the process still exits.
+#[test]
+fn a_callback_fired_into_a_synchronous_call_stalls_and_recovers() -> eyre::Result<()> {
     let Some(probe) = Probe::get() else {
         return Ok(());
     };
-    tokio::time::timeout(
-        Duration::from_secs(60),
-        run("deadlock.js", Some(scoped(probe))),
-    )
-    .await
-    .map_err(|_elapsed| {
-        eyre::eyre!("the realm never recovered: the foreign-thread wait is not bounded")
-    })?
+    let grant = scoped(probe);
+    let (finished, outcome) = mpsc::channel();
+    thread::spawn(move || {
+        // Multi-threaded, like every other case here: den's http loader
+        // reaches for `block_in_place`, which a current-thread runtime refuses.
+        let ran = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(eyre::Report::from)
+            .and_then(|realm| realm.block_on(run("deadlock.js", Some(grant))));
+        let _watchdog_gave_up = finished.send(ran);
+    });
+    outcome
+        .recv_timeout(Duration::from_secs(60))
+        .map_err(|_elapsed| {
+            eyre::eyre!("the realm never recovered: the foreign-thread wait is not bounded")
+        })?
 }
 
 /// ARCHITECTURE §7.5 rule 1, for callbacks: C may call an armed one at any
@@ -273,8 +290,12 @@ async fn a_realm_can_be_dropped_with_a_live_callback() -> eyre::Result<()> {
 
 /// §6: both SysV struct classes, in and out. `point_scale` is eight bytes and
 /// travels in a register; `triple_sum` is twenty-four, so libffi allocates the
-/// hidden `sret` pointer — a marshaller that only handles the first passes the
-/// former and corrupts the stack on the latter.
+/// hidden `sret` pointer, and `padded_sum`/`nested_sum` are where den's own
+/// offset arithmetic shows. What the fixture asserts is that every field
+/// arrives and comes back with the value C computed — which a marshaller that
+/// handles only the register class cannot fake. It says nothing about the
+/// bytes *past* a return cell; that property is asserted directly, one class
+/// down, by [`a_sub_register_return_does_not_widen_past_its_cell`].
 #[tokio::test(flavor = "multi_thread")]
 async fn structs_cross_by_value_in_both_abi_classes() -> eyre::Result<()> {
     let Some(probe) = Probe::get() else {
