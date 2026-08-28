@@ -157,14 +157,24 @@ pub(crate) fn pipe_to<'js>(
         }
         let listener = {
             let state = Rc::downgrade(&state);
-            let signal = signal.clone();
+            // The closure captures no JS value: a `RustFunction` traces
+            // nothing, so a captured signal would close the cycle
+            // signal -> listener -> signal over an edge the collector cannot
+            // follow, and every one of those objects is still standing when
+            // `JS_FreeRuntime` asserts the heap is empty. The signal is read
+            // back out of the pipe's own traced slot instead.
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let reason: Value = signal
-                    .get("reason")
-                    .unwrap_or_else(|_| type_error(&ctx, "the pipe was aborted"));
+                let signal = state
+                    .borrow()
+                    .signal
+                    .as_ref()
+                    .map(|(signal, _)| signal.clone());
+                let reason = signal
+                    .and_then(|signal| signal.get::<_, Value>("reason").ok())
+                    .unwrap_or_else(|| type_error(&ctx, "the pipe was aborted"));
                 abort_pipe(&ctx, &state, reason);
             })?
         };
