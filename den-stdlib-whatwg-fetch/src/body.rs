@@ -215,9 +215,9 @@ pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Resu
 }
 
 pub(crate) fn locked_empty_stream<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
-    let stream = ReadableStream::new(ctx.clone(), Opt(None))?;
+    let stream = ReadableStream::new(ctx.clone(), Opt(None), Opt(None))?;
     let instance = Class::instance(ctx.clone(), stream)?;
-    let _ = instance.borrow().get_reader(ctx.clone(), Opt(None));
+    ReadableStream::lock_for_consume(&instance, ctx)?;
     Ok(instance.into_value())
 }
 
@@ -490,7 +490,7 @@ fn form_data_keys_empty<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<boo
 fn readable_from_source<'js>(ctx: &Ctx<'js>, source: Object<'js>) -> Result<Value<'js>> {
     Class::instance(
         ctx.clone(),
-        ReadableStream::new(ctx.clone(), Opt(Some(source.into_value())))?,
+        ReadableStream::new(ctx.clone(), Opt(Some(source.into_value())), Opt(None))?,
     )
     .map(|stream| stream.into_value())
 }

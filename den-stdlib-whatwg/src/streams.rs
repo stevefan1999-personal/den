@@ -1,936 +1,219 @@
-//! Minimal WHATWG streams, enough for Blob.stream() and CompressionStream.
+//! WHATWG Streams.
+//!
+//! The state machine is synchronous Rust. Promises are minted with
+//! `ctx.promise()` and settled inline, so their reactions land on QuickJS's own
+//! microtask queue and turn ordering matches the specification. `ctx.spawn` is
+//! confined to [`native`], where a host byte source is polled.
+//!
+//! Internal sequencing that the specification expresses as records rather than
+//! promises — read requests, the pipe and tee consumers — stays Rust closures,
+//! so piping never creates a `{ value, done }` object and never touches a
+//! user-visible `then`.
 
-use std::{cell::RefCell, rc::Rc};
+pub mod native;
+mod pipe;
+mod readable;
+mod strategy;
+mod transform;
+mod writable;
 
-use den_util::{BufferSource, Probe as _};
-use indexmap::indexmap;
 use rquickjs::{
-    ArrayBuffer, Class, Constructor, Ctx, Exception, FromJs, Function, JsLifetime, Object, Promise,
-    Result, TypedArray, Value,
-    atom::PredefinedAtom,
+    Ctx, Function, JsLifetime, Object, Promise, Result, Value,
     class::{Trace, Tracer},
-    function::{Async, Opt, This},
-    object::Accessor,
+    function::This,
 };
 
-use crate::host::Host;
+pub use crate::streams::{
+    native::{ByteSink, ByteSource, PullFuture, SinkFuture, StreamError},
+    readable::{
+        ReadableStream, ReadableStreamAsyncIterator, ReadableStreamDefaultController,
+        ReadableStreamDefaultReader,
+    },
+    strategy::{ByteLengthQueuingStrategy, CountQueuingStrategy},
+    transform::{TransformStream, TransformStreamDefaultController},
+    writable::{WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter},
+};
 
-#[derive(Trace, JsLifetime)]
-pub(crate) struct ReadableState<'js> {
-    source:         Value<'js>,
-    controller:     Object<'js>,
-    queue:          Vec<Value<'js>>,
-    waiters:        Vec<Function<'js>>,
-    errored:        Option<Value<'js>>,
-    closed:         bool,
-    locked:         bool,
-    pulling:        bool,
-    disturbed:      bool,
-    closed_resolve: Option<Function<'js>>,
-    closed_reject:  Option<Function<'js>>,
-}
-
+/// `Promise.prototype.then` and a no-op, captured before user code can patch
+/// them. Internal reactions go through these, so patching `Promise.prototype`
+/// neither breaks nor observes the stream machinery.
 #[derive(JsLifetime)]
-#[rquickjs::class]
-pub struct ReadableStream<'js> {
-    pub(crate) state: Rc<RefCell<ReadableState<'js>>>,
+pub(crate) struct Intrinsics<'js> {
+    then: Function<'js>,
+    noop: Function<'js>,
 }
 
-impl<'js> Trace<'js> for ReadableStream<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Ok(state) = self.state.try_borrow() {
-            state.trace(tracer);
-        }
-    }
+pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
+    let promise: Object = ctx.globals().get("Promise")?;
+    let proto: Object = promise.get("prototype")?;
+    let then: Function = proto.get("then")?;
+    let noop = Function::new(ctx.clone(), || {})?;
+    let _ = ctx.store_userdata(Intrinsics { then, noop });
+    Ok(())
 }
 
-impl<'js> ReadableStream<'js> {
-    fn wake(state: &mut ReadableState<'js>) {
-        for resolve in state.waiters.drain(..) {
-            let _ = resolve.call::<_, ()>(());
-        }
-        Self::settle_closed(state);
+fn intrinsics<'js>(ctx: &Ctx<'js>) -> Result<(Function<'js>, Function<'js>)> {
+    if let Some(cached) = ctx.userdata::<Intrinsics<'js>>() {
+        return Ok((cached.then.clone(), cached.noop.clone()));
     }
-
-    fn settle_closed(state: &mut ReadableState<'js>) {
-        if let Some(error) = state.errored.clone() {
-            if let Some(reject) = state.closed_reject.take() {
-                let _ = reject.call::<_, ()>((error,));
-            }
-            state.closed_resolve = None;
-        } else if state.closed {
-            if let Some(resolve) = state.closed_resolve.take() {
-                let _ = resolve.call::<_, ()>(());
-            }
-            state.closed_reject = None;
-        }
-    }
-
-    fn controller_for(
-        ctx: &Ctx<'js>, state: &Rc<RefCell<ReadableState<'js>>>,
-    ) -> Result<Object<'js>> {
-        let controller = Object::new(ctx.clone())?;
-        let weak = Rc::downgrade(state);
-        controller.set(
-            "enqueue",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move |chunk: Value<'js>| -> Result<()> {
-                    let Some(state) = weak.upgrade() else {
-                        return Ok(());
-                    };
-                    let mut state = state.borrow_mut();
-                    if state.closed || state.errored.is_some() {
-                        return Ok(());
-                    }
-                    state.queue.push(chunk);
-                    ReadableStream::wake(&mut state);
-                    Ok(())
-                }
-            })?,
-        )?;
-        controller.set(
-            "close",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move || -> Result<()> {
-                    let Some(state) = weak.upgrade() else {
-                        return Ok(());
-                    };
-                    let mut state = state.borrow_mut();
-                    state.closed = true;
-                    ReadableStream::wake(&mut state);
-                    Ok(())
-                }
-            })?,
-        )?;
-        controller.set(
-            "error",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                let ctx = ctx.clone();
-                move |reason: Opt<Value<'js>>| -> Result<()> {
-                    let Some(state) = weak.upgrade() else {
-                        return Ok(());
-                    };
-                    let mut state = state.borrow_mut();
-                    if state.errored.is_some() || state.closed {
-                        return Ok(());
-                    }
-                    state.errored = Some(reason.0.unwrap_or_else(|| {
-                        rquickjs::Exception::from_message(ctx.clone(), "ReadableStream errored")
-                            .map(|exc| exc.into_object().into_value())
-                            .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
-                    }));
-                    ReadableStream::wake(&mut state);
-                    Ok(())
-                }
-            })?,
-        )?;
-        Ok(controller)
-    }
-
-    fn result(ctx: &Ctx<'js>, value: Value<'js>, done: bool) -> Result<Value<'js>> {
-        indexmap! {
-          "value" => value,
-          "done" => done.into_js_bool(ctx)?,
-        }
-        .into_js_map(ctx)
-    }
-
-    async fn pull_if_empty(state: &Rc<RefCell<ReadableState<'js>>>, ctx: &Ctx<'js>) -> Result<()> {
-        let (source, controller) = {
-            let mut state = state.borrow_mut();
-            if state.pulling || state.closed || state.errored.is_some() || !state.queue.is_empty() {
-                return Ok(());
-            }
-            let source = state.source.clone();
-            let Some(obj) = source.as_object() else {
-                return Ok(());
-            };
-            if obj.get::<_, Function>("pull").is_err() {
-                return Ok(());
-            }
-            state.pulling = true;
-            (source, state.controller.clone())
-        };
-        let outcome = if let Some(obj) = source.as_object() {
-            match obj.get::<_, Function>("pull") {
-                Ok(pull) => pull.call::<_, Value>((This(obj.clone()), controller)),
-                Err(_) => Ok(Value::new_undefined(ctx.clone())),
-            }
-        } else {
-            Ok(Value::new_undefined(ctx.clone()))
-        };
-        match outcome {
-            Ok(value) => {
-                if let Err(error) = Host::maybe_await(value).await {
-                    Self::error_with(state, ctx, error);
-                }
-            }
-            Err(error) => Self::error_with(state, ctx, error),
-        }
-        state.borrow_mut().pulling = false;
-        Ok(())
-    }
-
-    fn error_with(state: &Rc<RefCell<ReadableState<'js>>>, ctx: &Ctx<'js>, error: rquickjs::Error) {
-        let reason = match error {
-            rquickjs::Error::Exception => ctx.catch(),
-            _ => {
-                rquickjs::Exception::from_message(ctx.clone(), &error.to_string())
-                    .map(|exc| exc.into_object().into_value())
-                    .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
-            }
-        };
-        let mut state = state.borrow_mut();
-        state.errored = Some(reason);
-        Self::wake(&mut state);
-    }
-
-    fn disturb_and_lock(stream: &Class<'js, Self>, ctx: Ctx<'js>) -> Result<()> {
-        if stream.borrow().state.borrow().locked {
-            stream.borrow().state.borrow_mut().disturbed = true;
-            return Ok(());
-        }
-        Self::lock_for_consume(stream, &ctx)
-    }
-
-    pub fn lock_for_consume(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<()> {
-        let stream = stream.borrow();
-        let mut state = stream.state.borrow_mut();
-        if state.locked {
-            return Err(Host::throw_type(ctx, "ReadableStream is locked"));
-        }
-        state.locked = true;
-        state.disturbed = true;
-        Ok(())
-    }
-
-    pub fn tee_pair(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<(Value<'js>, Value<'js>)> {
-        let queue = {
-            let stream = stream.borrow();
-            let mut state = stream.state.borrow_mut();
-            if state.locked {
-                return Err(Host::throw_type(ctx, "ReadableStream is locked"));
-            }
-            if state.errored.is_some() {
-                return Err(Host::throw_type(ctx, "ReadableStream is errored"));
-            }
-            state.locked = true;
-            state.disturbed = true;
-            state.queue.clone()
-        };
-        let right = Self::from_queue(ctx, queue)?;
-        Ok((stream.clone().into_value(), right.into_value()))
-    }
-
-    pub fn from_queue(ctx: &Ctx<'js>, queue: Vec<Value<'js>>) -> Result<Class<'js, Self>> {
-        let state = Rc::new(RefCell::new(ReadableState {
-            source: Object::new(ctx.clone())?.into_value(),
-            controller: Object::new(ctx.clone())?,
-            queue,
-            waiters: Vec::new(),
-            errored: None,
-            closed: true,
-            locked: false,
-            pulling: false,
-            disturbed: false,
-            closed_resolve: None,
-            closed_reject: None,
-        }));
-        Class::instance(ctx.clone(), Self { state })
-    }
-
-    fn fill_byob(
-        ctx: &Ctx<'js>, result: Value<'js>, view: Option<Value<'js>>,
-        state: &Rc<RefCell<ReadableState<'js>>>,
-    ) -> Result<Value<'js>> {
-        let Some(object) = result.as_object() else {
-            return Ok(result);
-        };
-        if object.get::<_, bool>("done").unwrap_or(false) {
-            return Ok(result);
-        }
-        let Some(view) = view else {
-            return Ok(result);
-        };
-        let chunk: Value = object.get("value")?;
-        let src = if let Ok(buffer) = ArrayBuffer::from_js(ctx, chunk.clone()) {
-            buffer.as_bytes().unwrap_or(&[]).to_vec()
-        } else if let Some(bytes) = ctx.probe(|| {
-            BufferSource::is_array_buffer_view(ctx, &chunk)
-                .ok()
-                .filter(|is_view| *is_view)?;
-            BufferSource::view_bytes(ctx, &chunk).ok()
-        }) {
-            bytes
-        } else {
-            return Ok(result);
-        };
-        let view_len: usize = view
-            .as_object()
-            .and_then(|object| object.get("byteLength").ok())
-            .unwrap_or(0);
-        let n = src.len().min(view_len);
-        if let Some(leftover) = src.get(n..)
-            && !leftover.is_empty()
-        {
-            state.borrow_mut().queue.insert(
-                0,
-                TypedArray::<u8>::new_copy(ctx.clone(), leftover)?.into_value(),
-            );
-        }
-        let Some(view_obj) = view.as_object() else {
-            return Ok(result);
-        };
-        let buffer: ArrayBuffer = view_obj.get("buffer")?;
-        let offset = view_obj.get::<_, usize>("byteOffset").unwrap_or(0);
-        let Some(raw) = buffer.as_raw() else {
-            return Err(Exception::throw_type(ctx, "array buffer is detached"));
-        };
-        // SAFETY: `raw` is QuickJS's own live allocation for this buffer. Nothing else
-        // aliases it here — no JS runs between `as_raw` and the end of the
-        // copy, so the buffer cannot be detached or resized underneath us.
-        let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
-        let Some(dest) = dest.get_mut(offset..offset + n) else {
-            return Err(Exception::throw_range(
-                ctx,
-                "the view is out of bounds of its buffer",
-            ));
-        };
-        let Some(src) = src.get(..n) else {
-            return Ok(result);
-        };
-        dest.copy_from_slice(src);
-        let ctor: Constructor = ctx.globals().get("Uint8Array")?;
-        let value: TypedArray<u8> = ctor.construct((buffer, offset, n))?;
-        let filled = Object::new(ctx.clone())?;
-        filled.set("done", false)?;
-        filled.set("value", value)?;
-        Ok(filled.into_value())
-    }
-
-    pub async fn read_all_bytes(stream: &Class<'js, Self>, ctx: Ctx<'js>) -> Result<Vec<u8>> {
-        let state = stream.borrow().state.clone();
-        let mut out = Vec::new();
-        loop {
-            let result = Self::read_next(Rc::clone(&state), ctx.clone()).await?;
-            let Some(object) = result.as_object() else {
-                break;
-            };
-            if object.get::<_, bool>("done").unwrap_or(false) {
-                break;
-            }
-            let value: Value = object.get("value")?;
-            let Some(bytes) = ctx.probe(|| {
-                BufferSource::is_array_buffer_view(&ctx, &value)
-                    .ok()
-                    .filter(|is_view| *is_view)?;
-                BufferSource::view_bytes(&ctx, &value).ok()
-            }) else {
-                return Err(Host::throw_type(
-                    &ctx,
-                    "ReadableStream chunk must be a Uint8Array",
-                ));
-            };
-            out.extend(bytes);
-        }
-        Ok(out)
-    }
-
-    pub(crate) async fn read_next(
-        state: Rc<RefCell<ReadableState<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<Value<'js>> {
-        state.borrow_mut().disturbed = true;
-        loop {
-            {
-                let mut state = state.borrow_mut();
-                // Drain buffered chunks before surfacing an error: a chunk
-                // enqueued while this read was pending belongs to this read,
-                // even if the source errored immediately after enqueueing it.
-                if !state.queue.is_empty() {
-                    let value = state.queue.remove(0);
-                    return Self::result(&ctx, value, false);
-                }
-                if let Some(error) = state.errored.clone() {
-                    return Err(ctx.throw(error));
-                }
-                if state.closed {
-                    return Self::result(&ctx, Value::new_undefined(ctx.clone()), true);
-                }
-            }
-            Self::pull_if_empty(&state, &ctx).await?;
-            {
-                let state = state.borrow();
-                if !state.queue.is_empty() || state.closed || state.errored.is_some() {
-                    continue;
-                }
-            }
-            let (promise, resolve, _reject) = ctx.promise()?;
-            state.borrow_mut().waiters.push(resolve);
-            let _ = promise.into_future::<Value>().await;
-        }
-    }
+    install_intrinsics(ctx)?;
+    let cached = ctx
+        .userdata::<Intrinsics<'js>>()
+        .ok_or_else(|| Exception::throw_type(ctx, "stream intrinsics are unavailable"))?;
+    Ok((cached.then.clone(), cached.noop.clone()))
 }
 
-trait IntoJsBool<'js> {
-    fn into_js_bool(self, ctx: &Ctx<'js>) -> Result<Value<'js>>;
+/// PerformPromiseThen over the pristine `then`. `value` is treated as the
+/// specification's `promiseResolve(value)`: an existing promise is reacted to
+/// directly, anything else is wrapped so the reaction still costs one turn.
+pub(crate) fn react<'js>(
+    ctx: &Ctx<'js>, value: Value<'js>, on_ok: Option<Function<'js>>, on_err: Option<Function<'js>>,
+) -> Result<()> {
+    let (then, _) = intrinsics(ctx)?;
+    let promise = if value.is_promise() {
+        value
+    } else {
+        Cap::resolved(ctx, value)?.into_value()
+    };
+    then.call::<_, Value>((This(promise), on_ok, on_err))?;
+    Ok(())
 }
 
-impl<'js> IntoJsBool<'js> for bool {
-    fn into_js_bool(self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        rquickjs::IntoJs::into_js(self, ctx)
-    }
-}
-
-trait IntoJsMap<'js> {
-    fn into_js_map(self, ctx: &Ctx<'js>) -> Result<Value<'js>>;
-}
-
-impl<'js> IntoJsMap<'js> for indexmap::IndexMap<&'static str, Value<'js>> {
-    fn into_js_map(self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        rquickjs::IntoJs::into_js(self, ctx)
-    }
-}
-
-#[rquickjs::methods(rename_all = "camelCase")]
-impl<'js> ReadableStream<'js> {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, source: Opt<Value<'js>>) -> Result<Self> {
-        let source = match source.0 {
-            Some(value) if value.is_object() => value,
-            _ => Object::new(ctx.clone())?.into_value(),
-        };
-        let placeholder = Object::new(ctx.clone())?;
-        let state = Rc::new(RefCell::new(ReadableState {
-            source:         source.clone(),
-            controller:     placeholder,
-            queue:          Vec::new(),
-            waiters:        Vec::new(),
-            errored:        None,
-            closed:         false,
-            locked:         false,
-            pulling:        false,
-            disturbed:      false,
-            closed_resolve: None,
-            closed_reject:  None,
-        }));
-        let controller = Self::controller_for(&ctx, &state)?;
-        state.borrow_mut().controller = controller.clone();
-        if let Some(obj) = source.as_object() {
-            if let Ok(start) = obj.get::<_, Function>("start") {
-                match start.call::<_, Value>((This(obj.clone()), controller)) {
-                    Ok(value) => {
-                        if value.is_promise() {
-                            let state = Rc::clone(&state);
-                            let ctx_err = ctx.clone();
-                            ctx.spawn(async move {
-                                if let Err(error) = Host::maybe_await(value).await {
-                                    ReadableStream::error_with(&state, &ctx_err, error);
-                                }
-                            });
-                        }
-                    }
-                    Err(error) => Self::error_with(&state, &ctx, error),
-                }
-            }
-        }
-        Ok(Self { state })
-    }
-
-    #[qjs(get)]
-    pub fn locked(&self) -> bool { self.state.borrow().locked }
-
-    pub fn is_disturbed(&self) -> bool { self.state.borrow().disturbed }
-
-    #[qjs(get, rename = "_denDisturbed")]
-    pub fn den_disturbed(&self) -> bool { self.is_disturbed() }
-
-    pub fn get_reader(&self, ctx: Ctx<'js>, options: Opt<Value<'js>>) -> Result<Object<'js>> {
-        if self.state.borrow().locked {
-            return Err(Host::throw_type(&ctx, "ReadableStream is locked"));
-        }
-        self.state.borrow_mut().locked = true;
-        let byob = options
-            .0
-            .as_ref()
-            .and_then(|value| value.as_object())
-            .and_then(|object| object.get::<_, String>("mode").ok())
-            .is_some_and(|mode| mode == "byob");
-        let reader = Object::new(ctx.clone())?;
-        let weak = Rc::downgrade(&self.state);
-        reader.prop(
-            "closed",
-            Accessor::from({
-                let weak = weak.clone();
-                move |this: This<Object<'js>>, ctx: Ctx<'js>| -> Result<Promise<'js>> {
-                    if let Ok(existing) = this.0.get::<_, Promise<'_>>("_denClosed") {
-                        return Ok(existing);
-                    }
-                    let Some(state) = weak.upgrade() else {
-                        return Err(Host::throw_type(&ctx, "ReadableStream is detached"));
-                    };
-                    let (closed, resolve, reject) = ctx.promise()?;
-                    {
-                        let mut state = state.borrow_mut();
-                        if let Some(error) = state.errored.clone() {
-                            let _ = reject.call::<_, ()>((error,));
-                        } else if state.closed {
-                            let _ = resolve.call::<_, ()>(());
-                        } else {
-                            state.closed_resolve = Some(resolve);
-                            state.closed_reject = Some(reject);
-                        }
-                    }
-                    this.0.set("_denClosed", closed.clone())?;
-                    Ok(closed)
-                }
-            })
-            .enumerable(),
-        )?;
-        reader.set(
-            "read",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move |ctx: Ctx<'js>,
-                      _this: This<Value<'js>>,
-                      view: Opt<Value<'js>>|
-                      -> Result<Promise<'js>> {
-                    let Some(state) = weak.upgrade() else {
-                        return Err(Host::throw_type(&ctx, "ReadableStream is detached"));
-                    };
-                    state.borrow_mut().disturbed = true;
-                    let (promise, resolve, reject) = ctx.promise()?;
-                    let ctx_err = ctx.clone();
-                    let view = view.0;
-                    ctx.spawn(async move {
-                        match ReadableStream::read_next(Rc::clone(&state), ctx_err.clone()).await {
-                            Ok(value) => {
-                                let value = if byob {
-                                    match ReadableStream::fill_byob(&ctx_err, value, view, &state) {
-                                        Ok(value) => value,
-                                        Err(_) => {
-                                            let thrown = ctx_err.catch();
-                                            let _ = reject.call::<_, ()>((thrown,));
-                                            return;
-                                        }
-                                    }
-                                } else {
-                                    value
-                                };
-                                let _ = resolve.call::<_, ()>((value,));
-                            }
-                            Err(_) => {
-                                let thrown = ctx_err.catch();
-                                let _ = reject.call::<_, ()>((thrown,));
-                            }
-                        }
-                    });
-                    Ok(promise)
-                }
-            })?,
-        )?;
-        reader.set(
-            "cancel",
-            Function::new(
-                ctx.clone(),
-                Async({
-                    let weak = weak.clone();
-                    move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| {
-                        let weak = weak.clone();
-                        async move {
-                            let Some(state) = weak.upgrade() else {
-                                return Ok(Value::new_undefined(ctx.clone()));
-                            };
-                            {
-                                let mut state = state.borrow_mut();
-                                state.disturbed = true;
-                            }
-                            let source = state.borrow().source.clone();
-                            if let Some(obj) = source.as_object() {
-                                if let Ok(cancel) = obj.get::<_, Function>("cancel") {
-                                    let _ = cancel.call::<_, Value>((This(obj.clone()), reason.0));
-                                }
-                            }
-                            let mut state = state.borrow_mut();
-                            state.queue.clear();
-                            state.closed = true;
-                            state.locked = false;
-                            ReadableStream::wake(&mut state);
-                            Ok::<Value<'js>, rquickjs::Error>(Value::new_undefined(ctx.clone()))
-                        }
-                    }
-                }),
-            )?,
-        )?;
-        reader.set(
-            "releaseLock",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move || -> Result<()> {
-                    if let Some(state) = weak.upgrade() {
-                        state.borrow_mut().locked = false;
-                    }
-                    Ok(())
-                }
-            })?,
-        )?;
-        Ok(reader)
-    }
-
-    pub fn pipe_through(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, transform: Object<'js>,
-    ) -> Result<Value<'js>> {
-        let readable: Value<'js> = transform.get("readable")?;
-        let writable: Value<'js> = transform.get("writable")?;
-        if readable.is_undefined() || writable.is_undefined() {
-            return Err(Host::throw_type(
-                &ctx,
-                "pipeThrough requires a { readable, writable } pair",
-            ));
-        }
-        if writable.as_object().is_none() {
-            return Err(Host::throw_type(
-                &ctx,
-                "pipeThrough requires a { readable, writable } pair",
-            ));
-        }
-        Self::disturb_and_lock(&this.0, ctx)?;
-        Ok(readable)
-    }
-
-    pub fn pipe_to(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, dest: Opt<Value<'js>>,
-    ) -> Result<Promise<'js>> {
-        Self::disturb_and_lock(&this.0, ctx.clone())?;
-        let (promise, resolve, reject) = ctx.promise()?;
-        let stream = this.0;
-        let dest = dest.0;
-        let ctx_err = ctx.clone();
-        ctx.spawn(async move {
-            match ReadableStream::read_all_bytes(&stream, ctx_err.clone()).await {
-                Ok(bytes) => {
-                    let written = if let Some(dest) = dest {
-                        if let Some(object) = dest.as_object()
-                            && let Some(writable) = Class::<WritableStream>::from_object(object)
-                        {
-                            let sink = writable.borrow().state.borrow().sink.clone();
-                            if let Some(sink) = sink.as_object()
-                                && let Ok(write) = sink.get::<_, Function>("write")
-                            {
-                                match rquickjs::TypedArray::<u8>::new_copy(ctx_err.clone(), bytes) {
-                                    Ok(chunk) => {
-                                        write
-                                            .call::<_, Value>((This(sink.clone()), chunk))
-                                            .map(|_| ())
-                                    }
-                                    Err(error) => Err(error),
-                                }
-                            } else {
-                                Ok(())
-                            }
-                        } else {
-                            Ok(())
-                        }
-                    } else {
-                        Ok(())
-                    };
-                    match written {
-                        Ok(()) => {
-                            let _ = resolve.call::<_, ()>(());
-                        }
-                        Err(_) => {
-                            let thrown = ctx_err.catch();
-                            let _ = reject.call::<_, ()>((thrown,));
-                        }
-                    }
-                }
-                Err(_) => {
-                    let thrown = ctx_err.catch();
-                    let _ = reject.call::<_, ()>((thrown,));
-                }
-            }
-        });
-        Ok(promise)
-    }
-
-    pub fn cancel(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, reason: Opt<Value<'js>>,
-    ) -> Result<Promise<'js>> {
-        let source = {
-            let stream = this.0.borrow();
-            let mut state = stream.state.borrow_mut();
-            state.disturbed = true;
-            state.closed = true;
-            state.queue.clear();
-            let source = state.source.clone();
-            ReadableStream::wake(&mut state);
-            source
-        };
-        if let Some(object) = source.as_object()
-            && let Ok(cancel) = object.get::<_, Function>("cancel")
-        {
-            let _ = cancel.call::<_, Value>((This(object.clone()), reason.0));
-        }
-        let (promise, resolve, _reject) = ctx.promise()?;
+/// Chain a user-returned value onto a fresh promise that fulfils with
+/// `undefined` and forwards a rejection unchanged. The reaction handlers are
+/// the new promise's own capability functions, so no Rust record holding JS
+/// values has to survive the reaction.
+pub(crate) fn chain_undefined<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Promise<'js>> {
+    let (promise, resolve, reject) = ctx.promise()?;
+    let ok = Function::new(ctx.clone(), move || {
         let _ = resolve.call::<_, ()>(());
+    })?;
+    react(ctx, value, Some(ok), Some(reject))?;
+    Ok(promise)
+}
+
+/// Attach a no-op rejection handler so a promise nobody observes cannot trip
+/// den's unhandled-rejection tracker.
+pub(crate) fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
+    if let Ok((then, noop)) = intrinsics(ctx) {
+        let _ = then.call::<_, Value>((This(promise.clone()), Option::<Function>::None, noop));
+    }
+}
+
+/// A promise plus its capability functions. Settling drops both functions,
+/// which is what breaks the pending-reaction cycle at settle time.
+pub(crate) struct Cap<'js> {
+    promise: Promise<'js>,
+    resolve: Option<Function<'js>>,
+    reject:  Option<Function<'js>>,
+}
+
+impl<'js> Trace<'js> for Cap<'js> {
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        self.promise.trace(tracer);
+        self.resolve.trace(tracer);
+        self.reject.trace(tracer);
+    }
+}
+
+impl<'js> Cap<'js> {
+    pub(crate) fn new(ctx: &Ctx<'js>) -> Result<Self> {
+        let (promise, resolve, reject) = ctx.promise()?;
+        Ok(Self {
+            promise,
+            resolve: Some(resolve),
+            reject: Some(reject),
+        })
+    }
+
+    pub(crate) fn promise(&self) -> Promise<'js> { self.promise.clone() }
+
+    pub(crate) fn is_pending(&self) -> bool { self.resolve.is_some() }
+
+    pub(crate) fn resolve(&mut self, value: Value<'js>) {
+        self.reject = None;
+        if let Some(resolve) = self.resolve.take() {
+            let _ = resolve.call::<_, ()>((value,));
+        }
+    }
+
+    pub(crate) fn fulfill(&mut self, ctx: &Ctx<'js>) {
+        self.resolve(Value::new_undefined(ctx.clone()));
+    }
+
+    pub(crate) fn reject(&mut self, value: Value<'js>) {
+        self.resolve = None;
+        if let Some(reject) = self.reject.take() {
+            let _ = reject.call::<_, ()>((value,));
+        }
+    }
+
+    /// Reject and immediately mark handled: used for promises the caller may
+    /// never look at (`reader.closed` after `releaseLock`, and friends).
+    pub(crate) fn reject_handled(&mut self, ctx: &Ctx<'js>, value: Value<'js>) {
+        let promise = self.promise.clone();
+        self.reject(value);
+        mark_handled(ctx, &promise);
+    }
+
+    /// Hand the capability functions to promise reactions directly, so no Rust
+    /// record has to keep them alive.
+    pub(crate) fn into_parts(self) -> (Option<Function<'js>>, Option<Function<'js>>) {
+        (self.resolve, self.reject)
+    }
+
+    pub(crate) fn resolved(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Promise<'js>> {
+        let mut cap = Self::new(ctx)?;
+        let promise = cap.promise();
+        cap.resolve(value);
         Ok(promise)
     }
 
-    #[qjs(rename = "_denAbort")]
-    pub fn den_abort(&self, reason: Opt<Value<'js>>) {
-        let mut state = self.state.borrow_mut();
-        if state.closed || state.errored.is_some() {
-            return;
-        }
-        state.errored = reason.0;
-        Self::wake(&mut state);
+    pub(crate) fn undefined(ctx: &Ctx<'js>) -> Result<Promise<'js>> {
+        Self::resolved(ctx, Value::new_undefined(ctx.clone()))
     }
 
-    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "ReadableStream" }
+    pub(crate) fn rejected(ctx: &Ctx<'js>, reason: Value<'js>) -> Result<Promise<'js>> {
+        let mut cap = Self::new(ctx)?;
+        let promise = cap.promise();
+        cap.reject(reason);
+        Ok(promise)
+    }
 }
 
-#[derive(Trace, JsLifetime)]
-struct WritableState<'js> {
-    sink:    Value<'js>,
-    closed:  bool,
-    errored: Option<Value<'js>>,
-}
-
-#[derive(JsLifetime)]
-#[rquickjs::class]
-pub struct WritableStream<'js> {
-    state: Rc<RefCell<WritableState<'js>>>,
-}
-
-impl<'js> Trace<'js> for WritableStream<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Ok(state) = self.state.try_borrow() {
-            state.trace(tracer);
+/// The value a thrown `rquickjs::Error` carries, as a JS value.
+pub(crate) fn thrown<'js>(ctx: &Ctx<'js>, error: rquickjs::Error) -> Value<'js> {
+    match error {
+        rquickjs::Error::Exception => ctx.catch(),
+        other => {
+            Exception::from_message(ctx.clone(), &other.to_string())
+                .map(|exception| exception.into_object().into_value())
+                .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
         }
     }
 }
 
-#[rquickjs::methods(rename_all = "camelCase")]
-impl<'js> WritableStream<'js> {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, sink: Opt<Value<'js>>) -> Result<Self> {
-        let sink = match sink.0 {
-            Some(value) if value.is_object() => value,
-            _ => Object::new(ctx.clone())?.into_value(),
-        };
-        let state = Rc::new(RefCell::new(WritableState {
-            sink:    sink.clone(),
-            closed:  false,
-            errored: None,
-        }));
-        if let Some(obj) = sink.as_object() {
-            if let Ok(start) = obj.get::<_, Function>("start") {
-                if let Err(error) = start.call::<_, Value>((This(obj.clone()),)) {
-                    let reason = match error {
-                        rquickjs::Error::Exception => ctx.catch(),
-                        _ => Value::new_undefined(ctx.clone()),
-                    };
-                    state.borrow_mut().errored = Some(reason);
-                }
-            }
-        }
-        Ok(Self { state })
-    }
-
-    pub fn get_writer(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
-        let writer = Object::new(ctx.clone())?;
-        let weak = Rc::downgrade(&self.state);
-        writer.set(
-            "write",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move |ctx: Ctx<'js>, chunk: Value<'js>| -> Result<Value<'js>> {
-                    let Some(state) = weak.upgrade() else {
-                        return Err(Host::throw_type(&ctx, "WritableStream is detached"));
-                    };
-                    let (errored, closed, sink) = {
-                        let state = state.borrow();
-                        (state.errored.clone(), state.closed, state.sink.clone())
-                    };
-                    if let Some(error) = errored {
-                        return Err(ctx.throw(error));
-                    }
-                    if closed {
-                        return Err(Host::throw_type(&ctx, "WritableStream is closed"));
-                    }
-                    let outcome = if let Some(obj) = sink.as_object() {
-                        match obj.get::<_, Function>("write") {
-                            Ok(write) => write.call::<_, Value>((This(obj.clone()), chunk)),
-                            Err(_) => Ok(Value::new_undefined(ctx.clone())),
-                        }
-                    } else {
-                        Ok(Value::new_undefined(ctx.clone()))
-                    };
-                    match outcome {
-                        Ok(value) => Ok(value),
-                        Err(error) => {
-                            let reason = match error {
-                                rquickjs::Error::Exception => ctx.catch(),
-                                _ => Value::new_undefined(ctx.clone()),
-                            };
-                            state.borrow_mut().errored = Some(reason.clone());
-                            Err(ctx.throw(reason))
-                        }
-                    }
-                }
-            })?,
-        )?;
-        writer.set(
-            "close",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move |ctx: Ctx<'js>| -> Result<Value<'js>> {
-                    let Some(state) = weak.upgrade() else {
-                        return Err(Host::throw_type(&ctx, "WritableStream is detached"));
-                    };
-                    let sink = {
-                        let mut state = state.borrow_mut();
-                        if let Some(error) = state.errored.clone() {
-                            return Err(ctx.throw(error));
-                        }
-                        state.closed = true;
-                        state.sink.clone()
-                    };
-                    let outcome = if let Some(obj) = sink.as_object() {
-                        match obj.get::<_, Function>("close") {
-                            Ok(close) => close.call::<_, Value>((This(obj.clone()),)),
-                            Err(_) => Ok(Value::new_undefined(ctx.clone())),
-                        }
-                    } else {
-                        Ok(Value::new_undefined(ctx.clone()))
-                    };
-                    match outcome {
-                        Ok(value) => Ok(value),
-                        Err(error) => {
-                            let reason = match error {
-                                rquickjs::Error::Exception => ctx.catch(),
-                                _ => Value::new_undefined(ctx.clone()),
-                            };
-                            state.borrow_mut().errored = Some(reason.clone());
-                            Err(ctx.throw(reason))
-                        }
-                    }
-                }
-            })?,
-        )?;
-        writer.set(
-            "abort",
-            Function::new(ctx.clone(), {
-                let weak = weak.clone();
-                move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Value<'js>> {
-                    let Some(state) = weak.upgrade() else {
-                        return Ok(Value::new_undefined(ctx.clone()));
-                    };
-                    state.borrow_mut().closed = true;
-                    let sink = state.borrow().sink.clone();
-                    if let Some(obj) = sink.as_object() {
-                        if let Ok(abort) = obj.get::<_, Function>("abort") {
-                            return abort.call((This(obj.clone()), reason.0));
-                        }
-                    }
-                    Ok(Value::new_undefined(ctx.clone()))
-                }
-            })?,
-        )?;
-        Ok(writer)
-    }
-
-    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "WritableStream" }
+pub(crate) fn type_error<'js>(ctx: &Ctx<'js>, message: &str) -> Value<'js> {
+    let error = Exception::throw_type(ctx, message);
+    thrown(ctx, error)
 }
 
-#[derive(Trace, JsLifetime)]
-#[rquickjs::class]
-pub struct TransformStream<'js> {
-    readable: Class<'js, ReadableStream<'js>>,
-    writable: Class<'js, WritableStream<'js>>,
-}
-
-#[rquickjs::methods]
-impl<'js> TransformStream<'js> {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, transformer: Opt<Value<'js>>) -> Result<Self> {
-        let transformer = match transformer.0.and_then(Value::into_object) {
-            Some(object) => object,
-            None => Object::new(ctx.clone())?,
-        };
-        let readable = Class::instance(ctx.clone(), ReadableStream::new(ctx.clone(), Opt(None))?)?;
-        let controller = readable.borrow().state.borrow().controller.clone();
-        let write_sink = Object::new(ctx.clone())?;
-        write_sink.set(
-            "write",
-            Function::new(ctx.clone(), {
-                let transformer = transformer.clone();
-                let controller = controller.clone();
-                move |chunk: Value<'js>| -> Result<Value<'js>> {
-                    match transformer.get::<_, Function>("transform") {
-                        Ok(transform) => {
-                            transform.call((This(transformer.clone()), chunk, controller.clone()))
-                        }
-                        Err(_) => Ok(Value::new_undefined(transformer.ctx().clone())),
-                    }
-                }
-            })?,
-        )?;
-        write_sink.set(
-            "close",
-            Function::new(ctx.clone(), {
-                let transformer = transformer.clone();
-                let controller = controller.clone();
-                move |ctx: Ctx<'js>| -> Result<Value<'js>> {
-                    let flushed = match transformer.get::<_, Function>("flush") {
-                        Ok(flush) => {
-                            flush
-                                .call::<_, Value>((This(transformer.clone()), controller.clone()))?
-                        }
-                        Err(_) => Value::new_undefined(ctx.clone()),
-                    };
-                    let close: Function = controller.get("close")?;
-                    if flushed.is_promise() {
-                        let controller = controller.clone();
-                        ctx.spawn(async move {
-                            let _ = Host::maybe_await(flushed).await;
-                            let _ = close.call::<_, ()>((This(controller),));
-                        });
-                        return Ok(Value::new_undefined(ctx.clone()));
-                    }
-                    close.call::<_, ()>((This(controller.clone()),))?;
-                    Ok(flushed)
-                }
-            })?,
-        )?;
-        write_sink.set(
-            "abort",
-            Function::new(ctx.clone(), {
-                let controller = controller.clone();
-                move |reason: Opt<Value<'js>>| -> Result<()> {
-                    let error: Function = controller.get("error")?;
-                    error.call::<_, ()>((This(controller.clone()), reason.0))?;
-                    Ok(())
-                }
-            })?,
-        )?;
-        let writable = Class::instance(
-            ctx.clone(),
-            WritableStream::new(ctx.clone(), Opt(Some(write_sink.into_value())))?,
-        )?;
-        Ok(Self { readable, writable })
+/// Get a method off an options bag exactly once, per the specification's
+/// "let x be ? GetV(...)" steps. A present-but-uncallable member is a
+/// TypeError.
+pub(crate) fn method<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, name: &str,
+) -> Result<Option<Function<'js>>> {
+    let value: Value = object.get(name)?;
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
     }
-
-    #[qjs(get)]
-    pub fn readable(&self) -> Class<'js, ReadableStream<'js>> { self.readable.clone() }
-
-    #[qjs(get)]
-    pub fn writable(&self) -> Class<'js, WritableStream<'js>> { self.writable.clone() }
-
-    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "TransformStream" }
+    value.into_function().map(Some).ok_or_else(|| {
+        Exception::throw_type(
+            ctx,
+            &format!("underlying stream member `{name}` is not callable"),
+        )
+    })
 }
+
+use rquickjs::Exception;
