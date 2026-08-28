@@ -133,7 +133,11 @@ pub(crate) fn chain_undefined<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<
 
 /// Attach a no-op rejection handler so a promise nobody observes cannot trip
 /// den's unhandled-rejection tracker.
-pub(crate) fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
+///
+/// Goes through the realm's pristine `then`, so a script that patches
+/// `Promise.prototype.then` cannot observe or break an internal reaction —
+/// which is why this is public rather than something each caller reimplements.
+pub fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
     if let Ok((then, noop)) = intrinsics(ctx) {
         let _ = then.call::<_, Value>((This(promise.clone()), Option::<Function>::None, noop));
     }
