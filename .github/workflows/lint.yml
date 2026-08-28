@@ -1,7 +1,4 @@
 name: lint
-
-
-
 permissions:
   contents: read
 
@@ -18,16 +15,20 @@ jobs:
   clippy:
     runs-on: [self-hosted]
     steps:
-      - uses: olix0r/cargo-action-fmt/setup@v2
       - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
-      - run: cargo +nightly clippy --no-deps --message-format=json | cargo-action-fmt
+      - name: Reject evaluated stdlib bootstraps
+        run: >-
+          ! git grep -nE '\.(eval|eval_with_options)(::<|<|\()' --
+          ':(glob)den-stdlib-*/src/**/*.rs'
+          | grep -vE
+          '^den-stdlib-worker/src/worker.rs:.*ctx\.eval_with_options::<\(\), _>\(source, Self::classic_options'
+      - run: cargo +nightly clippy --no-deps
 
   fmt:
     runs-on: [self-hosted]
     timeout-minutes: 10
     steps:
-      - uses: olix0r/cargo-action-fmt/setup@v2
       - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
       - run: cargo +nightly fmt --check
@@ -36,14 +37,16 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 10
     steps:
-      - uses: olix0r/cargo-action-fmt/setup@v2
       - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
-      - run: cargo +nightly doc --no-deps --message-format=json | cargo-action-fmt
+      - run: cargo +nightly doc --no-deps
 
   test:
     runs-on: [self-hosted]
     timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+      INSTA_UPDATE: "no"
     strategy:
       fail-fast: false
       # Cranelift (`jit`) vs Pulley: they share the JS-API layer but not the
@@ -54,4 +57,4 @@ jobs:
       - uses: actions/checkout@v4
       # compat excludes official vendor binaries (spec_core / wpt / test262).
       # Those report official pass/fail in their own workflows.
-      - run: cargo nextest run --profile compat --workspace --no-default-features --features stdlib,typescript,react,${{ matrix.extra }}
+      - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,${{ matrix.extra }}
