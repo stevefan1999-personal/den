@@ -1240,7 +1240,7 @@ mod tests {
         // future.
         let started = std::time::Instant::now();
         let stopped_the_program = tokio::select! {
-            _ = engine.run_file(entry) => false,
+            _ = engine.run_file::<()>(entry) => false,
             () = tokio::time::sleep(std::time::Duration::from_millis(100)) => true,
         };
         drop(engine);
