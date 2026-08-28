@@ -12,8 +12,10 @@
 //! JS function reaches C as a `{ callback }` function pointer, callable from
 //! den's own thread or from one of C's. A `nonblocking: true` symbol runs on a
 //! worker and returns a Promise, which is also the only kind of symbol a
-//! callback may be handed to (§4.7). Structs are still refused by name at
-//! `open()`, with `FfiError { kind: "Schema" }`.
+//! callback may be handed to (§4.7). A `{ struct }` crosses by value in either
+//! direction, laid out by den and checked against libffi before any call, and
+//! `layout()` publishes that layout so a script can assert it against the
+//! header it is binding.
 
 mod callback;
 mod error;
@@ -62,6 +64,16 @@ pub mod ffi {
         ctx: Ctx<'js>, def: Value<'js>, function: Function<'js>,
     ) -> Result<Value<'js>> {
         super::callback::create(ctx, def, function)
+    }
+
+    /// What den believes one struct type's ABI layout to be.
+    ///
+    /// The calibration knob (§5.2): no computed layout can see `#pragma
+    /// pack`, bitfields or `-fshort-enums`, so publishing den's answer is the
+    /// only way a script can find out that den is wrong about its header.
+    #[rquickjs::function]
+    pub fn layout<'js>(ctx: Ctx<'js>, declared: Value<'js>) -> Result<Object<'js>> {
+        super::schema::StructLayout::query(&ctx, &declared)
     }
 
     /// This realm's FFI grant, or `null` when it has none.

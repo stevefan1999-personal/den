@@ -135,3 +135,53 @@ int32_t fire_on_thread_and_join(int32_t value) {
   pthread_join(thread, NULL);
   return call.result;
 }
+
+/* Structs by value, one per ABI class this target has.
+ *
+ * `Point` is 8 bytes and goes in a single INTEGER register; `Triple` is 24 and
+ * is MEMORY class, which is what makes libffi allocate the hidden `sret`
+ * pointer. A marshaller that only handles the first passes `point_scale` and
+ * corrupts the stack on `triple_sum`. */
+typedef struct {
+  int32_t x;
+  int32_t y;
+} Point;
+
+Point point_scale(Point point, int32_t factor) {
+  Point scaled = {point.x * factor, point.y * factor};
+  return scaled;
+}
+
+typedef struct {
+  double a;
+  double b;
+  double c;
+} Triple;
+
+Triple triple_sum(Triple triple, double addend) {
+  Triple summed = {triple.a + addend, triple.b + addend, triple.c + addend};
+  return summed;
+}
+
+/* The padding case: this compiler decides where `n` sits, and den has to have
+ * computed the same offset or the sum comes back wrong. */
+typedef struct {
+  int8_t b;
+  int32_t n;
+} Padded;
+
+int32_t padded_sum(Padded padded) { return padded.b + padded.n; }
+
+/* A struct inside a struct, which is where a layout that only handles scalars
+ * stops being right. */
+typedef struct {
+  Point origin;
+  int32_t z;
+} Nested;
+
+int32_t nested_sum(Nested nested) {
+  return nested.origin.x + nested.origin.y + nested.z;
+}
+
+/* An exported struct variable, for the `{ type: { struct } }` form. */
+Point base_point = {2, 3};

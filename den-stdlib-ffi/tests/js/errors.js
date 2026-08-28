@@ -32,10 +32,20 @@ assertEquals(renamed.symbol, "add");
 // Nothing is silently widened or ignored: an unimplemented type, an
 // unimplemented key and a malformed entry all throw, naming the symbol.
 for (const broken of [
-  { params: [{ struct: { x: "i32" } }], result: "i32" },
+  // A struct is legal, but not an empty one, not one with a `void` field, and
+  // not with a key beside `struct`.
+  { params: [{ struct: {} }], result: "i32" },
+  { params: [{ struct: { x: "void" } }], result: "i32" },
+  { params: [{ struct: { x: "i32" }, oops: 1 }], result: "i32" },
   // A callback parameter is legal; a callback that takes a `buffer` is not —
-  // C hands the trampoline an address with no length.
+  // C hands the trampoline an address with no length — and neither direction
+  // of a callback takes a struct by value.
   { params: [{ callback: { params: ["buffer"], result: "void" } }], result: "i32" },
+  {
+    params: [{ callback: { params: [{ struct: { x: "i32" } }], result: "void" } }],
+    result: "i32",
+  },
+  { params: [{ callback: { params: [], result: { struct: { x: "i32" } } } }], result: "i32" },
   { params: [{ callback: { params: [], result: "void" }, oops: 1 }], result: "i32" },
   { params: ["i32", "i32"], result: "buffer" },
   { params: ["void"], result: "void" },

@@ -14,12 +14,11 @@
  * numbers that do not fit their declared C type are refused rather than
  * truncated. §5.1 of the design note lists what remains yours.
  *
- * **Implemented today: the whole scalar vocabulary** — every integer width,
- * `bool`, `f32`, `f64`, `pointer` and `void` — as arguments, as results and as
- * static symbols, plus `buffer` arguments, `name`, `optional`, the `ptr`
- * namespace, `callback`s in both directions and `nonblocking: true`. `struct`
- * is part of the settled schema but throws `FfiError { kind: "Schema" }` at
- * `open()` until its phase lands.
+ * **Implemented today: all of it** — every integer width, `bool`, `f32`,
+ * `f64`, `pointer`, `void` and `struct` by value, as arguments, as results and
+ * as static symbols, plus `buffer` arguments, `name`, `optional`, the `ptr`
+ * namespace, `callback`s in both directions, `nonblocking: true` and the
+ * `layout` query.
  */
 
 declare module "den:ffi" {
@@ -61,14 +60,19 @@ declare module "den:ffi" {
   /**
    * A callback is handed bare addresses: a `buffer` is a length den is *told*,
    * and C tells it nothing, so a callback parameter takes a `pointer` and
-   * `ptr.view` instead.
+   * `ptr.view` instead. A struct by value is out for a different reason: den
+   * carries a callback's values across a thread as register-wide cells, so
+   * both directions of a callback are register-wide types.
    */
-  type CallbackParamType = Exclude<ValueType, "buffer">;
+  type CallbackParamType = Exclude<ValueType, "buffer" | StructType>;
+
+  /** As `CallbackParamType`, in the other direction. */
+  type CallbackResultType = Exclude<ResultType, StructType>;
 
   /** The signature of a JS function C is allowed to call back into. */
   interface FnSig {
     readonly params: readonly CallbackParamType[];
-    readonly result: ResultType;
+    readonly result: CallbackResultType;
   }
 
   /** A parameter that takes a `Callback` handle rather than a value. */
@@ -123,10 +127,10 @@ declare module "den:ffi" {
    *
    * `nonblocking: true` runs the call on a worker thread and returns a Promise,
    * leaving the realm free to keep running — which is what makes a `callback`
-   * argument answerable, and why a callback may be passed to nothing else. Two
-   * things it cannot be combined with, both refused at `open()` with `Schema`:
-   * a `buffer` argument, whose bytes are only lent for the length of the call,
-   * and a `struct` (which is not implemented at all yet).
+   * argument answerable, and why a callback may be passed to nothing else. The
+   * one thing it cannot be combined with, refused at `open()` with `Schema`, is
+   * a `buffer` argument, whose bytes are only lent for the length of the call.
+   * A `struct` argument is den's own copy and travels fine.
    */
   export interface FnDef {
     readonly params: readonly ParamType[];
@@ -259,11 +263,30 @@ declare module "den:ffi" {
    */
   export function callback<
     const P extends readonly CallbackParamType[],
-    const R extends ResultType,
+    const R extends CallbackResultType,
   >(
     def: { readonly params: P; readonly result: R },
     fn: (...args: Args<P>) => Native<R>,
   ): Callback<P, R>;
+
+  /** What den believes a struct type's ABI layout to be. */
+  export interface Layout {
+    readonly size: number;
+    readonly align: number;
+    readonly offsets: { readonly [field: string]: number };
+  }
+
+  /**
+   * den's computed layout for a struct type, so that a script can assert it
+   * against the header it is binding.
+   *
+   * den's arithmetic is already cross-checked against libffi's at `open()`, so
+   * this is not there to catch den disagreeing with itself. It is there for
+   * what no computed layout can see: `#pragma pack`, `__attribute__((packed))`,
+   * bitfields, anonymous unions and `-fshort-enums`. If this does not match
+   * your header, den's idea of that struct is wrong and the binding is unsafe.
+   */
+  export function layout(type: StructType): Layout;
 
   /** This realm's grant, or `null` when it was given none. */
   export function grant(): FfiGrant | null;

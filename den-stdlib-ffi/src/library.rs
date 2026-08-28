@@ -17,7 +17,7 @@ use rquickjs::{
 use crate::{
     error::ErrorKind,
     grant::FfiGrant,
-    marshal::{self, ArgumentCell, CallSite, Cell},
+    marshal::{self, ArgumentCell, Bytes, CallSite},
     schema::{CallMode, FnSig, ParamType, SymbolKind, SymbolSpec},
 };
 
@@ -151,6 +151,13 @@ impl BoundFn {
     /// realm thread, holding the runtime lock throughout.
     fn call<'js>(&self, ctx: &Ctx<'js>, arguments: &[Value<'js>]) -> Result<Value<'js>> {
         let cells = self.prepare(ctx, arguments)?;
+        // Marshalling runs JS — a struct field is an ordinary property read,
+        // and so is the resizable check on a buffer — and JS is free to
+        // dispose the library from inside one. Taking a share of the handle
+        // for the length of the call is what the `nonblocking` path does for
+        // the same reason: the `dlclose` then waits for C to return instead
+        // of unmapping the code this frame is about to jump into.
+        let _mapped = self.library.share(ctx)?;
         // SAFETY: the CIF and the argument cells were built from the same
         // `SymbolSpec`, so their count and types agree, and the address came
         // from `dlsym` on a handle this `BoundFn` still holds an `Rc` to,
@@ -161,7 +168,7 @@ impl BoundFn {
         // `types/den-ffi.d.ts`.
         let cell = unsafe {
             marshal::invoke(
-                self.signature.result,
+                &self.signature.result,
                 &self.cif,
                 CodePtr::from_ptr(std::ptr::with_exposed_provenance(self.address)),
                 &cells,
@@ -172,7 +179,7 @@ impl BoundFn {
         unsafe {
             marshal::read(
                 ctx,
-                self.signature.result,
+                &self.signature.result,
                 cell.as_ptr(),
                 Some(&self.library),
             )
@@ -205,13 +212,13 @@ impl ForeignCall {
     ///
     /// As [`marshal::invoke`]: the schema must be the symbol's real signature,
     /// which is the caller's contract (§5.1 item 1).
-    unsafe fn run(self) -> Cell {
+    unsafe fn run(self) -> Bytes {
         let cif = self.signature.cif();
         // SAFETY: the caller's contract, restated on this function. The CIF is
         // rebuilt from the same signature the cells were marshalled against.
         let cell = unsafe {
             marshal::invoke(
-                self.signature.result,
+                &self.signature.result,
                 &cif,
                 CodePtr::from_ptr(std::ptr::with_exposed_provenance(self.address)),
                 &self.cells,
@@ -300,14 +307,14 @@ fn bind<'js>(
             // SAFETY: `address` is the address of the exported object, and the
             // schema declares its type. That the declaration is true is the
             // caller's contract (§5.1) — a `.so` carries no type information.
-            unsafe { marshal::read(ctx, *declared, address.cast::<u8>(), Some(library)) }
+            unsafe { marshal::read(ctx, declared, address.cast::<u8>(), Some(library)) }
         }
         SymbolKind::Function {
             params,
             result,
             mode,
         } => {
-            let signature = Arc::new(FnSig::of(params, *result));
+            let signature = Arc::new(FnSig::of(params, result.clone()));
             let call = Rc::new(BoundFn {
                 cif: signature.cif(),
                 address: address.expose_provenance(),
@@ -348,7 +355,7 @@ fn nonblocking<'js>(ctx: &Ctx<'js>, call: Rc<BoundFn>) -> Result<Function<'js>> 
             // nobody's. `CaughtError` owns the value and re-raises it at the
             // moment the rejection is actually delivered.
             let planned = CaughtError::catch(&ctx, call.plan(&ctx, &args.0));
-            let result = call.signature.result;
+            let signature = Arc::clone(&call.signature);
             let library = Rc::clone(&call.library);
             async move {
                 let planned = planned.map_err(|caught| caught.throw(&ctx))?;
@@ -366,7 +373,7 @@ fn nonblocking<'js>(ctx: &Ctx<'js>, call: Rc<BoundFn>) -> Result<Function<'js>> 
                     })?;
                 // SAFETY: `cell` holds exactly the bytes libffi wrote for the
                 // declared result type.
-                unsafe { marshal::read(&ctx, result, returned.as_ptr(), Some(&library)) }
+                unsafe { marshal::read(&ctx, &signature.result, returned.as_ptr(), Some(&library)) }
             }
         }),
     )
