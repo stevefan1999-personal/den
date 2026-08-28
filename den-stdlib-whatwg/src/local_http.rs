@@ -108,7 +108,7 @@ async fn handle(
 async fn read_request(stream: &mut TcpStream) -> std::io::Result<Incoming> {
     let mut buf = Vec::new();
     loop {
-        let mut tmp = [0u8; 1024];
+        let mut tmp = [0_u8; 1024];
         let n = stream.read(&mut tmp).await?;
         if n == 0 {
             break;
@@ -147,26 +147,75 @@ async fn read_request(stream: &mut TcpStream) -> std::io::Result<Incoming> {
             headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
         }
     }
-    let content_length = headers
-        .get("content-length")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0usize);
     let mut body = buf[header_end + 4..].to_vec();
-    while body.len() < content_length {
-        let mut tmp = [0u8; 1024];
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            break;
+    if headers
+        .get("transfer-encoding")
+        .is_some_and(|value| value.eq_ignore_ascii_case("chunked"))
+    {
+        body = read_chunked(stream, body).await?;
+    } else {
+        let content_length = headers
+            .get("content-length")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0_usize);
+        while body.len() < content_length {
+            let mut tmp = [0_u8; 1024];
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&tmp[..n]);
         }
-        body.extend_from_slice(&tmp[..n]);
+        body.truncate(content_length);
     }
-    body.truncate(content_length);
     Ok(Incoming {
         method,
         path,
         headers,
         body,
     })
+}
+
+/// Streaming uploads arrive with `Transfer-Encoding: chunked` — there is no
+/// length to announce — so the listener has to reassemble them.
+async fn read_chunked(stream: &mut TcpStream, mut buffered: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    let mut body = Vec::new();
+    loop {
+        let line_end = loop {
+            if let Some(at) = buffered.windows(2).position(|window| window == b"\r\n") {
+                break at;
+            }
+            let mut tmp = [0_u8; 1024];
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                return Ok(body);
+            }
+            buffered.extend_from_slice(&tmp[..n]);
+        };
+        let size = usize::from_str_radix(
+            String::from_utf8_lossy(&buffered[..line_end])
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim(),
+            16,
+        )
+        .unwrap_or(0);
+        buffered.drain(..line_end + 2);
+        if size == 0 {
+            return Ok(body);
+        }
+        while buffered.len() < size + 2 {
+            let mut tmp = [0_u8; 1024];
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                return Ok(body);
+            }
+            buffered.extend_from_slice(&tmp[..n]);
+        }
+        body.extend_from_slice(&buffered[..size]);
+        buffered.drain(..size + 2);
+    }
 }
 
 async fn write_response(stream: &mut TcpStream, outgoing: &Outgoing) -> std::io::Result<()> {
