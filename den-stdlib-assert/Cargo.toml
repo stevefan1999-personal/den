@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 den-util.workspace = true
+insta.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 
 [dev-dependencies]

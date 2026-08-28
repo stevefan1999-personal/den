@@ -1,17 +1,24 @@
-//! JSR `@std/assert@1.0.19` as `den:assert`. Import-only; no globals.
+//! JSR `@std/assert@1.0.19` plus Insta-backed snapshots as `den:assert`.
+//! Import-only; no globals.
 
-use std::cmp::Ordering;
+use std::{
+    any::Any,
+    cmp::Ordering,
+    fs,
+    panic::{AssertUnwindSafe, catch_unwind},
+};
 
 use den_util::{instance_of_global, json_stringify};
+pub use insta;
 use rquickjs::{
-    Class, Coerced, Ctx, Error, Filter, FromJs as _, Function, Object, Result, Type, Value,
-    class::Trace, function::Opt, prelude::This,
+    Class, Coerced, Ctx, Error, Filter, FromJs as _, Function, Object, Result, Value, class::Trace,
+    function::Opt, prelude::This,
 };
 
 #[derive(Trace, rquickjs::JsLifetime)]
 #[rquickjs::class(rename = "AssertionError")]
 pub struct AssertionError {
-    #[qjs(skip_trace)]
+    #[qjs(get, skip_trace)]
     message: String,
 }
 
@@ -25,9 +32,6 @@ impl AssertionError {
     }
 
     #[qjs(get)]
-    pub fn message(&self) -> String { self.message.clone() }
-
-    #[qjs(get)]
     pub const fn name(&self) -> &'static str { "AssertionError" }
 }
 
@@ -38,24 +42,8 @@ fn throw_assertion(ctx: &Ctx<'_>, message: String) -> Error {
     }
 }
 
-fn is_truthy(value: &Value<'_>) -> bool {
-    match value.type_of() {
-        Type::Undefined | Type::Null | Type::Uninitialized => false,
-        Type::Bool => value.as_bool() == Some(true),
-        Type::Int => value.as_int().is_some_and(|number| number != 0),
-        Type::Float => value.as_float().is_some_and(float_is_truthy),
-        Type::String => {
-            value
-                .as_string()
-                .and_then(|string| string.to_string().ok())
-                .is_some_and(|string| !string.is_empty())
-        }
-        _ => true,
-    }
-}
-
-const fn float_is_truthy(number: f64) -> bool {
-    !number.is_nan() && number.to_bits() != 0 && number.to_bits() != (1_u64 << 63)
+fn is_truthy<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
+    Ok(Coerced::<bool>::from_js(ctx, value.clone())?.0)
 }
 
 fn same_value<'js>(ctx: &Ctx<'js>, left: &Value<'js>, right: &Value<'js>) -> Result<bool> {
@@ -107,7 +95,12 @@ fn equal_objects<'js>(
         }
         return Ok(true);
     }
-    if instance_of_global(ctx, left, "Date")? && instance_of_global(ctx, right, "Date")? {
+    let left_date = instance_of_global(ctx, left, "Date")?;
+    let right_date = instance_of_global(ctx, right, "Date")?;
+    if left_date || right_date {
+        if !(left_date && right_date) {
+            return Ok(false);
+        }
         let left_object = left
             .as_object()
             .ok_or_else(|| rquickjs::Exception::throw_type(ctx, "expected a Date"))?;
@@ -122,8 +115,22 @@ fn equal_objects<'js>(
             .call((This(right.clone()),))?;
         return Ok(left_time.to_bits() == right_time.to_bits());
     }
-    if instance_of_global(ctx, left, "RegExp")? && instance_of_global(ctx, right, "RegExp")? {
-        return Ok(stringify(ctx, left) == stringify(ctx, right));
+    let left_regexp = instance_of_global(ctx, left, "RegExp")?;
+    let right_regexp = instance_of_global(ctx, right, "RegExp")?;
+    if left_regexp || right_regexp {
+        if !(left_regexp && right_regexp) {
+            return Ok(false);
+        }
+        let left_object = left
+            .as_object()
+            .ok_or_else(|| rquickjs::Exception::throw_type(ctx, "expected a RegExp"))?;
+        let right_object = right
+            .as_object()
+            .ok_or_else(|| rquickjs::Exception::throw_type(ctx, "expected a RegExp"))?;
+        return Ok(left_object.get::<_, String>("source")?
+            == right_object.get::<_, String>("source")?
+            && left_object.get::<_, String>("flags")?
+                == right_object.get::<_, String>("flags")?);
     }
     let Some(left_object) = left.as_object() else {
         return Ok(false);
@@ -164,6 +171,103 @@ fn stringify<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
     }
     Coerced::<String>::from_js(ctx, value.clone())
         .map_or_else(|_| value.type_of().as_str().to_owned(), |coerced| coerced.0)
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            payload
+                .downcast_ref::<&str>()
+                .map(|message| (*message).to_owned())
+        })
+        .unwrap_or_else(|| "snapshot assertion failed".to_owned())
+}
+
+fn assert_insta_snapshot(name: &str, value: &str) -> std::result::Result<(), String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return Err("snapshot name must contain only ASCII letters, digits, '_' or '-'".into());
+    }
+    let path = std::env::current_dir()
+        .map_err(|error| error.to_string())?
+        .join("snapshots");
+    let snapshot_file = path.join(format!("{name}.snap"));
+    let exists = snapshot_file.is_file();
+    let matches = if exists {
+        let snapshot = insta::Snapshot::from_file(&snapshot_file).ok();
+        let current = insta::internals::TextSnapshotContents::new(
+            value.to_owned(),
+            insta::TextSnapshotKind::File,
+        );
+        snapshot
+            .as_ref()
+            .and_then(insta::Snapshot::as_text)
+            .is_some_and(|stored| stored.matches_latest(&current))
+    } else {
+        false
+    };
+    if !matches {
+        let update = std::env::var("INSTA_UPDATE").unwrap_or_else(|_| "auto".to_owned());
+        let in_place = match update.as_str() {
+            "always" | "force" => Some(true),
+            "unseen" => Some(!exists),
+            "new" => Some(false),
+            "auto" if std::env::var_os("CI").is_none() => Some(false),
+            "auto" | "no" => None,
+            _ => return Err(format!("invalid INSTA_UPDATE mode: {update}")),
+        };
+        if let Some(in_place) = in_place {
+            fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+            let target = if in_place {
+                snapshot_file
+            } else {
+                snapshot_file.with_extension("snap.new")
+            };
+            fs::write(
+                target,
+                format!("---\nsource: den-stdlib-assert/src/lib.rs\n---\n{value}\n"),
+            )
+            .map_err(|error| error.to_string())?;
+            if in_place {
+                return Ok(());
+            }
+            return Err("snapshot differs; review the generated .snap.new file".into());
+        }
+        return Err("snapshot differs and INSTA_UPDATE forbids updates".into());
+    }
+
+    let workspace = insta::_get_workspace_root!();
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path(path);
+    settings.set_prepend_module_to_snapshot(false);
+    settings.set_omit_expression(true);
+
+    // ponytail: Insta's public macro emits `#[allow]`, which this workspace
+    // forbids. The exact dependency pin protects this intentionally narrow use
+    // of its macro support until Insta offers a public non-macro assertion.
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        settings.bind(|| {
+            insta::_macro_support::assert_snapshot(
+                (name, value).into(),
+                workspace.as_path(),
+                "assertSnapshot",
+                module_path!(),
+                file!(),
+                line!(),
+                "value",
+            )
+        })
+    }));
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(payload) => Err(panic_message(payload.as_ref())),
+    }
 }
 
 fn message_or(msg: Opt<String>, fallback: String) -> String { msg.0.unwrap_or(fallback) }
@@ -272,16 +376,16 @@ pub mod assert {
     }
 
     #[rquickjs::function]
-    pub fn assert(ctx: Ctx<'_>, expr: Value<'_>, msg: Opt<String>) -> Result<()> {
-        if super::is_truthy(&expr) {
+    pub fn assert<'js>(ctx: Ctx<'js>, expr: Value<'js>, msg: Opt<String>) -> Result<()> {
+        if super::is_truthy(&ctx, &expr)? {
             return Ok(());
         }
         fail_with(&ctx, super::message_or(msg, "Assertion failed".into()))
     }
 
     #[rquickjs::function]
-    pub fn assertFalse(ctx: Ctx<'_>, expr: Value<'_>, msg: Opt<String>) -> Result<()> {
-        if !super::is_truthy(&expr) {
+    pub fn assertFalse<'js>(ctx: Ctx<'js>, expr: Value<'js>, msg: Opt<String>) -> Result<()> {
+        if !super::is_truthy(&ctx, &expr)? {
             return Ok(());
         }
         fail_with(&ctx, super::message_or(msg, "Expected false".into()))
@@ -559,6 +663,15 @@ pub mod assert {
         )
     }
 
+    /// Compare a string against a named Insta snapshot under `./snapshots` in
+    /// the process working directory.
+    #[rquickjs::function]
+    pub fn assertSnapshot(ctx: Ctx<'_>, actual: String, name: String) -> Result<()> {
+        super::assert_insta_snapshot(&name, &actual).map_err(|error| {
+            super::throw_assertion(&ctx, format!("Snapshot {name:?} failed: {error}"))
+        })
+    }
+
     fn object_match<'js>(
         ctx: &Ctx<'js>, actual: &Value<'js>, expected: &Value<'js>,
     ) -> Result<bool> {
@@ -678,3 +791,7 @@ pub mod assert {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/assert.rs"]
+mod tests;
