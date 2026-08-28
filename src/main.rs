@@ -115,7 +115,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
     }
 
     if let Some(x) = cli.file.clone()
-        && let Err(error) = app.engine.run_file::<()>(x).await
+        && let Err(error) = app.engine.run_file(x).await
     {
         match error {
             EngineError::Rquickjs(_) => {
@@ -138,4 +138,9 @@ async fn main() -> color_eyre::eyre::Result<()> {
 }
 
 mod app;
+mod history;
 mod repl;
+
+#[cfg(test)]
+#[path = "../tests/unit/cli.rs"]
+mod tests;
