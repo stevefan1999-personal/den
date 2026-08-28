@@ -1,0 +1,243 @@
+//! JS values in, C values out, and back — `docs/research/19-den-ffi.md` §4.4.
+//!
+//! Two rules carry most of the weight here. 64-bit integers cross through
+//! their **decimal string**, never `BigInt::to_i64` (doc 09 fact 12). And a
+//! return cell is a Rust local of exactly the declared type, because
+//! `call_return_into` corrects sub-register returns itself and writes exactly
+//! `type.size()` bytes (§0 fact 3).
+
+use std::{ffi::c_void, rc::Rc, str::FromStr};
+
+use libffi::middle::{Arg, Cif, CodePtr, Ret};
+use rquickjs::{BigInt, Coerced, Ctx, FromJs as _, Result, Value};
+
+use crate::{error::ErrorKind, library::LoadedLibrary, pointer::Pointer, schema::NativeType};
+
+/// The largest integer a JS `number` holds exactly. Past it the value was
+/// already lost before den saw it, so narrowing it into a C integer would hand
+/// C a wrong answer it cannot detect.
+const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+/// One argument, owned for exactly the duration of one call: `Arg::new` takes
+/// the cell's address, and libffi may rewrite the argument array in place, so
+/// cells are built fresh per call and never cached (§4.3).
+pub enum ArgumentCell {
+    I8(i8),
+    U8(u8),
+    I16(i16),
+    U16(u16),
+    I32(i32),
+    U32(u32),
+    I64(i64),
+    U64(u64),
+    Isize(isize),
+    Usize(usize),
+    F32(f32),
+    F64(f64),
+    Pointer(*mut c_void),
+}
+
+impl ArgumentCell {
+    pub fn marshal<'js>(ctx: &Ctx<'js>, declared: NativeType, value: &Value<'js>) -> Result<Self> {
+        let name = declared.name();
+        Ok(match declared {
+            NativeType::I8 => Self::I8(integer(ctx, name, value)?),
+            NativeType::U8 => Self::U8(integer(ctx, name, value)?),
+            NativeType::I16 => Self::I16(integer(ctx, name, value)?),
+            NativeType::U16 => Self::U16(integer(ctx, name, value)?),
+            NativeType::I32 => Self::I32(integer(ctx, name, value)?),
+            NativeType::U32 => Self::U32(integer(ctx, name, value)?),
+            NativeType::I64 => Self::I64(big(ctx, name, value)?),
+            NativeType::U64 => Self::U64(big(ctx, name, value)?),
+            NativeType::Isize => Self::Isize(big(ctx, name, value)?),
+            NativeType::Usize => Self::Usize(big(ctx, name, value)?),
+            NativeType::F32 => Self::F32(narrowing(ctx, name, value)?),
+            NativeType::F64 => Self::F64(float(ctx, name, value)?),
+            // C's `_Bool` is one byte wide, and only `true`/`false` reach it:
+            // a truthy string is not a boolean.
+            NativeType::Bool => {
+                Self::U8(u8::from(value.as_bool().ok_or_else(|| {
+                    ErrorKind::BadArgument.throw(ctx, "expected a boolean for `bool`")
+                })?))
+            }
+            NativeType::Pointer => Self::Pointer(Pointer::marshal(ctx, value)?),
+            NativeType::Void => {
+                return Err(
+                    ErrorKind::Schema.throw(ctx, "`void` is a result type, not a parameter type")
+                );
+            }
+        })
+    }
+
+    pub fn as_arg(&self) -> Arg<'_> {
+        match self {
+            Self::I8(value) => Arg::new(value),
+            Self::U8(value) => Arg::new(value),
+            Self::I16(value) => Arg::new(value),
+            Self::U16(value) => Arg::new(value),
+            Self::I32(value) => Arg::new(value),
+            Self::U32(value) => Arg::new(value),
+            Self::I64(value) => Arg::new(value),
+            Self::U64(value) => Arg::new(value),
+            Self::Isize(value) => Arg::new(value),
+            Self::Usize(value) => Arg::new(value),
+            Self::F32(value) => Arg::new(value),
+            Self::F64(value) => Arg::new(value),
+            Self::Pointer(value) => Arg::new(value),
+        }
+    }
+}
+
+/// A JS `number` that is exactly an integer, narrowed to the declared C width.
+/// `1.5`, `2**31` as an `i32` and `NaN` are all refusals, never roundings.
+pub fn integer<T: TryFrom<i64>>(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<T> {
+    let number = value.as_number().ok_or_else(|| {
+        ErrorKind::BadArgument.throw(ctx, format_args!("expected a number for `{declared}`"))
+    })?;
+    if number.fract() != 0.0 || number.abs() > MAX_SAFE_INTEGER {
+        return Err(ErrorKind::Range.throw(
+            ctx,
+            format_args!("{number} is not an exact integer for `{declared}`"),
+        ));
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "checked exact and inside the safe-integer range immediately above"
+    )]
+    T::try_from(number as i64).map_err(|_out_of_range| {
+        ErrorKind::Range.throw(
+            ctx,
+            format_args!("{number} is out of range for `{declared}`"),
+        )
+    })
+}
+
+/// A JS `bigint`, through its decimal string.
+///
+/// ponytail: exact, and immune to both engine bugs of doc 09 fact 12 —
+/// `BigInt::to_i64` silently returns `-1` for `2n**64n - 1n` and `0` for
+/// `2n**70n`, and quickjs-ng's `BigInt.asUintN` is wrong for every bit width
+/// that is a multiple of 32, so it cannot be the guard either. Swap for a limb
+/// API only if a profile ever shows this next to a foreign call.
+fn big<'js, T: FromStr>(ctx: &Ctx<'js>, declared: &str, value: &Value<'js>) -> Result<T> {
+    if !value.is_big_int() {
+        return Err(ErrorKind::BadArgument.throw(
+            ctx,
+            format_args!(
+                "expected a bigint for `{declared}` — a number cannot hold every 64-bit value"
+            ),
+        ));
+    }
+    let text = Coerced::<String>::from_js(ctx, value.clone())?.0;
+    T::from_str(&text).map_err(|_unparsable| {
+        ErrorKind::Range.throw(ctx, format_args!("{text}n does not fit `{declared}`"))
+    })
+}
+
+fn float(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f64> {
+    value.as_number().ok_or_else(|| {
+        ErrorKind::BadArgument.throw(ctx, format_args!("expected a number for `{declared}`"))
+    })
+}
+
+/// `f32` loses precision silently, exactly as C does at the same call.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the declared C parameter is a float; narrowing is the conversion"
+)]
+fn narrowing(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f32> {
+    Ok(float(ctx, declared, value)? as f32)
+}
+
+/// Call `address` and build the JS value for its result.
+///
+/// The return cell is a Rust local of exactly the declared type — the whole
+/// reason a dynamic marshaller may use `call_return_into` at all (§0 fact 3).
+///
+/// # Safety
+///
+/// `cif`, `args` and `declared` must all describe the same signature, and that
+/// signature must be the one `address` really has. The latter is the caller's
+/// contract (§5.1) and is checkable at no layer.
+pub unsafe fn call<'js>(
+    ctx: &Ctx<'js>, declared: NativeType, cif: &Cif, address: CodePtr, args: &[Arg<'_>],
+    library: &Rc<LoadedLibrary>,
+) -> Result<Value<'js>> {
+    macro_rules! into_cell {
+        ($ty:ty, $zero:expr) => {{
+            let mut cell: $ty = $zero;
+            // SAFETY: the caller's contract, restated on this function.
+            unsafe { cif.call_return_into(address, args, Ret::new(&mut cell)) };
+            // SAFETY: `cell` is a live, aligned local of exactly the type
+            // `declared` names, which is what `read` reads back out of it.
+            unsafe { read(ctx, declared, (&raw const cell).cast::<u8>(), library) }
+        }};
+    }
+
+    match declared {
+        NativeType::Void => {
+            // SAFETY: the caller's contract, restated on this function.
+            unsafe { cif.call_return_into(address, args, Ret::void()) };
+            Ok(Value::new_undefined(ctx.clone()))
+        }
+        NativeType::I8 => into_cell!(i8, 0),
+        NativeType::U8 | NativeType::Bool => into_cell!(u8, 0),
+        NativeType::I16 => into_cell!(i16, 0),
+        NativeType::U16 => into_cell!(u16, 0),
+        NativeType::I32 => into_cell!(i32, 0),
+        NativeType::U32 => into_cell!(u32, 0),
+        NativeType::I64 | NativeType::Isize => into_cell!(i64, 0),
+        NativeType::U64 | NativeType::Usize => into_cell!(u64, 0),
+        NativeType::F32 => into_cell!(f32, 0.0),
+        NativeType::F64 => into_cell!(f64, 0.0),
+        NativeType::Pointer => into_cell!(*mut c_void, std::ptr::null_mut()),
+    }
+}
+
+/// Read one C value of `declared` out of `address` and build its JS value.
+///
+/// Both a returned cell and a static symbol land here, so the two paths cannot
+/// drift apart.
+///
+/// # Safety
+///
+/// `address` must point at an initialised, readable C object of the type
+/// `declared` names. For a static symbol that the schema is describing
+/// correctly is the caller's contract (§5.1).
+pub unsafe fn read<'js>(
+    ctx: &Ctx<'js>, declared: NativeType, address: *const u8, library: &Rc<LoadedLibrary>,
+) -> Result<Value<'js>> {
+    macro_rules! cell {
+        ($ty:ty) => {
+            // SAFETY: the caller's contract, restated on this function.
+            // `read_unaligned` also covers a static whose alignment den has no
+            // way to assert.
+            unsafe { address.cast::<$ty>().read_unaligned() }
+        };
+    }
+    macro_rules! number {
+        ($ty:ty) => {
+            Ok(Value::new_number(ctx.clone(), f64::from(cell!($ty))))
+        };
+    }
+
+    match declared {
+        NativeType::I8 => number!(i8),
+        NativeType::U8 => number!(u8),
+        NativeType::I16 => number!(i16),
+        NativeType::U16 => number!(u16),
+        NativeType::I32 => number!(i32),
+        NativeType::U32 => number!(u32),
+        NativeType::F32 => number!(f32),
+        NativeType::F64 => Ok(Value::new_number(ctx.clone(), cell!(f64))),
+        NativeType::I64 => Ok(BigInt::from_i64(ctx.clone(), cell!(i64))?.into_value()),
+        NativeType::U64 => Ok(BigInt::from_u64(ctx.clone(), cell!(u64))?.into_value()),
+        NativeType::Isize => Ok(BigInt::from_i64(ctx.clone(), cell!(isize) as i64)?.into_value()),
+        NativeType::Usize => Ok(BigInt::from_u64(ctx.clone(), cell!(usize) as u64)?.into_value()),
+        NativeType::Bool => Ok(Value::new_bool(ctx.clone(), cell!(u8) != 0)),
+        NativeType::Pointer => {
+            Pointer::to_js(ctx, cell!(*const c_void).expose_provenance(), library)
+        }
+        NativeType::Void => Ok(Value::new_undefined(ctx.clone())),
+    }
+}

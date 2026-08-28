@@ -6,21 +6,27 @@
 //! `docs/research/19-den-ffi.md`; §5.1 is the list of things this module
 //! deliberately cannot protect you from.
 //!
-//! Phase 1 marshals `i32`, `f64` and `void`, synchronously. Everything else in
-//! the published schema — 64-bit integers, buffers, pointers, structs,
-//! callbacks, `nonblocking` — throws `FfiError { kind: "Schema" }` at
-//! `open()`, naming what is missing.
+//! The scalar vocabulary is complete — every integer width, `bool`, `f32`,
+//! `f64`, `pointer` and `void`, as arguments, as results and as static
+//! symbols. Buffers, structs, callbacks and `nonblocking` are still refused by
+//! name at `open()`, with `FfiError { kind: "Schema" }`.
 
 mod error;
 mod grant;
 mod library;
+mod marshal;
+mod pointer;
 mod schema;
 
 pub use crate::{error::FfiError, grant::FfiGrant};
 
 #[rquickjs::module]
 pub mod ffi {
-    use rquickjs::{Class, Ctx, Object, Result, Value, function::Opt, module::Exports};
+    use rquickjs::{
+        Class, Ctx, Object, Result, Value,
+        function::Opt,
+        module::{Declarations, Exports},
+    };
 
     #[expect(
         clippy::module_name_repetitions,
@@ -54,8 +60,22 @@ pub mod ffi {
         Ok(Class::instance(ctx.clone(), granted.clone())?.into_value())
     }
 
+    /// `ptr` and `suffix` are values, not functions, so the macro cannot
+    /// derive their declarations from an item signature.
+    #[qjs(declare)]
+    pub fn declare(declare: &Declarations<'_>) -> Result<()> {
+        declare.declare("ptr")?;
+        declare.declare("suffix")?;
+        Ok(())
+    }
+
     #[qjs(evaluate)]
-    pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
-        super::error::install(ctx)
+    pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
+        super::error::install(ctx)?;
+        exports.export("ptr", super::pointer::namespace(ctx)?)?;
+        // The platform's shared-library extension, so a script can name one
+        // library across three operating systems without a `switch`.
+        exports.export("suffix", std::env::consts::DLL_SUFFIX)?;
+        Ok(())
     }
 }

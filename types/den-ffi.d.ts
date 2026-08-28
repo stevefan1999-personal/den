@@ -14,12 +14,14 @@
  * numbers that do not fit their declared C type are refused rather than
  * truncated. §5.1 of the design note lists what remains yours.
  *
- * **Implemented today (phase 1): `i32`, `f64` and `void`, called
- * synchronously.** Every other member of `ValueType`, and the `nonblocking`,
- * `optional`, `type`, `struct` and `callback` forms, is part of the settled
- * schema but throws `FfiError { kind: "Schema" }` at `open()` until its phase
- * lands. `Callback<P, R>` is declared here from the start, brand and all,
- * because adding a brand to a published interface later is a breaking change.
+ * **Implemented today: the whole scalar vocabulary** — every integer width,
+ * `bool`, `f32`, `f64`, `pointer` and `void` — as arguments, as results and as
+ * static symbols, plus `name`, `optional` and the `ptr` namespace, all called
+ * synchronously. `buffer`, `struct`, `callback` and `nonblocking` are part of
+ * the settled schema but throw `FfiError { kind: "Schema" }` at `open()` until
+ * their phase lands. `Callback<P, R>` is declared here from the start, brand
+ * and all, because adding a brand to a published interface later is a breaking
+ * change.
  */
 
 declare module "den:ffi" {
@@ -104,12 +106,17 @@ declare module "den:ffi" {
     readonly result: ResultType;
     readonly nonblocking?: boolean;
     readonly optional?: boolean;
+    /** The name to look up, when it is not the key. The key stays the JS
+     *  property, so a C identifier that is not a legal one can still be bound. */
+    readonly name?: string;
   }
 
-  /** An exported variable. */
+  /** An exported variable, read once at `open()`. */
   export interface StaticDef {
     readonly type: ValueType;
     readonly optional?: boolean;
+    /** As on `FnDef`. */
+    readonly name?: string;
   }
 
   type SymbolDef = FnDef | StaticDef;
@@ -178,6 +185,50 @@ declare module "den:ffi" {
 
   /** This realm's grant, or `null` when it was given none. */
   export function grant(): FfiGrant | null;
+
+  /**
+   * The platform's shared-library extension — `".so"`, `".dylib"` or `".dll"`,
+   * leading dot included — so one specifier can name a library on three
+   * operating systems.
+   */
+  export const suffix: string;
+
+  /**
+   * The four things JS may do with an address. There is deliberately no
+   * `create(bigint)` and no `offset(p, n)`: a pointer minted from an integer
+   * has no owning library, so there would be nothing to check it against.
+   */
+  export namespace ptr {
+    /** The address, for logging and for comparing against C's own idea of it.
+     *  It cannot be turned back into a `Pointer`. */
+    function value(p: Pointer): bigint;
+
+    /** Address equality. Two `Pointer` objects naming the same address are
+     *  distinct JS values, so `===` is not this. */
+    function equals(a: Pointer | null, b: Pointer | null): boolean;
+
+    /**
+     * A **copy** of `byteLength` bytes at `p`.
+     *
+     * `byteLength` is mandatory and is **not a bounds check**: a `.so` carries
+     * no information about how large a pointee is, so `ptr.view(p, 1 << 30)`
+     * is an arbitrary read that passes every check den has. What the length
+     * buys is that the returned array has one, so every read *after* this is
+     * bounds checked by the engine.
+     *
+     * The bytes are copied — no JS value ever aliases memory the engine does
+     * not own — so writing to the result does not write back to C. Handing a
+     * writable region *to* C is the `buffer` parameter type.
+     */
+    function view(p: Pointer, byteLength: number): Uint8Array<ArrayBuffer>;
+
+    /**
+     * A NUL-terminated C string, scanned one byte at a time so that nothing
+     * past the terminator is read. No NUL inside the bound throws `Range`,
+     * never a silently truncated string. The bound defaults to 4096.
+     */
+    function cstring(p: Pointer, maxByteLength?: number): string;
+  }
 
   /**
    * Load a shared library and bind every symbol `schema` names. Symbols resolve
