@@ -33,9 +33,7 @@ async fn run_example(name: &str) -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn https_esm_imports_resolve_through_fetch() -> eyre::Result<()> {
-    run("https_esm.js").await
-}
+async fn https_esm_imports_resolve_through_fetch() -> eyre::Result<()> { run("https_esm.js").await }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fetch_reads_a_scripted_tcp_http_server() -> eyre::Result<()> {
@@ -84,15 +82,11 @@ async fn a_worker_timer_posts_a_temporal_instant() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn json_import_attributes_feed_assert() -> eyre::Result<()> {
-    run("import_json.js").await
-}
+async fn json_import_attributes_feed_assert() -> eyre::Result<()> { run("import_json.js").await }
 
 #[cfg(feature = "typescript")]
 #[tokio::test(flavor = "multi_thread")]
-async fn a_typescript_entry_file_reaches_assert() -> eyre::Result<()> {
-    run("typed_note.ts").await
-}
+async fn a_typescript_entry_file_reaches_assert() -> eyre::Result<()> { run("typed_note.ts").await }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn random_bytes_round_trip_through_blob_and_file_reader() -> eyre::Result<()> {
