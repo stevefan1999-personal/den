@@ -35,15 +35,15 @@ pub struct Request<'js> {
     pub(crate) destination:           String,
     #[qjs(get, enumerable, skip_trace)]
     pub(crate) referrer:              String,
-    #[qjs(get, enumerable, skip_trace)]
+    #[qjs(get, enumerable, rename = "referrerPolicy", skip_trace)]
     pub(crate) referrer_policy:       String,
     #[qjs(get, enumerable, skip_trace)]
     pub(crate) duplex:                String,
     #[qjs(get, enumerable)]
     pub(crate) keepalive:             bool,
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, rename = "isReloadNavigation")]
     pub(crate) is_reload_navigation:  bool,
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, rename = "isHistoryNavigation")]
     pub(crate) is_history_navigation: bool,
     #[qjs(get, enumerable)]
     pub(crate) signal:                Value<'js>,
@@ -52,6 +52,7 @@ pub struct Request<'js> {
     pub(crate) headers:               Class<'js, Headers>,
     pub(crate) body:                  Option<Value<'js>>,
     pub(crate) body_stream:           Option<Value<'js>>,
+    #[qjs(get, enumerable, rename = "bodyUsed")]
     pub(crate) body_used:             bool,
 }
 
@@ -463,6 +464,12 @@ impl<'js> Request<'js> {
         {
             let stream = existing.borrow().body_stream.clone();
             if let Some(stream) = stream {
+                if crate::body::stream_is_disturbed(&stream) {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "ReadableStream is locked or disturbed",
+                    ));
+                }
                 let (left, right) = tee_stream(&ctx, stream)?;
                 let mut existing = existing.borrow_mut();
                 existing.body_used = true;
@@ -482,16 +489,29 @@ impl<'js> Request<'js> {
             && !value.is_undefined()
         {
             if is_readable_stream(&ctx, &value)? {
-                if stream_is_locked(&value) {
-                    return Err(Exception::throw_type(&ctx, "ReadableStream is locked"));
+                if stream_is_locked(&value) || crate::body::stream_is_disturbed(&value) {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "ReadableStream is locked or disturbed",
+                    ));
                 }
-                if let Some(object) = options.as_ref() {
-                    let duplex_value: Value = object.get("duplex")?;
-                    if !duplex_value.is_undefined() && !duplex_value.is_null() {
-                        let text = den_util::coerce_string(&ctx, duplex_value)?;
-                        duplex = Self::parse_enum(&ctx, &text, &["half"], "duplex")?;
-                    }
-                }
+                // A stream body is sent as it is produced, which is what
+                // `duplex: "half"` opts into. Without that opt-in the request
+                // is not the one the caller asked for, so refuse it rather
+                // than quietly buffering.
+                let declared = options
+                    .as_ref()
+                    .map(|object| object.get::<_, Value>("duplex"))
+                    .transpose()?
+                    .filter(|value| !value.is_undefined() && !value.is_null());
+                let Some(declared) = declared else {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "a ReadableStream body requires duplex: 'half'",
+                    ));
+                };
+                let text = den_util::coerce_string(&ctx, declared)?;
+                duplex = Self::parse_enum(&ctx, &text, &["half"], "duplex")?;
                 body_stream = Some(value.clone());
                 body = Some(value);
             } else {
@@ -522,9 +542,6 @@ impl<'js> Request<'js> {
             body_used: false,
         })
     }
-
-    #[qjs(get, enumerable)]
-    pub fn body_used(&self) -> bool { self.body_used }
 
     #[qjs(get, enumerable)]
     pub fn body(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Value<'js>> {

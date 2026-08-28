@@ -97,3 +97,30 @@ async fn a_cacheable_response_streams_and_still_fills_the_cache() -> eyre::Resul
     assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_request_body_is_uploaded_without_buffering() -> eyre::Result<()> {
+    let framing = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let seen = std::sync::Arc::clone(&framing);
+    let server = den_stdlib_whatwg::local_http::serve(move |incoming| {
+        if let Ok(mut seen) = seen.lock() {
+            seen.clone_from(
+                incoming
+                    .headers
+                    .get("transfer-encoding")
+                    .unwrap_or(&String::new()),
+            );
+        }
+        den_stdlib_whatwg::local_http::Outgoing::ok(incoming.body, "text/plain")
+    })
+    .await;
+    // SAFETY: test-only key, set before the engine starts.
+    unsafe {
+        std::env::set_var("DEN_TEST_UPLOAD_URL", server.url("/upload"));
+    }
+    run("fetch_stream_upload.js").await?;
+    // Chunked framing is the observable proof the body was never collected:
+    // a buffered body would have announced a Content-Length instead.
+    assert_eq!(framing.lock().expect("framing").as_str(), "chunked");
+    Ok(())
+}
