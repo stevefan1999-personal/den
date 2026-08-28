@@ -68,7 +68,8 @@ impl NativeType {
                 return Err(ErrorKind::Schema.throw_for(
                     ctx,
                     format_args!(
-                        "symbol `{symbol}`: a struct type may not nest more than                          {MAX_STRUCT_DEPTH} deep — this one is either enormous or cyclic"
+                        "symbol `{symbol}`: a struct type may not nest more than \
+                         {MAX_STRUCT_DEPTH} deep — this one is either enormous or cyclic"
                     ),
                     symbol,
                 ));
