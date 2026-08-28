@@ -1,3 +1,5 @@
+use std::ptr::NonNull;
+
 use den_util::BufferSource;
 use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray, Value};
 use sha1::Sha1;
@@ -6,42 +8,46 @@ use uuid::Uuid;
 
 pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
     {
-        let array = if let Ok(array) = TypedArray::<u8>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<u16>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<u32>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<u64>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<i8>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<i16>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<i32>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Ok(array) = TypedArray::<i64>::from_object(array.clone()) {
-            array.arraybuffer()
-        } else if let Some(array) = ArrayBuffer::from_object(array.clone()) {
-            Ok(array)
-        } else {
-            Err(Exception::throw_type(&ctx, "not a typed array"))
-        }?;
-
-        // `as_raw` is the only mutable view rquickjs 0.12 offers: `as_bytes` hands back
-        // a shared `&[u8]`, so writing through it would mean casting away its
-        // immutability. It returns `None` for a detached buffer, which JS can
-        // trigger at will.
-        let Some(raw) = array.as_raw() else {
-            return Err(Exception::throw_type(&ctx, "array buffer is detached"));
+        // The view, not the backing buffer: `new Uint8Array(memory.buffer, ptr, len)`
+        // is how JS WASI implements `random_get`, and filling the whole
+        // `ArrayBuffer` would overwrite the wasm heap.
+        let Some((ptr, len)) = integer_typed_view(&array) else {
+            return Err(Exception::throw_type(&ctx, "not a typed array"));
         };
-        // SAFETY: `raw` is QuickJS's own live allocation for this buffer. Nothing else
+        if len > 65_536 {
+            return Err(den_util::throw_dom_exception(
+                &ctx,
+                "QuotaExceededError",
+                "The ArrayBufferView's byte length exceeds the number of bytes of entropy \
+                 available via this API",
+            ));
+        }
+        // SAFETY: `TypedArray::as_raw` is the view's own bytes. Nothing else
         // aliases it here — no JS runs between `as_raw` and the end of the
         // fill, so the buffer cannot be detached or resized underneath us.
-        let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
+        let dest = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), len) };
         rand::fill(dest);
     }
     Ok(array)
+}
+
+fn integer_typed_view(array: &Object<'_>) -> Option<(NonNull<u8>, usize)> {
+    macro_rules! take {
+        ($ty:ty) => {
+            if let Ok(view) = TypedArray::<$ty>::from_object(array.clone()) {
+                return view.as_raw().map(|raw| (raw.ptr, raw.len));
+            }
+        };
+    }
+    take!(u8);
+    take!(u16);
+    take!(u32);
+    take!(u64);
+    take!(i8);
+    take!(i16);
+    take!(i32);
+    take!(i64);
+    None
 }
 
 pub fn random_uuid() -> String { Uuid::new_v4().to_string() }
@@ -136,8 +142,7 @@ pub async fn digest<'js>(
 
 #[rquickjs::module]
 pub mod crypto {
-    use indexmap::indexmap;
-    use rquickjs::{Ctx, IntoJs, Object, Result, module::Exports};
+    use rquickjs::{Ctx, Object, Result, module::Exports};
 
     #[rquickjs::function]
     #[qjs(rename = "getRandomValues")]
@@ -151,14 +156,13 @@ pub mod crypto {
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
-        let subtle = indexmap! {
-            "digest" => super::js_digest.into_js(ctx)?,
-        };
-        ctx.globals().set("crypto", indexmap! {
-            "getRandomValues" => js_get_random_values.into_js(ctx)?,
-            "randomUUID" => js_random_uuid.into_js(ctx)?,
-            "subtle" => subtle.into_js(ctx)?,
-        })?;
+        let subtle = Object::new(ctx.clone())?;
+        subtle.set("digest", super::js_digest)?;
+        let crypto = Object::new(ctx.clone())?;
+        crypto.set("getRandomValues", js_get_random_values)?;
+        crypto.set("randomUUID", js_random_uuid)?;
+        crypto.set("subtle", subtle)?;
+        ctx.globals().set("crypto", crypto)?;
         Ok(())
     }
 }

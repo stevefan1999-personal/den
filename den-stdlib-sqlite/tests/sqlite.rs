@@ -10,9 +10,17 @@ fn case(name: &str) -> PathBuf {
 }
 
 async fn run(name: &str) -> eyre::Result<()> {
-    Engine::new().await.run_file::<()>(case(name)).await?;
+    Engine::new().await.run_file(case(name)).await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn in_memory_execute_and_query_rows() -> eyre::Result<()> { run("memory.js").await }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closed_connection_rejects_execute_and_close() -> eyre::Result<()> {
+    run("closed.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn query_rows_round_trip_sqlite_types() -> eyre::Result<()> { run("types.js").await }

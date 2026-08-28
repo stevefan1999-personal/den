@@ -9,15 +9,17 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 
+[lib]
+test = false
+
 [dependencies]
 rusqlite.workspace = true
-derive_more.workspace = true
 either.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 
 [dev-dependencies]
 color-eyre.workspace = true
-den-core = { workspace = true, features = ["stdlib"] }
+den-core = { workspace = true, features = ["stdlib", "stdlib-sqlite"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

@@ -10,11 +10,12 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 
+[lib]
+test = false
+
 [dependencies]
-derive_more.workspace = true
 either.workspace = true
 encoding_rs.workspace = true
-indexmap.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 
 [dev-dependencies]

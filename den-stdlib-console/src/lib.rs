@@ -7,23 +7,6 @@ use rquickjs::{Error, JsLifetime, Result, Type, Value, class::Trace, function::R
 // Except with some key changes, especially from log to tracing
 // TODO: JS native stack tracing support for trace spans
 
-#[derive(Default, Clone, Debug)]
-#[non_exhaustive]
-struct FormatArgs {
-    key: Option<bool>,
-}
-
-impl FormatArgs {
-    pub fn is_key(&self) -> bool { self.key.unwrap_or(false) }
-
-    pub fn with_key(self) -> Self {
-        Self {
-            key: Some(true),
-            ..self
-        }
-    }
-}
-
 /// A formatter for the [`Console`] object
 ///
 /// This formatter is used to format values to be printed by the console object.
@@ -35,20 +18,20 @@ pub struct Formatter {
 }
 
 impl Default for Formatter {
-    fn default() -> Self { Self::builder().build() }
+    fn default() -> Self { Self::new(10) }
 }
 
 impl Formatter {
-    pub fn builder() -> FormatterBuilder { FormatterBuilder::default() }
+    pub const fn new(max_depth: usize) -> Self { Self { max_depth } }
 
     pub fn format(&self, out: &mut impl Write, value: Value<'_>) -> Result<()> {
-        self._format(out, value, FormatArgs::default(), 0)
+        self._format(out, value, false, 0)
     }
 
     /// A poor attempt at mimicking the node format
     /// See https://github.com/nodejs/node/blob/363eca1033458b8c2808207e2e5fc88e0f4df655/lib/internal/util/inspect.js#L842
     fn _format(
-        &self, out: &mut impl Write, value: Value<'_>, args: FormatArgs, depth: usize,
+        &self, out: &mut impl Write, value: Value<'_>, key: bool, depth: usize,
     ) -> Result<()> {
         match value.type_of() {
             Type::String => {
@@ -105,12 +88,12 @@ impl Formatter {
                     .ok_or(Error::new_from_js("value", "array"))?;
                 if depth > self.max_depth {
                     write!(out, "[Array]").map_err(|_| Error::Unknown)?;
-                } else if args.is_key() {
+                } else if key {
                     for (i, element) in array.iter().enumerate() {
                         if i > 0 {
                             write!(out, ",").map_err(|_| Error::Unknown)?;
                         }
-                        self._format(out, element?, FormatArgs::default().with_key(), depth + 1)?;
+                        self._format(out, element?, true, depth + 1)?;
                     }
                 } else {
                     write!(out, "[ ").map_err(|_| Error::Unknown)?;
@@ -118,7 +101,7 @@ impl Formatter {
                         if i > 0 {
                             write!(out, ", ").map_err(|_| Error::Unknown)?;
                         }
-                        self._format(out, element?, FormatArgs::default(), depth + 1)?;
+                        self._format(out, element?, false, depth + 1)?;
                     }
                     write!(out, " ]").map_err(|_| Error::Unknown)?;
                 }
@@ -128,7 +111,7 @@ impl Formatter {
             Type::Object | Type::Proxy => {
                 if depth > self.max_depth {
                     write!(out, "[Object]").map_err(|_| Error::Unknown)?;
-                } else if args.is_key() {
+                } else if key {
                     write!(out, "[object Object]").map_err(|_| Error::Unknown)?;
                 } else {
                     let object = value
@@ -137,9 +120,9 @@ impl Formatter {
                     write!(out, "{{ ").map_err(|_| Error::Unknown)?;
                     for prop in object.props() {
                         let (key, val) = prop?;
-                        self._format(out, key, FormatArgs::default().with_key(), depth + 1)?;
+                        self._format(out, key, true, depth + 1)?;
                         write!(out, ": ").map_err(|_| Error::Unknown)?;
-                        self._format(out, val, FormatArgs::default(), depth + 1)?;
+                        self._format(out, val, false, depth + 1)?;
                     }
                     write!(out, " }}").map_err(|_| Error::Unknown)?;
                 }
@@ -184,40 +167,13 @@ impl Formatter {
     }
 }
 
-/// Builder for [`Formatter`]
-#[derive(Default, Clone, Debug)]
-#[non_exhaustive]
-pub struct FormatterBuilder {
-    max_depth: Option<usize>,
-}
-
-impl FormatterBuilder {
-    /// Set the maximum depth to format, defaults to 10.
-    ///
-    /// If the depth is reached, the formatter will not try to print
-    /// inner items and will print `[Array]` or `[Object]`.
-    pub fn max_depth(self, max_depth: usize) -> Self {
-        Self {
-            max_depth: Some(max_depth),
-            ..self
-        }
-    }
-
-    /// Build the formatter
-    pub fn build(self) -> Formatter {
-        Formatter {
-            max_depth: self.max_depth.unwrap_or(10),
-        }
-    }
-}
-
 const TARGET: &str = "console";
 
 /// A console object to print messages to the [`log`] crate.
 ///
 /// # Example
 /// ```rust
-/// use rquickjs::{Context, Runtime};
+/// use rquickjs::{Context, Function, Object, Runtime};
 /// use rquickjs_extra::console::{Console, Formatter};
 ///
 /// fn main() {
@@ -227,7 +183,9 @@ const TARGET: &str = "console";
 ///     ctx.with(|ctx| {
 ///         let console = Console::new("hello", Formatter::default());
 ///         ctx.globals().set("console", console).unwrap();
-///         ctx.eval::<(), _>("console.log('test')").unwrap();
+///         let console: Object = ctx.globals().get("console").unwrap();
+///         let log: Function = console.get("log").unwrap();
+///         log.call::<_, ()>(("test",)).unwrap();
 ///     })
 /// }
 /// ```
@@ -292,10 +250,7 @@ pub mod console {
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         let globals = ctx.globals();
-        globals.set(
-            "console",
-            Console::new(TARGET, Formatter::builder().max_depth(3).build()),
-        )?;
+        globals.set("console", Console::new(TARGET, Formatter::new(3)))?;
         Ok(())
     }
 }
