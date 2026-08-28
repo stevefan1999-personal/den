@@ -32,7 +32,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = ["transpile"]
-transpile = ["dep:den-transpiler-oxc", "den-transpiler-oxc/transpile"]
+transpile = ["dep:den-transpiler-oxc"]
 
 [lints]
 workspace = true

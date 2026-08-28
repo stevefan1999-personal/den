@@ -1,0 +1,6 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "transpiled(include_str!(\"fixtures/types.ts\"),\nsource_type(\"ts\").with_module(true),)"
+---
+const x = 1;
+export { x };

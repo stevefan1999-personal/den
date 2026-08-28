@@ -1,0 +1,4 @@
+{
+  "imports": { "pkg": "./top.js" },
+  "scopes": { "./nested/": { "pkg": "./nested/inner.js" } }
+}

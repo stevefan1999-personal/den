@@ -1,0 +1,11 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: error
+---
+failed to parse source:
+
+  x Unexpected token
+   ,-[<anonymous>:1:7]
+ 1 | const = ;
+   :       ^
+   `----

@@ -1,0 +1,5 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "transpiled(include_str!(\"fixtures/top_level_await.js\"),\nsource_type(get_best_transpiling()).with_unambiguous(true),)"
+---
+await import("./x.js");

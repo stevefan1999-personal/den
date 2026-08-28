@@ -10,7 +10,7 @@ use url::Url;
 /// is already an absolute path, one that is a `file:` URL, and — the half that
 /// makes the other two useful — one that is relative *to* such a name.
 ///
-/// `FileResolver` hands every path to [`relative_path::RelativePath`], which
+/// `FileResolver` hands every path to its relative-path parser, which
 /// has no notion of a root and interprets what it is given against the working
 /// directory: `den /home/me/app.js` asks for `./home/me/app.js`, and `./lib.js`
 /// imported from `/home/me/app.js` comes out as `./home/me/lib.js` relative to

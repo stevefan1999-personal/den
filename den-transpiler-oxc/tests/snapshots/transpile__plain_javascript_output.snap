@@ -1,0 +1,5 @@
+---
+source: den-transpiler-oxc/tests/transpile.rs
+expression: "transpiled(include_str!(\"fixtures/plain.js\"),\nsource_type(\"js\").with_script(true),)"
+---
+const add = (a, b) => a + b;

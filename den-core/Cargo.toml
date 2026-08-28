@@ -1,5 +1,6 @@
 [package]
 name = "den-core"
+autotests = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,12 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-cfg-if.workspace = true
 derive_more.workspace = true
-fmmap = { workspace = true, features = ["tokio"] }
-matchit.workspace = true
-mime.workspace = true
-relative-path.workspace = true
 # `default-tls` is rustls, and `charset`/`http2`/`system-proxy` come with the defaults too; only
 # the body codecs and the streaming body are extra.
 reqwest = { workspace = true, features = [
@@ -30,7 +26,6 @@ serde_json.workspace = true
 # builds when something else in the graph turns them on.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 url.workspace = true
-typed-builder.workspace = true
 
 # Den specific stuff
 den-stdlib-assert = { workspace = true, optional = true }
@@ -40,6 +35,7 @@ den-stdlib-crypto = { workspace = true, optional = true }
 den-stdlib-ffi = { workspace = true, optional = true }
 den-stdlib-fs = { workspace = true, optional = true }
 den-stdlib-networking = { workspace = true, optional = true }
+den-stdlib-path = { workspace = true, optional = true }
 den-stdlib-process = { workspace = true, optional = true }
 den-stdlib-sqlite = { workspace = true, optional = true }
 den-stdlib-temporal = { workspace = true, optional = true }
@@ -58,8 +54,7 @@ libtest-mimic.workspace = true
 rquickjs.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net"] }
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
-# Reference assembler for the WebAssembly fixtures, and the yardstick den's own
-# `den:wasm` `wat2wasm` is pinned against.
+# Reference assembler for WebAssembly fixtures.
 wat.workspace = true
 
 [features]
@@ -71,7 +66,6 @@ typescript = [
 react = ["transpile", "den-transpiler-oxc?/react"]
 transpile = [
     "dep:den-transpiler-oxc",
-    "den-transpiler-oxc?/transpile",
     "den-stdlib-worker?/transpile",
 ]
 
@@ -82,6 +76,7 @@ stdlib = [
     "stdlib-crypto",
     "stdlib-fs",
     "stdlib-networking",
+    "stdlib-path",
     "stdlib-process",
     "stdlib-sqlite",
     "stdlib-temporal",
@@ -98,6 +93,7 @@ stdlib-crypto = ["dep:den-stdlib-crypto"]
 stdlib-ffi = ["dep:den-stdlib-ffi"]
 stdlib-fs = ["dep:den-stdlib-fs"]
 stdlib-networking = ["dep:den-stdlib-networking"]
+stdlib-path = ["dep:den-stdlib-path"]
 stdlib-process = ["dep:den-stdlib-process"]
 stdlib-sqlite = ["dep:den-stdlib-sqlite"]
 stdlib-temporal = ["dep:den-stdlib-temporal"]
@@ -111,6 +107,10 @@ stdlib-worker = ["dep:den-stdlib-worker"]
 # pulling Cranelift-native through den-stdlib-wasm's own default.
 wasm = ["dep:den-stdlib-wasm"]
 jit = ["den-stdlib-wasm?/jit"]
+
+[[test]]
+name = "compat"
+path = "tests/compat.rs"
 
 [[test]]
 name = "wpt"

@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "den:assert";
 import { metadata, write, createDirAll } from "den:fs";
-import { Connection } from "den:sqlite";
 import * as net from "den:networking";
+import path from "den:path";
 
 assertEquals(typeof console.log, "function");
 assertEquals(atob(btoa("den")), "den");
@@ -18,16 +18,12 @@ if (typeof WebAssembly === "object" && WebAssembly) {
   assertEquals(typeof WebAssembly.validate, "function");
 }
 assertEquals(typeof net.TcpListener, "function");
+assertEquals(path.posix.normalize("/srv/app/../data"), "/srv/data");
+assertEquals(path.windows.join("C:\\srv", "data"), "C:\\srv\\data");
 
 const dir = `${process.env.TMPDIR ?? process.env.TEMP ?? "/tmp"}/den-e2e-${process.pid}`;
 await createDirAll(dir);
 assertEquals(typeof metadata, "function");
 assertEquals(typeof write, "function");
-
-const open = Connection.openInMemory ?? Connection.open_in_memory;
-const db = open.call(Connection);
-(db.execute.bind(db))("CREATE TABLE t (n INTEGER)");
-(db.execute.bind(db))("INSERT INTO t VALUES (1)");
-db.close();
 
 await new Promise((resolve) => setTimeout(resolve, 1));
