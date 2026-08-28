@@ -1,0 +1,34 @@
+import { assert, assertEquals } from "den:assert";
+import { posix } from "den:path";
+
+assertEquals(posix.normalize("./fixtures///b/../b/c.js"), "fixtures/b/c.js");
+assertEquals(posix.normalize("../../../foo/../../../bar"), "../../../../../bar");
+assertEquals(posix.normalize(""), ".");
+assertEquals(posix.normalize("/"), "/");
+assertEquals(posix.join("/srv", "app/../data"), "/srv/data");
+assertEquals(posix.join(), ".");
+assertEquals(posix.join("", ""), ".");
+assertEquals(posix.basename("/foo/bar.txt", ".txt"), "bar");
+assertEquals(posix.basename("/"), "");
+assertEquals(posix.dirname("/foo/bar.txt"), "/foo");
+assertEquals(posix.dirname("/"), "/");
+assertEquals(posix.extname("/foo/.config.json"), ".json");
+assertEquals(posix.extname(".gitignore"), "");
+assertEquals(posix.extname("archive.tar.gz"), ".gz");
+assertEquals(posix.isAbsolute("/tmp"), true);
+assertEquals(posix.isAbsolute("tmp"), false);
+assertEquals(posix.resolve("/foo", "bar", "baz"), "/foo/bar/baz");
+assertEquals(posix.resolve("/foo", "/bar"), "/bar");
+assertEquals(posix.relative("/data/project/src", "/data/project/tests"), "../tests");
+assertEquals(posix.relative("/a", "/a"), "");
+assertEquals(posix.toNamespacedPath("/foo/bar"), "/foo/bar");
+
+const parsed = posix.parse("/home/user/file.txt");
+assertEquals(parsed.root, "/");
+assertEquals(parsed.dir, "/home/user");
+assertEquals(parsed.base, "file.txt");
+assertEquals(parsed.ext, ".txt");
+assertEquals(parsed.name, "file");
+assertEquals(posix.format(parsed), "/home/user/file.txt");
+assertEquals(posix.format({ name: "file", ext: "txt" }), "file.txt");
+assert(posix.resolve(".").startsWith("/") || posix.resolve(".") === ".");

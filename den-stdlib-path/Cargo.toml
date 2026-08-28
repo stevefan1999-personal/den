@@ -1,0 +1,22 @@
+[package]
+name = "den-stdlib-path"
+description = "Cross-platform lexical path utilities for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+rquickjs = { workspace = true, features = ["macro"] }
+
+[dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
