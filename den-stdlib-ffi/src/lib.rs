@@ -80,6 +80,13 @@ pub mod ffi {
     ///
     /// The composition root — `den --allow-ffi[=PATH]` — is what puts one in
     /// userdata. There is no way to mint one from JS.
+    ///
+    /// §5.3 wants the grant handed to *one module*, and this is not that: it
+    /// is realm-scoped, so any module in a granted realm can ask for it. The
+    /// per-module version needs an `EngineBuilder` seam to hand the value to a
+    /// single module, which does not exist yet (§0 fact 0). Until it does, the
+    /// grant's roots are the whole boundary — said plainly here and in
+    /// `types/den-ffi.d.ts` rather than left to read as a stronger property.
     #[rquickjs::function]
     pub fn grant(ctx: Ctx<'_>) -> Result<Value<'_>> {
         // `null`, not `undefined`: "this realm has no grant" is an answer, not
