@@ -55,6 +55,13 @@ for (const broken of [
   { params: ["buffer"], result: "i32", nonblocking: true },
   { result: "i32" },
   { params: ["i32", "i32"] },
+  // A key of the wrong shape is den's own error naming the key, not the
+  // engine's untyped TypeError.
+  { params: "i32", result: "i32" },
+  { params: [{ callback: { params: "i32", result: "void" } }], result: "i32" },
+  { ...add, name: 7 },
+  { ...add, optional: 3 },
+  { ...add, nonblocking: 3 },
   // A static and a function are different key sets, so neither accepts the
   // other's keys, and `void` names no bytes to read.
   { type: "i32", params: [] },

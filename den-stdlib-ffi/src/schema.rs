@@ -8,7 +8,7 @@
 use std::{ffi::c_void, sync::Arc};
 
 use libffi::middle::{Cif, Type, ffi_abi_FFI_DEFAULT_ABI};
-use rquickjs::{Array, Ctx, Object, Result, Value};
+use rquickjs::{Array, Ctx, FromJs, Object, Result, Value};
 
 use crate::error::ErrorKind;
 
@@ -443,8 +443,7 @@ impl FnSig {
         })?;
         refuse_unknown_keys(ctx, symbol, declared, &Self::KEYS)?;
 
-        let params = declared
-            .get::<_, Option<Array<'js>>>("params")?
+        let params = read::<Array<'js>>(ctx, symbol, declared, "params", "an array of type names")?
             .ok_or_else(|| {
                 ErrorKind::Schema.throw_for(
                     ctx,
@@ -556,6 +555,26 @@ pub enum CallMode {
     Nonblocking,
 }
 
+/// One schema key, read as the shape it must have.
+///
+/// The engine's own conversion failure is an untyped `TypeError`, and every
+/// refusal out of den:ffi carries a `kind` (§4.8) — so a key of the wrong
+/// shape is `Schema` naming the key, exactly like a key den does not know.
+fn read<'js, T: FromJs<'js>>(
+    ctx: &Ctx<'js>, key: &str, declared: &Object<'js>, name: &str, expected: &str,
+) -> Result<Option<T>> {
+    let Some(value) = declared.get::<_, Option<Value<'js>>>(name)? else {
+        return Ok(None);
+    };
+    T::from_js(ctx, value).map(Some).map_err(|_wrong_shape| {
+        ErrorKind::Schema.throw_for(
+            ctx,
+            format_args!("symbol `{key}`: `{name}` must be {expected}"),
+            key,
+        )
+    })
+}
+
 /// An ignored key is how Bun turns a `nonblocking` request into a synchronous
 /// call with no diagnostic; den refuses instead.
 fn refuse_unknown_keys(
@@ -652,12 +671,9 @@ impl SymbolSpec {
         };
 
         Ok(Self {
-            symbol: declared
-                .get::<_, Option<String>>("name")?
+            symbol: read::<String>(ctx, key, declared, "name", "a string")?
                 .unwrap_or_else(|| key.to_owned()),
-            optional: declared
-                .get::<_, Option<bool>>("optional")?
-                .unwrap_or(false),
+            optional: read::<bool>(ctx, key, declared, "optional", "a boolean")?.unwrap_or(false),
             kind,
         })
     }
@@ -665,8 +681,7 @@ impl SymbolSpec {
     fn parse_function<'js>(
         ctx: &Ctx<'js>, key: &str, declared: &Object<'js>,
     ) -> Result<SymbolKind> {
-        let params = declared
-            .get::<_, Option<Array<'js>>>("params")?
+        let params = read::<Array<'js>>(ctx, key, declared, "params", "an array of type names")?
             .ok_or_else(|| {
                 ErrorKind::Schema.throw_for(
                     ctx,
@@ -689,9 +704,7 @@ impl SymbolSpec {
             })
             .and_then(|declared| NativeType::parse(ctx, key, &declared))?;
 
-        let mode = if declared
-            .get::<_, Option<bool>>("nonblocking")?
-            .unwrap_or(false)
+        let mode = if read::<bool>(ctx, key, declared, "nonblocking", "a boolean")?.unwrap_or(false)
         {
             CallMode::Nonblocking
         } else {
