@@ -2,6 +2,7 @@
 
 members = [
     "den-core",
+    "den-e2e",
     "den-stdlib-assert",
     "den-stdlib-console",
     "den-stdlib-core",

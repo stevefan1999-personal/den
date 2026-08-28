@@ -1,0 +1,32 @@
+[package]
+name = "den-e2e"
+description = "End-to-end Engine tests that span multiple den stdlib crates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+publish = false
+
+[lib]
+test = false
+
+[dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = ["stdlib", "wasm", "jit", "typescript", "react"]
+stdlib = ["den-core/stdlib"]
+typescript = ["den-core/typescript"]
+react = ["den-core/react"]
+wasm = ["den-core/wasm"]
+jit = ["den-core/jit"]
+wasi = ["den-core/wasi"]
+
+[lints]
+workspace = true
