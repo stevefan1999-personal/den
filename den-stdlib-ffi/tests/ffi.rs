@@ -1,7 +1,7 @@
-//! `docs/research/19-den-ffi.md` §6, phases 1 to 5: the scalar vocabulary,
+//! `docs/research/19-den-ffi.md` §6, phases 1 to 6: the scalar vocabulary,
 //! borrowed buffers, callbacks on den's thread and on C's, and `nonblocking`
-//! symbols — all against a real `.so`, built here with the platform's C
-//! compiler so that the ABI under test is the one this machine actually uses.
+//! symbols, structs by value — all against a real `.so`, built here with the C
+//! compiler of this machine, so the ABI under test is the one it really uses.
 
 use std::{
     env,
@@ -253,6 +253,18 @@ async fn a_realm_can_be_dropped_with_a_live_callback() -> eyre::Result<()> {
         return Ok(());
     };
     run("leak.js", Some(scoped(probe))).await
+}
+
+/// §6: both SysV struct classes, in and out. `point_scale` is eight bytes and
+/// travels in a register; `triple_sum` is twenty-four, so libffi allocates the
+/// hidden `sret` pointer — a marshaller that only handles the first passes the
+/// former and corrupts the stack on the latter.
+#[tokio::test(flavor = "multi_thread")]
+async fn structs_cross_by_value_in_both_abi_classes() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("structs.js", Some(scoped(probe))).await
 }
 
 /// §0 fact 3, asserted rather than trusted: `call_return_into` writes exactly

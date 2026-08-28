@@ -2,20 +2,21 @@
 //!
 //! `docs/research/19-den-ffi.md` §3.1: the same value types the call site in
 //! `types/den-ffi.d.ts`, drives the CIF here, and is validated at the
-//! boundary. Everything the current phases cannot marshal — structs — throws
-//! `FfiError { kind: "Schema" }` naming the offender, rather than widening or
-//! ignoring it.
+//! boundary. Anything den cannot marshal throws `FfiError { kind: "Schema" }`
+//! naming the offender, rather than widening or ignoring it.
 
 use std::{ffi::c_void, sync::Arc};
 
-use libffi::middle::{Cif, Type};
+use libffi::middle::{Cif, Type, ffi_abi_FFI_DEFAULT_ABI};
 use rquickjs::{Array, Ctx, Object, Result, Value};
 
 use crate::error::ErrorKind;
 
-/// One C scalar. Every width is distinct even where two share a Rust type on
-/// this target, because the CIF and the range check both read this.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One C value type: a scalar, `void`, or a struct passed by value.
+///
+/// Every scalar width is distinct even where two share a Rust type on this
+/// target, because the CIF and the range check both read this.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeType {
     I8,
     U8,
@@ -32,31 +33,42 @@ pub enum NativeType {
     Bool,
     Pointer,
     Void,
+    /// `{ struct: { field: type, … } }`, laid out at `open()` (§4.2).
+    Struct(Arc<StructLayout>),
 }
 
 impl NativeType {
-    /// The declared type of one result or one static.
-    fn parse(ctx: &Ctx<'_>, symbol: &str, declared: &Value<'_>) -> Result<Self> {
-        Self::named(ctx, symbol, &Self::type_name(ctx, symbol, declared)?)
+    /// The declared type of one result, one static or one struct field.
+    pub fn parse<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>) -> Result<Self> {
+        if let Some(name) = Self::type_name(declared)? {
+            return Self::named(ctx, symbol, &name);
+        }
+        if let Some(object) = declared.as_object()
+            && let Some(fields) = object.get::<_, Option<Object<'js>>>("struct")?
+        {
+            refuse_unknown_keys(ctx, symbol, object, &["struct"])?;
+            return Ok(Self::Struct(Arc::new(StructLayout::parse(
+                ctx, symbol, &fields,
+            )?)));
+        }
+        Err(ErrorKind::Schema.throw_for(
+            ctx,
+            format_args!(
+                "symbol `{symbol}`: a type is a type name or `{{ struct: {{ … }} }}` — `{{ \
+                 callback }}` is a parameter type only"
+            ),
+            symbol,
+        ))
     }
 
-    /// A type is named by a string. An object is a struct or a callback type,
-    /// neither of which den can marshal yet, and anything else is malformed.
-    fn type_name(ctx: &Ctx<'_>, symbol: &str, declared: &Value<'_>) -> Result<String> {
-        match declared.as_string().map(rquickjs::String::to_string) {
-            Some(Ok(name)) => Ok(name),
-            Some(Err(error)) => Err(error),
-            None => {
-                Err(ErrorKind::Schema.throw_for(
-                    ctx,
-                    format_args!(
-                        "symbol `{symbol}`: a type must be a type name — struct types are not \
-                         supported yet, and `{{ callback }}` is a parameter type only"
-                    ),
-                    symbol,
-                ))
-            }
-        }
+    /// The name a type was declared by, when it was declared by one at all —
+    /// which is what tells `buffer` apart before [`Self::named`] rejects it as
+    /// a result type.
+    fn type_name(declared: &Value<'_>) -> Result<Option<String>> {
+        declared
+            .as_string()
+            .map(rquickjs::String::to_string)
+            .transpose()
     }
 
     fn named(ctx: &Ctx<'_>, symbol: &str, name: &str) -> Result<Self> {
@@ -91,36 +103,33 @@ impl NativeType {
             other => {
                 Err(ErrorKind::Schema.throw_for(
                     ctx,
-                    format_args!(
-                        "symbol `{symbol}`: type `{other}` is not supported yet — den:ffi \
-                         currently marshals the scalar types and `void`"
-                    ),
+                    format_args!("symbol `{symbol}`: `{other}` is not a type den:ffi knows"),
                     symbol,
                 ))
             }
         }
     }
 
-    /// The declared type of one parameter. `void` is a result type only: a C
-    /// function takes no `void` argument, and accepting one would make the CIF
-    /// disagree with the argument array.
-    fn parse_param(ctx: &Ctx<'_>, symbol: &str, name: &str) -> Result<Self> {
-        match Self::named(ctx, symbol, name)? {
+    /// The declared type of one parameter or one struct field. `void` is a
+    /// result type only: a C function takes no `void` argument, and accepting
+    /// one would make the CIF disagree with the argument array.
+    fn parse_value<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Value<'js>) -> Result<Self> {
+        match Self::parse(ctx, symbol, declared)? {
             Self::Void => {
                 Err(ErrorKind::Schema.throw_for(
                     ctx,
                     format_args!(
-                        "symbol `{symbol}`: `void` is a result type, not a parameter type"
+                        "symbol `{symbol}`: `void` is a result type, not a parameter or field type"
                     ),
                     symbol,
                 ))
             }
-            scalar => Ok(scalar),
+            value => Ok(value),
         }
     }
 
     /// The name this type has in the schema, for error messages.
-    pub const fn name(self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self {
             Self::I8 => "i8",
             Self::U8 => "u8",
@@ -137,12 +146,13 @@ impl NativeType {
             Self::Bool => "bool",
             Self::Pointer => "pointer",
             Self::Void => "void",
+            Self::Struct(_) => "struct",
         }
     }
 
     /// How many bytes one value of this type occupies, which is how much of a
     /// C cell may be copied out of it (see [`crate::marshal::Cell`]).
-    pub const fn size(self) -> usize {
+    pub fn size(&self) -> usize {
         match self {
             Self::I8 | Self::U8 | Self::Bool => size_of::<u8>(),
             Self::I16 | Self::U16 => size_of::<u16>(),
@@ -151,12 +161,28 @@ impl NativeType {
             Self::Isize | Self::Usize => size_of::<usize>(),
             Self::Pointer => size_of::<*mut c_void>(),
             Self::Void => 0,
+            Self::Struct(layout) => layout.size,
+        }
+    }
+
+    /// What this type must be aligned to inside a struct. It is the C
+    /// alignment because it is Rust's for the same target — which is the
+    /// assumption [`StructLayout::agrees_with_libffi`] exists to check.
+    fn align(&self) -> usize {
+        match self {
+            Self::I8 | Self::U8 | Self::Bool | Self::Void => align_of::<u8>(),
+            Self::I16 | Self::U16 => align_of::<u16>(),
+            Self::I32 | Self::U32 | Self::F32 => align_of::<u32>(),
+            Self::I64 | Self::U64 | Self::F64 => align_of::<u64>(),
+            Self::Isize | Self::Usize => align_of::<usize>(),
+            Self::Pointer => align_of::<*mut c_void>(),
+            Self::Struct(layout) => layout.align,
         }
     }
 
     /// The libffi description this type calls for. C's `_Bool` is one byte, so
     /// it rides the `u8` class; the marshaller is what normalises 0/1.
-    pub fn ffi_type(self) -> Type {
+    pub fn ffi_type(&self) -> Type {
         match self {
             Self::I8 => Type::i8(),
             Self::U8 | Self::Bool => Type::u8(),
@@ -172,7 +198,140 @@ impl NativeType {
             Self::F64 => Type::f64(),
             Self::Pointer => Type::pointer(),
             Self::Void => Type::void(),
+            Self::Struct(layout) => layout.ffi_type(),
         }
+    }
+}
+
+/// One field of a struct, and where den computed it to sit.
+#[derive(Debug, Eq, PartialEq)]
+pub struct StructField {
+    pub name:     String,
+    pub declared: NativeType,
+    pub offset:   usize,
+}
+
+/// A struct passed or returned by value.
+///
+/// The offsets are den's own arithmetic — the only arithmetic in this crate —
+/// so they are checked against libffi's before any call happens (§4.2). Named
+/// fields are also what makes Deno's unchecked-struct hole unrepresentable:
+/// there is no caller-supplied buffer here to be the wrong size.
+#[derive(Debug, Eq, PartialEq)]
+pub struct StructLayout {
+    pub fields: Vec<StructField>,
+    pub size:   usize,
+    pub align:  usize,
+}
+
+impl StructLayout {
+    /// `offset = align_up(cursor, align_of(field))`, `align = max(field
+    /// aligns)`, `size = align_up(cursor, align)` — the C rule, and then
+    /// libffi is asked whether it agrees.
+    fn parse<'js>(ctx: &Ctx<'js>, symbol: &str, declared: &Object<'js>) -> Result<Self> {
+        let (mut fields, mut cursor, mut align) = (Vec::new(), 0_usize, 1_usize);
+        for entry in declared.props::<String, Value<'js>>() {
+            let (name, declared) = entry?;
+            let declared = NativeType::parse_value(ctx, symbol, &declared)?;
+            let offset = cursor.next_multiple_of(declared.align());
+            cursor = offset + declared.size();
+            align = align.max(declared.align());
+            fields.push(StructField {
+                name,
+                declared,
+                offset,
+            });
+        }
+        if fields.is_empty() {
+            return Err(ErrorKind::Schema.throw_for(
+                ctx,
+                format_args!("symbol `{symbol}`: a struct type needs at least one field"),
+                symbol,
+            ));
+        }
+        let computed = Self {
+            fields,
+            size: cursor.next_multiple_of(align),
+            align,
+        };
+        computed.agrees_with_libffi(ctx, symbol)?;
+        Ok(computed)
+    }
+
+    fn ffi_type(&self) -> Type {
+        Type::structure(self.fields.iter().map(|field| field.declared.ffi_type()))
+    }
+
+    /// libffi lays the same fields out for the target ABI, and it is what will
+    /// actually place them in registers — so a disagreement with den's
+    /// arithmetic is `Layout` at `open()` rather than a silently wrong call on
+    /// a target nobody has tested (§8 question 1).
+    fn agrees_with_libffi(&self, ctx: &Ctx<'_>, symbol: &str) -> Result<()> {
+        let mut described = self.ffi_type();
+        let offsets = described
+            .struct_offsets(ffi_abi_FFI_DEFAULT_ABI)
+            .map_err(|error| {
+                ErrorKind::Layout.throw_for(
+                    ctx,
+                    format_args!("symbol `{symbol}`: libffi refused this struct type: {error:?}"),
+                    symbol,
+                )
+            })?;
+        // SAFETY: `as_raw_ptr` hands back the `ffi_type` this `Type` owns, and
+        // `struct_offsets` has just laid it out — which is what initialises
+        // `size` and `alignment` — so both fields are readable and live for as
+        // long as `described`.
+        let (size, align) = unsafe {
+            let described = &*described.as_raw_ptr();
+            (described.size, usize::from(described.alignment))
+        };
+        let disagrees = size != self.size
+            || align != self.align
+            || offsets.len() != self.fields.len()
+            || offsets
+                .iter()
+                .zip(&self.fields)
+                .any(|(libffi, field)| *libffi != field.offset);
+        if disagrees {
+            return Err(ErrorKind::Layout.throw_for(
+                ctx,
+                format_args!(
+                    "symbol `{symbol}`: den laid this struct out as size {} align {} offsets \
+                     {:?}, libffi as size {size} align {align} offsets {offsets:?} — den's ABI \
+                     arithmetic is wrong on this target",
+                    self.size,
+                    self.align,
+                    self.fields
+                        .iter()
+                        .map(|field| field.offset)
+                        .collect::<Vec<_>>()
+                ),
+                symbol,
+            ));
+        }
+        Ok(())
+    }
+
+    /// `layout(type)` — what den believes about a struct, so that a script can
+    /// assert it against the header it is binding. No computed layout can see
+    /// `#pragma pack`, bitfields or `-fshort-enums`; publishing den's answer is
+    /// the only way a caller can find out that den is wrong (§5.2).
+    pub fn query<'js>(ctx: &Ctx<'js>, declared: &Value<'js>) -> Result<Object<'js>> {
+        let NativeType::Struct(layout) = NativeType::parse(ctx, "layout", declared)? else {
+            return Err(ErrorKind::Schema.throw(
+                ctx,
+                "`layout` describes a struct type — `layout({ struct: { … } })`",
+            ));
+        };
+        let offsets = Object::new(ctx.clone())?;
+        for field in &layout.fields {
+            offsets.set(field.name.as_str(), field.offset)?;
+        }
+        let described = Object::new(ctx.clone())?;
+        described.set("size", layout.size)?;
+        described.set("align", layout.align)?;
+        described.set("offsets", offsets)?;
+        Ok(described)
     }
 }
 
@@ -184,7 +343,8 @@ impl NativeType {
 /// a property of the types rather than a check someone can forget.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParamType {
-    Scalar(NativeType),
+    /// A scalar or a struct: something C is handed by value.
+    Value(NativeType),
     /// A `Uint8Array` whose bytes C borrows for exactly one call (§4.6).
     Buffer,
     /// `{ callback: { params, result } }` — a function pointer into JS. The
@@ -210,17 +370,16 @@ impl ParamType {
                 ctx, symbol, &signature,
             )?)));
         }
-        let name = NativeType::type_name(ctx, symbol, declared)?;
-        if name == "buffer" {
+        if NativeType::type_name(declared)?.as_deref() == Some("buffer") {
             return Ok(Self::Buffer);
         }
-        Ok(Self::Scalar(NativeType::parse_param(ctx, symbol, &name)?))
+        Ok(Self::Value(NativeType::parse_value(ctx, symbol, declared)?))
     }
 
     /// Both a buffer and a callback reach C as an address.
     pub fn ffi_type(&self) -> Type {
         match self {
-            Self::Scalar(scalar) => scalar.ffi_type(),
+            Self::Value(value) => value.ffi_type(),
             Self::Buffer | Self::Callback(_) => Type::pointer(),
         }
     }
@@ -260,11 +419,11 @@ impl FnSig {
             })?
             .iter::<Value<'js>>()
             .map(|declared| {
-                let name = NativeType::type_name(ctx, symbol, &declared?)?;
+                let declared = declared?;
                 // A buffer is a length den is told, and C tells it nothing:
                 // the trampoline is handed a bare address, so there is no
                 // length to build a `Uint8Array` from.
-                if name == "buffer" {
+                if NativeType::type_name(&declared)?.as_deref() == Some("buffer") {
                     return Err(ErrorKind::Schema.throw_for(
                         ctx,
                         format_args!(
@@ -274,7 +433,9 @@ impl FnSig {
                         symbol,
                     ));
                 }
-                NativeType::parse_param(ctx, symbol, &name)
+                let parsed = NativeType::parse_value(ctx, symbol, &declared)?;
+                Self::refuse_struct(ctx, symbol, &parsed, "parameter")?;
+                Ok(parsed)
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -288,8 +449,31 @@ impl FnSig {
                 )
             })
             .and_then(|declared| NativeType::parse(ctx, symbol, &declared))?;
+        Self::refuse_struct(ctx, symbol, &result, "result")?;
 
         Ok(Self { params, result })
+    }
+
+    /// A callback's arguments are copied out of libffi's argument vector as
+    /// fixed-width [`crate::marshal::Cell`]s and its answer is written back
+    /// through one, so a struct by value has nowhere to go in either
+    /// direction. Refused by name rather than truncated — and the published
+    /// `FnSig` in `types/den-ffi.d.ts` excludes it too, so this is the
+    /// backstop for plain JS.
+    fn refuse_struct(
+        ctx: &Ctx<'_>, symbol: &str, declared: &NativeType, position: &str,
+    ) -> Result<()> {
+        if matches!(declared, NativeType::Struct(_)) {
+            return Err(ErrorKind::Schema.throw_for(
+                ctx,
+                format_args!(
+                    "symbol `{symbol}`: a callback {position} cannot be a struct by value — den \
+                     carries a callback's values as register-wide cells"
+                ),
+                symbol,
+            ));
+        }
+        Ok(())
     }
 
     /// The C signature of a bound symbol: a `buffer` and a `{ callback }` both
@@ -302,7 +486,7 @@ impl FnSig {
                 .iter()
                 .map(|param| {
                     match param {
-                        ParamType::Scalar(scalar) => *scalar,
+                        ParamType::Value(value) => value.clone(),
                         ParamType::Buffer | ParamType::Callback(_) => NativeType::Pointer,
                     }
                 })
@@ -315,14 +499,14 @@ impl FnSig {
     /// `nonblocking` call, which is what keeps the schema `Send`.
     pub fn cif(&self) -> Cif {
         Cif::new(
-            self.params.iter().map(|param| param.ffi_type()),
+            self.params.iter().map(NativeType::ffi_type),
             self.result.ffi_type(),
         )
     }
 
     /// How this signature reads in an error message: `(i32, i32) => i32`.
     pub fn describe(&self) -> String {
-        let params: Vec<&str> = self.params.iter().map(|param| param.name()).collect();
+        let params: Vec<&str> = self.params.iter().map(NativeType::name).collect();
         format!("({}) => {}", params.join(", "), self.result.name())
     }
 }

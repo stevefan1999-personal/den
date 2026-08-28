@@ -2,10 +2,11 @@
 //!
 //! Two rules carry most of the weight here. 64-bit integers cross through
 //! their **decimal string**, never `BigInt::to_i64` (doc 09 fact 12). And a
-//! result lands in a [`Cell`] rather than in a typed local, because
+//! result lands in [`Bytes`] rather than in a typed local, because
 //! `call_return_into` corrects sub-register returns itself and writes exactly
 //! `type.size()` bytes (§0 fact 3) into a buffer libffi requires to be at
-//! least `ffi_arg`-wide.
+//! least `ffi_arg`-wide — and because a struct returned through a hidden
+//! `sret` pointer needs as many bytes as it has, not a register's worth.
 
 use std::{ffi::c_void, rc::Rc, str::FromStr, sync::Arc};
 
@@ -20,7 +21,7 @@ use crate::{
     error::ErrorKind,
     library::LoadedLibrary,
     pointer::Pointer,
-    schema::{CallMode, NativeType, ParamType},
+    schema::{CallMode, NativeType, ParamType, StructLayout},
 };
 
 /// The largest integer a JS `number` holds exactly. Past it the value was
@@ -46,14 +47,53 @@ const _: () = assert!(
     "a C value den marshals does not fit its cell"
 );
 
+/// Owned bytes for one C value that a [`Cell`] cannot hold on its own: a
+/// result libffi is about to write, or a struct argument den packs field by
+/// field.
+///
+/// Eight-aligned, because it is [`Cell`]s underneath and eight is every
+/// alignment den's vocabulary has — no field is wider than a pointer or a
+/// `double`. `size` is the declared type's own size, which is what may be
+/// copied out; the buffer itself is rounded up to whole cells and is never
+/// smaller than one, because libffi documents a return buffer of at least
+/// `ffi_arg` whatever the declared type's size is (§0 fact 3). Rounding up is
+/// load-bearing on the argument side too: libffi reads a struct's registers an
+/// eightbyte at a time (`ffi64.c:719`), which for a twelve-byte struct is a
+/// read of the four bytes past it.
+pub struct Bytes {
+    cells: Vec<Cell>,
+    size:  usize,
+}
+
+impl Bytes {
+    pub fn for_type(declared: &NativeType) -> Self { Self::zeroed(declared.size()) }
+
+    fn zeroed(size: usize) -> Self {
+        Self {
+            cells: vec![Cell::default(); size.max(CELL_BYTES).div_ceil(CELL_BYTES)],
+            size,
+        }
+    }
+
+    pub const fn as_ptr(&self) -> *const u8 { self.cells.as_ptr().cast() }
+
+    const fn as_mut_ptr(&mut self) -> *mut u8 { self.cells.as_mut_ptr().cast() }
+
+    /// The buffer libffi writes into, or reads a struct argument out of. It is
+    /// handed over as a slice so that `Arg`/`Ret` take its address and nothing
+    /// else — both accept a `?Sized` reference and keep only the data pointer.
+    fn as_slice(&self) -> &[Cell] { &self.cells }
+}
+
 impl Cell {
     /// Copy one C value out of the buffer libffi is pointing at.
     ///
     /// # Safety
     ///
     /// `address` must point at an initialised, readable C value of the type
-    /// `declared` names.
-    pub unsafe fn read_from(declared: NativeType, address: *const u8) -> Self {
+    /// `declared` names, and that type must fit a cell — every type but a
+    /// struct, which is refused in a callback signature for this reason.
+    pub unsafe fn read_from(declared: &NativeType, address: *const u8) -> Self {
         let mut cell = Self::default();
         // SAFETY: the caller's contract, and `declared.size()` — which is that
         // value's width — never exceeds this cell.
@@ -99,6 +139,10 @@ pub enum ArgumentCell {
     /// pointer here would make the whole cell `!Send` for no gain: libffi
     /// copies the bytes and Rust's provenance cannot follow them into C.
     Pointer(usize),
+    /// A struct by value: its fields already written at their computed offsets
+    /// into den's own bytes. C is handed the address of these, and libffi does
+    /// the register-or-memory placement the ABI calls for.
+    Struct(Bytes),
 }
 
 impl ArgumentCell {
@@ -106,7 +150,7 @@ impl ArgumentCell {
         ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>, site: CallSite<'_>,
     ) -> Result<Self> {
         match declared {
-            ParamType::Scalar(scalar) => Self::scalar(ctx, *scalar, value),
+            ParamType::Value(declared) => Self::value(ctx, declared, value),
             ParamType::Buffer => Ok(Self::Pointer(Self::buffer(ctx, value)?)),
             // §4.7, and the whole of fact 6: a C function handed a callback is
             // free to spawn a thread, call it and join. On the realm thread
@@ -215,7 +259,34 @@ impl ArgumentCell {
         Ok(())
     }
 
-    pub fn scalar<'js>(ctx: &Ctx<'js>, declared: NativeType, value: &Value<'js>) -> Result<Self> {
+    /// One struct's own bytes, packed field by field at den's computed
+    /// offsets. A field the object does not carry is a `Schema` error naming
+    /// it: den will not invent a zero for something the caller forgot (§4.4).
+    fn structure<'js>(ctx: &Ctx<'js>, layout: &StructLayout, value: &Value<'js>) -> Result<Bytes> {
+        let object = value.as_object().ok_or_else(|| {
+            ErrorKind::BadArgument.throw(ctx, "expected an object for a `struct` argument")
+        })?;
+        let mut bytes = Bytes::zeroed(layout.size);
+        for field in &layout.fields {
+            let declared = object
+                .get::<_, Option<Value<'js>>>(field.name.as_str())?
+                .ok_or_else(|| {
+                    ErrorKind::Schema.throw_for(
+                        ctx,
+                        format_args!("this struct has no `{}` field", field.name),
+                        &field.name,
+                    )
+                })?;
+            let cell = Self::value(ctx, &field.declared, &declared)?;
+            // SAFETY: `offset + size` of every field is at most `layout.size`
+            // by construction, and `bytes` is that many bytes of den's own
+            // memory.
+            unsafe { cell.write_field(bytes.as_mut_ptr().add(field.offset)) };
+        }
+        Ok(bytes)
+    }
+
+    pub fn value<'js>(ctx: &Ctx<'js>, declared: &NativeType, value: &Value<'js>) -> Result<Self> {
         let name = declared.name();
         Ok(match declared {
             NativeType::I8 => Self::I8(integer(ctx, name, value)?),
@@ -238,6 +309,7 @@ impl ArgumentCell {
                 })?))
             }
             NativeType::Pointer => Self::Pointer(Pointer::marshal(ctx, value)?),
+            NativeType::Struct(layout) => Self::Struct(Self::structure(ctx, layout, value)?),
             NativeType::Void => {
                 return Err(
                     ErrorKind::Schema.throw(ctx, "`void` is a result type, not a parameter type")
@@ -266,6 +338,46 @@ impl ArgumentCell {
             Self::Usize(value) | Self::Pointer(value) => Arg::new(value),
             Self::F32(value) => Arg::new(value),
             Self::F64(value) => Arg::new(value),
+            // A struct is passed by the address of its bytes, and libffi is
+            // what turns that into registers or a copy on the stack.
+            Self::Struct(bytes) => Arg::new(bytes.as_slice()),
+        }
+    }
+
+    /// Write this value into a struct's own bytes, at the natural width of its
+    /// declared type.
+    ///
+    /// Deliberately *not* [`write_return`]'s widening: that one fills a
+    /// closure's register-wide return buffer, and doing it to a struct field
+    /// would write over the field next door.
+    ///
+    /// # Safety
+    ///
+    /// `out` must be writable for this value's declared size, inside a buffer
+    /// den owns.
+    const unsafe fn write_field(&self, out: *mut u8) {
+        // SAFETY: the caller's contract, restated on this function. Each arm
+        // writes exactly the declared type's own width.
+        unsafe {
+            match self {
+                Self::I8(value) => out.cast::<i8>().write_unaligned(*value),
+                Self::U8(value) => out.write_unaligned(*value),
+                Self::I16(value) => out.cast::<i16>().write_unaligned(*value),
+                Self::U16(value) => out.cast::<u16>().write_unaligned(*value),
+                Self::I32(value) => out.cast::<i32>().write_unaligned(*value),
+                Self::U32(value) => out.cast::<u32>().write_unaligned(*value),
+                Self::I64(value) => out.cast::<i64>().write_unaligned(*value),
+                Self::U64(value) => out.cast::<u64>().write_unaligned(*value),
+                Self::Isize(value) => out.cast::<isize>().write_unaligned(*value),
+                Self::Usize(value) | Self::Pointer(value) => {
+                    out.cast::<usize>().write_unaligned(*value)
+                }
+                Self::F32(value) => out.cast::<f32>().write_unaligned(*value),
+                Self::F64(value) => out.cast::<f64>().write_unaligned(*value),
+                Self::Struct(bytes) => {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.size);
+                }
+            }
         }
     }
 }
@@ -344,21 +456,22 @@ fn narrowing(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f32> {
 /// signature must be the one `address` really has. The latter is the caller's
 /// contract (§5.1) and is checkable at no layer.
 pub unsafe fn invoke(
-    declared: NativeType, cif: &Cif, address: CodePtr, cells: &[ArgumentCell],
-) -> Cell {
+    declared: &NativeType, cif: &Cif, address: CodePtr, cells: &[ArgumentCell],
+) -> Bytes {
     let args: Vec<Arg<'_>> = cells.iter().map(ArgumentCell::as_arg).collect();
-    let mut cell = Cell::default();
+    let mut cell = Bytes::for_type(declared);
     // A `void` function has nowhere to write, and libffi wants to be told so
     // rather than handed a buffer it must not touch.
-    let returned = if declared == NativeType::Void {
+    let returned = if *declared == NativeType::Void {
         Ret::void()
     } else {
-        Ret::new(&mut cell.0)
+        Ret::new(cell.cells.as_mut_slice())
     };
     // SAFETY: the caller's contract, restated on this function. The return
-    // buffer is `CELL_BYTES` wide, which is at least libffi's documented
-    // minimum and at least `declared.size()`, the number of bytes
-    // `call_return_into` writes (§0 fact 3).
+    // buffer is at least `CELL_BYTES` wide and at least `declared.size()` —
+    // libffi's documented minimum, and the number of bytes `call_return_into`
+    // writes (§0 fact 3). A struct large enough to be returned through a
+    // hidden `sret` pointer is written into these same bytes.
     unsafe { cif.call_return_into(address, &args, returned) };
     cell
 }
@@ -376,7 +489,7 @@ pub unsafe fn invoke(
 /// `declared` names. For a static symbol that the schema is describing
 /// correctly is the caller's contract (§5.1).
 pub unsafe fn read<'js>(
-    ctx: &Ctx<'js>, declared: NativeType, address: *const u8, library: Option<&Rc<LoadedLibrary>>,
+    ctx: &Ctx<'js>, declared: &NativeType, address: *const u8, library: Option<&Rc<LoadedLibrary>>,
 ) -> Result<Value<'js>> {
     macro_rules! cell {
         ($ty:ty) => {
@@ -410,6 +523,19 @@ pub unsafe fn read<'js>(
             Pointer::to_js(ctx, cell!(*const c_void).expose_provenance(), library)
         }
         NativeType::Void => Ok(Value::new_undefined(ctx.clone())),
+        // A fresh object per read: no JS value ever aliases the C bytes.
+        NativeType::Struct(layout) => {
+            let object = Object::new(ctx.clone())?;
+            for field in &layout.fields {
+                // SAFETY: the caller's contract — `address` is a struct of
+                // this layout, so each field's own offset is inside it and
+                // holds a value of the type the field declares.
+                let value =
+                    unsafe { read(ctx, &field.declared, address.add(field.offset), library)? };
+                object.set(field.name.as_str(), value)?;
+            }
+            Ok(object.into_value())
+        }
     }
 }
 
@@ -444,6 +570,12 @@ pub unsafe fn write_return(out: *mut c_void, cell: &ArgumentCell) {
             }
             ArgumentCell::F32(value) => out.cast::<f32>().write(*value),
             ArgumentCell::F64(value) => out.cast::<f64>().write(*value),
+            // Unreachable while a callback may not return a struct (§4.2), and
+            // written correctly rather than as a panic, because a panic here
+            // is an abort (§0 fact 7).
+            ArgumentCell::Struct(bytes) => {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.size);
+            }
         }
     }
 }
@@ -456,7 +588,7 @@ pub unsafe fn write_return(out: *mut c_void, cell: &ArgumentCell) {
 /// # Safety
 ///
 /// As [`write_return`].
-pub const unsafe fn write_zero(out: *mut c_void, declared: NativeType) {
+pub unsafe fn write_zero(out: *mut c_void, declared: &NativeType) {
     // SAFETY: the caller's contract, restated on this function.
     unsafe {
         match declared {
@@ -466,6 +598,8 @@ pub const unsafe fn write_zero(out: *mut c_void, declared: NativeType) {
             NativeType::Pointer => out.cast::<usize>().write(0),
             NativeType::I64 | NativeType::Isize => out.cast::<i64>().write(0),
             NativeType::U64 | NativeType::Usize => out.cast::<u64>().write(0),
+            // As [`write_return`]: unreachable today, and correct anyway.
+            NativeType::Struct(layout) => out.cast::<u8>().write_bytes(0, layout.size),
             _narrower_than_a_register => widen_unsigned(out, 0),
         }
     }

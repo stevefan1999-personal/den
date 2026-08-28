@@ -7,10 +7,6 @@ use rquickjs::{Class, Ctx, Error, JsLifetime, Object, class::Trace};
 /// Which rule was broken. One sum type, one discriminant, per
 /// `docs/research/19-den-ffi.md` §4.8 — no sentinel returns and no untyped
 /// throws.
-///
-/// The published surface (`types/den-ffi.d.ts`) also names `Layout`, which
-/// only the struct-by-value phase can produce; a variant nothing throws would
-/// be dead code here.
 #[derive(Clone, Copy, Debug)]
 pub enum ErrorKind {
     /// No grant, or a grant that does not cover the resolved path.
@@ -19,8 +15,10 @@ pub enum ErrorKind {
     Open,
     /// `dlsym` has no such name.
     Symbol,
-    /// The schema is malformed, or names something this phase cannot do.
+    /// The schema is malformed, or names something den:ffi cannot do.
     Schema,
+    /// den's struct arithmetic and libffi's disagree about this target's ABI.
+    Layout,
     /// A number argument does not fit the declared C type.
     Range,
     /// A well-typed call with an argument den refuses to marshal.
@@ -36,6 +34,7 @@ impl ErrorKind {
             Self::Open => "Open",
             Self::Symbol => "Symbol",
             Self::Schema => "Schema",
+            Self::Layout => "Layout",
             Self::Range => "Range",
             Self::BadArgument => "BadArgument",
             Self::Closed => "Closed",

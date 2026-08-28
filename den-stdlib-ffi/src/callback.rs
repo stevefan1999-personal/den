@@ -147,7 +147,7 @@ pub fn create<'js>(
 ) -> Result<Value<'js>> {
     let signature = Arc::new(FnSig::parse(&ctx, "callback", &definition)?);
     let cif = Cif::new(
-        signature.params.iter().map(|param| param.ffi_type()),
+        signature.params.iter().map(NativeType::ffi_type),
         signature.result.ffi_type(),
     );
     let index = FfiRealm::register(&ctx, function, cif, &signature)?;
@@ -380,7 +380,7 @@ impl Slot {
                 // SAFETY: libffi hands one pointer per parameter the CIF
                 // declares, and the CIF was built from this same signature, so
                 // `position` is in bounds and the pointee has the declared type.
-                unsafe { Cell::read_from(*declared, (*arguments.add(position)).cast::<u8>()) }
+                unsafe { Cell::read_from(declared, (*arguments.add(position)).cast::<u8>()) }
             })
             .collect()
     }
@@ -413,7 +413,7 @@ unsafe extern "C" fn trampoline(
     //
     // SAFETY: `result` is libffi's return buffer for this closure's CIF, which
     // was built from `slot.signature`.
-    unsafe { marshal::write_zero(out, slot.signature.result) };
+    unsafe { marshal::write_zero(out, &slot.signature.result) };
 
     // SAFETY: `arguments` is libffi's argument vector for that same CIF.
     let ran = panic::catch_unwind(AssertUnwindSafe(|| unsafe { slot.invoke(out, arguments) }));
@@ -517,7 +517,7 @@ impl<'js> FfiRealm<'js> {
                 // declared type, copied out of libffi's argument vector. A
                 // callback argument carries no library provenance: den is told
                 // an address and nothing about where it came from.
-                unsafe { marshal::read(ctx, *declared, cell.as_ptr(), None) }
+                unsafe { marshal::read(ctx, declared, cell.as_ptr(), None) }
             })
             .collect::<Result<Vec<_>>>()?;
         let mut call = Args::new(ctx.clone(), marshalled.len());
@@ -527,9 +527,9 @@ impl<'js> FfiRealm<'js> {
         if signature.result == NativeType::Void {
             return Ok(None);
         }
-        Ok(Some(ArgumentCell::scalar(
+        Ok(Some(ArgumentCell::value(
             ctx,
-            signature.result,
+            &signature.result,
             &returned,
         )?))
     }

@@ -2,13 +2,14 @@
 // that the inference works and that every `@ts-expect-error` below is
 // consumed — an unused one is itself an error (TS2578).
 //
-// Nothing here runs; the runtime implements everything but `struct`, which it
-// refuses at `open()`.
+// Nothing here runs; the runtime implements every shape below.
 import {
   type Callback,
   callback,
   FfiGrant,
   grant,
+  type Layout,
+  layout,
   open,
   type Pointer,
   ptr,
@@ -64,6 +65,11 @@ if (address !== null) {
   void [bits, same, bytes, text];
 }
 
+// The layout query: a struct type in, plain data out.
+const described: Layout = layout({ struct: { b: "i8", n: "i32" } });
+const offset: number = described.offsets.n;
+void [described, offset];
+
 using doubler = callback({ params: ["i32"], result: "i32" }, (n) => n * 2);
 const applied: Promise<number> = lib.apply(doubler, 21);
 const code: Pointer = doubler.pointer;
@@ -97,6 +103,12 @@ lib.apply(wrongSignature, 1);
 callback({ params: ["i32"], result: "i32" }, (text: string) => text.length);
 // @ts-expect-error — a callback is handed addresses, so it cannot take a buffer.
 callback({ params: ["buffer"], result: "void" }, () => {});
+// @ts-expect-error — a callback carries register-wide values, so not a struct.
+callback({ params: [{ struct: { x: "i32" } }], result: "void" }, () => {});
+// @ts-expect-error — nor does it return one.
+callback({ params: [], result: { struct: { x: "i32" } } }, () => ({ x: 1 }));
+// @ts-expect-error — `layout` describes a struct; a scalar has no fields.
+layout("i32");
 // @ts-expect-error — `buffer` is an argument type, not a static's type.
 open("./libprobe.so", { v: { type: "buffer" } }, capability);
 // @ts-expect-error — `buffer` is not a result type.
