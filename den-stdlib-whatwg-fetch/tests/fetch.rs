@@ -124,3 +124,8 @@ async fn a_stream_request_body_is_uploaded_without_buffering() -> eyre::Result<(
     assert_eq!(framing.lock().expect("framing").as_str(), "chunked");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_stream_decodes_a_buffered_body_without_aborting() -> eyre::Result<()> {
+    run("response_text_stream.js").await
+}
