@@ -672,11 +672,14 @@ fn tee_cancel<'js>(
         let reader_id = state.borrow().reader_id;
         ReadableStream::release_reader(ctx, &source_inner, reader_id);
         let cancelled = ReadableStream::cancel_stream(ctx, &source_inner, composite.into_value())?;
-        let outer = crate::streams::chain_undefined(ctx, cancelled.into_value())?;
-        if let Some(cap) = state.borrow_mut().cancel.as_mut() {
-            cap.fulfill(ctx);
+        // Specification step 13: resolve the shared capability *with* the
+        // cancel result, so both branches see the same settlement. Fulfilling
+        // it unconditionally told the branch that cancelled first that the
+        // teardown succeeded even when the source's cancel rejected.
+        if let Some(mut cap) = state.borrow_mut().cancel.take() {
+            cap.resolve(cancelled.into_value());
         }
-        return Ok(outer);
+        return Ok(promise);
     }
     Ok(promise)
 }
