@@ -206,6 +206,11 @@ impl<'js> TransformStream<'js> {
             backpressure_change: None,
         }));
         let shared: Shared<'js> = Rc::downgrade(&owned);
+        // The specification starts a transform under backpressure and lets the
+        // readable half's first pull clear it. That has to happen before the
+        // readable exists, or attaching its controller pulls, clears the flag,
+        // and this call puts it straight back on with no pull left to lift it.
+        set_backpressure(&ctx, &shared, true);
 
         // Readable half: pulling clears backpressure, cancelling errors the
         // writable half.
@@ -395,7 +400,6 @@ impl<'js> TransformStream<'js> {
             .roots
             .push(controller.clone().into_value());
         readable_inner.borrow_mut().source = controller.clone().into_inner();
-        set_backpressure(&ctx, &shared, true);
 
         let started = match start_fn {
             Some(start) => start.call::<_, Value>((This(transformer_object), controller))?,
@@ -407,7 +411,17 @@ impl<'js> TransformStream<'js> {
                 error_both(&ctx, &shared, reason);
             })?
         };
-        react(&ctx, started, None, Some(on_err))?;
+        // The readable half's controller starts already-started, so nothing has
+        // kicked its first pull. Do it when the transformer's `start` settles,
+        // where the specification's start promise would: a readable strategy
+        // with room pulls straight away and lifts the initial backpressure.
+        let on_ok = {
+            let readable_inner = Rc::clone(&readable_inner);
+            Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                ReadableStream::pull_if_needed(&ctx, &readable_inner);
+            })?
+        };
+        react(&ctx, started, Some(on_ok), Some(on_err))?;
 
         Ok(Self { readable, writable })
     }
@@ -467,7 +481,7 @@ impl<'js> TransformStreamDefaultController<'js> {
         }
         let backpressure = ReadableStream::desired_size(&readable).is_none_or(|size| size <= 0.0);
         if backpressure != self.shared.borrow().backpressure {
-            set_backpressure(&ctx, &shared, true);
+            set_backpressure(&ctx, &shared, backpressure);
         }
         Ok(())
     }
