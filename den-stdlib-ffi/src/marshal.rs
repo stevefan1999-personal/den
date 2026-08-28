@@ -9,9 +9,14 @@
 use std::{ffi::c_void, rc::Rc, str::FromStr};
 
 use libffi::middle::{Arg, Cif, CodePtr, Ret};
-use rquickjs::{BigInt, Coerced, Ctx, FromJs as _, Result, Value};
+use rquickjs::{BigInt, Coerced, Ctx, FromJs as _, Object, Result, TypedArray, Value};
 
-use crate::{error::ErrorKind, library::LoadedLibrary, pointer::Pointer, schema::NativeType};
+use crate::{
+    error::ErrorKind,
+    library::LoadedLibrary,
+    pointer::Pointer,
+    schema::{NativeType, ParamType},
+};
 
 /// The largest integer a JS `number` holds exactly. Past it the value was
 /// already lost before den saw it, so narrowing it into a C integer would hand
@@ -38,7 +43,91 @@ pub enum ArgumentCell {
 }
 
 impl ArgumentCell {
-    pub fn marshal<'js>(ctx: &Ctx<'js>, declared: NativeType, value: &Value<'js>) -> Result<Self> {
+    pub fn marshal<'js>(ctx: &Ctx<'js>, declared: ParamType, value: &Value<'js>) -> Result<Self> {
+        match declared {
+            ParamType::Scalar(scalar) => Self::scalar(ctx, scalar, value),
+            ParamType::Buffer => Ok(Self::Pointer(Self::buffer(ctx, value)?)),
+        }
+    }
+
+    /// A `Uint8Array`'s own bytes, borrowed for exactly one call.
+    ///
+    /// `as_raw()` and not `as_bytes()`: the latter hands back a `&[u8]`, which
+    /// cannot back a C function that *writes* into the buffer. Both are
+    /// byteOffset-correct — `get_raw_bytes` adds the view's offset — and both
+    /// report detachment and nothing else, so the two backing stores that can
+    /// move or be mutated while C holds the address need their own reads
+    /// (§4.6).
+    ///
+    /// The address is never stored: the `Value` this reads lives in the
+    /// caller's argument list for the whole of `BoundFn::call`, and the
+    /// cell dies with the call.
+    fn buffer<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<*mut c_void> {
+        let view = value
+            .as_object()
+            .cloned()
+            .and_then(|object| TypedArray::<u8>::from_object(object).ok())
+            .ok_or_else(|| {
+                ErrorKind::BadArgument.throw(ctx, "expected a Uint8Array for `buffer`")
+            })?;
+        // Detachment is the one hazard `as_raw` reports by itself, and it is
+        // checked first because the reads below need a buffer to ask about.
+        Self::address_of(ctx, &view)?;
+        Self::refuse_unstable_store(ctx, &view)?;
+        // The address is taken only now: `Symbol.hasInstance` on the realm's
+        // `SharedArrayBuffer` is a JS hook, and JS can detach a buffer — so an
+        // address read before that check could already be dangling here.
+        Self::address_of(ctx, &view)
+    }
+
+    /// The address of the view's first byte, or the typed refusal for a
+    /// detached buffer.
+    fn address_of<'js>(ctx: &Ctx<'js>, view: &TypedArray<'js, u8>) -> Result<*mut c_void> {
+        view.as_raw()
+            .map(|raw| raw.ptr.as_ptr().cast::<c_void>())
+            .ok_or_else(|| {
+                ErrorKind::BadArgument.throw(ctx, "the buffer behind this Uint8Array is detached")
+            })
+    }
+
+    /// A shared or resizable backing store can be written or moved by another
+    /// agent *while C holds the pointer*, and rquickjs 0.12.2 reports neither:
+    /// `ArrayBuffer`'s whole surface is `len`/`as_bytes`/`as_raw`/`detach`.
+    /// So both are explicit reads, per §4.6.
+    ///
+    /// The buffer comes from `TypedArray::arraybuffer()`, which is
+    /// `JS_GetTypedArrayBuffer` rather than a `.buffer` property read, so an
+    /// own property on the view cannot aim this at a different store.
+    ///
+    /// ponytail: `resizable` is still read through the prototype getter, so a
+    /// script that shadows it on its own buffer defeats this one check. The
+    /// unspoofable version is a `JS_GetAnyOpaque` through `rquickjs-sys`, which
+    /// is a new dependency for a hole a caller can only dig for itself.
+    fn refuse_unstable_store<'js>(ctx: &Ctx<'js>, view: &TypedArray<'js, u8>) -> Result<()> {
+        let buffer = view.arraybuffer()?;
+        let buffer = buffer.as_object();
+        if let Some(shared) = ctx
+            .globals()
+            .get::<_, Option<Object<'js>>>("SharedArrayBuffer")?
+            && buffer.is_instance_of(shared)
+        {
+            return Err(ErrorKind::BadArgument.throw(
+                ctx,
+                "a SharedArrayBuffer cannot back a `buffer` argument — another agent could write \
+                 it while C holds the address",
+            ));
+        }
+        if buffer.get::<_, Option<bool>>("resizable")? == Some(true) {
+            return Err(ErrorKind::BadArgument.throw(
+                ctx,
+                "a resizable ArrayBuffer cannot back a `buffer` argument — resizing moves the \
+                 bytes out from under C",
+            ));
+        }
+        Ok(())
+    }
+
+    fn scalar<'js>(ctx: &Ctx<'js>, declared: NativeType, value: &Value<'js>) -> Result<Self> {
         let name = declared.name();
         Ok(match declared {
             NativeType::I8 => Self::I8(integer(ctx, name, value)?),

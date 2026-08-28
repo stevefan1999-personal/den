@@ -16,10 +16,10 @@
  *
  * **Implemented today: the whole scalar vocabulary** — every integer width,
  * `bool`, `f32`, `f64`, `pointer` and `void` — as arguments, as results and as
- * static symbols, plus `name`, `optional` and the `ptr` namespace, all called
- * synchronously. `buffer`, `struct`, `callback` and `nonblocking` are part of
- * the settled schema but throw `FfiError { kind: "Schema" }` at `open()` until
- * their phase lands. `Callback<P, R>` is declared here from the start, brand
+ * static symbols, plus `buffer` arguments, `name`, `optional` and the `ptr`
+ * namespace, all called synchronously. `struct`, `callback` and `nonblocking`
+ * are part of the settled schema but throw `FfiError { kind: "Schema" }` at
+ * `open()` until their phase lands. `Callback<P, R>` is declared here from the start, brand
  * and all, because adding a brand to a published interface later is a breaking
  * change.
  */
@@ -36,6 +36,16 @@ declare module "den:ffi" {
     readonly struct: { readonly [field: string]: ValueType };
   }
 
+  /**
+   * `buffer` is a `Uint8Array` whose own bytes — byteOffset included — C
+   * borrows for exactly the one synchronous call, so C may write through it and
+   * the writes are visible to JS immediately. Three backing stores are refused
+   * with `BadArgument` rather than lent out: a detached one, a
+   * `SharedArrayBuffer` and a resizable `ArrayBuffer`, either of which another
+   * agent could move or rewrite while C holds the address. den passes the
+   * address and nothing else: a `length` the C function takes is an ordinary
+   * separate argument, and nothing checks that it agrees with the view.
+   */
   type ValueType =
     | NumberType
     | BigIntType
@@ -46,6 +56,9 @@ declare module "den:ffi" {
 
   /** `buffer` is in-only: a returned pointer carries no length. */
   type ResultType = Exclude<ValueType, "buffer"> | "void";
+
+  /** An exported variable has the same problem a result does. */
+  type StaticType = Exclude<ValueType, "buffer">;
 
   /** The signature of a JS function C is allowed to call back into. */
   interface FnSig {
@@ -113,7 +126,7 @@ declare module "den:ffi" {
 
   /** An exported variable, read once at `open()`. */
   export interface StaticDef {
-    readonly type: ValueType;
+    readonly type: StaticType;
     readonly optional?: boolean;
     /** As on `FnDef`. */
     readonly name?: string;

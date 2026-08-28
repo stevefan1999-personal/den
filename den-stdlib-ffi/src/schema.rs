@@ -2,7 +2,7 @@
 //!
 //! `docs/research/19-den-ffi.md` §3.1: the same value types the call site in
 //! `types/den-ffi.d.ts`, drives the CIF here, and is validated at the
-//! boundary. Everything the current phases cannot marshal — `buffer`, structs,
+//! boundary. Everything the current phases cannot marshal — structs,
 //! callbacks, `nonblocking` — throws `FfiError { kind: "Schema" }` naming the
 //! offender, rather than widening or ignoring it.
 
@@ -33,10 +33,16 @@ pub enum NativeType {
 }
 
 impl NativeType {
-    /// The declared type of one parameter, one result or one static.
+    /// The declared type of one result or one static.
     fn parse(ctx: &Ctx<'_>, symbol: &str, declared: &Value<'_>) -> Result<Self> {
+        Self::named(ctx, symbol, &Self::type_name(ctx, symbol, declared)?)
+    }
+
+    /// A type is named by a string. An object is a struct or a callback type,
+    /// neither of which den can marshal yet, and anything else is malformed.
+    fn type_name(ctx: &Ctx<'_>, symbol: &str, declared: &Value<'_>) -> Result<String> {
         match declared.as_string().map(rquickjs::String::to_string) {
-            Some(Ok(name)) => Self::named(ctx, symbol, &name),
+            Some(Ok(name)) => Ok(name),
             Some(Err(error)) => Err(error),
             None => {
                 Err(ErrorKind::Schema.throw_for(
@@ -68,6 +74,18 @@ impl NativeType {
             "bool" => Ok(Self::Bool),
             "pointer" => Ok(Self::Pointer),
             "void" => Ok(Self::Void),
+            // A pointer C returns carries no length, so there is nothing to
+            // build a `Uint8Array` from; a static has the same problem (§4.4).
+            "buffer" => {
+                Err(ErrorKind::Schema.throw_for(
+                    ctx,
+                    format_args!(
+                        "symbol `{symbol}`: `buffer` is an argument type, not a result or static \
+                         type"
+                    ),
+                    symbol,
+                ))
+            }
             other => {
                 Err(ErrorKind::Schema.throw_for(
                     ctx,
@@ -124,12 +142,56 @@ impl NativeType {
     }
 }
 
+/// What a parameter may be.
+///
+/// `buffer` lives here and only here: it is an argument type, because a
+/// pointer C hands back carries no length to build a `Uint8Array` from (§4.4).
+/// Keeping it out of [`NativeType`] is what makes "not a result, not a static"
+/// a property of the types rather than a check someone can forget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParamType {
+    Scalar(NativeType),
+    /// A `Uint8Array` whose bytes C borrows for exactly one call (§4.6).
+    Buffer,
+}
+
+impl ParamType {
+    /// `void` is a result type only: a C function takes no `void` argument, and
+    /// accepting one would make the CIF disagree with the argument array.
+    pub fn parse(ctx: &Ctx<'_>, symbol: &str, declared: &Value<'_>) -> Result<Self> {
+        let name = NativeType::type_name(ctx, symbol, declared)?;
+        if name == "buffer" {
+            return Ok(Self::Buffer);
+        }
+        match NativeType::named(ctx, symbol, &name)? {
+            NativeType::Void => {
+                Err(ErrorKind::Schema.throw_for(
+                    ctx,
+                    format_args!(
+                        "symbol `{symbol}`: `void` is a result type, not a parameter type"
+                    ),
+                    symbol,
+                ))
+            }
+            scalar => Ok(Self::Scalar(scalar)),
+        }
+    }
+
+    /// A buffer reaches C as the address of its first byte.
+    pub fn ffi_type(self) -> Type {
+        match self {
+            Self::Scalar(scalar) => scalar.ffi_type(),
+            Self::Buffer => Type::pointer(),
+        }
+    }
+}
+
 /// What a schema entry declares the symbol to be.
 #[derive(Debug)]
 pub enum SymbolKind {
     /// `{ params, result }` — a function to bind.
     Function {
-        params: Vec<NativeType>,
+        params: Vec<ParamType>,
         result: NativeType,
     },
     /// `{ type }` — an exported variable, read once at `open()`.
@@ -219,7 +281,7 @@ impl SymbolSpec {
                 )
             })?
             .iter::<Value<'js>>()
-            .map(|declared| Self::parse_param(ctx, key, declared?))
+            .map(|declared| ParamType::parse(ctx, key, &declared?))
             .collect::<Result<Vec<_>>>()?;
 
         let result = declared
@@ -236,23 +298,11 @@ impl SymbolSpec {
         Ok(SymbolKind::Function { params, result })
     }
 
-    /// `void` is a result type only: a C function takes no `void` argument, and
-    /// accepting one would make the CIF disagree with the argument array.
-    fn parse_param(ctx: &Ctx<'_>, key: &str, declared: Value<'_>) -> Result<NativeType> {
-        match NativeType::parse(ctx, key, &declared)? {
-            NativeType::Void => {
-                Err(ErrorKind::Schema.throw_for(
-                    ctx,
-                    format_args!("symbol `{key}`: `void` is a result type, not a parameter type"),
-                    key,
-                ))
-            }
-            parsed => Ok(parsed),
-        }
-    }
-
     /// An ignored key is how Bun turns a `nonblocking` request into a
-    /// synchronous call with no diagnostic; den refuses instead.
+    /// synchronous call with no diagnostic; den refuses instead. `nonblocking`
+    /// is one of those keys today, which is why nothing here has to say that a
+    /// `buffer` parameter may not be nonblocking — when phase 5 makes the key
+    /// legal, that pairing has to become its own refusal (§4.6).
     fn refuse_unknown_keys(
         ctx: &Ctx<'_>, key: &str, declared: &Object<'_>, allowed: &[&str],
     ) -> Result<()> {

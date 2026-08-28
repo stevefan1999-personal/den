@@ -1,6 +1,6 @@
-//! `docs/research/19-den-ffi.md` §6, phases 1 and 2: the scalar vocabulary
-//! against a real `.so`, built here with the platform's C compiler so that the
-//! ABI under test is the one this machine actually uses.
+//! `docs/research/19-den-ffi.md` §6, phases 1 to 3: the scalar vocabulary and
+//! borrowed buffers against a real `.so`, built here with the platform's C
+//! compiler so that the ABI under test is the one this machine actually uses.
 
 use std::{
     env,
@@ -159,6 +159,14 @@ async fn pointers_are_opaque_and_carry_their_library() -> eyre::Result<()> {
         return Ok(());
     };
     run("pointers.js", Some(scoped(probe))).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_buffer_is_borrowed_at_its_byte_offset_or_refused() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("buffers.js", Some(scoped(probe))).await
 }
 
 /// §0 fact 3, asserted rather than trusted: `call_return_into` writes exactly
