@@ -685,7 +685,7 @@ impl<'js> Response<'js> {
     }
 
     pub fn text_stream(&mut self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
-        if matches!(*self.inner.borrow(), ResponseBody::Taken)
+        if self.body_used()
             || self
                 .body_stream
                 .as_ref()
@@ -693,12 +693,16 @@ impl<'js> Response<'js> {
         {
             return Err(Exception::throw_type(&ctx, "Already read"));
         }
-        if matches!(*self.inner.borrow(), ResponseBody::None) && self.body_stream.is_none() {
-            self.mark_used();
+        if !self.has_body() {
             return body::text_to_stream(&ctx, "");
         }
-        if let ResponseBody::Bytes(bytes) = &*self.inner.borrow() {
-            let text = body::utf8_text(bytes);
+        // Decode before marking used: `mark_used` borrows `inner` mutably, so
+        // holding the read borrow across it aborts the process.
+        let buffered = match &*self.inner.borrow() {
+            ResponseBody::Bytes(bytes) => Some(body::utf8_text(bytes)),
+            _ => None,
+        };
+        if let Some(text) = buffered {
             self.mark_used();
             self.body_stream = None;
             return body::text_to_stream(&ctx, &text);
