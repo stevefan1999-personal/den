@@ -7,7 +7,6 @@
 
 pub mod blob;
 pub mod compression;
-pub mod event_target;
 pub mod events;
 pub mod eventsource;
 pub mod file_reader;
@@ -19,33 +18,11 @@ pub mod urlpattern;
 pub mod websocket;
 pub mod xhr;
 
-/// Everything `den:whatwg` exports and installs as a global.
-///
-/// Headers and Request live in `den-stdlib-whatwg-fetch` — they are fetch's
-/// job, and putting them here would duplicate the types fetch already
-/// constructs.
-#[cfg(test)]
-const API: [&str; 14] = [
-    "Blob",
-    "CloseEvent",
-    "CompressionStream",
-    "DecompressionStream",
-    "EventSource",
-    "File",
-    "FileReader",
-    "FormData",
-    "ProgressEvent",
-    "ReadableStream",
-    "TransformStream",
-    "URLPattern",
-    "WebSocket",
-    "XMLHttpRequest",
-];
-
 #[rquickjs::module]
 pub mod whatwg {
+    use den_stdlib_worker::events::{Event, EventTarget, define_event_handler, define_on};
     use den_util::inherit;
-    use rquickjs::{Class, Ctx, Result, class::JsClass, module::Exports};
+    use rquickjs::{Class, Ctx, Result, class::JsClass, function::Opt, module::Exports};
 
     use crate::host::Host;
     pub use crate::{
@@ -55,7 +32,12 @@ pub mod whatwg {
         eventsource::EventSource,
         file_reader::FileReader,
         form_data::FormData,
-        streams::{ReadableStream, TransformStream, WritableStream},
+        streams::{
+            ByteLengthQueuingStrategy, CountQueuingStrategy, ReadableStream,
+            ReadableStreamDefaultController, ReadableStreamDefaultReader, TransformStream,
+            TransformStreamDefaultController, WritableStream, WritableStreamDefaultController,
+            WritableStreamDefaultWriter,
+        },
         urlpattern::URLPattern,
         websocket::WebSocket,
         xhr::XMLHttpRequest,
@@ -68,8 +50,22 @@ pub mod whatwg {
         Ok(())
     }
 
+    fn install_event_handlers<'js, C: JsClass<'js>>(ctx: &Ctx<'js>, names: &[&str]) -> Result<()> {
+        let Some(proto) = Class::<C>::prototype(ctx)? else {
+            return Ok(());
+        };
+        for name in names {
+            define_event_handler(ctx.clone(), proto.clone(), (*name).to_owned(), Opt(None))?;
+        }
+        Ok(())
+    }
+
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _exports: &Exports<'js>) -> Result<()> {
+        let globals = ctx.globals();
+        if !globals.contains_key("EventTarget")? {
+            define_on(&globals)?;
+        }
         install::<Blob>(ctx, "Blob")?;
         install::<CloseEvent>(ctx, "CloseEvent")?;
         install::<CompressionStream>(ctx, "CompressionStream")?;
@@ -79,22 +75,51 @@ pub mod whatwg {
         install::<FileReader>(ctx, "FileReader")?;
         install::<FormData>(ctx, "FormData")?;
         install::<ProgressEvent>(ctx, "ProgressEvent")?;
+        crate::streams::install_intrinsics(ctx)?;
+        install::<ByteLengthQueuingStrategy>(ctx, "ByteLengthQueuingStrategy")?;
+        install::<CountQueuingStrategy>(ctx, "CountQueuingStrategy")?;
         install::<ReadableStream>(ctx, "ReadableStream")?;
+        install::<ReadableStreamDefaultController>(ctx, "ReadableStreamDefaultController")?;
+        install::<ReadableStreamDefaultReader>(ctx, "ReadableStreamDefaultReader")?;
         install::<TransformStream>(ctx, "TransformStream")?;
+        install::<TransformStreamDefaultController>(ctx, "TransformStreamDefaultController")?;
+        install::<WritableStreamDefaultController>(ctx, "WritableStreamDefaultController")?;
+        install::<WritableStreamDefaultWriter>(ctx, "WritableStreamDefaultWriter")?;
+        let _ = Class::<crate::streams::ReadableStreamAsyncIterator>::create_constructor(ctx)?;
         install::<crate::url::URL>(ctx, "URL")?;
         install::<crate::url::URLSearchParams>(ctx, "URLSearchParams")?;
-        crate::url::install_shell(ctx)?;
+        let _ = Class::<crate::url::UrlSearchIterator>::create_constructor(ctx)?;
         install::<URLPattern>(ctx, "URLPattern")?;
         install::<WebSocket>(ctx, "WebSocket")?;
         install::<XMLHttpRequest>(ctx, "XMLHttpRequest")?;
         install::<WritableStream>(ctx, "WritableStream")?;
         inherit::<File, Blob>(ctx)?;
-        Host::set_event_target_proto::<ProgressEvent>(ctx, "Event")?;
-        Host::set_event_target_proto::<CloseEvent>(ctx, "Event")?;
-        Host::set_event_target_proto::<FileReader>(ctx, "EventTarget")?;
-        Host::set_event_target_proto::<XMLHttpRequest>(ctx, "EventTarget")?;
-        Host::set_event_target_proto::<EventSource>(ctx, "EventTarget")?;
-        Host::set_event_target_proto::<WebSocket>(ctx, "EventTarget")?;
+        inherit::<ProgressEvent, Event>(ctx)?;
+        inherit::<CloseEvent, Event>(ctx)?;
+        inherit::<FileReader, EventTarget>(ctx)?;
+        inherit::<XMLHttpRequest, EventTarget>(ctx)?;
+        inherit::<EventSource, EventTarget>(ctx)?;
+        inherit::<WebSocket, EventTarget>(ctx)?;
+        install_event_handlers::<FileReader>(ctx, &[
+            "onload",
+            "onerror",
+            "onloadend",
+            "onloadstart",
+            "onprogress",
+            "onabort",
+        ])?;
+        install_event_handlers::<XMLHttpRequest>(ctx, &[
+            "onreadystatechange",
+            "onload",
+            "onerror",
+            "onloadend",
+            "onloadstart",
+            "onprogress",
+            "onabort",
+            "ontimeout",
+        ])?;
+        install_event_handlers::<EventSource>(ctx, &["onopen", "onmessage", "onerror"])?;
+        install_event_handlers::<WebSocket>(ctx, &["onopen", "onmessage", "onerror", "onclose"])?;
         WebSocket::install_idl_constants(ctx)?;
         FileReader::install_idl_constants(ctx)?;
         Host::install_formdata_symbol(ctx)?;
@@ -103,131 +128,8 @@ pub mod whatwg {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use den_core::engine::Engine;
-
-    static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    fn case(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/js")
-            .join(name)
-    }
-
-    async fn run(name: &str) {
-        Engine::new()
-            .await
-            .run_file::<()>(case(name))
-            .await
-            .unwrap_or_else(|error| panic!("{error}"));
-    }
-
-    #[test]
-    fn api_list_has_not_drifted() {
-        assert_eq!(crate::API.len(), 14);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn xhr_get_and_post_against_a_local_listener() {
-        let _guard = ENV.lock().await;
-        let server = super::local_http::serve(|incoming| {
-            if incoming.path.ends_with("/post") {
-                super::local_http::Outgoing::ok(incoming.body, "text/plain")
-            } else {
-                super::local_http::Outgoing {
-                    status:  200,
-                    headers: vec![
-                        ("Content-Type".into(), "text/plain".into()),
-                        ("X-Echo".into(), "yes".into()),
-                    ],
-                    body:    b"hello-xhr".to_vec(),
-                    hang:    false,
-                    silent:  false,
-                }
-            }
-        })
-        .await;
-        // SAFETY: test-only keys, held under `ENV` so cargo-test threads cannot race.
-        unsafe {
-            std::env::set_var("DEN_TEST_GET_URL", server.url("/get"));
-            std::env::set_var("DEN_TEST_POST_URL", server.url("/post"));
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(5), run("xhr.js"))
-            .await
-            .expect("XMLHttpRequest test timed out");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn event_source_reads_two_events_from_a_local_listener() {
-        let _guard = ENV.lock().await;
-        let server = super::local_http::serve(|_| {
-            super::local_http::Outgoing::ok(
-                b"event: custom\ndata: a\n\ndata: b\n\n".to_vec(),
-                "text/event-stream",
-            )
-        })
-        .await;
-        // SAFETY: test-only key, held under `ENV` so cargo-test threads cannot race.
-        unsafe {
-            std::env::set_var("DEN_TEST_URL", server.url("/"));
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(5), run("event_source.js"))
-            .await
-            .expect("EventSource test timed out");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn websocket_echoes_a_text_frame_on_a_local_listener() {
-        let _guard = ENV.lock().await;
-        let port = echo_ws().await;
-        // SAFETY: test-only key, held under `ENV` so cargo-test threads cannot race.
-        unsafe {
-            std::env::set_var("DEN_TEST_WS_URL", format!("ws://127.0.0.1:{port}/"));
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(5), run("websocket_echo.js"))
-            .await
-            .expect("WebSocket test timed out");
-    }
-
-    async fn echo_ws() -> u16 {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("ws bind");
-        let port = listener.local_addr().expect("addr").port();
-        tokio::spawn(async move {
-            loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    break;
-                };
-                tokio::spawn(async move {
-                    let Ok(ws) =
-                        den_stdlib_networking::websocket::NativeWebSocket::accept(stream).await
-                    else {
-                        return;
-                    };
-                    while let Some(event) = ws.next_event().await {
-                        match event {
-                            den_stdlib_networking::websocket::NativeWsEvent::Text(text) => {
-                                let _ = ws.send_text(text);
-                            }
-                            den_stdlib_networking::websocket::NativeWsEvent::Binary(bytes) => {
-                                let _ = ws.send_binary(bytes);
-                            }
-                            den_stdlib_networking::websocket::NativeWsEvent::Close { .. } => {
-                                break;
-                            }
-                            den_stdlib_networking::websocket::NativeWsEvent::Open { .. }
-                            | den_stdlib_networking::websocket::NativeWsEvent::Error(_) => {}
-                        }
-                    }
-                });
-            }
-        });
-        port
-    }
-}
+#[path = "../tests/unit/lib.rs"]
+mod tests;
 
 #[cfg(any(test, feature = "test"))]
 pub mod local_http;

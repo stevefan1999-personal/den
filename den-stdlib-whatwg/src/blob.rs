@@ -98,7 +98,7 @@ impl BlobInner {
         )?;
         Class::instance(
             ctx.clone(),
-            ReadableStream::new(ctx, Opt(Some(source.into_value())))?,
+            ReadableStream::new(ctx, Opt(Some(source.into_value())), Opt(None))?,
         )
     }
 }
@@ -172,12 +172,13 @@ impl Blob {
 }
 
 #[derive(Trace, JsLifetime, Clone)]
-#[rquickjs::class]
+#[rquickjs::class(rename_all = "camelCase")]
 pub struct File {
     #[qjs(skip_trace)]
     inner:         BlobInner,
-    #[qjs(skip_trace)]
+    #[qjs(skip_trace, get, enumerable)]
     name:          String,
+    #[qjs(get, enumerable)]
     last_modified: f64,
 }
 
@@ -235,12 +236,6 @@ impl File {
             .map(|duration| duration.as_millis() as f64)
             .unwrap_or(0.0)
     }
-
-    #[qjs(get, enumerable)]
-    pub fn name(&self) -> String { self.name.clone() }
-
-    #[qjs(get, enumerable)]
-    pub fn last_modified(&self) -> f64 { self.last_modified }
 
     #[qjs(get, enumerable)]
     pub fn size(&self) -> usize { self.inner.size() }
