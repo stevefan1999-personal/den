@@ -42,6 +42,17 @@ declare module "den:ffi" {
    * agent could move or rewrite while C holds the address. den passes the
    * address and nothing else: a `length` the C function takes is an ordinary
    * separate argument, and nothing checks that it agrees with the view.
+   *
+   * The address is taken again after the *whole* argument list is marshalled —
+   * reading a later argument runs your JS, and that JS could have detached
+   * this one — so a store that dies mid-call is `BadArgument` and never a
+   * write through freed memory. For the same reason **no JS runs while a
+   * buffer is lent**: a callback C fires during such a call does not run, C
+   * gets the zero value, and one line goes to stderr. Two refusals are
+   * best-effort rather than airtight, and neither is a memory-safety
+   * guarantee: `SharedArrayBuffer` is a class-id check and holds, but
+   * `resizable` is an ordinary property read, so an own property of that name
+   * defeats it.
    */
   type ValueType =
     | NumberType
@@ -253,6 +264,12 @@ declare module "den:ffi" {
    * moment and nothing tells den otherwise. `Symbol.dispose` is what takes that
    * back, which is why there is no `ref()`/`unref()`.
    *
+   * **A call made from inside a synchronous call of your own runs inline**,
+   * on the thread already holding the realm's lock — with one exception: if
+   * that call lent C a `buffer`, the callback does **not** run. Your JS could
+   * detach the store C is about to write, and den cannot throw into a C frame,
+   * so C is handed the zero value and one line goes to stderr.
+   *
    * **A call from C's own thread is answered, and the wait for the answer is
    * bounded.** The realm services it through a mailbox. If the realm cannot be
    * reached within the timeout — the one case being a callback C stored and
@@ -288,7 +305,17 @@ declare module "den:ffi" {
    */
   export function layout(type: StructType): Layout;
 
-  /** This realm's grant, or `null` when it was given none. */
+  /**
+   * This realm's grant, or `null` when it was given none.
+   *
+   * **The grant is scoped to the realm, not to the module that was handed
+   * one.** den has no per-module seam yet (`EngineBuilder` does not exist), so
+   * anything running in a granted realm — including a dependency you did not
+   * write — can call this and then `open()` any path the roots cover. Passing
+   * the value to `open()` is what makes the capability explicit and greppable;
+   * it is not, today, what makes it unreachable. The roots are therefore the
+   * whole boundary: scope `--allow-ffi=PATH` as tightly as the binding allows.
+   */
   export function grant(): FfiGrant | null;
 
   /**
