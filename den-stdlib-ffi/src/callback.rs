@@ -6,9 +6,20 @@
 //! index into the realm's registry, exactly as `den-stdlib-wasm` does for a
 //! wasm import (`instance.rs`, `ImportedFunctions`).
 //!
-//! **This phase serves the owner thread only.** A trampoline entered from a
-//! thread C created returns the zero value and writes one line to stderr; the
-//! mailbox that makes it a real call is phase 5.
+//! A trampoline entered from the realm's own thread re-enters JS directly. One
+//! entered from a thread C created posts to a mailbox and blocks on the reply,
+//! and a `ctx.spawn`-ed pump on the realm side answers it. That pump is also
+//! what keeps den alive while a callback is armed (ARCHITECTURE §7.5 rule 1);
+//! `Symbol.dispose` is what takes it back.
+//!
+//! The wait for that reply is **bounded**, and the bound is not a nicety. A
+//! callback stored by C and fired from a thread a *synchronous* symbol then
+//! joins is a cycle den cannot see coming (§4.7): the realm is inside C, so it
+//! can never reach the pump. On expiry the trampoline hands C the zero value
+//! and says so on stderr, which lets C's thread finish, the join return, and
+//! the realm resume. That converts a permanent deadlock into a bounded stall
+//! plus a wrong answer plus a diagnostic, which is the only trade available
+//! (§5.1 item 5).
 //!
 //! # The lifetime contract, which is the whole hazard
 //!
@@ -25,8 +36,13 @@ use std::{
     ffi::c_void,
     panic::{self, AssertUnwindSafe},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{RecvTimeoutError, SyncSender, sync_channel},
+    },
     thread::{self, ThreadId},
+    time::Duration,
 };
 
 use den_stdlib_core::exceptions::report_uncaught;
@@ -38,14 +54,23 @@ use libffi::{
 use rquickjs::{
     Class, Ctx, Exception, Function, JsLifetime, Result, Value, class::Trace, function::Args,
 };
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     error::ErrorKind,
     library,
-    marshal::{self, ArgumentCell},
+    marshal::{self, ArgumentCell, Cell},
     pointer::Pointer,
     schema::{FnSig, NativeType},
 };
+
+/// How long a foreign thread waits for the realm before giving up, handing C
+/// the zero value and saying so.
+///
+/// Long enough that a realm merely busy with other work answers in time; short
+/// enough that §4.7's residual deadlock is a stall a human notices rather than
+/// a process that never comes back.
+const FOREIGN_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The handle JS holds. Everything mutable about a callback lives in the
 /// realm's registry, so a disposed handle cannot answer a stale address.
@@ -79,8 +104,8 @@ impl Callback {
     /// registers, which is undefined behaviour with no diagnostic anywhere
     /// (§0 fact 1). Both halves are cheap; only this one holds for plain JS.
     pub fn code_pointer<'js>(
-        ctx: &Ctx<'js>, declared: &Arc<FnSig>, value: &Value<'js>,
-    ) -> Result<*mut c_void> {
+        ctx: &Ctx<'js>, declared: &Arc<FnSig>, value: &Value<'js>, origin: &Arc<str>,
+    ) -> Result<usize> {
         let handle = value
             .as_object()
             .and_then(Class::<Self>::from_object)
@@ -105,13 +130,18 @@ impl Callback {
                 ),
             ));
         }
-        Ok(std::ptr::with_exposed_provenance_mut(
-            FfiRealm::code_address(ctx, handle.index)?,
-        ))
+        // Where C got this address is the only attribution den has when the
+        // callback comes back on a thread of C's own and nobody answers.
+        FfiRealm::record_origin(ctx, handle.index, origin)?;
+        FfiRealm::code_address(ctx, handle.index)
     }
 }
 
 /// `callback(def, fn)` — mint a C function pointer for `function`.
+///
+/// Registering one spawns the realm-side pump, so from here until
+/// `Symbol.dispose` the process stays alive: C may call at any moment, and
+/// den has no way to know it will not.
 pub fn create<'js>(
     ctx: Ctx<'js>, definition: Value<'js>, function: Function<'js>,
 ) -> Result<Value<'js>> {
@@ -157,6 +187,10 @@ struct Registration<'js> {
     /// function is what makes every later dispatch — a `.pointer` read, a
     /// marshalled argument, a call from C — see a dead callback.
     function: Option<Function<'js>>,
+    /// Dropping this ends the realm-side pump, which is what lets `idle()`
+    /// resolve again (ARCHITECTURE §7.5 rule 1). Held rather than sent through:
+    /// the drop *is* the message.
+    stop:     Option<oneshot::Sender<()>>,
 }
 
 // SAFETY: the only `'js` value here is `function` — `CallbackEntry` is
@@ -174,10 +208,6 @@ unsafe impl<'js> JsLifetime<'js> for Registration<'js> {
 /// and therefore dropped — first.
 struct CallbackEntry {
     closure: Closure<'static>,
-    #[expect(
-        dead_code,
-        reason = "never read: it owns the pointee `closure` holds, and drops after it"
-    )]
     slot:    Pin<Box<Slot>>,
 }
 
@@ -190,7 +220,8 @@ impl CallbackEntry {
         // `Closure<'static>` therefore demands a `&'static Slot`; the pointee
         // is pinned behind a `Box`, so its address is stable for this struct's
         // whole life, `closure` is declared first and so is dropped before it,
-        // and no `&Slot` derived from this ever escapes the trampoline.
+        // and no `&Slot` derived from this outlives the registry borrow it is
+        // taken through.
         let userdata: &'static Slot = unsafe { &*std::ptr::from_ref(&*slot) };
         Self {
             closure: Closure::new(cif, trampoline, userdata),
@@ -206,13 +237,46 @@ impl CallbackEntry {
 }
 
 /// What the trampoline gets instead of a JS value: an index, a signature, the
-/// thread that may run JS, and the parked context to run it in.
+/// thread that may run JS, the parked context to run it in, and the way back
+/// into the realm from any other thread.
 struct Slot {
     index:     usize,
     owner:     ThreadId,
     signature: Arc<FnSig>,
+    /// The realm-side pump's end. Closed once the callback is disposed, which
+    /// is how a late call from C becomes a logged zero rather than a wait.
+    mailbox:   mpsc::UnboundedSender<Call>,
+    /// `lib.so::symbol`, the last place C was handed this address — written on
+    /// the realm thread at marshal time, read from a foreign thread when the
+    /// wait expires. Nothing but the diagnostic depends on it, so a miss is a
+    /// vaguer message and never a wrong call.
+    origin:    Mutex<Option<Arc<str>>>,
     /// Read **only** after `owner` matches the calling thread.
     reentrant: OwnedCtx,
+}
+
+/// One foreign-thread callback on its way to the realm, and the way back.
+struct Call {
+    index:     usize,
+    signature: Arc<FnSig>,
+    /// The arguments as raw C bytes: this is built on a thread that may not
+    /// touch a JS value, so the realm is what turns them into one.
+    arguments: Vec<Cell>,
+    /// The realm answers with one value, or with `None` for a `void` result.
+    /// Dropping the sender instead is how a throw reaches C — the zero the
+    /// trampoline already wrote stands, and the exception is reported on the
+    /// realm side.
+    reply:     SyncSender<Option<ArgumentCell>>,
+    /// Cleared when the foreign thread gives up waiting. A request that
+    /// outlived its caller must not run: C's frame is gone, so any address
+    /// among the arguments is now dangling.
+    ///
+    /// ponytail: this narrows the window rather than closing it — a request the
+    /// pump starts serving in the same instant the wait expires still runs.
+    /// Closing it needs the reply channel to report its own disconnection,
+    /// which `std::sync::mpsc` does not offer and `tokio::sync::oneshot` offers
+    /// without a bounded blocking receive.
+    alive:     Arc<AtomicBool>,
 }
 
 // SAFETY: C decides which thread calls a trampoline, so `&Slot` crosses
@@ -230,66 +294,106 @@ impl Slot {
     /// `out` and `arguments` must be the buffers libffi handed the trampoline
     /// for the CIF this slot's signature built.
     unsafe fn invoke(&self, out: *mut c_void, arguments: *const *const c_void) {
-        if thread::current().id() != self.owner {
-            // Phase 5 posts to a mailbox and blocks here. Until then the honest
-            // answer is the zero value and a line saying so: no JS value in the
-            // process may be touched from this thread.
+        // SAFETY: the caller's contract, restated on this function.
+        let arguments = unsafe { self.arguments(arguments) };
+        if thread::current().id() == self.owner {
+            // C called back inside a call JS made, so the runtime lock is held
+            // by the frame below us — which is exactly what `OwnedCtx::with`
+            // requires of its caller.
+            self.reentrant.with(|ctx| {
+                match FfiRealm::serve(ctx, self.index, &self.signature, &arguments) {
+                    // SAFETY: the caller's contract, and `cell` holds the type
+                    // this slot's CIF declares as its result.
+                    Ok(Some(cell)) => unsafe { marshal::write_return(out, &cell) },
+                    Ok(None) => {}
+                    // A JS throw has no C caller to propagate to: C keeps the
+                    // zero value written before this ran, and the exception is
+                    // reported the way any uncaught one is.
+                    Err(thrown) => report_uncaught(ctx, Err(thrown)),
+                }
+            });
+            return;
+        }
+        // SAFETY: the caller's contract, restated on this function.
+        unsafe { self.post(out, arguments) };
+    }
+
+    /// The foreign-thread branch: no JS value in this process may be touched
+    /// from here, so the arguments travel as bytes and the realm's pump does
+    /// the call.
+    ///
+    /// # Safety
+    ///
+    /// As [`Slot::invoke`].
+    unsafe fn post(&self, out: *mut c_void, arguments: Vec<Cell>) {
+        let (reply, answer) = sync_channel(1);
+        let alive = Arc::new(AtomicBool::new(true));
+        let posted = self.mailbox.send(Call {
+            index: self.index,
+            signature: Arc::clone(&self.signature),
+            arguments,
+            reply,
+            alive: Arc::clone(&alive),
+        });
+        if posted.is_err() {
             eprintln!(
-                "den:ffi: a callback `{}` was invoked from a thread den does not own; C got the \
-                 zero value. Off-thread callbacks are not implemented yet.",
+                "den:ffi: `{}` called a disposed callback `{}` from its own thread; C got the \
+                 zero value.",
+                self.describe_origin(),
                 self.signature.describe()
             );
             return;
         }
-        // SAFETY: this is the owner thread, and C can only have reached this
-        // thread through a call JS made — so the frame below us is a den:ffi
-        // symbol call, which holds the runtime lock for its whole duration.
-        // That is exactly what `OwnedCtx::with` requires of its caller.
-        self.reentrant.with(|ctx| {
-            // SAFETY: the caller's contract, restated on this function.
-            let outcome = unsafe { self.call(ctx, out, arguments) };
-            // A JS throw has no C caller to propagate to: C gets the zero
-            // value written before this ran, and the exception is reported the
-            // way any uncaught one is.
-            report_uncaught(ctx, outcome);
-        });
+        match answer.recv_timeout(FOREIGN_CALL_TIMEOUT) {
+            // SAFETY: the caller's contract, and the realm marshalled `cell`
+            // against this slot's declared result type.
+            Ok(Some(cell)) => unsafe { marshal::write_return(out, &cell) },
+            // A `void` result, or a throw the realm has already reported.
+            Ok(None) | Err(RecvTimeoutError::Disconnected) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                alive.store(false, Ordering::Release);
+                eprintln!(
+                    "den:ffi: no answer from the realm within {:?} for the callback `{}` that \
+                     `{}` was given; C got the zero value. The realm is most likely inside a \
+                     synchronous call to that library which is itself waiting on this thread — \
+                     see docs/research/19-den-ffi.md §5.1 item 5.",
+                    FOREIGN_CALL_TIMEOUT,
+                    self.signature.describe(),
+                    self.describe_origin()
+                );
+            }
+        }
     }
 
+    /// Copy every argument out of libffi's vector, so that the bytes outlive
+    /// the trampoline frame and can cross a thread.
+    ///
     /// # Safety
     ///
     /// As [`Slot::invoke`].
-    unsafe fn call(
-        &self, ctx: &Ctx<'_>, out: *mut c_void, arguments: *const *const c_void,
-    ) -> Result<()> {
-        let function = FfiRealm::function(ctx, self.index)?;
-        let marshalled = self
-            .signature
+    unsafe fn arguments(&self, arguments: *const *const c_void) -> Vec<Cell> {
+        self.signature
             .params
             .iter()
             .enumerate()
             .map(|(position, declared)| {
                 // SAFETY: libffi hands one pointer per parameter the CIF
                 // declares, and the CIF was built from this same signature, so
-                // `position` is in bounds and the pointee has the declared
-                // type. A callback argument carries no library provenance.
-                unsafe {
-                    let cell = *arguments.add(position);
-                    marshal::read(ctx, *declared, cell.cast::<u8>(), None)
-                }
+                // `position` is in bounds and the pointee has the declared type.
+                unsafe { Cell::read_from(*declared, (*arguments.add(position)).cast::<u8>()) }
             })
-            .collect::<Result<Vec<_>>>()?;
-        let mut arguments = Args::new(ctx.clone(), marshalled.len());
-        arguments.push_args(marshalled)?;
-        let returned: Value<'_> = function.call_arg(arguments)?;
+            .collect()
+    }
 
-        if self.signature.result == NativeType::Void {
-            return Ok(());
-        }
-        let cell = ArgumentCell::scalar(ctx, self.signature.result, &returned)?;
-        // SAFETY: the caller's contract, and `cell` holds the type this slot's
-        // CIF declares as its result.
-        unsafe { marshal::write_return(out, &cell) };
-        Ok(())
+    /// The symbol C was handed this callback through, for a diagnostic. A
+    /// callback passed as a bare `pointer` was never recorded, and a poisoned
+    /// lock is not worth a second failure on a path that is already failing.
+    fn describe_origin(&self) -> Arc<str> {
+        self.origin
+            .lock()
+            .ok()
+            .and_then(|origin| origin.clone())
+            .unwrap_or_else(|| Arc::from("an unrecorded symbol"))
     }
 }
 
@@ -331,6 +435,8 @@ impl<'js> FfiRealm<'js> {
     fn register(
         ctx: &Ctx<'js>, function: Function<'js>, cif: Cif, signature: &Arc<FnSig>,
     ) -> Result<usize> {
+        let (mailbox, requests) = mpsc::unbounded_channel();
+        let (stop, stopped) = oneshot::channel();
         let registry = ctx.userdata::<Self>().ok_or_else(|| Self::missing(ctx))?;
         let mut registered = registry
             .registered
@@ -342,15 +448,105 @@ impl<'js> FfiRealm<'js> {
                 index,
                 owner: thread::current().id(),
                 signature: Arc::clone(signature),
+                mailbox,
+                origin: Mutex::new(None),
                 reentrant: OwnedCtx::new(ctx),
             }),
             function: Some(function),
+            stop:     Some(stop),
         });
+        // Before the pump exists there is nothing borrowing the registry, and
+        // the pump borrows it on every request.
+        drop(registered);
+        ctx.spawn(Self::pump(ctx.clone(), requests, stopped));
         Ok(index)
     }
 
-    /// `Symbol.dispose`: the function goes, the trampoline stays (see the
-    /// module docs). Idempotent, like every `Symbol.dispose`.
+    /// The realm side of the mailbox.
+    ///
+    /// This future is the process-lifetime mechanism for callbacks, the same
+    /// one `den-stdlib-worker`'s ports use: `AsyncRuntime::idle()` resolves
+    /// only when no `ctx.spawn`-ed future is left (doc 09 §2.2), so an armed
+    /// callback keeps den running and `Symbol.dispose` — which drops the
+    /// `stop` sender — is how that is taken back. There is no `ref()`/`unref()`
+    /// because there is nothing left for one to do.
+    async fn pump(
+        ctx: Ctx<'js>, mut requests: mpsc::UnboundedReceiver<Call>, stopped: oneshot::Receiver<()>,
+    ) {
+        let mut stopped = std::pin::pin!(stopped);
+        loop {
+            let call = tokio::select! {
+                // Biased, and disposal first: a disposed callback must not
+                // serve a request that raced it in.
+                biased;
+                _disposed = &mut stopped => return,
+                call = requests.recv() => match call {
+                    Some(call) => call,
+                    None => return,
+                },
+            };
+            if !call.alive.load(Ordering::Acquire) {
+                continue;
+            }
+            match Self::serve(&ctx, call.index, &call.signature, &call.arguments) {
+                Ok(answer) => {
+                    // The foreign thread is blocked on this and nothing else
+                    // holds the other end, so a failure here means it gave up
+                    // waiting; C already has the zero value.
+                    let _gave_up = call.reply.send(answer);
+                }
+                // Dropping `call` drops the reply sender, which is what tells
+                // the foreign thread to keep the zero it already wrote.
+                Err(thrown) => report_uncaught(&ctx, Err(thrown)),
+            }
+        }
+    }
+
+    /// Run one callback on the realm thread, whichever branch asked for it.
+    /// `None` is a `void` result, which writes nothing at all.
+    fn serve(
+        ctx: &Ctx<'js>, index: usize, signature: &FnSig, arguments: &[Cell],
+    ) -> Result<Option<ArgumentCell>> {
+        let function = Self::function(ctx, index)?;
+        let marshalled = signature
+            .params
+            .iter()
+            .zip(arguments)
+            .map(|(declared, cell)| {
+                // SAFETY: `cell` holds the bytes of a C value of exactly this
+                // declared type, copied out of libffi's argument vector. A
+                // callback argument carries no library provenance: den is told
+                // an address and nothing about where it came from.
+                unsafe { marshal::read(ctx, *declared, cell.as_ptr(), None) }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut call = Args::new(ctx.clone(), marshalled.len());
+        call.push_args(marshalled)?;
+        let returned: Value<'_> = function.call_arg(call)?;
+
+        if signature.result == NativeType::Void {
+            return Ok(None);
+        }
+        Ok(Some(ArgumentCell::scalar(
+            ctx,
+            signature.result,
+            &returned,
+        )?))
+    }
+
+    /// Note which symbol C was handed this callback through, for the
+    /// foreign-thread diagnostic. Last writer wins: a callback passed to two
+    /// symbols names the more recent one, which is the better guess.
+    fn record_origin(ctx: &Ctx<'js>, index: usize, origin: &Arc<str>) -> Result<()> {
+        Self::with_entry(ctx, index, |entry| {
+            entry.entry.slot.origin.lock().ok().map(|mut recorded| {
+                *recorded = Some(Arc::clone(origin));
+            })
+        })
+    }
+
+    /// `Symbol.dispose`: the function goes and the pump ends, the trampoline
+    /// stays (see the module docs). Idempotent, like every `Symbol.dispose`.
     fn release(ctx: &Ctx<'js>, index: usize) -> Result<()> {
         let registry = ctx.userdata::<Self>().ok_or_else(|| Self::missing(ctx))?;
         let mut registered = registry
@@ -359,6 +555,7 @@ impl<'js> FfiRealm<'js> {
             .map_err(|_in_use| Self::busy(ctx))?;
         if let Some(entry) = registered.get_mut(index) {
             entry.function = None;
+            entry.stop = None;
         }
         Ok(())
     }

@@ -2,13 +2,13 @@
 //!
 //! `docs/research/19-den-ffi.md` §3.1: the same value types the call site in
 //! `types/den-ffi.d.ts`, drives the CIF here, and is validated at the
-//! boundary. Everything the current phases cannot marshal — structs,
-//! callbacks, `nonblocking` — throws `FfiError { kind: "Schema" }` naming the
-//! offender, rather than widening or ignoring it.
+//! boundary. Everything the current phases cannot marshal — structs — throws
+//! `FfiError { kind: "Schema" }` naming the offender, rather than widening or
+//! ignoring it.
 
-use std::sync::Arc;
+use std::{ffi::c_void, sync::Arc};
 
-use libffi::middle::Type;
+use libffi::middle::{Cif, Type};
 use rquickjs::{Array, Ctx, Object, Result, Value};
 
 use crate::error::ErrorKind;
@@ -137,6 +137,20 @@ impl NativeType {
             Self::Bool => "bool",
             Self::Pointer => "pointer",
             Self::Void => "void",
+        }
+    }
+
+    /// How many bytes one value of this type occupies, which is how much of a
+    /// C cell may be copied out of it (see [`crate::marshal::Cell`]).
+    pub const fn size(self) -> usize {
+        match self {
+            Self::I8 | Self::U8 | Self::Bool => size_of::<u8>(),
+            Self::I16 | Self::U16 => size_of::<u16>(),
+            Self::I32 | Self::U32 | Self::F32 => size_of::<u32>(),
+            Self::I64 | Self::U64 | Self::F64 => size_of::<u64>(),
+            Self::Isize | Self::Usize => size_of::<usize>(),
+            Self::Pointer => size_of::<*mut c_void>(),
+            Self::Void => 0,
         }
     }
 
@@ -278,6 +292,34 @@ impl FnSig {
         Ok(Self { params, result })
     }
 
+    /// The C signature of a bound symbol: a `buffer` and a `{ callback }` both
+    /// reach C as an address, so both are `pointer` here. This is the plain,
+    /// `Send` description a `nonblocking` call carries to its worker thread,
+    /// where the CIF is rebuilt from it.
+    pub fn of(params: &[ParamType], result: NativeType) -> Self {
+        Self {
+            params: params
+                .iter()
+                .map(|param| {
+                    match param {
+                        ParamType::Scalar(scalar) => *scalar,
+                        ParamType::Buffer | ParamType::Callback(_) => NativeType::Pointer,
+                    }
+                })
+                .collect(),
+            result,
+        }
+    }
+
+    /// The CIF this signature describes. Cheap enough to rebuild per
+    /// `nonblocking` call, which is what keeps the schema `Send`.
+    pub fn cif(&self) -> Cif {
+        Cif::new(
+            self.params.iter().map(|param| param.ffi_type()),
+            self.result.ffi_type(),
+        )
+    }
+
     /// How this signature reads in an error message: `(i32, i32) => i32`.
     pub fn describe(&self) -> String {
         let params: Vec<&str> = self.params.iter().map(|param| param.name()).collect();
@@ -285,12 +327,18 @@ impl FnSig {
     }
 }
 
+/// How a bound symbol runs, which is also what decides whether a `Callback`
+/// may be handed to it (§4.7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallMode {
+    /// On the realm thread, holding the runtime lock for the whole call.
+    Blocking,
+    /// `nonblocking: true` — on a `spawn_blocking` worker, returning a Promise.
+    Nonblocking,
+}
+
 /// An ignored key is how Bun turns a `nonblocking` request into a synchronous
-/// call with no diagnostic; den refuses instead. `nonblocking` is one of those
-/// keys today, which is why nothing here has to say that a `buffer` parameter
-/// may not be nonblocking — when phase 5 makes the key legal, that pairing has
-/// to become its own refusal (§4.6), as does passing a `{ callback }` to a
-/// symbol that is not `nonblocking` (§4.7).
+/// call with no diagnostic; den refuses instead.
 fn refuse_unknown_keys(
     ctx: &Ctx<'_>, key: &str, declared: &Object<'_>, allowed: &[&str],
 ) -> Result<()> {
@@ -318,6 +366,7 @@ pub enum SymbolKind {
     Function {
         params: Vec<ParamType>,
         result: NativeType,
+        mode:   CallMode,
     },
     /// `{ type }` — an exported variable, read once at `open()`.
     Static(NativeType),
@@ -339,7 +388,8 @@ impl SymbolSpec {
     /// A `type` key is what makes an entry a static; the two key sets are
     /// disjoint apart from `name` and `optional`, so an entry carrying both is
     /// refused by whichever set it does not belong to.
-    const FUNCTION_KEYS: [&'static str; 4] = ["params", "result", "name", "optional"];
+    const FUNCTION_KEYS: [&'static str; 5] =
+        ["params", "result", "name", "optional", "nonblocking"];
     const STATIC_KEYS: [&'static str; 3] = ["type", "name", "optional"];
 
     pub fn parse<'js>(ctx: &Ctx<'js>, key: &str, declared: &Value<'js>) -> Result<Self> {
@@ -420,6 +470,33 @@ impl SymbolSpec {
             })
             .and_then(|declared| NativeType::parse(ctx, key, &declared))?;
 
-        Ok(SymbolKind::Function { params, result })
+        let mode = if declared
+            .get::<_, Option<bool>>("nonblocking")?
+            .unwrap_or(false)
+        {
+            CallMode::Nonblocking
+        } else {
+            CallMode::Blocking
+        };
+        // §4.6: a `buffer` lends the view's own bytes for exactly the length of
+        // the call. A `nonblocking` call outlives its call site, and JS is free
+        // to detach or transfer that buffer while the worker is inside C, so
+        // the two are refused together rather than lent across a thread.
+        if mode == CallMode::Nonblocking && params.contains(&ParamType::Buffer) {
+            return Err(ErrorKind::Schema.throw_for(
+                ctx,
+                format_args!(
+                    "symbol `{key}`: a `buffer` argument cannot be `nonblocking` — its bytes are \
+                     borrowed for one call, and JS keeps running during this one"
+                ),
+                key,
+            ));
+        }
+
+        Ok(SymbolKind::Function {
+            params,
+            result,
+            mode,
+        })
     }
 }

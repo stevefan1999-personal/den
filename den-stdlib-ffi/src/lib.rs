@@ -9,8 +9,10 @@
 //! The scalar vocabulary is complete — every integer width, `bool`, `f32`,
 //! `f64`, `pointer` and `void`, as arguments, as results and as static
 //! symbols — a `Uint8Array` reaches C as a borrowed `buffer` argument, and a
-//! JS function reaches C as a `{ callback }` function pointer, callable on
-//! den's own thread. Structs and `nonblocking` are still refused by name at
+//! JS function reaches C as a `{ callback }` function pointer, callable from
+//! den's own thread or from one of C's. A `nonblocking: true` symbol runs on a
+//! worker and returns a Promise, which is also the only kind of symbol a
+//! callback may be handed to (§4.7). Structs are still refused by name at
 //! `open()`, with `FfiError { kind: "Schema" }`.
 
 mod callback;
@@ -51,11 +53,10 @@ pub mod ffi {
 
     /// Mint a C function pointer for `function`.
     ///
-    /// The handle owns the trampoline: `def` is checked here, the signature it
-    /// declares is checked again against every slot the handle is passed to,
-    /// and neither check can tell whether C will call it from a thread of its
-    /// own — which is why an off-thread call currently returns the zero value
-    /// and says so on stderr.
+    /// The handle owns the trampoline: `def` is checked here, and the
+    /// signature it declares is checked again against every slot the handle is
+    /// passed to. An armed callback keeps den running until it is disposed,
+    /// because C may call it at any time and from any thread.
     #[rquickjs::function]
     pub fn callback<'js>(
         ctx: Ctx<'js>, def: Value<'js>, function: Function<'js>,

@@ -17,9 +17,9 @@
  * **Implemented today: the whole scalar vocabulary** — every integer width,
  * `bool`, `f32`, `f64`, `pointer` and `void` — as arguments, as results and as
  * static symbols, plus `buffer` arguments, `name`, `optional`, the `ptr`
- * namespace and same-thread `callback`s, all called synchronously. `struct`
- * and `nonblocking` are part of the settled schema but throw
- * `FfiError { kind: "Schema" }` at `open()` until their phase lands.
+ * namespace, `callback`s in both directions and `nonblocking: true`. `struct`
+ * is part of the settled schema but throws `FfiError { kind: "Schema" }` at
+ * `open()` until its phase lands.
  */
 
 declare module "den:ffi" {
@@ -118,7 +118,16 @@ declare module "den:ffi" {
     : T extends { struct: infer F } ? { -readonly [K in keyof F]: Native<F[K]> }
     : never;
 
-  /** An exported function. `nonblocking: true` opts in to the off-thread call. */
+  /**
+   * An exported function.
+   *
+   * `nonblocking: true` runs the call on a worker thread and returns a Promise,
+   * leaving the realm free to keep running — which is what makes a `callback`
+   * argument answerable, and why a callback may be passed to nothing else. Two
+   * things it cannot be combined with, both refused at `open()` with `Schema`:
+   * a `buffer` argument, whose bytes are only lent for the length of the call,
+   * and a `struct` (which is not implemented at all yet).
+   */
   export interface FnDef {
     readonly params: readonly ParamType[];
     readonly result: ResultType;
@@ -146,12 +155,28 @@ declare module "den:ffi" {
    */
   export type Schema = { readonly [name: string]: SymbolDef };
 
-  type Args<P extends readonly ParamType[]> = {
-    -readonly [K in keyof P]: Native<P[K]>;
+  /**
+   * `Async` decides which parameters exist at all, because two of them are the
+   * mirror image of each other.
+   *
+   * A `Callback` may only be handed to a `nonblocking: true` symbol: a
+   * synchronous one occupies the one thread that could answer the callback, so
+   * C calling it is a deadlock. A `buffer` is only the other way round: its
+   * bytes are the script's, lent for the length of one call, and a nonblocking
+   * call outlives its call site. Either slot on the wrong kind of symbol is
+   * uninhabited here, and refused at run time too — `BadArgument` at the call
+   * for the first, `Schema` at `open()` for the second.
+   */
+  type Args<P extends readonly ParamType[], Async = true> = {
+    -readonly [K in keyof P]: P[K] extends CallbackType
+      ? ([Async] extends [true] ? Native<P[K]> : never)
+      : P[K] extends "buffer"
+        ? ([Async] extends [true] ? never : Native<P[K]>)
+      : Native<P[K]>;
   };
 
   type Bound<D> = D extends FnDef
-    ? (...args: Args<D["params"]>) =>
+    ? (...args: Args<D["params"], D["nonblocking"]>) =>
       [D["nonblocking"]] extends [true] ? Promise<Native<D["result"]>>
         : Native<D["result"]>
     : D extends StaticDef ? Native<D["type"]>
@@ -214,10 +239,23 @@ declare module "den:ffi" {
    * the pointer after the realm itself is gone: that is a jump into unmapped
    * memory, and no layer can turn it into a throw.
    *
-   * **Same thread only, for now.** A callback C invokes from a thread it
-   * created returns the zero value of its result type and writes one line to
-   * stderr; there is no way into a QuickJS realm from a foreign thread until
-   * the mailbox lands.
+   * **A callback may only be passed to a `nonblocking: true` symbol.** A
+   * synchronous symbol occupies the one thread that can run JS, so a callback
+   * it made would have nobody to answer it; that is refused at the call with
+   * `BadArgument`. Passing `handle.pointer` as a bare `pointer` sidesteps the
+   * check and is your deadlock to own.
+   *
+   * **An armed callback keeps the process alive**, because C may call it at any
+   * moment and nothing tells den otherwise. `Symbol.dispose` is what takes that
+   * back, which is why there is no `ref()`/`unref()`.
+   *
+   * **A call from C's own thread is answered, and the wait for the answer is
+   * bounded.** The realm services it through a mailbox. If the realm cannot be
+   * reached within the timeout — the one case being a callback C stored and
+   * then fires from a thread a *synchronous* symbol is joining — C is handed
+   * the zero value and one line goes to stderr naming the library, the symbol
+   * and the timeout. That is a real wrong answer, deliberately preferred to a
+   * process that never returns.
    */
   export function callback<
     const P extends readonly CallbackParamType[],
