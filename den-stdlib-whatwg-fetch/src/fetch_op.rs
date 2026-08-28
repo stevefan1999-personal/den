@@ -1,7 +1,9 @@
 //! HTTP(S) fetch: data URLs, CORS, redirects, cookies, cache, SRI.
 
 use std::{
+    cell::{Cell, RefCell},
     collections::HashMap,
+    rc::Rc,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -100,25 +102,6 @@ pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
 
 fn network_error(ctx: &Ctx<'_>, message: &str) -> Error { Exception::throw_type(ctx, message) }
 
-fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    })
-}
-
-#[derive(Clone)]
-struct Cookie {
-    name:    String,
-    value:   String,
-    host:    String,
-    path:    String,
-    expires: Option<Instant>,
-}
-
 #[derive(Clone)]
 struct CacheEntry {
     status:        u16,
@@ -134,9 +117,19 @@ struct CacheEntry {
     vary_values:   Vec<(String, String)>,
 }
 
-fn cookies() -> &'static Mutex<Vec<Cookie>> {
-    static COOKIES: OnceLock<Mutex<Vec<Cookie>>> = OnceLock::new();
-    COOKIES.get_or_init(|| Mutex::new(Vec::new()))
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+fn cookie_jar() -> &'static reqwest::cookie::Jar {
+    static JAR: OnceLock<reqwest::cookie::Jar> = OnceLock::new();
+    JAR.get_or_init(reqwest::cookie::Jar::default)
 }
 
 fn cache() -> &'static Mutex<HashMap<String, Vec<CacheEntry>>> {
@@ -240,104 +233,6 @@ fn cors_safelisted_response_header(name: &str) -> bool {
             | "last-modified"
             | "pragma"
     )
-}
-
-fn parse_set_cookie(header: &str, host: &str, default_path: &str) -> Option<Cookie> {
-    let mut parts = header.split(';');
-    let first = parts.next()?.trim();
-    let (name, value) = first.split_once('=')?;
-    if name.is_empty() {
-        return None;
-    }
-    let mut cookie = Cookie {
-        name:    name.trim().to_string(),
-        value:   value.trim().to_string(),
-        host:    host.to_string(),
-        path:    default_path.to_string(),
-        expires: None,
-    };
-    for part in parts {
-        let part = part.trim();
-        let (key, val) = part
-            .split_once('=')
-            .map(|(k, v)| (k.trim(), v.trim()))
-            .unwrap_or((part, ""));
-        match key.to_ascii_lowercase().as_str() {
-            "path" if !val.is_empty() => cookie.path = val.to_string(),
-            "max-age" => {
-                if let Ok(secs) = val.parse::<i64>() {
-                    if secs <= 0 {
-                        cookie.expires = Some(Instant::now() - Duration::from_secs(1));
-                    } else {
-                        cookie.expires = Some(Instant::now() + Duration::from_secs(secs as u64));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Some(cookie)
-}
-
-fn store_cookies(url: &reqwest::Url, headers: &[(String, String)]) {
-    let Some(host) = url.host_str() else {
-        return;
-    };
-    let path = url.path();
-    let default_path = match path.rfind('/') {
-        Some(0) | None => "/".to_string(),
-        Some(at) => path[..=at].to_string(),
-    };
-    let Ok(mut jar) = cookies().lock() else {
-        return;
-    };
-    for (name, value) in headers {
-        if name != "set-cookie" {
-            continue;
-        }
-        for piece in value.split('\n') {
-            let Some(cookie) = parse_set_cookie(piece, host, &default_path) else {
-                continue;
-            };
-            jar.retain(|old| {
-                !(old.name == cookie.name && old.host == cookie.host && old.path == cookie.path)
-            });
-            if cookie
-                .expires
-                .is_none_or(|expires| expires > Instant::now())
-            {
-                jar.push(cookie);
-            }
-        }
-    }
-}
-
-fn cookie_header(url: &reqwest::Url) -> Option<String> {
-    let host = url.host_str()?;
-    let path = url.path();
-    let Ok(mut jar) = cookies().lock() else {
-        return None;
-    };
-    jar.retain(|cookie| {
-        cookie
-            .expires
-            .is_none_or(|expires| expires > Instant::now())
-    });
-    let mut pairs = Vec::new();
-    for cookie in jar.iter() {
-        if cookie.host != host {
-            continue;
-        }
-        if !path.starts_with(&cookie.path) {
-            continue;
-        }
-        pairs.push(format!("{}={}", cookie.name, cookie.value));
-    }
-    if pairs.is_empty() {
-        None
-    } else {
-        Some(pairs.join("; "))
-    }
 }
 
 fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -561,15 +456,6 @@ fn parse_cors_token_list(value: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn must_stream_body(url: &reqwest::Url) -> bool {
-    let path = url.path();
-    path.contains("infinite-slow")
-        || path.contains("huge-response")
-        || path.contains("bad-chunk")
-        || path.contains("bad-gzip")
-        || path.contains("trickle")
-}
-
 fn cache_no_store(headers: &[(String, String)]) -> bool {
     header_value(headers, "cache-control")
         .is_some_and(|value| value.to_ascii_lowercase().contains("no-store"))
@@ -635,6 +521,77 @@ fn store_cache(
         map.entry(cache_key(&url, credentials))
             .or_default()
             .push(entry);
+    }
+}
+
+/// A cache entry whose body is not known yet.
+///
+/// Buffering a whole response just so the HTTP cache can copy it is what the
+/// old size heuristic was working around. Instead the response streams and the
+/// bytes are mirrored here as the consumer reads them; the entry is written
+/// only when the body ends cleanly, so a body nobody reads is never buffered
+/// and a truncated one is never cached.
+pub(crate) struct PendingCacheWrite {
+    url:             String,
+    credentials:     String,
+    status:          u16,
+    status_text:     String,
+    headers:         Vec<(String, String)>,
+    request_headers: Vec<(String, String)>,
+    /// Set when the entry's body is not the response body (the
+    /// `content-location` case keys the entry off the request's `uuid`).
+    body_override:   Option<Vec<u8>>,
+}
+
+#[derive(Default)]
+pub(crate) struct CacheFill {
+    writes: Vec<PendingCacheWrite>,
+    body:   RefCell<Vec<u8>>,
+    done:   Cell<bool>,
+}
+
+impl CacheFill {
+    /// `None` when there is nothing to cache, so the streamed body pays for no
+    /// mirroring at all in the common case.
+    pub(crate) fn pending(writes: Vec<PendingCacheWrite>) -> Option<Rc<Self>> {
+        (!writes.is_empty()).then(|| {
+            Rc::new(Self {
+                writes,
+                ..Self::default()
+            })
+        })
+    }
+
+    /// The buffered path already holds the whole body.
+    pub(crate) fn commit_now(writes: Vec<PendingCacheWrite>, body: &[u8]) {
+        if let Some(fill) = Self::pending(writes) {
+            fill.push(body);
+            fill.commit();
+        }
+    }
+
+    pub(crate) fn push(&self, chunk: &[u8]) {
+        if !self.done.get() {
+            self.body.borrow_mut().extend_from_slice(chunk);
+        }
+    }
+
+    pub(crate) fn commit(&self) {
+        if self.done.replace(true) {
+            return;
+        }
+        let body = self.body.take();
+        for write in &self.writes {
+            store_cache(
+                write.url.clone(),
+                &write.credentials,
+                write.status,
+                write.status_text.clone(),
+                write.headers.clone(),
+                write.body_override.clone().unwrap_or_else(|| body.clone()),
+                &write.request_headers,
+            );
+        }
     }
 }
 
@@ -808,9 +765,17 @@ async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> R
 
 async fn send_http<'js>(
     ctx: &Ctx<'js>, method: reqwest::Method, url: &reqwest::Url, headers: &[(String, String)],
-    body: Option<Vec<u8>>, watch: Option<&AbortWatch>,
+    body: Option<Vec<u8>>, watch: Option<&AbortWatch>, send_cookies: bool,
 ) -> Result<reqwest::Response> {
+    use reqwest::{
+        cookie::CookieStore as _,
+        header::{COOKIE, SET_COOKIE},
+    };
+
     let mut builder = client().request(method, connect_url(url));
+    if send_cookies && let Some(cookies) = cookie_jar().cookies(url) {
+        builder = builder.header(COOKIE, cookies);
+    }
     let mut saw_host = false;
     for (name, value) in headers {
         if name.eq_ignore_ascii_case("host") {
@@ -836,21 +801,25 @@ async fn send_http<'js>(
         builder = builder.body(body);
     }
     let request = builder.send();
-    if let Some(signal) = watch {
+    let response = if let Some(signal) = watch {
         let abort = signal.notify.notified();
         futures::pin_mut!(request);
         futures::pin_mut!(abort);
         match futures::future::select(request, abort).await {
             Either::Left((result, _)) => {
-                result.map_err(|err| network_error(ctx, &format!("{err}")))
+                result.map_err(|err| network_error(ctx, &format!("{err}")))?
             }
-            Either::Right(_) => Err(Exception::throw_type(ctx, "aborted")),
+            Either::Right(_) => return Err(Exception::throw_type(ctx, "aborted")),
         }
     } else {
         request
             .await
-            .map_err(|err| network_error(ctx, &format!("{err}")))
+            .map_err(|err| network_error(ctx, &format!("{err}")))?
+    };
+    if send_cookies {
+        cookie_jar().set_cookies(&mut response.headers().get_all(SET_COOKIE).iter(), url);
     }
+    Ok(response)
 }
 
 fn response_header_pairs(response: &reqwest::Response) -> Vec<(String, String)> {
@@ -870,8 +839,8 @@ fn response_header_pairs(response: &reqwest::Response) -> Vec<(String, String)> 
 }
 
 fn collect_request_headers(
-    headers: Vec<(String, String)>, url: &reqwest::Url, origin: &str, _method: &str,
-    credentials: &str, cross_origin: bool, referrer: &str, redirected: bool,
+    headers: Vec<(String, String)>, origin: &str, _method: &str, cross_origin: bool,
+    referrer: &str, redirected: bool,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut has_accept = false;
@@ -910,14 +879,6 @@ fn collect_request_headers(
         out.push(("referer".to_string(), referrer.to_string()));
     } else if referrer == "about:client" {
         out.push(("referer".to_string(), origin.to_string()));
-    }
-    let send_cookies = match credentials {
-        "include" => true,
-        "same-origin" => !cross_origin,
-        _ => false,
-    };
-    if send_cookies && let Some(cookie) = cookie_header(url) {
-        out.push(("cookie".to_string(), cookie));
     }
     out
 }
@@ -1011,6 +972,7 @@ async fn preflight<'js>(
         &preflight_headers,
         None,
         watch,
+        false,
     )
     .await?;
     let status = response.status().as_u16();
@@ -1264,10 +1226,8 @@ async fn http_fetch<'js>(
     };
     let mut request_headers = collect_request_headers(
         headers.clone(),
-        &url,
         &origin_header,
         &method,
-        &credentials,
         cross_origin || tainted_origin,
         &referrer,
         redirected,
@@ -1439,7 +1399,17 @@ async fn http_fetch<'js>(
     } else {
         body.clone()
     };
-    let response = match send_http(ctx, http_method, &url, &request_headers, send_body, watch).await
+    let send_cookies = credentials == "include" || (credentials == "same-origin" && !cross_origin);
+    let response = match send_http(
+        ctx,
+        http_method,
+        &url,
+        &request_headers,
+        send_body,
+        watch,
+        send_cookies,
+    )
+    .await
     {
         Ok(response) => response,
         Err(error) => {
@@ -1583,10 +1553,6 @@ async fn http_fetch<'js>(
     if pairs.iter().any(|(_, value)| value.contains('\0')) {
         return Err(network_error(ctx, "NUL in header"));
     }
-    if credentials != "omit" {
-        store_cookies(&url, &pairs);
-    }
-
     if cors_mode && cross_origin {
         let include = credentials == "include";
         // Validate against the origin that was actually sent: a cross-origin
@@ -1739,9 +1705,53 @@ async fn http_fetch<'js>(
         return Ok(produced);
     }
 
+    // Every cache entry this response would populate, described up front so the
+    // body can be streamed and mirrored into them instead of pre-buffered.
+    let mut cache_writes = Vec::new();
+    if matches!(method.as_str(), "POST" | "PATCH")
+        && (200..300).contains(&status)
+        && let Some(cl) = header_value(&pairs, "content-location")
+        && (parse_max_age(&pairs).is_some()
+            || header_value(&pairs, "expires").is_some()
+            || cache_directive(&pairs, "public"))
+        && let Ok(cl_url) = url.join(&encode_location(cl))
+    {
+        cache_writes.push(PendingCacheWrite {
+            url: cl_url.to_string(),
+            credentials: credentials.clone(),
+            status,
+            status_text: status_text.clone(),
+            headers: pairs.clone(),
+            request_headers: request_headers.clone(),
+            body_override: url
+                .query_pairs()
+                .find(|(key, _)| key == "uuid")
+                .map(|(_, value)| value.into_owned().into_bytes())
+                .filter(|body| !body.is_empty()),
+        });
+    }
+    if can_store {
+        cache_writes.push(PendingCacheWrite {
+            url: url.to_string(),
+            credentials: credentials.clone(),
+            status,
+            status_text: status_text.clone(),
+            headers: pairs.clone(),
+            request_headers: request_headers.clone(),
+            body_override: None,
+        });
+    }
+
+    // Stream unless the whole body is needed before any of it can be handed
+    // over, which is only subresource integrity: it has to hash the body to
+    // decide whether the response exists at all. Size is not a reason — a body
+    // that fits in memory is still one the consumer wants the first chunk of
+    // now — and neither is caching, which the fill mirrors as bytes flow.
     let content_len = response.content_length();
-    if must_stream_body(&url) || content_len.is_some_and(|len| len > 8_000_000) {
+    if integrity.is_empty() {
         let mut produced = Response::from_reqwest(ctx, response, kind)?;
+        produced.expected_length = content_len;
+        produced.cache_fill = CacheFill::pending(cache_writes);
         produced.redirected = redirected;
         produced.headers = headers;
         produced.url = url.to_string();
@@ -1780,44 +1790,8 @@ async fn http_fetch<'js>(
         produced.redirected = redirected;
         return Ok(produced);
     }
-    if !integrity.is_empty() {
-        check_integrity(ctx, &integrity, &bytes).await?;
-    }
-    if matches!(method.as_str(), "POST" | "PATCH")
-        && (200..300).contains(&status)
-        && let Some(cl) = header_value(&pairs, "content-location")
-        && (parse_max_age(&pairs).is_some()
-            || header_value(&pairs, "expires").is_some()
-            || cache_directive(&pairs, "public"))
-        && let Ok(cl_url) = url.join(&encode_location(cl))
-    {
-        let cached_body = url
-            .query_pairs()
-            .find(|(key, _)| key == "uuid")
-            .map(|(_, value)| value.into_owned().into_bytes())
-            .filter(|body| !body.is_empty())
-            .unwrap_or_else(|| bytes.clone());
-        store_cache(
-            cl_url.to_string(),
-            &credentials,
-            status,
-            status_text.clone(),
-            pairs.clone(),
-            cached_body,
-            &request_headers,
-        );
-    }
-    if can_store {
-        store_cache(
-            url.to_string(),
-            &credentials,
-            status,
-            status_text.clone(),
-            pairs,
-            bytes.clone(),
-            &request_headers,
-        );
-    }
+    check_integrity(ctx, &integrity, &bytes).await?;
+    CacheFill::commit_now(cache_writes, &bytes);
     let mut produced = Response::from_bytes(
         ctx,
         status,
