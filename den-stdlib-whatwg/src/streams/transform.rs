@@ -34,6 +34,14 @@ struct TransformInner<'js> {
     writable:            Weak<RefCell<crate::streams::writable::WritableInner<'js>>>,
     backpressure:        bool,
     backpressure_change: Option<Cap<'js>>,
+    /// Writes parked on `backpressure_change`. The reaction that resumes one
+    /// is a `Function::new` closure, and rquickjs gives `RustFunction` an empty
+    /// `Trace` impl — so such a closure may capture no JS value or the
+    /// collector cannot see it and the whole graph outlives the runtime. The
+    /// chunk and its capability live here, traced, and the closure carries
+    /// nothing but an id.
+    parked:              Vec<(u64, Value<'js>, Cap<'js>)>,
+    next_parked:         u64,
 }
 
 // SAFETY: see the matching impl in `readable`.
@@ -50,6 +58,10 @@ impl<'js> Trace<'js> for TransformInner<'js> {
         self.backpressure_change
             .as_ref()
             .map(|cap| cap.trace(tracer));
+        for (_, chunk, cap) in &self.parked {
+            chunk.trace(tracer);
+            cap.trace(tracer);
+        }
     }
 }
 
@@ -114,6 +126,38 @@ fn error_both<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, reason: Value<'js>) {
     }
     if let Some(writable) = writable_of(shared) {
         WritableStream::start_erroring(ctx, &writable, reason);
+    }
+}
+
+/// Resume a write that was parked on backpressure, settling the capability the
+/// sink handed back with the transform's own outcome.
+fn resume_parked<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, id: u64) {
+    let Some(owned) = shared.upgrade() else {
+        return;
+    };
+    let parked = {
+        let mut borrow = owned.borrow_mut();
+        borrow
+            .parked
+            .iter()
+            .position(|(each, ..)| *each == id)
+            .map(|at| borrow.parked.remove(at))
+    };
+    let Some((_, chunk, mut cap)) = parked else {
+        return;
+    };
+    match perform_transform(ctx, shared, chunk) {
+        Ok(transformed) => {
+            let (resolve, reject) = cap.into_parts();
+            let ok = resolve.and_then(|resolve| {
+                Function::new(ctx.clone(), move || {
+                    let _ = resolve.call::<_, ()>(());
+                })
+                .ok()
+            });
+            let _ = react(ctx, transformed.into_value(), ok, reject);
+        }
+        Err(error) => cap.reject(thrown(ctx, error)),
     }
 }
 
@@ -204,6 +248,8 @@ impl<'js> TransformStream<'js> {
             writable: Weak::new(),
             backpressure: false,
             backpressure_change: None,
+            parked: Vec::new(),
+            next_parked: 0,
         }));
         let shared: Shared<'js> = Rc::downgrade(&owned);
         // The specification starts a transform under backpressure and lets the
@@ -275,21 +321,19 @@ impl<'js> TransformStream<'js> {
                     let Some(waiting) = waiting else {
                         return perform_transform(&ctx, &shared, chunk);
                     };
-                    let (promise, resolve, reject) = ctx.promise()?;
+                    let cap = Cap::new(&ctx)?;
+                    let promise = cap.promise();
+                    let id = {
+                        let mut borrow = owned.borrow_mut();
+                        let id = borrow.next_parked;
+                        borrow.next_parked += 1;
+                        borrow.parked.push((id, chunk, cap));
+                        id
+                    };
                     let on_ok = {
                         let shared = shared.clone();
-                        Function::new(ctx.clone(), move |ctx: Ctx<'js>| -> Result<()> {
-                            let transformed = perform_transform(&ctx, &shared, chunk.clone())?;
-                            let resolve = resolve.clone();
-                            let ok = Function::new(ctx.clone(), move || {
-                                let _ = resolve.call::<_, ()>(());
-                            })?;
-                            react(
-                                &ctx,
-                                transformed.into_value(),
-                                Some(ok),
-                                Some(reject.clone()),
-                            )
+                        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                            resume_parked(&ctx, &shared, id);
                         })?
                     };
                     react(&ctx, waiting.into_value(), Some(on_ok), None)?;
