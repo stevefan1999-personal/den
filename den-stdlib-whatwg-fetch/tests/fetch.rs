@@ -10,7 +10,7 @@ fn case(name: &str) -> PathBuf {
 }
 
 async fn run(name: &str) -> eyre::Result<()> {
-    Engine::new().await.run_file::<()>(case(name)).await?;
+    Engine::new().await.run_file(case(name)).await?;
     Ok(())
 }
 
