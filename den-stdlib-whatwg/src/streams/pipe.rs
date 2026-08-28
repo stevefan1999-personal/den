@@ -10,7 +10,7 @@ use std::{
 };
 
 use rquickjs::{
-    Class, Ctx, Exception, Function, JsLifetime, Object, Promise, Result, Value,
+    Class, Coerced, Ctx, Exception, Function, JsLifetime, Object, Promise, Result, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Opt, This},
@@ -814,14 +814,30 @@ pub(crate) fn from_iterable<'js>(
                         ReadableStream::error(&ctx, &inner, reason);
                         return;
                     };
-                    if object.get::<_, bool>("done").unwrap_or(false) {
-                        let _ = ReadableStream::close_requested(&ctx, &inner);
-                        return;
+                    // IteratorComplete/IteratorValue are ToBoolean and a plain
+                    // Get: `{ done: 1 }` ends the stream, and a getter that
+                    // throws errors it rather than enqueuing undefined.
+                    match object.get::<_, Coerced<bool>>("done") {
+                        Ok(Coerced(true)) => {
+                            let _ = ReadableStream::close_requested(&ctx, &inner);
+                            return;
+                        }
+                        Ok(Coerced(false)) => {}
+                        Err(error) => {
+                            let reason = thrown(&ctx, error);
+                            ReadableStream::error(&ctx, &inner, reason);
+                            return;
+                        }
                     }
-                    let value: Value = object
-                        .get("value")
-                        .unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
-                    let _ = ReadableStream::enqueue(&ctx, &inner, value);
+                    match object.get::<_, Value>("value") {
+                        Ok(value) => {
+                            let _ = ReadableStream::enqueue(&ctx, &inner, value);
+                        }
+                        Err(error) => {
+                            let reason = thrown(&ctx, error);
+                            ReadableStream::error(&ctx, &inner, reason);
+                        }
+                    }
                 })?;
                 react(&ctx, step, Some(on_ok), Some(on_err))?;
                 Ok(())

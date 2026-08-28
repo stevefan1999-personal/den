@@ -660,7 +660,9 @@ impl<'js> ReadableStream<'js> {
             let Some(object) = result.as_object() else {
                 break;
             };
-            if object.get::<_, bool>("done").unwrap_or(false) {
+            // `done` is ToBoolean, and a `read()` result whose shape is not
+            // readable at all is a host-side error, not "keep reading".
+            if object.get::<_, Coerced<bool>>("done")?.0 {
                 break;
             }
             let value: Value = object.get("value")?;
