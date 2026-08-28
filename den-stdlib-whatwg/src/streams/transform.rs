@@ -294,10 +294,7 @@ impl<'js> TransformStream<'js> {
             })?);
         }
         owned.borrow_mut().readable = Rc::downgrade(&readable_inner);
-        ReadableStream::attach_controller(&ctx, &readable_inner)?;
-        let readable = Class::instance(ctx.clone(), ReadableStream {
-            inner: Rc::clone(&readable_inner),
-        })?;
+        let readable = ReadableStream::wrap(&ctx, Rc::clone(&readable_inner))?;
 
         // Writable half: its sink is the transformer.
         let writable_inner = WritableStream::new_inner(&ctx)?;
@@ -427,9 +424,7 @@ impl<'js> TransformStream<'js> {
             borrow.size_fn = writable_size;
         }
         WritableStream::setup_with_sink(&ctx, &writable_inner, sink, writable_hwm)?;
-        let writable = Class::instance(ctx.clone(), WritableStream {
-            inner: Rc::clone(&writable_inner),
-        })?;
+        let writable = WritableStream::wrap(&ctx, Rc::clone(&writable_inner))?;
 
         let controller = Class::instance(ctx.clone(), TransformStreamDefaultController {
             shared: owned,
@@ -461,7 +456,9 @@ impl<'js> TransformStream<'js> {
         // with room pulls straight away and lifts the initial backpressure.
         let on_ok = {
             let readable_inner = Rc::clone(&readable_inner);
+            let keeper = ReadableStream::keeper(&readable_inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                let _keeper = &keeper;
                 ReadableStream::pull_if_needed(&ctx, &readable_inner);
             })?
         };

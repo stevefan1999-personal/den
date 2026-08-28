@@ -4,10 +4,7 @@
 //! chunk's promise settles when that chunk's sink write settles, while `ready`
 //! settles when the queue drops back under the high-water mark.
 
-use std::{
-    cell::RefCell,
-    rc::{Rc, Weak},
-};
+use std::{cell::RefCell, rc::Rc};
 
 use rquickjs::{
     Class, Coerced, Ctx, Exception, Function, JsLifetime, Object, Promise, Result, Value,
@@ -126,14 +123,13 @@ pub(crate) type Inner<'js> = Rc<RefCell<WritableInner<'js>>>;
 #[rquickjs::class]
 pub struct WritableStream<'js> {
     pub(crate) inner: Inner<'js>,
+    /// See [`ReadableStream`](crate::streams::ReadableStream): the controller
+    /// is the record's single tracer and the stream owns one reference to it.
+    controller:       Class<'js, WritableStreamDefaultController<'js>>,
 }
 
 impl<'js> Trace<'js> for WritableStream<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Ok(inner) = self.inner.try_borrow() {
-            inner.trace(tracer);
-        }
-    }
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) { self.controller.trace(tracer); }
 }
 
 impl<'js> WritableStream<'js> {
@@ -166,12 +162,31 @@ impl<'js> WritableStream<'js> {
 
     pub(crate) fn is_locked(inner: &Inner<'js>) -> bool { inner.borrow().writer.is_some() }
 
-    pub(crate) fn attach_controller(ctx: &Ctx<'js>, inner: &Inner<'js>) -> Result<()> {
+    pub(crate) fn attach_controller(
+        ctx: &Ctx<'js>, inner: &Inner<'js>,
+    ) -> Result<Class<'js, WritableStreamDefaultController<'js>>> {
         let controller = Class::instance(ctx.clone(), WritableStreamDefaultController {
-            inner: Rc::downgrade(inner),
+            inner: Rc::clone(inner),
         })?;
-        inner.borrow_mut().controller = Some(controller);
-        Ok(())
+        inner.borrow_mut().controller = Some(controller.clone());
+        Ok(controller)
+    }
+
+    /// The controller handle every internal reaction holds to keep the stream
+    /// alive for the length of the operation it is waiting on.
+    pub(crate) fn keeper(
+        inner: &Inner<'js>,
+    ) -> Option<Class<'js, WritableStreamDefaultController<'js>>> {
+        inner.borrow().controller.clone()
+    }
+
+    /// Wrap a record built by Rust in its stream object.
+    pub(crate) fn wrap(ctx: &Ctx<'js>, inner: Inner<'js>) -> Result<Class<'js, Self>> {
+        let controller = match Self::keeper(&inner) {
+            Some(controller) => controller,
+            None => Self::attach_controller(ctx, &inner)?,
+        };
+        Class::instance(ctx.clone(), Self { inner, controller })
     }
 
     /// The pipe needs the destination's failure state and its capacity signal
@@ -433,13 +448,12 @@ impl<'js> WritableStream<'js> {
             Ok(value) => {
                 let promise = abort.cap.promise();
                 let (resolve, reject) = abort.cap.into_parts();
+                let keeper = Self::keeper(inner);
                 let settle = |handler: Option<Function<'js>>| {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
-                    let inner = Rc::clone(inner);
+                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
                     let reason = reason.clone();
                     move |ctx: Ctx<'js>, error: Opt<Value<'js>>| {
+                        let _keeper = &keeper;
                         if let Some(handler) = handler.as_ref() {
                             let _ = handler.call::<_, ()>((error
                                 .0
@@ -566,21 +580,24 @@ impl<'js> WritableStream<'js> {
         };
         match outcome {
             Ok(value) => {
+                let keeper = Self::keeper(inner);
                 let on_ok = {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
-                    let inner = Rc::clone(inner);
+                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                        // Holding the controller is what keeps the record's JS values
+                        // alive for the length of this operation: see the note on
+                        // `ReadableStreamDefaultController`.
+                        let _keeper = &keeper;
                         WritableStream::write_settled(&ctx, &inner);
                     })
                 };
                 let on_err = {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                        // Holding the controller is what keeps the record's JS values
+                        // alive for the length of this operation: see the note on
+                        // `ReadableStreamDefaultController`.
+                        let _keeper = &keeper;
                         WritableStream::write_failed(&ctx, &inner, reason);
                     })
                 };
@@ -647,21 +664,24 @@ impl<'js> WritableStream<'js> {
         Self::clear_algorithms(inner);
         match outcome {
             Ok(value) => {
+                let keeper = Self::keeper(inner);
                 let on_ok = {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
-                    let inner = Rc::clone(inner);
+                    let (inner, keeper) = (Rc::clone(inner), keeper.clone());
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                        // Holding the controller is what keeps the record's JS values
+                        // alive for the length of this operation: see the note on
+                        // `ReadableStreamDefaultController`.
+                        let _keeper = &keeper;
                         WritableStream::close_settled(&ctx, &inner);
                     })
                 };
                 let on_err = {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                        // Holding the controller is what keeps the record's JS values
+                        // alive for the length of this operation: see the note on
+                        // `ReadableStreamDefaultController`.
+                        let _keeper = &keeper;
                         WritableStream::close_failed(&ctx, &inner, reason);
                     })
                 };
@@ -838,30 +858,23 @@ impl<'js> WritableStream<'js> {
             borrow.abort_controller = abort_controller;
         }
         Self::recompute_backpressure(ctx, inner);
-        let controller = Class::instance(ctx.clone(), WritableStreamDefaultController {
-            inner: Rc::downgrade(inner),
-        })?;
-        inner.borrow_mut().controller = Some(controller.clone());
+        let controller = Self::attach_controller(ctx, inner)?;
         let started = match start_fn {
-            Some(start) => start.call::<_, Value>((This(sink), controller))?,
+            Some(start) => start.call::<_, Value>((This(sink), controller.clone()))?,
             None => Value::new_undefined(ctx.clone()),
         };
         let on_ok = {
-            // A pending reaction keeps the stream's record alive: the operation it is
-            // waiting on is part of the stream, and a weak handle here would silently
-            // abandon a write or a pull whose stream became unreachable mid-flight.
-            let inner = Rc::clone(inner);
+            let (inner, keeper) = (Rc::clone(inner), controller.clone());
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                let _keeper = &keeper;
                 inner.borrow_mut().started = true;
                 WritableStream::advance_queue(&ctx, &inner);
             })?
         };
         let on_err = {
-            // A pending reaction keeps the stream's record alive: the operation it is
-            // waiting on is part of the stream, and a weak handle here would silently
-            // abandon a write or a pull whose stream became unreachable mid-flight.
-            let inner = Rc::clone(inner);
+            let (inner, keeper) = (Rc::clone(inner), controller.clone());
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                let _keeper = &keeper;
                 inner.borrow_mut().started = true;
                 WritableStream::clear_algorithms(&inner);
                 WritableStream::deal_with_rejection(&ctx, &inner, reason);
@@ -891,7 +904,9 @@ impl<'js> WritableStream<'js> {
         }
         let inner = Self::new_inner(&ctx)?;
         Self::setup(&ctx, &inner, sink_object, strategy.0)?;
-        Ok(Self { inner })
+        let controller = Self::keeper(&inner)
+            .ok_or_else(|| Exception::throw_type(&ctx, "the stream has no controller"))?;
+        Ok(Self { inner, controller })
     }
 
     #[qjs(get)]
@@ -930,19 +945,25 @@ impl<'js> WritableStream<'js> {
     pub fn to_string_tag() -> &'static str { "WritableStream" }
 }
 
+/// Owner and single tracer of the record: see the note on
+/// [`ReadableStreamDefaultController`](crate::streams::ReadableStreamDefaultController).
 #[rquickjs::class]
 pub struct WritableStreamDefaultController<'js> {
-    /// Weak: see the note on `ReadableStreamDefaultController`.
-    inner: Weak<RefCell<WritableInner<'js>>>,
+    inner: Inner<'js>,
 }
 
-// SAFETY: the weak handle is `'js`-scoped, exactly like the strong one.
+// SAFETY: the record handle is `'js`-scoped, exactly as the derive would
+// generate.
 unsafe impl<'js> rquickjs::JsLifetime<'js> for WritableStreamDefaultController<'js> {
     type Changed<'to> = WritableStreamDefaultController<'to>;
 }
 
 impl<'js> Trace<'js> for WritableStreamDefaultController<'js> {
-    fn trace<'a>(&self, _tracer: Tracer<'a, 'js>) {}
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        if let Ok(inner) = self.inner.try_borrow() {
+            inner.trace(tracer);
+        }
+    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -954,10 +975,7 @@ impl<'js> WritableStreamDefaultController<'js> {
 
     #[qjs(get)]
     pub fn signal(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        let Some(inner) = self.inner.upgrade() else {
-            return Ok(Value::new_undefined(ctx));
-        };
-        match inner.borrow().abort_controller.clone() {
+        match self.inner.borrow().abort_controller.clone() {
             Some(controller) => controller.get("signal"),
             None => Ok(Value::new_undefined(ctx)),
         }
@@ -973,14 +991,12 @@ impl<'js> WritableStreamDefaultController<'js> {
     }
 
     pub fn error(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) {
-        let Some(inner) = self.inner.upgrade() else {
-            return;
-        };
+        let inner = &self.inner;
         if matches!(inner.borrow().state, WsState::Writable) {
-            WritableStream::clear_algorithms(&inner);
+            WritableStream::clear_algorithms(inner);
             WritableStream::start_erroring(
                 &ctx,
-                &inner,
+                inner,
                 reason
                     .0
                     .unwrap_or_else(|| Value::new_undefined(ctx.clone())),

@@ -575,7 +575,7 @@ fn tee_branch<'js>(
     }
     ReadableStream::attach_controller(ctx, &inner)?;
     state.borrow_mut().branches[index] = Rc::downgrade(&inner);
-    Class::instance(ctx.clone(), ReadableStream { inner })
+    ReadableStream::wrap(ctx, inner)
 }
 
 fn tee_pull<'js>(ctx: &Ctx<'js>, state: &Tee<'js>) {
@@ -835,5 +835,5 @@ pub(crate) fn from_iterable<'js>(
         })?);
     }
     ReadableStream::attach_controller(ctx, &inner)?;
-    Class::instance(ctx.clone(), ReadableStream { inner })
+    ReadableStream::wrap(ctx, inner)
 }
