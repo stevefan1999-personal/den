@@ -771,7 +771,9 @@ pub(crate) fn from_iterable<'js>(
         .into_function()
         .ok_or_else(|| Exception::throw_type(ctx, "ReadableStream.from requires an iterable"))?;
     let iterator: Object = factory.call((This(object),))?;
-    let next: Function = iterator.get("next")?;
+    // Read once here for the specification's GetIterator validation; the pull
+    // closure reads it again because it may capture no JS value of its own.
+    let _: Function = iterator.get("next")?;
     let inner = ReadableStream::new_inner(ctx)?;
     {
         let mut borrow = inner.borrow_mut();
@@ -779,14 +781,26 @@ pub(crate) fn from_iterable<'js>(
         borrow.source = iterator.clone();
         borrow.pull_fn = Some(Function::new(ctx.clone(), {
             let inner = Rc::downgrade(&inner);
-            let iterator = iterator.clone();
-            let next = next.clone();
+            // The closure captures no JS value at all: `RustFunction` traces
+            // nothing, so the iterator is read back out of the stream's own
+            // `source` slot, which is traced, on every pull.
             move |ctx: Ctx<'js>| -> Result<()> {
-                let Some(inner) = inner.upgrade() else {
+                let Some(strong) = inner.upgrade() else {
                     return Ok(());
                 };
-                let step: Value = next.call((This(iterator.clone()),))?;
+                let iterator = strong.borrow().source.clone();
+                let next: Function = iterator.get("next")?;
+                let step: Value = next.call((This(iterator),))?;
+                drop(strong);
+                // Weak again, not the handle just upgraded: this closure is a
+                // `RustFunction` with an empty `Trace` impl, so a strong record
+                // here would hide the stream from the collector until the
+                // iterator settles — which a stalled generator never does.
+                let inner = inner.clone();
                 let on_ok = Function::new(ctx.clone(), move |ctx: Ctx<'js>, step: Value<'js>| {
+                    let Some(inner) = inner.upgrade() else {
+                        return;
+                    };
                     let Some(object) = step.as_object() else {
                         let reason = type_error(&ctx, "an iterator must yield an object");
                         ReadableStream::error(&ctx, &inner, reason);
@@ -806,10 +820,15 @@ pub(crate) fn from_iterable<'js>(
             }
         })?);
         borrow.cancel_fn = Some(Function::new(ctx.clone(), {
-            let iterator = iterator.clone();
+            let inner = Rc::downgrade(&inner);
             move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Value<'js>> {
+                let Some(strong) = inner.upgrade() else {
+                    return Ok(Value::new_undefined(ctx.clone()));
+                };
+                let iterator = strong.borrow().source.clone();
+                drop(strong);
                 match iterator.get::<_, Function>("return") {
-                    Ok(finish) => finish.call((This(iterator.clone()), reason.0)),
+                    Ok(finish) => finish.call((This(iterator), reason.0)),
                     Err(_) => Ok(Value::new_undefined(ctx.clone())),
                 }
             }
