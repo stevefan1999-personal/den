@@ -1,9 +1,11 @@
-//! Phase 1 of `docs/research/19-den-ffi.md` §6: `int add(int, int)` from a
-//! real `.so`, built here with the platform's C compiler so that the ABI under
-//! test is the one this machine actually uses.
+//! `docs/research/19-den-ffi.md` §6, phases 1 and 2: the scalar vocabulary
+//! against a real `.so`, built here with the platform's C compiler so that the
+//! ABI under test is the one this machine actually uses.
 
 use std::{
-    env, fs,
+    env,
+    ffi::c_void,
+    fs, iter,
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
@@ -11,6 +13,7 @@ use std::{
 
 use color_eyre::eyre;
 use den_core::{FfiGrant, engine::Engine};
+use libffi::middle::{Cif, CodePtr, Ret, Type};
 use tempfile::TempDir;
 
 /// The compiled probe and the fixtures that call it, in one directory that
@@ -81,6 +84,8 @@ impl Probe {
 
     fn case(&self, name: &str) -> PathBuf { self.directory.path().join(name) }
 
+    fn library(&self) -> PathBuf { self.directory.path().join("libprobe.so") }
+
     fn root(&self) -> &Path { self.directory.path() }
 }
 
@@ -138,4 +143,65 @@ async fn open_names_what_it_refuses() -> eyre::Result<()> {
         return Ok(());
     };
     run("errors.js", Some(scoped(probe))).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_scalar_width_round_trips() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("scalars.js", Some(scoped(probe))).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pointers_are_opaque_and_carry_their_library() -> eyre::Result<()> {
+    let Some(probe) = Probe::get() else {
+        return Ok(());
+    };
+    run("pointers.js", Some(scoped(probe))).await
+}
+
+/// §0 fact 3, asserted rather than trusted: `call_return_into` writes exactly
+/// `type.size()` bytes and endian-corrects a sub-register return itself. That
+/// is the whole reason den's return cell is a local of the declared type
+/// rather than a register-sized one — and a cell that widened would clobber
+/// the byte next to it, which is what `canary` is here to notice.
+///
+/// This talks to libffi directly because the property is about the byte after
+/// the cell, and no JS-visible value can see it.
+#[test]
+fn a_sub_register_return_does_not_widen_past_its_cell() {
+    #[repr(C)]
+    struct Guard {
+        cell:   i8,
+        canary: [u8; 8],
+    }
+
+    let Some(probe) = Probe::get() else {
+        return;
+    };
+    let library = dlopen2::raw::Library::open(probe.library()).expect("the probe is loadable");
+    // SAFETY: `symbol` only transmutes the `dlsym` result into a pointer-sized
+    // `T` and reads nothing through it; the CIF below describes the real
+    // signature of `int8_t minus_one_i8(void)`.
+    let address: *const c_void =
+        unsafe { library.symbol("minus_one_i8") }.expect("the probe exports it");
+
+    let cif = Cif::new(iter::empty::<Type>(), Type::i8());
+    let mut guard = Guard {
+        cell:   0x7f,
+        canary: [0xAA; 8],
+    };
+    // SAFETY: the CIF matches the C declaration, the argument list is empty as
+    // it declares, and the return cell is exactly one byte, the size the CIF's
+    // result type reports.
+    unsafe {
+        cif.call_return_into(CodePtr::from_ptr(address), &[], Ret::new(&mut guard.cell));
+    }
+
+    assert_eq!(guard.cell, -1, "an i8 return is sign-correct");
+    assert_eq!(
+        guard.canary, [0xAA; 8],
+        "libffi wrote past a return cell sized to the declared type"
+    );
 }

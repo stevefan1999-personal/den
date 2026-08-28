@@ -21,17 +21,31 @@ const absent = assertThrows(
 assertEquals(absent.kind, "Symbol");
 assertEquals(absent.symbol, "definitely_missing");
 
+// ... and `name` is what dlsym sees, so overriding it with a name the library
+// does not export fails the same way, still naming the key.
+const renamed = assertThrows(
+  () => open(library, { add: { ...add, name: "definitely_missing" } }, capability),
+);
+assertEquals(renamed.kind, "Symbol");
+assertEquals(renamed.symbol, "add");
+
 // Nothing is silently widened or ignored: an unimplemented type, an
 // unimplemented key and a malformed entry all throw, naming the symbol.
 for (const broken of [
-  { params: ["u64"], result: "i32" },
+  { params: ["buffer"], result: "i32" },
   { params: [{ struct: { x: "i32" } }], result: "i32" },
+  { params: [{ callback: { params: [], result: "void" } }], result: "i32" },
   { params: ["i32", "i32"], result: "buffer" },
   { params: ["void"], result: "void" },
   { params: ["i32", "i32"], result: "i32", nonblocking: true },
-  { params: ["i32", "i32"], result: "i32", optional: true },
+  { params: ["i32", "i32"], result: "i32", nonblokcing: true },
   { result: "i32" },
   { params: ["i32", "i32"] },
+  // A static and a function are different key sets, so neither accepts the
+  // other's keys, and `void` names no bytes to read.
+  { type: "i32", params: [] },
+  { type: "void" },
+  { type: "quad" },
   "add",
 ]) {
   const error = assertThrows(() => open(library, { add: broken }, capability));

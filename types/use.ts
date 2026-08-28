@@ -2,20 +2,22 @@
 // that the inference works and that every `@ts-expect-error` below is
 // consumed — an unused one is itself an error (TS2578).
 //
-// Nothing here runs; the phase-1 runtime implements only the `i32` / `f64` /
-// `void` corner of this surface.
+// Nothing here runs; the runtime implements the scalar corner of this surface
+// and refuses the rest at `open()`.
 import {
   type Callback,
   FfiGrant,
   grant,
   open,
   type Pointer,
+  ptr,
+  suffix,
 } from "den:ffi";
 
 declare const capability: FfiGrant;
 
 // No `as const` anywhere: `const S` on `open` keeps the literal narrow.
-const lib = open("./libprobe.so", {
+const lib = open(`./libprobe${suffix}`, {
   add: { params: ["i32", "i32"], result: "i32" },
   scale: {
     params: [{ struct: { x: "i32", y: "i32" } }, "i32"],
@@ -29,6 +31,7 @@ const lib = open("./libprobe.so", {
   alloc: { params: ["usize"], result: "pointer" },
   maybe: { params: [], result: "void", optional: true },
   version: { type: "i32" },
+  sum: { params: ["i32", "i32"], result: "i32", name: "add" },
 }, capability);
 
 const sum: number = lib.add(1, 2);
@@ -38,7 +41,17 @@ const version: number = lib.version;
 const address: Pointer | null = lib.alloc(8n);
 lib.maybe?.();
 lib[Symbol.dispose]();
-void [sum, point, digest, version, address];
+const renamed: number = lib.sum(1, 2);
+void [sum, point, digest, version, address, renamed];
+
+// The `ptr` namespace: opaque in, plain data out.
+if (address !== null) {
+  const bits: bigint = ptr.value(address);
+  const same: boolean = ptr.equals(address, null);
+  const bytes: Uint8Array<ArrayBuffer> = ptr.view(address, 8);
+  const text: string = ptr.cstring(address, 64);
+  void [bits, same, bytes, text];
+}
 
 declare const callback: Callback<readonly ["i32"], "i32">;
 const applied: number = lib.apply(callback, 21);
@@ -66,6 +79,11 @@ lib.apply(wrongSignature, 1);
 open("./libprobe.so", { f: { params: [], result: "buffer" } }, capability);
 // @ts-expect-error — the grant is unforgeable.
 open("./libprobe.so", { f: { params: [], result: "void" } }, { roots: [] });
+
+// @ts-expect-error — `view`'s length is mandatory.
+ptr.view(address!);
+// @ts-expect-error — an address cannot be made from an integer.
+ptr.value(0n);
 
 declare const wrongSignature: Callback<readonly ["f64", "f64"], "f64">;
 void [notAwaited, notANumber, grant];
