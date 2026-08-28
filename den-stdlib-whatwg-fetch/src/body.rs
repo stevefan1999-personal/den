@@ -5,7 +5,7 @@ use std::{cell::RefCell, rc::Rc};
 use den_stdlib_whatwg::streams::ReadableStream;
 use den_util::{BufferSource, Probe as _};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Promise, Result,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
     TypedArray, Value,
     function::{Async, Constructor, Opt, This},
     promise::MaybePromise,
@@ -286,15 +286,10 @@ pub(crate) fn tee_stream<'js>(
     {
         return den_stdlib_whatwg::streams::ReadableStream::tee_pair(&readable, ctx);
     }
-    if let Some(object) = stream.as_object()
-        && let Ok(tee) = object.get::<_, Function>("tee")
-    {
-        let result: Value = tee.call((This(object.clone()),))?;
-        if let Some(pair) = result.as_object() {
-            return Ok((pair.get(0)?, pair.get(1)?));
-        }
-    }
-    tee_foreign(ctx, stream)
+    Err(Exception::throw_type(
+        ctx,
+        "ReadableStream expected: den has one stream implementation and this is not it",
+    ))
 }
 
 pub(crate) fn blob_from_bytes<'js>(
@@ -687,175 +682,4 @@ fn array_buffer_method_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<
         })?,
     )?;
     readable_from_source(ctx, source)
-}
-
-fn array_push<'js>(array: &Array<'js>, value: Value<'js>) -> Result<()> {
-    let push: Function = AsRef::<Object>::as_ref(array).get("push")?;
-    push.call((This(array.clone()), value))
-}
-
-fn array_shift<'js>(array: &Array<'js>) -> Result<Option<Value<'js>>> {
-    if array.len() == 0 {
-        return Ok(None);
-    }
-    let shift: Function = AsRef::<Object>::as_ref(array).get("shift")?;
-    shift.call((This(array.clone()),)).map(Some)
-}
-
-fn tee_wake(bag: &Object<'_>) {
-    let Ok(waiters) = bag.get::<_, Array>("waiters") else {
-        return;
-    };
-    let ctx = bag.ctx().clone();
-    let count = waiters.len();
-    for index in 0..count {
-        if let Ok(resolve) = waiters.get::<Function>(index) {
-            let _ = resolve.call::<_, ()>(());
-        }
-    }
-    if let Ok(empty) = Array::new(ctx) {
-        let _ = bag.set("waiters", empty);
-    }
-}
-
-fn tee_foreign<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<(Value<'js>, Value<'js>)> {
-    let Some(object) = stream.as_object() else {
-        return Err(Exception::throw_type(ctx, "ReadableStream expected"));
-    };
-    let get_reader: Function = object.get("getReader")?;
-    let reader: Object = get_reader.call((This(object.clone()),))?;
-    let bag = Object::new(ctx.clone())?;
-    bag.set("left", Array::new(ctx.clone())?)?;
-    bag.set("right", Array::new(ctx.clone())?)?;
-    bag.set("waiters", Array::new(ctx.clone())?)?;
-    bag.set("closed", false)?;
-    bag.set("failed", Value::new_undefined(ctx.clone()))?;
-    bag.set("reader", reader)?;
-    let pump = Function::new(
-        ctx.clone(),
-        Async({
-            move |this: This<Object<'js>>, ctx: Ctx<'js>| {
-                let bag = this.0.clone();
-                async move { tee_pump(&ctx, bag).await }
-            }
-        }),
-    )?;
-    pump.defer((This(bag.clone()),))?;
-    let left = tee_branch(ctx, bag.clone(), "left")?;
-    let right = tee_branch(ctx, bag, "right")?;
-    Ok((left, right))
-}
-
-async fn tee_pump<'js>(ctx: &Ctx<'js>, bag: Object<'js>) -> Result<()> {
-    let reader: Object = bag.get("reader")?;
-    let read: Function = reader.get("read")?;
-    loop {
-        let produced: Value = match read.call((This(reader.clone()),)) {
-            Ok(value) => value,
-            Err(_) => {
-                let thrown = ctx.catch();
-                let _ = bag.set("failed", thrown);
-                tee_wake(&bag);
-                return Ok(());
-            }
-        };
-        let result = match MaybePromise::from_js(ctx, produced)?
-            .into_future::<Value>()
-            .await
-        {
-            Ok(value) => value,
-            Err(_) => {
-                let thrown = ctx.catch();
-                let _ = bag.set("failed", thrown);
-                tee_wake(&bag);
-                return Ok(());
-            }
-        };
-        let Some(object) = result.as_object() else {
-            let _ = bag.set("closed", true);
-            tee_wake(&bag);
-            return Ok(());
-        };
-        if object.get::<_, bool>("done").unwrap_or(false) {
-            let _ = bag.set("closed", true);
-            tee_wake(&bag);
-            return Ok(());
-        }
-        let value: Value = object.get("value")?;
-        let left: Array = bag.get("left")?;
-        let right: Array = bag.get("right")?;
-        array_push(&left, value.clone())?;
-        array_push(&right, value)?;
-        tee_wake(&bag);
-    }
-}
-
-fn tee_branch<'js>(ctx: &Ctx<'js>, bag: Object<'js>, side: &'static str) -> Result<Value<'js>> {
-    let source = Object::new(ctx.clone())?;
-    source.set("_tee", bag)?;
-    source.set("_side", side)?;
-    source.set(
-        "pull",
-        Function::new(
-            ctx.clone(),
-            Async({
-                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
-                    let bag: Result<Object<'js>> = this.0.get("_tee");
-                    let side: Result<String> = this.0.get("_side");
-                    async move {
-                        let bag = bag?;
-                        let is_left = side?.as_str() == "left";
-                        tee_take(&ctx, &bag, is_left, &controller).await
-                    }
-                }
-            }),
-        )?,
-    )?;
-    readable_from_source(ctx, source)
-}
-
-enum TeeNext<'js> {
-    Chunk(Value<'js>),
-    Close,
-    Fail(Value<'js>),
-    Wait(Promise<'js>),
-}
-
-async fn tee_take<'js>(
-    ctx: &Ctx<'js>, bag: &Object<'js>, is_left: bool, controller: &Object<'js>,
-) -> Result<()> {
-    loop {
-        let next = {
-            let failed: Value = bag.get("failed")?;
-            if !failed.is_undefined() && !failed.is_null() {
-                TeeNext::Fail(failed)
-            } else {
-                let queue: Array = bag.get(if is_left { "left" } else { "right" })?;
-                if let Some(chunk) = array_shift(&queue)? {
-                    TeeNext::Chunk(chunk)
-                } else if bag.get::<_, bool>("closed").unwrap_or(false) {
-                    TeeNext::Close
-                } else {
-                    let (promise, resolve, _) = ctx.promise()?;
-                    let waiters: Array = bag.get("waiters")?;
-                    array_push(&waiters, resolve.into_value())?;
-                    TeeNext::Wait(promise)
-                }
-            }
-        };
-        match next {
-            TeeNext::Fail(failed) => return Err(ctx.throw(failed)),
-            TeeNext::Chunk(chunk) => {
-                controller_call(controller, "enqueue", Some(chunk))?;
-                return Ok(());
-            }
-            TeeNext::Close => {
-                controller_call(controller, "close", None)?;
-                return Ok(());
-            }
-            TeeNext::Wait(promise) => {
-                let _ = promise.into_future::<Value>().await;
-            }
-        }
-    }
 }
