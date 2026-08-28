@@ -32,7 +32,6 @@ assertEquals(renamed.symbol, "add");
 // Nothing is silently widened or ignored: an unimplemented type, an
 // unimplemented key and a malformed entry all throw, naming the symbol.
 for (const broken of [
-  { params: ["buffer"], result: "i32" },
   { params: [{ struct: { x: "i32" } }], result: "i32" },
   { params: [{ callback: { params: [], result: "void" } }], result: "i32" },
   { params: ["i32", "i32"], result: "buffer" },
@@ -45,6 +44,7 @@ for (const broken of [
   // other's keys, and `void` names no bytes to read.
   { type: "i32", params: [] },
   { type: "void" },
+  { type: "buffer" },
   { type: "quad" },
   "add",
 ]) {

@@ -14,7 +14,7 @@ use crate::{
     error::ErrorKind,
     grant::FfiGrant,
     marshal::{self, ArgumentCell},
-    schema::{NativeType, SymbolKind, SymbolSpec},
+    schema::{NativeType, ParamType, SymbolKind, SymbolSpec},
 };
 
 /// The loaded library. Every bound symbol and every `Pointer` holds an `Rc` of
@@ -81,7 +81,7 @@ impl LoadedLibrary {
 struct BoundFn {
     address: CodePtr,
     cif:     Cif,
-    params:  Vec<NativeType>,
+    params:  Vec<ParamType>,
     result:  NativeType,
     library: Rc<LoadedLibrary>,
 }

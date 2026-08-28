@@ -75,6 +75,8 @@ lib.maybe();
 lib.apply((n: number) => n * 2, 1);
 // @ts-expect-error — the signature brand: this handle is the wrong shape.
 lib.apply(wrongSignature, 1);
+// @ts-expect-error — `buffer` is an argument type, not a static's type.
+open("./libprobe.so", { v: { type: "buffer" } }, capability);
 // @ts-expect-error — `buffer` is not a result type.
 open("./libprobe.so", { f: { params: [], result: "buffer" } }, capability);
 // @ts-expect-error — the grant is unforgeable.

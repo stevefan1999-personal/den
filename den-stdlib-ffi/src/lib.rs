@@ -8,8 +8,9 @@
 //!
 //! The scalar vocabulary is complete — every integer width, `bool`, `f32`,
 //! `f64`, `pointer` and `void`, as arguments, as results and as static
-//! symbols. Buffers, structs, callbacks and `nonblocking` are still refused by
-//! name at `open()`, with `FfiError { kind: "Schema" }`.
+//! symbols — and a `Uint8Array` reaches C as a borrowed `buffer` argument.
+//! Structs, callbacks and `nonblocking` are still refused by name at `open()`,
+//! with `FfiError { kind: "Schema" }`.
 
 mod error;
 mod grant;

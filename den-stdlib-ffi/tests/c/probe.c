@@ -46,3 +46,12 @@ const char *unterminated(void) { return unterminated_bytes; }
 /* Exported variables, read by the `{ type }` schema form. */
 int32_t version = 3;
 double ratio = 0.5;
+
+/* The buffer argument: C writes through the pointer den hands it, so a view
+ * built at a byteOffset shows exactly where that pointer landed. Each byte is
+ * its own index plus one, which no zeroed buffer can be mistaken for. */
+void fill_bytes(uint8_t *out, size_t length) {
+  for (size_t index = 0; index < length; index++) {
+    out[index] = (uint8_t)(index + 1);
+  }
+}
