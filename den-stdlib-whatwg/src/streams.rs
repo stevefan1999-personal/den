@@ -39,8 +39,12 @@ pub use crate::streams::{
 /// neither breaks nor observes the stream machinery.
 #[derive(JsLifetime)]
 pub(crate) struct Intrinsics<'js> {
-    then: Function<'js>,
-    noop: Function<'js>,
+    then:      Function<'js>,
+    noop:      Function<'js>,
+    /// The queuing strategies' `size` is one function per realm, not one per
+    /// instance: `queuing-strategies.any.js` compares them by identity.
+    count:     Function<'js>,
+    byte_size: Function<'js>,
 }
 
 pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
@@ -48,19 +52,49 @@ pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
     let proto: Object = promise.get("prototype")?;
     let then: Function = proto.get("then")?;
     let noop = Function::new(ctx.clone(), || {})?;
-    let _ = ctx.store_userdata(Intrinsics { then, noop });
+    let count = Function::new(ctx.clone(), || 1.0)?.with_name("size")?;
+    let byte_size = Function::new(ctx.clone(), |chunk: Object<'_>| -> Result<f64> {
+        Ok(chunk.get::<_, rquickjs::Coerced<f64>>("byteLength")?.0)
+    })?
+    .with_name("size")?;
+    let _ = ctx.store_userdata(Intrinsics {
+        then,
+        noop,
+        count,
+        byte_size,
+    });
     Ok(())
 }
 
 fn intrinsics<'js>(ctx: &Ctx<'js>) -> Result<(Function<'js>, Function<'js>)> {
-    if let Some(cached) = ctx.userdata::<Intrinsics<'js>>() {
-        return Ok((cached.then.clone(), cached.noop.clone()));
+    let cached = cached_intrinsics(ctx)?;
+    Ok((cached.0, cached.1))
+}
+
+/// `(then, noop, countSize, byteLengthSize)`.
+fn cached_intrinsics<'js>(
+    ctx: &Ctx<'js>,
+) -> Result<(Function<'js>, Function<'js>, Function<'js>, Function<'js>)> {
+    if ctx.userdata::<Intrinsics<'js>>().is_none() {
+        install_intrinsics(ctx)?;
     }
-    install_intrinsics(ctx)?;
     let cached = ctx
         .userdata::<Intrinsics<'js>>()
         .ok_or_else(|| Exception::throw_type(ctx, "stream intrinsics are unavailable"))?;
-    Ok((cached.then.clone(), cached.noop.clone()))
+    Ok((
+        cached.then.clone(),
+        cached.noop.clone(),
+        cached.count.clone(),
+        cached.byte_size.clone(),
+    ))
+}
+
+pub(crate) fn count_size<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>> {
+    Ok(cached_intrinsics(ctx)?.2)
+}
+
+pub(crate) fn byte_length_size<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>> {
+    Ok(cached_intrinsics(ctx)?.3)
 }
 
 /// PerformPromiseThen over the pristine `then`. `value` is treated as the
@@ -195,6 +229,11 @@ pub(crate) fn thrown<'js>(ctx: &Ctx<'js>, error: rquickjs::Error) -> Value<'js> 
 
 pub(crate) fn type_error<'js>(ctx: &Ctx<'js>, message: &str) -> Value<'js> {
     let error = Exception::throw_type(ctx, message);
+    thrown(ctx, error)
+}
+
+pub(crate) fn range_error<'js>(ctx: &Ctx<'js>, message: &str) -> Value<'js> {
+    let error = Exception::throw_range(ctx, message);
     thrown(ctx, error)
 }
 

@@ -12,7 +12,9 @@ use rquickjs::{
     function::{Opt, This},
 };
 
-use crate::streams::{Cap, method, native::NativeSource, pipe, react, thrown, type_error};
+use crate::streams::{
+    Cap, method, native::NativeSource, pipe, range_error, react, thrown, type_error,
+};
 
 pub(crate) enum RsState<'js> {
     Readable,
@@ -259,6 +261,14 @@ impl<'js> ReadableStream<'js> {
         Ok(id)
     }
 
+    pub(crate) fn closed_is_pending(inner: &Inner<'js>) -> bool {
+        inner
+            .borrow()
+            .reader
+            .as_ref()
+            .is_some_and(|slot| slot.closed.is_pending())
+    }
+
     pub(crate) fn reader_is_current(inner: &Inner<'js>, id: u64) -> bool {
         inner
             .borrow()
@@ -413,10 +423,13 @@ impl<'js> ReadableStream<'js> {
             let size_fn = inner.borrow().size_fn.clone();
             let size = match size_fn {
                 Some(size_fn) => {
-                    match size_fn.call::<_, Coerced<f64>>((chunk.clone(),)) {
+                    match size_fn.call::<_, Coerced<f64>>((
+                        This(Value::new_undefined(ctx.clone())),
+                        chunk.clone(),
+                    )) {
                         Ok(size) => {
                             if !size.0.is_finite() || size.0 < 0.0 {
-                                let reason = type_error(
+                                let reason = range_error(
                                     ctx,
                                     "a chunk size must be a non-negative finite number",
                                 );
@@ -883,13 +896,17 @@ impl<'js> ReadableStreamDefaultController<'js> {
 pub struct ReadableStreamDefaultReader<'js> {
     stream: Class<'js, ReadableStream<'js>>,
     id:     u64,
-    closed: Promise<'js>,
+    /// Replaced by a fresh rejected promise when the lock is released and the
+    /// old one had already settled, as the specification requires.
+    closed: RefCell<Promise<'js>>,
 }
 
 impl<'js> Trace<'js> for ReadableStreamDefaultReader<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
         self.stream.trace(tracer);
-        self.closed.trace(tracer);
+        if let Ok(closed) = self.closed.try_borrow() {
+            closed.trace(tracer);
+        }
     }
 }
 
@@ -900,7 +917,11 @@ impl<'js> ReadableStreamDefaultReader<'js> {
         let inner = stream.borrow().inner.clone();
         let id = ReadableStream::acquire_reader(ctx, &inner)?;
         let closed = ReadableStream::closed_promise(ctx, &inner)?;
-        Class::instance(ctx.clone(), Self { stream, id, closed })
+        Class::instance(ctx.clone(), Self {
+            stream,
+            id,
+            closed: RefCell::new(closed),
+        })
     }
 
     fn inner(&self, ctx: &Ctx<'js>) -> Result<Inner<'js>> {
@@ -926,11 +947,15 @@ impl<'js> ReadableStreamDefaultReader<'js> {
         let inner = stream.borrow().inner.clone();
         let id = ReadableStream::acquire_reader(&ctx, &inner)?;
         let closed = ReadableStream::closed_promise(&ctx, &inner)?;
-        Ok(Self { stream, id, closed })
+        Ok(Self {
+            stream,
+            id,
+            closed: RefCell::new(closed),
+        })
     }
 
     #[qjs(get)]
-    pub fn closed(&self) -> Promise<'js> { self.closed.clone() }
+    pub fn closed(&self) -> Promise<'js> { self.closed.borrow().clone() }
 
     pub fn read(&self, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         let inner = match self.inner(&ctx) {
@@ -959,7 +984,18 @@ impl<'js> ReadableStreamDefaultReader<'js> {
 
     pub fn release_lock(&self, ctx: Ctx<'js>) {
         let inner = self.stream.borrow().inner.clone();
+        if !ReadableStream::reader_is_current(&inner, self.id) {
+            return;
+        }
+        let was_pending = ReadableStream::closed_is_pending(&inner);
         ReadableStream::release_reader(&ctx, &inner, self.id);
+        if !was_pending
+            && let Ok(replacement) =
+                Cap::rejected(&ctx, type_error(&ctx, "the reader was released"))
+        {
+            crate::streams::mark_handled(&ctx, &replacement);
+            *self.closed.borrow_mut() = replacement;
+        }
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
