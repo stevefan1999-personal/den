@@ -24,7 +24,10 @@ use std::{
     io::{self, ErrorKind},
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -32,28 +35,13 @@ use den_core::engine::Engine;
 use futures::{SinkExt, StreamExt};
 use libtest_mimic::{Arguments, Completion, Failed, Trial};
 use rquickjs::{CatchResultExt, Object, Promise, context::EvalOptions};
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::{
+    Message,
+    handshake::server::{Request, Response},
+};
 
 const ADAPTER: &str = include_str!("wpt_adapter.js");
-const BOOTSTRAP: &str = r#"
-if (typeof self === "undefined") { globalThis.self = globalThis; }
-globalThis.window = globalThis;
-(function () {
-  var nativeSet = globalThis.setTimeout;
-  var nativeClear = globalThis.clearTimeout;
-  if (typeof nativeSet === "function") {
-    globalThis.setTimeout = function (fn, ms) {
-      return nativeSet(fn, ms == null ? 0 : Number(ms));
-    };
-  }
-  if (typeof nativeClear === "function") {
-    globalThis.clearTimeout = function (id) {
-      if (id == null) { return; }
-      return nativeClear(id);
-    };
-  }
-})();
-"#;
+const BOOTSTRAP: &str = include_str!("wpt_bootstrap.js");
 
 const STATUS_PASS: i32 = 0;
 const STATUS_FAIL: i32 = 1;
@@ -61,7 +49,7 @@ const STATUS_TIMEOUT: i32 = 2;
 const HARNESS_ERROR: i32 = 1;
 const HARNESS_TIMEOUT: i32 = 2;
 
-const WPT_TREES: &[&str] = &["websockets", "FileAPI", "url", "fetch", "wasm/jsapi"];
+const WPT_TREES: &[&str] = &["websockets", "FileAPI", "url", "fetch", "wasm/jsapi", "streams"];
 
 fn wpt_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -518,9 +506,13 @@ async fn bind_echo() -> Result<u16, String> {
                 break;
             };
             tokio::spawn(async move {
+                let greet = Arc::new(AtomicBool::new(false));
+                let mark_greeting = Arc::clone(&greet);
                 let accepted = tokio_tungstenite::accept_hdr_async(
                     stream,
-                    |request: &Request, mut response: Response| {
+                    move |request: &Request, mut response: Response| {
+                        mark_greeting
+                            .store(request.uri().path() == "/protocol_array", Ordering::Relaxed);
                         if let Some(header) = request.headers().get("Sec-WebSocket-Protocol") {
                             if let Ok(text) = header.to_str() {
                                 if let Some(first) = text
@@ -543,6 +535,9 @@ async fn bind_echo() -> Result<u16, String> {
                 let Ok(mut socket) = accepted else {
                     return;
                 };
+                if greet.load(Ordering::Relaxed) {
+                    let _ = socket.send(Message::Text("foobar".into())).await;
+                }
                 while let Some(message) = socket.next().await {
                     let Ok(message) = message else {
                         break;
@@ -2110,6 +2105,7 @@ async fn run_case(
         bundle.push_str("\";\n");
     }
     bundle.push_str(&expanded);
+    bundle.push_str("\ndone();\n");
     bundle.push_str("\nawait __denWptWait(");
     bundle.push_str(&wait_ms.to_string());
     bundle.push_str(");\n");

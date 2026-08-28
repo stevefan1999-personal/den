@@ -27,10 +27,10 @@ if (typeof globalThis.escape !== "function") {
 if (typeof globalThis.GLOBAL === "undefined") {
   globalThis.GLOBAL = {
     isWindow: function () {
-      return false;
+      return typeof globalThis.document !== "undefined";
     },
     isWorker: function () {
-      return true;
+      return typeof globalThis.document === "undefined";
     },
     isShadowRealm: function () {
       return false;
@@ -301,7 +301,89 @@ if (typeof ReadableStream === "function" && typeof ReadableStream.prototype.pipe
   };
 }
 
-setup({ output: false, explicit_timeout: true });
+// testharness has already selected its environment. Install only
+// the tiny DOM surface used by the runnable FileAPI constructor cases.
+function denTagged(value, name) {
+    Object.defineProperty(value, Symbol.toStringTag, { value: name, configurable: true });
+    return value;
+  }
+
+  function denCollection(items, name) {
+    var collection = denTagged({}, name);
+    for (var index = 0; index < items.length; index++) {
+      collection[index] = items[index];
+    }
+    Object.defineProperty(collection, "length", {
+      configurable: true,
+      get: function () {
+        return items.length;
+      },
+      set: function (length) {
+        items.length = Math.max(0, Number(length) || 0);
+      },
+    });
+    collection[Symbol.iterator] = function () {
+      return items[Symbol.iterator]();
+    };
+    return collection;
+  }
+
+  function denElement(name) {
+    name = String(name || "").toLowerCase();
+    var type = {
+      body: "HTMLBodyElement",
+      div: "HTMLDivElement",
+      html: "HTMLHtmlElement",
+      option: "HTMLOptionElement",
+      p: "HTMLParagraphElement",
+      select: "HTMLSelectElement",
+    }[name] || "HTMLElement";
+    var element = denTagged({}, type);
+    var children = [];
+    var attributes = [];
+    element.tagName = name.toUpperCase();
+    element.localName = name;
+    element.namespaceURI = "http://www.w3.org/1999/xhtml";
+    element.children = denCollection(children, "HTMLCollection");
+    element.attributes = denCollection(attributes, "NamedNodeMap");
+    element.appendChild = function (child) {
+      children.push(child);
+      element.children = denCollection(children, "HTMLCollection");
+      if (name === "select") {
+        element[children.length - 1] = child;
+        element.length = children.length;
+        element[Symbol.iterator] = function () {
+          return children[Symbol.iterator]();
+        };
+      }
+      return child;
+    };
+    element.setAttribute = function (attributeName, value) {
+      var attribute = denTagged({ name: String(attributeName), value: String(value) }, "Attr");
+      attributes.push(attribute);
+      element.attributes = denCollection(attributes, "NamedNodeMap");
+    };
+    return element;
+  }
+
+  globalThis.document = denTagged({ readyState: "complete" }, "HTMLDocument");
+  globalThis.document.body = denElement("body");
+  globalThis.document.documentElement = denElement("html");
+  globalThis.document.defaultView = globalThis;
+  globalThis.document.createElement = denElement;
+  globalThis.document.createElementNS = function (_, name) {
+    return denElement(name);
+  };
+  globalThis.document.getElementsByTagName = function () {
+    return denCollection([], "HTMLCollection");
+  };
+  globalThis.document.getElementById = function () {
+    return null;
+  };
+  globalThis.parent = globalThis;
+globalThis.top = globalThis;
+
+setup({ output: false, explicit_timeout: true, explicit_done: true });
 
 globalThis.__denWpt = { done: false, harness: 0, rows: [] };
 
