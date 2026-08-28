@@ -23,19 +23,10 @@ use crate::streams::{
     writable::{Inner as WsInner, WritableStream},
 };
 
+/// WebIDL boolean conversion: ToBoolean, so `NaN` and `""` are false and every
+/// other object is true. Hand-rolling this got `NaN` backwards.
 fn truthy(object: &Object<'_>, name: &str) -> Result<bool> {
-    let value: Value = object.get(name)?;
-    Ok(value.as_bool().unwrap_or_else(|| {
-        !(value.is_undefined() || value.is_null() || value.is_bool())
-            && value
-                .as_number()
-                .map(|number| number != 0.0)
-                .unwrap_or(true)
-            && value
-                .as_string()
-                .and_then(|s| s.to_string().ok())
-                .is_none_or(|s| !s.is_empty())
-    }))
+    Ok(object.get::<_, Coerced<bool>>(name)?.0)
 }
 
 /// The pipe holds both streams alive, as the specification's reader and writer
