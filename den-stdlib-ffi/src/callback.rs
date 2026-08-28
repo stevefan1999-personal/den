@@ -299,7 +299,10 @@ struct Slot {
     /// wait expires. Nothing but the diagnostic depends on it, so a miss is a
     /// vaguer message and never a wrong call.
     origin:    Mutex<Option<Arc<str>>>,
-    /// Read **only** after `owner` matches the calling thread.
+    /// Read **only** after this thread's [`INSIDE_CALL`] names [`Self::realm`]
+    /// — i.e. from a frame that is inside a call den made into that realm and
+    /// therefore holds its runtime lock. There is no `owner` thread to compare
+    /// against: den's realm is not pinned to one.
     reentrant: OwnedCtx,
 }
 
