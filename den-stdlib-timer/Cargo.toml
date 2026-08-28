@@ -10,10 +10,13 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 
+[lib]
+test = false
+
 [dependencies]
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 den-stdlib-core.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 tokio-util.workspace = true
 
 [dev-dependencies]

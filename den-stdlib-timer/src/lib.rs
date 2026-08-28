@@ -47,7 +47,7 @@ pub mod timer {
     use std::time::Duration;
 
     use den_stdlib_core::exceptions::report_uncaught;
-    use rquickjs::{Coerced, Ctx, FromJs as _, Result, Value, module::Exports, prelude::Opt};
+    use rquickjs::{Ctx, Function, Result, Value, function::Rest, module::Exports, prelude::Opt};
     use tokio::time;
     use tokio_util::sync::CancellationToken;
 
@@ -63,17 +63,8 @@ pub mod timer {
         Duration::from_millis(delay.unwrap_or(0) as u64).max(MINIMUM_DELAY)
     }
 
-    /// HTML: a function is called; anything else is coerced to a string and
-    /// evaluated as a classic script (`setTimeout("x", 0)`).
-    fn invoke<'js>(ctx: &Ctx<'js>, callback: &Value<'js>) {
-        if let Some(func) = callback.as_function() {
-            report_uncaught(ctx, func.call::<_, ()>(()));
-            return;
-        }
-        match Coerced::<String>::from_js(ctx, callback.clone()) {
-            Ok(Coerced(code)) => report_uncaught(ctx, ctx.eval::<(), _>(code)),
-            Err(error) => report_uncaught(ctx, Err(error)),
-        }
+    fn invoke<'js>(ctx: &Ctx<'js>, callback: &Function<'js>, arguments: &[Value<'js>]) {
+        report_uncaught(ctx, callback.call::<_, ()>((Rest(arguments.to_vec()),)));
     }
 
     fn arm(ctx: &Ctx<'_>) -> Result<(u32, CancellationToken)> {
@@ -103,7 +94,8 @@ pub mod timer {
     #[rquickjs::function]
     #[qjs(rename = "setInterval")]
     pub fn set_interval<'js>(
-        callback: Value<'js>, delay: Option<usize>, ctx: Ctx<'js>,
+        callback: Function<'js>, delay: Option<usize>, Rest(arguments): Rest<Value<'js>>,
+        ctx: Ctx<'js>,
     ) -> Result<u32> {
         let mut interval = time::interval(delay_of(delay));
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -116,7 +108,7 @@ pub mod timer {
                 // callback before the delay elapsed.
                 if token.run_until_cancelled(interval.tick()).await.is_some() {
                     while token.run_until_cancelled(interval.tick()).await.is_some() {
-                        invoke(&ctx, &callback);
+                        invoke(&ctx, &callback, &arguments);
                     }
                 }
                 Timers::forget(&ctx, id);
@@ -145,7 +137,8 @@ pub mod timer {
     #[rquickjs::function]
     #[qjs(rename = "setTimeout")]
     pub fn set_timeout<'js>(
-        callback: Value<'js>, delay: Option<usize>, ctx: Ctx<'js>,
+        callback: Function<'js>, delay: Option<usize>, Rest(arguments): Rest<Value<'js>>,
+        ctx: Ctx<'js>,
     ) -> Result<u32> {
         let duration = delay_of(delay);
         let (id, token) = arm(&ctx)?;
@@ -159,7 +152,7 @@ pub mod timer {
                     .is_some();
                 Timers::forget(&ctx, id);
                 if fired {
-                    invoke(&ctx, &callback);
+                    invoke(&ctx, &callback, &arguments);
                 }
             }
         });
@@ -173,6 +166,44 @@ pub mod timer {
     #[rquickjs::function]
     #[qjs(rename = "clearTimeout")]
     pub fn clear_timeout(Opt(id): Opt<u32>, ctx: Ctx<'_>) {
+        if let Some(id) = id {
+            Timers::cancel(&ctx, id);
+        }
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
+    #[rquickjs::function]
+    #[qjs(rename = "setImmediate")]
+    pub fn set_immediate<'js>(
+        callback: Function<'js>, Rest(arguments): Rest<Value<'js>>, ctx: Ctx<'js>,
+    ) -> Result<u32> {
+        let (id, token) = arm(&ctx)?;
+        ctx.spawn({
+            let ctx = ctx.clone();
+            async move {
+                let fired = token
+                    .run_until_cancelled(tokio::task::yield_now())
+                    .await
+                    .is_some();
+                Timers::forget(&ctx, id);
+                if fired {
+                    invoke(&ctx, &callback, &arguments);
+                }
+            }
+        });
+        Ok(id)
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the rquickjs function macro injects Ctx by value"
+    )]
+    #[rquickjs::function]
+    #[qjs(rename = "clearImmediate")]
+    pub fn clear_immediate(Opt(id): Opt<u32>, ctx: Ctx<'_>) {
         if let Some(id) = id {
             Timers::cancel(&ctx, id);
         }
@@ -192,6 +223,8 @@ pub mod timer {
         globals.set("setInterval", js_set_interval)?;
         globals.set("clearTimeout", js_clear_timeout)?;
         globals.set("clearInterval", js_clear_interval)?;
+        globals.set("setImmediate", js_set_immediate)?;
+        globals.set("clearImmediate", js_clear_immediate)?;
         Ok(())
     }
 }

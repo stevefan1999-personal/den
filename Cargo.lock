@@ -633,15 +633,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b63caa9aa9397e2d9480a9b13673856c78d8ac123288526c37d7839f2a86990"
 
 [[package]]
-name = "colored"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1141,9 +1132,7 @@ name = "den-stdlib-console"
 version = "0.4.0"
 dependencies = [
  "color-eyre",
- "colored",
  "den-core",
- "indexmap",
  "rquickjs",
  "tokio",
  "tracing",
@@ -1156,7 +1145,6 @@ dependencies = [
  "base64-simd",
  "color-eyre",
  "den-core",
- "den-util",
  "rquickjs",
  "tokio",
 ]
@@ -1168,7 +1156,6 @@ dependencies = [
  "color-eyre",
  "den-core",
  "den-util",
- "indexmap",
  "rand 0.10.2",
  "rquickjs",
  "sha1 0.11.0",
@@ -1241,7 +1228,6 @@ dependencies = [
  "color-eyre",
  "den-core",
  "either",
- "indexmap",
  "libc",
  "rquickjs",
  "tokio",
@@ -1254,7 +1240,6 @@ version = "0.4.0"
 dependencies = [
  "color-eyre",
  "den-core",
- "derive_more",
  "either",
  "rquickjs",
  "rusqlite",
@@ -1280,10 +1265,8 @@ version = "0.4.0"
 dependencies = [
  "color-eyre",
  "den-core",
- "derive_more",
  "either",
  "encoding_rs",
- "indexmap",
  "rquickjs",
  "tokio",
 ]

@@ -10,9 +10,11 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 
+[lib]
+test = false
+
 [dependencies]
 base64-simd.workspace = true
-den-util.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 
 [dev-dependencies]

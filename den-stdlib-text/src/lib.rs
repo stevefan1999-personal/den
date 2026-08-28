@@ -1,19 +1,18 @@
-use derive_more::{Debug, From, Into};
 use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
-use indexmap::{IndexMap, indexmap};
 use rquickjs::{
     ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
 };
 
-#[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
+#[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class]
 pub struct TextDecoder {
     #[qjs(skip_trace)]
-    #[debug(ignore)]
     encoding: &'static Encoding,
 
+    #[qjs(get, enumerable)]
     fatal:      bool,
+    #[qjs(get, enumerable, rename = "ignoreBOM")]
     ignore_bom: bool,
 }
 
@@ -42,12 +41,6 @@ impl TextDecoder {
 
     #[qjs(get, enumerable)]
     pub fn encoding(&self) -> String { self.encoding.name().to_ascii_lowercase() }
-
-    #[qjs(get, enumerable)]
-    pub fn fatal(&self) -> bool { self.fatal }
-
-    #[qjs(get, enumerable, rename = "ignoreBOM")]
-    pub fn ignore_bom(&self) -> bool { self.ignore_bom }
 
     pub fn decode<'js>(
         &self, buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>, ctx: Ctx<'js>,
@@ -96,25 +89,12 @@ impl TextDecoder {
     }
 }
 
-#[derive(Trace, JsLifetime, Clone, Debug, From, Into)]
+#[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class]
 pub struct TextEncoder {}
 
 impl Default for TextEncoder {
     fn default() -> Self { Self::new() }
-}
-
-impl TextEncoder {
-    /// Length in bytes of the longest UTF-8 prefix of `src` that fits in
-    /// `capacity`, never splitting a code point. https://encoding.spec.whatwg.org/#dom-textencoder-encodeinto
-    /// requires `encodeInto` to truncate rather than overrun the destination.
-    fn utf8_prefix_fitting(src: &str, capacity: usize) -> usize {
-        src.char_indices()
-            .map(|(offset, character)| offset + character.len_utf8())
-            .take_while(|end| *end <= capacity)
-            .last()
-            .unwrap_or(0)
-    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -131,14 +111,14 @@ impl TextEncoder {
 
     pub fn encode_into<'js>(
         &self, src: String, dest: TypedArray<'js, u8>, ctx: Ctx<'js>,
-    ) -> Result<IndexMap<&'static str, usize>> {
+    ) -> Result<Object<'js>> {
         // `as_raw` is the only mutable view rquickjs 0.12 offers — `as_bytes` hands
         // back a shared `&[u8]` — and it reports a detached buffer as `None`.
         let raw = dest
             .as_raw()
             .ok_or_else(|| Exception::throw_type(&ctx, "destination is detached"))?;
 
-        let written = Self::utf8_prefix_fitting(&src, raw.len);
+        let written = src.floor_char_boundary(raw.len);
 
         // SAFETY: `raw` is QuickJS's own live allocation for this view. Nothing else
         // aliases it here — no JS runs between `as_raw` and the end of the
@@ -147,10 +127,13 @@ impl TextEncoder {
         dest[..written].copy_from_slice(&src.as_bytes()[..written]);
 
         // `read` is counted in UTF-16 code units, `written` in bytes.
-        Ok(indexmap! {
-            "read" => src[..written].chars().map(char::len_utf16).sum(),
-            "written" => written
-        })
+        let result = Object::new(ctx)?;
+        result.set(
+            "read",
+            src[..written].chars().map(char::len_utf16).sum::<usize>(),
+        )?;
+        result.set("written", written)?;
+        Ok(result)
     }
 }
 
@@ -172,23 +155,5 @@ pub mod text {
             .set("TextEncoder", TextEncoder::constructor(ctx))?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::TextEncoder;
-
-    #[test]
-    fn utf8_prefix_never_overruns_or_splits_a_code_point() {
-        // "é" is two bytes, "€" is three: a capacity landing mid-character must not be
-        // used.
-        assert_eq!(TextEncoder::utf8_prefix_fitting("hello", 2), 2);
-        assert_eq!(TextEncoder::utf8_prefix_fitting("hello", 99), 5);
-        assert_eq!(TextEncoder::utf8_prefix_fitting("é", 1), 0);
-        assert_eq!(TextEncoder::utf8_prefix_fitting("é", 2), 2);
-        assert_eq!(TextEncoder::utf8_prefix_fitting("a€", 3), 1);
-        assert_eq!(TextEncoder::utf8_prefix_fitting("a€", 4), 4);
-        assert_eq!(TextEncoder::utf8_prefix_fitting("", 8), 0);
     }
 }

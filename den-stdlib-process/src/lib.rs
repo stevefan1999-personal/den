@@ -15,143 +15,89 @@ use rquickjs::{
 
 use crate::{
     env::Env,
-    lookup::Lookup,
     signal::{Signal, SignalHub},
     spawn::Child,
 };
 
-/// Host-side process helpers. JS sees the object `Process::install` builds.
-pub struct Process;
+pub fn pid() -> u32 { std::process::id() }
 
-impl Process {
-    pub fn pid() -> u32 { std::process::id() }
+pub fn ppid() -> u32 { parent_id() }
 
-    pub fn ppid() -> u32 { ParentId::get() }
+pub fn argv() -> Vec<String> { std::env::args().collect() }
 
-    pub fn argv() -> Vec<String> { std::env::args().collect() }
-
-    pub fn cwd(ctx: &Ctx<'_>) -> Result<String> {
-        std::env::current_dir()
-            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?
-            .into_os_string()
-            .into_string()
-            .map_err(|_| Exception::throw_internal(ctx, "cwd is not valid UTF-8"))
+fn parent_id() -> u32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: getppid is a pure query of the calling process.
+        unsafe { libc::getppid() as u32 }
     }
-
-    pub fn chdir(dir: String, ctx: &Ctx<'_>) -> Result<()> {
-        std::env::set_current_dir(&dir)
-            .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))
+    #[cfg(windows)]
+    {
+        windows_parent_id()
     }
-
-    pub fn exit(code: Option<i32>) -> ! { std::process::exit(code.unwrap_or(0)) }
-
-    pub fn install<'js>(ctx: &Ctx<'js>, exports: &rquickjs::module::Exports<'js>) -> Result<()> {
-        SignalHub::install(ctx)?;
-
-        let process = Object::new(ctx.clone())?;
-        process.set("env", Env::proxy(ctx.clone())?)?;
-        process.prop("argv", Accessor::from(Self::argv).enumerable())?;
-        process.prop("pid", Accessor::from(Self::pid).enumerable())?;
-        process.prop("ppid", Accessor::from(Self::ppid).enumerable())?;
-
-        process.set("cwd", js_cwd)?;
-        process.set("chdir", js_chdir)?;
-        process.set("exit", js_exit)?;
-        process.set("spawn", js_spawn)?;
-        process.set("kill", js_kill)?;
-        process.set("addSignalListener", js_add_signal_listener)?;
-        process.set("removeSignalListener", js_remove_signal_listener)?;
-        process.set("lookup", js_lookup)?;
-
-        exports.export("env", process.get::<_, Value>("env")?)?;
-        exports.export("argv", Self::argv())?;
-        exports.export("pid", Self::pid())?;
-        exports.export("ppid", Self::ppid())?;
-        exports.export("cwd", js_cwd)?;
-        exports.export("chdir", js_chdir)?;
-        exports.export("exit", js_exit)?;
-        exports.export("spawn", js_spawn)?;
-        exports.export("kill", js_kill)?;
-        exports.export("addSignalListener", js_add_signal_listener)?;
-        exports.export("removeSignalListener", js_remove_signal_listener)?;
-        exports.export("lookup", js_lookup)?;
-        exports.export("process", process.clone())?;
-
-        ctx.globals().set("process", process)?;
-        Ok(())
-    }
-}
-
-struct ParentId;
-
-impl ParentId {
-    fn get() -> u32 {
-        #[cfg(unix)]
-        {
-            // SAFETY: getppid is a pure query of the calling process.
-            unsafe { libc::getppid() as u32 }
-        }
-        #[cfg(windows)]
-        {
-            Self::windows()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            0
-        }
+    #[cfg(not(any(unix, windows)))]
+    {
+        0
     }
 }
 
 #[cfg(windows)]
-impl ParentId {
-    fn windows() -> u32 {
-        use windows_sys::Win32::{
-            Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
-            System::{
-                Diagnostics::ToolHelp::{
-                    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-                    TH32CS_SNAPPROCESS,
-                },
-                Threading::GetCurrentProcessId,
+fn windows_parent_id() -> u32 {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
             },
-        };
+            Threading::GetCurrentProcessId,
+        },
+    };
 
-        // SAFETY: ToolHelp snapshot iteration is the documented way to read
-        // `th32ParentProcessID`; the snapshot handle is closed on every path.
-        unsafe {
-            let pid = GetCurrentProcessId();
-            let snapshot: HANDLE = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
-                return 0;
-            }
-            let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
-            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            let mut ppid = 0;
-            if Process32FirstW(snapshot, &mut entry) != 0 {
-                loop {
-                    if entry.th32ProcessID == pid {
-                        ppid = entry.th32ParentProcessID;
-                        break;
-                    }
-                    if Process32NextW(snapshot, &mut entry) == 0 {
-                        break;
-                    }
+    // SAFETY: ToolHelp snapshot iteration is the documented way to read
+    // `th32ParentProcessID`; the snapshot handle is closed on every path.
+    unsafe {
+        let pid = GetCurrentProcessId();
+        let snapshot: HANDLE = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+            return 0;
+        }
+        let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut ppid = 0;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32ProcessID == pid {
+                    ppid = entry.th32ParentProcessID;
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
                 }
             }
-            CloseHandle(snapshot);
-            ppid
         }
+        CloseHandle(snapshot);
+        ppid
     }
 }
 
 #[rquickjs::function]
-pub fn cwd(ctx: Ctx<'_>) -> Result<String> { Process::cwd(&ctx) }
+pub fn cwd(ctx: Ctx<'_>) -> Result<String> {
+    std::env::current_dir()
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| Exception::throw_internal(&ctx, "cwd is not valid UTF-8"))
+}
 
 #[rquickjs::function]
-pub fn chdir(dir: String, ctx: Ctx<'_>) -> Result<()> { Process::chdir(dir, &ctx) }
+pub fn chdir(dir: String, ctx: Ctx<'_>) -> Result<()> {
+    std::env::set_current_dir(&dir)
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))
+}
 
 #[rquickjs::function]
-pub fn exit(Opt(code): Opt<i32>) { Process::exit(code) }
+pub fn exit(Opt(code): Opt<i32>) { std::process::exit(code.unwrap_or(0)) }
 
 #[rquickjs::function]
 pub fn spawn<'js>(
@@ -181,7 +127,41 @@ pub fn remove_signal_listener<'js>(
 pub async fn lookup<'js>(
     host: String, Opt(options): Opt<Object<'js>>, ctx: Ctx<'js>,
 ) -> Result<Value<'js>> {
-    Lookup::host(ctx, host, options).await
+    lookup::host(ctx, host, options).await
+}
+
+fn install<'js>(ctx: &Ctx<'js>, exports: &rquickjs::module::Exports<'js>) -> Result<()> {
+    SignalHub::install(ctx)?;
+
+    let process = Object::new(ctx.clone())?;
+    process.set("env", Env::proxy(ctx.clone())?)?;
+    process.prop("argv", Accessor::from(argv).enumerable())?;
+    process.prop("pid", Accessor::from(pid).enumerable())?;
+    process.prop("ppid", Accessor::from(ppid).enumerable())?;
+    process.set("cwd", js_cwd)?;
+    process.set("chdir", js_chdir)?;
+    process.set("exit", js_exit)?;
+    process.set("spawn", js_spawn)?;
+    process.set("kill", js_kill)?;
+    process.set("addSignalListener", js_add_signal_listener)?;
+    process.set("removeSignalListener", js_remove_signal_listener)?;
+    process.set("lookup", js_lookup)?;
+
+    exports.export("env", process.get::<_, Value>("env")?)?;
+    exports.export("argv", argv())?;
+    exports.export("pid", pid())?;
+    exports.export("ppid", ppid())?;
+    exports.export("cwd", js_cwd)?;
+    exports.export("chdir", js_chdir)?;
+    exports.export("exit", js_exit)?;
+    exports.export("spawn", js_spawn)?;
+    exports.export("kill", js_kill)?;
+    exports.export("addSignalListener", js_add_signal_listener)?;
+    exports.export("removeSignalListener", js_remove_signal_listener)?;
+    exports.export("lookup", js_lookup)?;
+    exports.export("process", process.clone())?;
+    ctx.globals().set("process", process)?;
+    Ok(())
 }
 
 #[rquickjs::module(
@@ -215,6 +195,6 @@ pub mod process {
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
-        crate::Process::install(ctx, exports)
+        crate::install(ctx, exports)
     }
 }
