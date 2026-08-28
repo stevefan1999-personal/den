@@ -1,9 +1,6 @@
 //! `ReadableStream`, its default reader and its default controller.
 
-use std::{
-    cell::RefCell,
-    rc::{Rc, Weak},
-};
+use std::{cell::RefCell, rc::Rc};
 
 use rquickjs::{
     Class, Coerced, Ctx, Exception, FromJs, Function, JsLifetime, Object, Promise, Result, Value,
@@ -13,7 +10,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, method, native::NativeSource, pipe, range_error, react, thrown, type_error,
+    Cap, Pins, method, native::NativeSource, pipe, range_error, react, thrown, type_error,
 };
 
 pub(crate) enum RsState<'js> {
@@ -145,14 +142,17 @@ pub(crate) type Inner<'js> = Rc<RefCell<ReadableInner<'js>>>;
 #[rquickjs::class]
 pub struct ReadableStream<'js> {
     pub(crate) inner: Inner<'js>,
+    /// A second handle on the controller `inner` already holds, so the stream
+    /// object owns one reference to it and traces exactly that one.
+    controller:       Class<'js, ReadableStreamDefaultController<'js>>,
 }
 
+/// The stream traces its controller, not its record: the controller is the
+/// record's single tracer, and holding a controller is therefore what pins a
+/// stream's JS values for the collector. A pending internal reaction keeps a
+/// controller handle for exactly that reason.
 impl<'js> Trace<'js> for ReadableStream<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Ok(inner) = self.inner.try_borrow() {
-            inner.trace(tracer);
-        }
-    }
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) { self.controller.trace(tracer); }
 }
 
 /// Parse a `{ highWaterMark, size }` strategy in specification order.
@@ -219,12 +219,31 @@ impl<'js> ReadableStream<'js> {
 
     /// Give a stream its default controller. Every path that builds a stream
     /// from Rust needs one, because `pull` is handed the controller.
-    pub(crate) fn attach_controller(ctx: &Ctx<'js>, inner: &Inner<'js>) -> Result<()> {
+    pub(crate) fn attach_controller(
+        ctx: &Ctx<'js>, inner: &Inner<'js>,
+    ) -> Result<Class<'js, ReadableStreamDefaultController<'js>>> {
         let controller = Class::instance(ctx.clone(), ReadableStreamDefaultController {
-            inner: Rc::downgrade(inner),
+            inner: Rc::clone(inner),
         })?;
-        inner.borrow_mut().controller = Some(controller);
-        Ok(())
+        inner.borrow_mut().controller = Some(controller.clone());
+        Ok(controller)
+    }
+
+    /// The controller handle every internal reaction holds to keep the stream
+    /// alive for the length of the operation it is waiting on.
+    pub(crate) fn keeper(
+        inner: &Inner<'js>,
+    ) -> Option<Class<'js, ReadableStreamDefaultController<'js>>> {
+        inner.borrow().controller.clone()
+    }
+
+    /// Wrap a record built by Rust in its stream object.
+    pub(crate) fn wrap(ctx: &Ctx<'js>, inner: Inner<'js>) -> Result<Class<'js, Self>> {
+        let controller = match Self::keeper(&inner) {
+            Some(controller) => controller,
+            None => Self::attach_controller(ctx, &inner)?,
+        };
+        Class::instance(ctx.clone(), Self { inner, controller })
     }
 
     pub(crate) fn stored_error(inner: &Inner<'js>) -> Option<Value<'js>> {
@@ -364,21 +383,21 @@ impl<'js> ReadableStream<'js> {
         };
         match outcome {
             Ok(value) => {
+                // Pinning the controller is what keeps the record's JS values alive
+                // for the length of this operation: see the note on
+                // `ReadableStreamDefaultController`.
+                let pin = Pins::hold(ctx, Self::keeper(inner));
                 let ok = {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                        Pins::release(&ctx, pin);
                         ReadableStream::pull_settled(&ctx, &inner);
                     })
                 };
                 let err = {
-                    // A pending reaction keeps the stream's record alive: the operation it is
-                    // waiting on is part of the stream, and a weak handle here would silently
-                    // abandon a write or a pull whose stream became unreachable mid-flight.
                     let inner = Rc::clone(inner);
                     Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                        Pins::release(&ctx, pin);
                         inner.borrow_mut().pulling = false;
                         ReadableStream::error(&ctx, &inner, reason);
                     })
@@ -622,7 +641,7 @@ impl<'js> ReadableStream<'js> {
                 borrow.state = RsState::Closed;
             }
         }
-        Class::instance(ctx.clone(), Self { inner })
+        Self::wrap(ctx, inner)
     }
 
     pub fn tee_pair(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<(Value<'js>, Value<'js>)> {
@@ -641,7 +660,9 @@ impl<'js> ReadableStream<'js> {
             let Some(object) = result.as_object() else {
                 break;
             };
-            if object.get::<_, bool>("done").unwrap_or(false) {
+            // `done` is ToBoolean, and a `read()` result whose shape is not
+            // readable at all is a host-side error, not "keep reading".
+            if object.get::<_, Coerced<bool>>("done")?.0 {
                 break;
             }
             let value: Value = object.get("value")?;
@@ -691,17 +712,16 @@ impl<'js> ReadableStream<'js> {
             borrow.pull_fn = pull_fn;
             borrow.cancel_fn = cancel_fn;
         }
-        let controller = Class::instance(ctx.clone(), ReadableStreamDefaultController {
-            inner: Rc::downgrade(&inner),
-        })?;
-        inner.borrow_mut().controller = Some(controller.clone());
+        let controller = Self::attach_controller(&ctx, &inner)?;
         let started = match start_fn {
-            Some(start) => start.call::<_, Value>((This(source_object), controller))?,
+            Some(start) => start.call::<_, Value>((This(source_object), controller.clone()))?,
             None => Value::new_undefined(ctx.clone()),
         };
+        let pin = Pins::hold(&ctx, Some(controller.clone()));
         let ok = {
             let inner = Rc::clone(&inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+                Pins::release(&ctx, pin);
                 inner.borrow_mut().started = true;
                 ReadableStream::pull_settled(&ctx, &inner);
                 ReadableStream::pull_if_needed(&ctx, &inner);
@@ -710,11 +730,12 @@ impl<'js> ReadableStream<'js> {
         let err = {
             let inner = Rc::clone(&inner);
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                Pins::release(&ctx, pin);
                 ReadableStream::error(&ctx, &inner, reason);
             })?
         };
         react(&ctx, started, Some(ok), Some(err))?;
-        Ok(Self { inner })
+        Ok(Self { inner, controller })
     }
 
     #[qjs(static)]
@@ -814,32 +835,37 @@ impl<'js> ReadableStream<'js> {
     pub fn to_string_tag() -> &'static str { "ReadableStream" }
 }
 
+/// The controller owns the stream's record and is its single tracer.
+///
+/// rquickjs gives `RustFunction` — what `Function::new` produces — an empty
+/// `Trace` impl, so a promise reaction implemented as a Rust closure is
+/// invisible to the collector. A closure that held only `Rc<ReadableInner>`
+/// therefore kept the record alive in Rust while the collector was free to
+/// reclaim the stream object that traced it, and the record's JS values became
+/// dangling. Reactions hold this object instead: a refcount the collector
+/// cannot follow is an external root, so the record and everything it traces
+/// survives exactly as long as the operation does.
 #[rquickjs::class]
 pub struct ReadableStreamDefaultController<'js> {
-    /// Weak on purpose. The stream owns the controller object and traces it;
-    /// a strong `Rc` back would be a reference cycle running through a JS
-    /// object, which neither QuickJS's collector nor `Rc` can break.
-    inner: Weak<RefCell<ReadableInner<'js>>>,
+    inner: Inner<'js>,
 }
 
-/// The controller does not trace its stream: the stream is the single JS owner
-/// of every value in `ReadableInner`, and tracing the same reference twice
-/// would double-decrement it during a mark phase.
-// SAFETY: the weak handle is `'js`-scoped, exactly like the strong one.
+// SAFETY: the record handle is `'js`-scoped, exactly as the derive would
+// generate.
 unsafe impl<'js> rquickjs::JsLifetime<'js> for ReadableStreamDefaultController<'js> {
     type Changed<'to> = ReadableStreamDefaultController<'to>;
 }
 
 impl<'js> Trace<'js> for ReadableStreamDefaultController<'js> {
-    fn trace<'a>(&self, _tracer: Tracer<'a, 'js>) {}
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        if let Ok(inner) = self.inner.try_borrow() {
+            inner.trace(tracer);
+        }
+    }
 }
 
 impl<'js> ReadableStreamDefaultController<'js> {
-    fn stream(&self, ctx: &Ctx<'js>) -> Result<Inner<'js>> {
-        self.inner
-            .upgrade()
-            .ok_or_else(|| Exception::throw_type(ctx, "the stream is gone"))
-    }
+    fn stream(&self, _ctx: &Ctx<'js>) -> Result<Inner<'js>> { Ok(Rc::clone(&self.inner)) }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -851,11 +877,7 @@ impl<'js> ReadableStreamDefaultController<'js> {
 
     #[qjs(get)]
     pub fn desired_size(&self, ctx: Ctx<'js>) -> Value<'js> {
-        match self
-            .inner
-            .upgrade()
-            .and_then(|inner| ReadableStream::desired_size(&inner))
-        {
+        match ReadableStream::desired_size(&self.inner) {
             Some(size) => Value::new_float(ctx, size),
             None => Value::new_null(ctx),
         }
@@ -876,15 +898,13 @@ impl<'js> ReadableStreamDefaultController<'js> {
     }
 
     pub fn error(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) {
-        if let Some(inner) = self.inner.upgrade() {
-            ReadableStream::error(
-                &ctx,
-                &inner,
-                reason
-                    .0
-                    .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-            );
-        }
+        ReadableStream::error(
+            &ctx,
+            &self.inner,
+            reason
+                .0
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        );
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]

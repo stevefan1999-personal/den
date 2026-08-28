@@ -98,10 +98,7 @@ impl<'js> ReadableStream<'js> {
                 cancel: Some(Box::new(cancel)),
             })));
         }
-        Self::attach_controller(ctx, &inner)?;
-        let stream = Class::instance(ctx.clone(), Self {
-            inner: inner.clone(),
-        })?;
+        let stream = Self::wrap(ctx, Rc::clone(&inner))?;
         Self::pull_if_needed(ctx, &inner);
         Ok(stream)
     }
@@ -124,8 +121,7 @@ impl<'js> WritableStream<'js> {
                 abort: Some(Box::new(abort)),
             })));
         }
-        Self::attach_controller(ctx, &inner)?;
-        Class::instance(ctx.clone(), Self { inner })
+        Self::wrap(ctx, inner)
     }
 }
 

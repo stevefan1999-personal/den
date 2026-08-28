@@ -17,8 +17,13 @@ mod strategy;
 mod transform;
 mod writable;
 
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
+
 use rquickjs::{
-    Ctx, Function, JsLifetime, Object, Promise, Result, Value,
+    Ctx, Function, IntoJs, JsLifetime, Object, Promise, Result, Value,
     class::{Trace, Tracer},
     function::This,
 };
@@ -128,9 +133,55 @@ pub(crate) fn chain_undefined<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<
 
 /// Attach a no-op rejection handler so a promise nobody observes cannot trip
 /// den's unhandled-rejection tracker.
-pub(crate) fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
+///
+/// Goes through the realm's pristine `then`, so a script that patches
+/// `Promise.prototype.then` cannot observe or break an internal reaction —
+/// which is why this is public rather than something each caller reimplements.
+pub fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
     if let Ok((then, noop)) = intrinsics(ctx) {
         let _ = then.call::<_, Value>((This(promise.clone()), Option::<Function>::None, noop));
+    }
+}
+
+/// JS values Rust must keep alive for the length of an in-flight operation.
+///
+/// A `Function::new` closure cannot hold one itself. `RustFunction` traces
+/// nothing, so a handle it captures is a refcount the collector cannot follow —
+/// an external root that is still standing when `JS_FreeRuntime` asserts every
+/// object is gone, which is how a `pipeThrough` whose readable is never drained
+/// aborts at exit. Realm userdata is released with the realm, so a pin that
+/// outlives its operation costs a leak for the run instead.
+#[derive(JsLifetime)]
+pub(crate) struct Pins<'js> {
+    live: RefCell<HashMap<u64, Value<'js>>>,
+    next: Cell<u64>,
+}
+
+impl<'js> Pins<'js> {
+    /// Keep `value` alive and hand back the ticket that releases it.
+    pub(crate) fn hold(ctx: &Ctx<'js>, value: Option<impl IntoJs<'js>>) -> u64 {
+        let Some(value) = value.and_then(|value| value.into_js(ctx).ok()) else {
+            return 0;
+        };
+        if ctx.userdata::<Pins<'js>>().is_none() {
+            let _ = ctx.store_userdata(Pins {
+                live: RefCell::new(HashMap::new()),
+                next: Cell::new(1),
+            });
+        }
+        let Some(pins) = ctx.userdata::<Pins<'js>>() else {
+            return 0;
+        };
+        let id = pins.next.get();
+        pins.next.set(id + 1);
+        pins.live.borrow_mut().insert(id, value);
+        id
+    }
+
+    pub(crate) fn release(ctx: &Ctx<'js>, id: u64) {
+        if let Some(pins) = ctx.userdata::<Pins<'js>>() {
+            pins.live.borrow_mut().remove(&id);
+        }
     }
 }
 
