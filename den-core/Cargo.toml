@@ -16,18 +16,13 @@ fmmap = { workspace = true, features = ["tokio"] }
 matchit.workspace = true
 mime.workspace = true
 relative-path.workspace = true
-# reqwest 0.13 flipped `default-tls` from native-tls to rustls, so leaving the defaults on next to
-# `native-tls` compiles both TLS stacks. `charset`/`http2`/`system-proxy` are named explicitly so
-# that dropping the defaults (which has to happen in the workspace dependency) changes nothing here.
+# `default-tls` is rustls, and `charset`/`http2`/`system-proxy` come with the defaults too; only
+# the body codecs and the streaming body are extra.
 reqwest = { workspace = true, features = [
     "stream",
     "deflate",
     "gzip",
     "brotli",
-    "native-tls",
-    "charset",
-    "http2",
-    "system-proxy",
 ] }
 rquickjs.workspace = true
 serde_json.workspace = true

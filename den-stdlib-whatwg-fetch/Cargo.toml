@@ -30,10 +30,6 @@ reqwest = { workspace = true, features = [
     "gzip",
     "cookies",
     "brotli",
-    "native-tls",
-    "charset",
-    "http2",
-    "system-proxy",
 ] }
 serde_json.workspace = true
 den-stdlib-whatwg.workspace = true
