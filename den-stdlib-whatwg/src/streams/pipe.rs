@@ -797,6 +797,14 @@ pub(crate) fn from_iterable<'js>(
                 // here would hide the stream from the collector until the
                 // iterator settles — which a stalled generator never does.
                 let inner = inner.clone();
+                let on_err = {
+                    let inner = inner.clone();
+                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                        if let Some(inner) = inner.upgrade() {
+                            ReadableStream::error(&ctx, &inner, reason);
+                        }
+                    })?
+                };
                 let on_ok = Function::new(ctx.clone(), move |ctx: Ctx<'js>, step: Value<'js>| {
                     let Some(inner) = inner.upgrade() else {
                         return;
@@ -815,7 +823,7 @@ pub(crate) fn from_iterable<'js>(
                         .unwrap_or_else(|_| Value::new_undefined(ctx.clone()));
                     let _ = ReadableStream::enqueue(&ctx, &inner, value);
                 })?;
-                react(&ctx, step, Some(on_ok), None)?;
+                react(&ctx, step, Some(on_ok), Some(on_err))?;
                 Ok(())
             }
         })?);
