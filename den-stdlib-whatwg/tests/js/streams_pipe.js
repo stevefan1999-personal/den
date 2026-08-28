@@ -122,3 +122,31 @@ for (const build of [
   }
   assert(threw, "an unimplemented stream feature must throw a TypeError");
 }
+
+// Teardown probes. Every shape below leaves an operation in flight when the
+// realm is dropped, which is where QuickJS asserts that no JS object is still
+// referenced from Rust. A stream graph that Rust pins for an operation that
+// never completes used to abort the process here, so these assert nothing:
+// reaching the end of the file is the assertion.
+const stalled = new TransformStream();
+globalThis.stalledReadable = new ReadableStream({
+  start(controller) {
+    controller.enqueue("never read");
+    controller.close();
+  },
+}).pipeThrough(stalled);
+
+const [leftBranch, rightBranch] = new ReadableStream({
+  start(controller) {
+    controller.enqueue("never read either");
+    controller.close();
+  },
+}).tee();
+globalThis.stalledBranches = [leftBranch, rightBranch];
+
+// A writer parked on a full queue, and a reader parked on an empty stream.
+const parked = new WritableStream({ write: () => new Promise(() => {}) });
+const parkedWriter = parked.getWriter();
+globalThis.parkedWrite = parkedWriter.write("first");
+globalThis.parkedNext = parkedWriter.write("second");
+globalThis.parkedRead = new ReadableStream({ start() {} }).getReader().read();

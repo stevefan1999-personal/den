@@ -2,12 +2,13 @@
 
 use std::borrow::Cow;
 
-use indexmap::{IndexMap, indexmap};
+use indexmap::IndexMap;
 use rquickjs::{
-    Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace, function::Opt,
+    Array, Coerced, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom, class::Trace, function::Opt,
 };
 use urlpattern::{
-    UrlPattern as Inner, UrlPatternMatchInput, UrlPatternOptions,
+    UrlPattern as Inner, UrlPatternComponentResult, UrlPatternMatchInput, UrlPatternOptions,
     quirks::{self, StringOrInit, UrlPatternInit},
 };
 
@@ -22,11 +23,16 @@ impl URLPattern {
     fn optional_string<'js>(
         ctx: &Ctx<'js>, obj: &Object<'js>, name: &str,
     ) -> Result<Option<String>> {
-        let value: Value = obj.get(name)?;
-        if value.is_undefined() || value.is_null() {
-            Ok(None)
-        } else {
-            Ok(Some(String::from_js(ctx, value)?))
+        Self::optional_arg(ctx, Opt(obj.get(name)?))
+    }
+
+    /// A missing argument and an explicit `undefined`/`null` are the same
+    /// absence; anything else is stringified as the IDL would.
+    fn optional_arg<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<Option<String>> {
+        match value.0 {
+            None => Ok(None),
+            Some(value) if value.is_undefined() || value.is_null() => Ok(None),
+            Some(value) => Ok(Some(Coerced::<String>::from_js(ctx, value)?.0)),
         }
     }
 
@@ -47,20 +53,23 @@ impl URLPattern {
     /// A pattern or a match target is either a full URL-shaped string — which
     /// the crate decomposes into all eight components — or an init dictionary.
     /// A missing argument is an empty init, i.e. every component wildcards.
-    fn string_or_init<'js>(ctx: &Ctx<'js>, input: &Value<'js>) -> Result<StringOrInit<'static>> {
+    fn string_or_init<'js>(
+        ctx: &Ctx<'js>, input: Opt<Value<'js>>,
+    ) -> Result<StringOrInit<'static>> {
+        let Some(input) = input.0 else {
+            return Ok(StringOrInit::Init(UrlPatternInit::default()));
+        };
         if input.is_undefined() || input.is_null() {
             return Ok(StringOrInit::Init(UrlPatternInit::default()));
         }
-        if let Some(string) = input.as_string() {
-            return Ok(StringOrInit::String(Cow::Owned(string.to_string()?)));
+        match input.as_object() {
+            Some(obj) => Ok(StringOrInit::Init(Self::init_from_object(ctx, obj)?)),
+            None => {
+                Ok(StringOrInit::String(Cow::Owned(
+                    Coerced::<String>::from_js(ctx, input)?.0,
+                )))
+            }
         }
-        let Some(obj) = input.as_object() else {
-            return Err(Exception::throw_type(
-                ctx,
-                "URLPattern input must be a string or object",
-            ));
-        };
-        Ok(StringOrInit::Init(Self::init_from_object(ctx, obj)?))
     }
 
     /// `None` means the input could not be parsed as a URL at all, which the
@@ -68,46 +77,68 @@ impl URLPattern {
     fn match_input<'js>(
         ctx: &Ctx<'js>, input: Value<'js>, base_url: Option<&str>,
     ) -> Result<Option<UrlPatternMatchInput>> {
-        let input = Self::string_or_init(ctx, &input)?;
+        let input = Self::string_or_init(ctx, Opt(Some(input)))?;
         quirks::process_match_input(input, base_url)
             .map(|matched| matched.map(|(input, _)| input))
             .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))
     }
 
     fn component_to_js<'js>(
-        ctx: &Ctx<'js>, input: &str, groups: &std::collections::HashMap<String, Option<String>>,
+        ctx: &Ctx<'js>, component: &UrlPatternComponentResult,
     ) -> Result<Value<'js>> {
-        let mut group_map = IndexMap::new();
-        for (name, value) in groups {
-            group_map.insert(name.clone(), match value {
+        let mut groups = IndexMap::new();
+        for (name, value) in &component.groups {
+            groups.insert(name.clone(), match value {
                 Some(value) => value.clone().into_js(ctx)?,
                 None => Value::new_undefined(ctx.clone()),
             });
         }
-        indexmap! {
-          "input" => input.into_js(ctx)?,
-          "groups" => group_map.into_js(ctx)?,
-        }
-        .into_js(ctx)
+        let entry = Object::new(ctx.clone())?;
+        entry.set("input", component.input.as_str())?;
+        entry.set("groups", groups)?;
+        Ok(entry.into_value())
     }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl URLPattern {
+    /// `new URLPattern(input, baseURL?, options?)` and the two-argument
+    /// `new URLPattern(input, options?)` overload, as implemented by Deno.
     #[qjs(constructor)]
-    pub fn new<'js>(ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<String>) -> Result<Self> {
-        let input = Self::string_or_init(&ctx, &input)?;
-        let init = quirks::process_construct_pattern_input(input, base_url.0.as_deref())
+    pub fn new<'js>(
+        ctx: Ctx<'js>, input: Opt<Value<'js>>, base_or_options: Opt<Value<'js>>,
+        trailing_options: Opt<Object<'js>>,
+    ) -> Result<Self> {
+        let (base_url, options) = match base_or_options.0 {
+            // The two-argument overload passes the options bag in the baseURL slot.
+            Some(value) if value.is_object() => (None, value.into_object()),
+            other => (Self::optional_arg(&ctx, Opt(other))?, trailing_options.0),
+        };
+        let options = match options {
+            None => UrlPatternOptions::default(),
+            Some(options) => {
+                UrlPatternOptions {
+                    ignore_case: options
+                        .get::<_, Option<Coerced<bool>>>("ignoreCase")?
+                        .is_some_and(|flag| flag.0),
+                    ..UrlPatternOptions::default()
+                }
+            }
+        };
+
+        let input = Self::string_or_init(&ctx, input)?;
+        let init = quirks::process_construct_pattern_input(input, base_url.as_deref())
             .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))?;
-        let inner = Inner::parse(init, UrlPatternOptions::default())
+        let inner = Inner::parse(init, options)
             .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))?;
         Ok(Self { inner })
     }
 
     pub fn test<'js>(
-        &self, ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<String>,
+        &self, ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<Value<'js>>,
     ) -> Result<bool> {
-        let Some(input) = Self::match_input(&ctx, input, base_url.0.as_deref())? else {
+        let base_url = Self::optional_arg(&ctx, base_url)?;
+        let Some(input) = Self::match_input(&ctx, input, base_url.as_deref())? else {
             return Ok(false);
         };
         self.inner
@@ -116,46 +147,70 @@ impl URLPattern {
     }
 
     pub fn exec<'js>(
-        &self, ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<String>,
+        &self, ctx: Ctx<'js>, input: Value<'js>, base_url: Opt<Value<'js>>,
     ) -> Result<Value<'js>> {
-        let Some(input) = Self::match_input(&ctx, input, base_url.0.as_deref())? else {
+        let inputs = Array::new(ctx.clone())?;
+        inputs.set(0, input.clone())?;
+        if let Some(base_url) = base_url.0.as_ref() {
+            inputs.set(1, base_url.clone())?;
+        }
+
+        let base_url = Self::optional_arg(&ctx, base_url)?;
+        let Some(input) = Self::match_input(&ctx, input, base_url.as_deref())? else {
             return Ok(Value::new_null(ctx));
         };
-        match self
+        let Some(result) = self
             .inner
             .exec(input)
             .map_err(|err| Exception::throw_type(&ctx, &format!("{err}")))?
-        {
-            None => Ok(Value::new_null(ctx)),
-            Some(result) => {
-                indexmap! {
-                  "pathname" => Self::component_to_js(
-                    &ctx,
-                    &result.pathname.input,
-                    &result.pathname.groups,
-                  )?,
-                  "protocol" => Self::component_to_js(
-                    &ctx,
-                    &result.protocol.input,
-                    &result.protocol.groups,
-                  )?,
-                  "hostname" => Self::component_to_js(
-                    &ctx,
-                    &result.hostname.input,
-                    &result.hostname.groups,
-                  )?,
-                }
-                .into_js(&ctx)
-            }
-        }
-    }
+        else {
+            return Ok(Value::new_null(ctx));
+        };
 
-    #[qjs(get)]
-    pub fn pathname(&self) -> String { self.inner.pathname().to_string() }
+        let matched = Object::new(ctx.clone())?;
+        matched.set("inputs", inputs)?;
+        for (name, component) in [
+            ("protocol", &result.protocol),
+            ("username", &result.username),
+            ("password", &result.password),
+            ("hostname", &result.hostname),
+            ("port", &result.port),
+            ("pathname", &result.pathname),
+            ("search", &result.search),
+            ("hash", &result.hash),
+        ] {
+            matched.set(name, Self::component_to_js(&ctx, component)?)?;
+        }
+        Ok(matched.into_value())
+    }
 
     #[qjs(get)]
     pub fn protocol(&self) -> String { self.inner.protocol().to_string() }
 
     #[qjs(get)]
+    pub fn username(&self) -> String { self.inner.username().to_string() }
+
+    #[qjs(get)]
+    pub fn password(&self) -> String { self.inner.password().to_string() }
+
+    #[qjs(get)]
     pub fn hostname(&self) -> String { self.inner.hostname().to_string() }
+
+    #[qjs(get)]
+    pub fn port(&self) -> String { self.inner.port().to_string() }
+
+    #[qjs(get)]
+    pub fn pathname(&self) -> String { self.inner.pathname().to_string() }
+
+    #[qjs(get)]
+    pub fn search(&self) -> String { self.inner.search().to_string() }
+
+    #[qjs(get)]
+    pub fn hash(&self) -> String { self.inner.hash().to_string() }
+
+    #[qjs(get)]
+    pub fn has_reg_exp_groups(&self) -> bool { self.inner.has_regexp_groups() }
+
+    #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
+    pub fn to_string_tag() -> &'static str { "URLPattern" }
 }
