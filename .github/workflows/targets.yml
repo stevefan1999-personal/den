@@ -124,6 +124,7 @@ jobs:
           root=$(cd "$(dirname "$(command -v clang)")/.." && pwd -W)
           resource=$(clang --print-resource-dir | sed 's#\\#/#g')
           target_key=$(printf %s '${{ matrix.target }}' | tr '-' '_')
+          printf 'CONFIG_SHELL=/usr/bin/sh\nSHELL=/usr/bin/sh\n' >> "$GITHUB_ENV"
           printf 'CC_%s=%s\n' "$target_key" '${{ matrix.cc }}' >> "$GITHUB_ENV"
           printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s --sysroot="%s" -isystem "%s/include" -isystem "%s/include"\n' \
             '${{ matrix.bindgen_target }}' "$root" "$resource" "$root" >> "$GITHUB_ENV"

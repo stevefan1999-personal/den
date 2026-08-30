@@ -745,3 +745,6 @@ lto = "fat"
 
 [lints]
 workspace = true
+
+[patch.crates-io]
+rquickjs-core = { path = "vendor/rquickjs-core" }
