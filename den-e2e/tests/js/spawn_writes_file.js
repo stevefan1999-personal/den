@@ -15,8 +15,10 @@ async function firstExisting(paths) {
   return paths[0];
 }
 
-const echo = await firstExisting(["/bin/echo", "/usr/bin/echo"]);
-const child = process.spawn([echo, "hello-from-child"], {
+const command = process.env.ComSpec
+  ? [process.env.ComSpec, "/d", "/s", "/c", "echo hello-from-child"]
+  : [await firstExisting(["/bin/echo", "/usr/bin/echo"]), "hello-from-child"];
+const child = process.spawn(command, {
   stdout: "pipe",
   stderr: "ignore",
 });

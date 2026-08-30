@@ -1,0 +1,373 @@
+name: targets
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [refactor]
+    paths:
+      - ".cargo/**"
+      - ".config/nextest.toml"
+      - ".github/musl-nextest.*"
+      - ".github/workflows/targets.yml"
+      - "den-*/**"
+      - "src/**"
+      - "tests/**"
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+  pull_request:
+    paths:
+      - ".cargo/**"
+      - ".config/nextest.toml"
+      - ".github/musl-nextest.*"
+      - ".github/workflows/targets.yml"
+      - "den-*/**"
+      - "src/**"
+      - "tests/**"
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+
+env:
+  CARGO_INCREMENTAL: "0"
+  # Hosted runners have 14 GB disks. Keep symbols for panic backtraces but do
+  # not emit DWARF into every dependency and test binary.
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  INSTA_UPDATE: "no"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            cc: cc
+            cc_args: ""
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cc: cc
+            cc_args: ""
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            cc: cc
+            cc_args: ""
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            cc: cc
+            cc_args: ""
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            cc: clang
+            cc_args: ""
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            cc: clang
+            cc_args: ""
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+          - target: i686-pc-windows-msvc
+            runner: windows-2025
+            cc: clang
+            cc_args: --target=i686-pc-windows-msvc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+          - target: x86_64-pc-windows-gnullvm
+            runner: windows-2025
+            cc: clang
+            cc_args: --target=x86_64-pc-windows-gnu
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+          - target: aarch64-pc-windows-gnullvm
+            runner: windows-11-arm
+            cc: clang
+            cc_args: --target=aarch64-pc-windows-gnu
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+          # One Tier 2 target without host tools: native, useful, and cheap.
+          - target: x86_64-unknown-linux-gnuasan
+            runner: ubuntu-24.04
+            cc: clang
+            cc_args: ""
+            asan_cflags: -fsanitize=address
+            features: stdlib,typescript,react,wasm,wasi,jit,rquickjs/bindgen
+    env:
+      CC_x86_64_unknown_linux_gnuasan: clang
+      CFLAGS_x86_64_unknown_linux_gnuasan: ${{ matrix.asan_cflags }}
+      CXXFLAGS_x86_64_unknown_linux_gnuasan: ${{ matrix.asan_cflags }}
+      DEN_TEST_CC: ${{ matrix.cc }}
+      DEN_TEST_CC_ARGS: ${{ matrix.cc_args }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        shell: bash
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Install Rust target
+        run: rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Build and run unit and integration tests
+        run: >-
+          cargo nextest run --locked --profile compat --workspace
+          --target ${{ matrix.target }} --no-default-features
+          --features ${{ matrix.features }}
+
+  cross-linux:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: i686-unknown-linux-gnu
+            cc: i686-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: ""
+            rustflags: ""
+          - target: x86_64-pc-windows-gnu
+            cc: x86_64-w64-mingw32-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: ""
+            rustflags: ""
+          - target: i686-pc-windows-gnu
+            cc: i686-w64-mingw32-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: ""
+            rustflags: ""
+          - target: aarch64-unknown-linux-musl
+            cc: aarch64-linux-musl-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: arm64
+            rustflags: -C target-feature=-crt-static
+          - target: arm-unknown-linux-gnueabi
+            cc: arm-linux-gnueabi-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: arm
+            rustflags: ""
+          - target: arm-unknown-linux-gnueabihf
+            cc: arm-linux-gnueabihf-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: arm
+            rustflags: ""
+          - target: armv7-unknown-linux-gnueabihf
+            cc: arm-linux-gnueabihf-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: arm
+            rustflags: ""
+          - target: loongarch64-unknown-linux-gnu
+            cc: loongarch64-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: loong64
+            rustflags: ""
+          - target: loongarch64-unknown-linux-musl
+            cc: loongarch64-linux-musl-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: loong64
+            rustflags: -C target-feature=-crt-static
+          - target: powerpc-unknown-linux-gnu
+            cc: powerpc-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: ppc
+            rustflags: ""
+          - target: powerpc64-unknown-linux-gnu
+            cc: powerpc64-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: ppc64
+            rustflags: ""
+          - target: powerpc64le-unknown-linux-gnu
+            cc: powerpc64le-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: ppc64le
+            rustflags: ""
+          - target: x86_64-unknown-linux-musl
+            cc: x86_64-linux-musl-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
+            qemu: ""
+            rustflags: -C target-feature=-crt-static
+          - target: riscv64gc-unknown-linux-gnu
+            cc: riscv64-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: riscv64
+            rustflags: ""
+          - target: riscv64gc-unknown-linux-musl
+            cc: riscv64-linux-musl-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: riscv64
+            rustflags: -C target-feature=-crt-static
+          - target: s390x-unknown-linux-gnu
+            cc: s390x-linux-gnu-gcc
+            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            qemu: s390x
+            rustflags: ""
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+      CROSS_BUILD_ENV_PASSTHROUGH: >-
+        DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE RUST_TEST_THREADS RUSTFLAGS
+        CARGO_INCREMENTAL
+        CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+        CARGO_PROFILE_DEV_OPT_LEVEL CARGO_PROFILE_TEST_OPT_LEVEL
+      DEN_TEST_CC: ${{ matrix.cc }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      RUST_TEST_THREADS: "1"
+      TARGET: ${{ matrix.target }}
+      TARGET_FEATURES: ${{ matrix.features }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Install QEMU binfmt
+        if: matrix.qemu != ''
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: ${{ matrix.qemu }}
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Install cross
+        run: >-
+          cargo install cross --git https://github.com/cross-rs/cross
+          --rev 8c1a8aa4b661711f4b7b6ac07c2e8929ce2f7d27 --locked
+      - name: Build and run unit and integration tests
+        shell: bash
+        run: |
+          args=(
+            --locked
+            --target "$TARGET"
+            --no-default-features
+            --features "$TARGET_FEATURES"
+          )
+
+          # profile.compat expressed as Cargo package/test selection: cross
+          # cannot invoke cargo-nextest inside its target images.
+          cross test "${args[@]}" --workspace \
+            --exclude den-core \
+            --exclude den-stdlib-temporal \
+            --exclude den-stdlib-wasm \
+            --lib --tests
+          cross test "${args[@]}" -p den-core --lib --test compat
+          cross test "${args[@]}" -p den-stdlib-wasm --lib --test integration
+
+  musl-release:
+    name: x86_64-unknown-linux-musl release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl target and toolchain
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Build the default-static release binary
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
+      - name: Smoke the static binary
+        run: |
+          file target/x86_64-unknown-linux-musl/release/den | grep -E 'static-pie|statically linked'
+          target/x86_64-unknown-linux-musl/release/den --version
+
+  musl-ffi:
+    name: x86_64-unknown-linux-musl dynamic FFI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Build pinned musl nextest image
+        run: >-
+          docker build --file .github/musl-nextest.Dockerfile
+          --tag den-musl-nextest .github
+      - name: Run FFI integration tests
+        run: >-
+          docker run --rm
+          --volume "$GITHUB_WORKSPACE:/work:ro"
+          --volume /cargo --volume /target
+          den-musl-nextest
+          run --locked -p den-stdlib-ffi --test ffi
+          --no-default-features
+
+  freebsd:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-freebsd
+            arch: x86_64
+          - target: aarch64-unknown-freebsd
+            arch: aarch64
+    env:
+      CARGO_BUILD_JOBS: "2"
+      DEN_TEST_CC: cc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Build and test on FreeBSD 15.1
+        uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1.5.5
+        with:
+          release: "15.1"
+          arch: ${{ matrix.arch }}
+          mem: 10240
+          copyback: false
+          envs: >-
+            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
+            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
+          prepare: |
+            pkg install -y bash ca_root_nss cmake-core curl git gmake llvm19-lite nasm perl5 pkgconf
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            mkdir -p "$HOME/.cargo/bin"
+            if [ "${{ matrix.arch }}" = x86_64 ]; then
+              curl -fsSL \
+                https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-freebsd.tar.gz \
+                | tar -xzf - -C "$HOME/.cargo/bin"
+            else
+              . "$HOME/.cargo/env"
+              cargo install cargo-nextest --version 0.9.143 --locked
+            fi
+          run: |
+            export PATH="$HOME/.cargo/bin:$PATH"
+            export LIBCLANG_PATH=/usr/local/llvm19/lib
+            cargo nextest run --locked --profile compat --workspace \
+              --target ${{ matrix.target }} --no-default-features \
+              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
