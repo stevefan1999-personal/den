@@ -9,29 +9,8 @@ const triple = { struct: { a: "f64", b: "f64", c: "f64" } };
 const padded = { struct: { b: "i8", n: "i32" } };
 const nested = { struct: { origin: point, z: "i32" } };
 
-// The calibration knob (§5.2): den publishes the layout it computed, so a
-// script can assert it against the header it is binding. The arithmetic itself
-// is already checked against libffi's at open() — this is the part a human
-// checks against a struct definition.
-assertEquals(layout(padded), { size: 8, align: 4, offsets: { b: 0, n: 4 } });
-assertEquals(layout(point), { size: 8, align: 4, offsets: { x: 0, y: 4 } });
-assertEquals(layout(triple), {
-  size: 24,
-  align: 8,
-  offsets: { a: 0, b: 8, c: 16 },
-});
-assertEquals(layout(nested), {
-  size: 12,
-  align: 4,
-  offsets: { origin: 0, z: 8 },
-});
-
-// `layout` describes a struct; a scalar has no fields to describe, and an
-// empty struct is not a C type.
-assertEquals(assertThrows(() => layout("i32")).kind, "Schema");
-assertEquals(assertThrows(() => layout({ struct: {} })).kind, "Schema");
-
 const probe = open(library, {
+  alignof_double: { params: [], result: "u32" },
   point_scale: { params: [point, "i32"], result: point },
   triple_sum: { params: [triple, "f64"], result: triple },
   padded_sum: { params: [padded], result: "i32" },
@@ -46,6 +25,28 @@ const probe = open(library, {
   },
   base_point: { type: point },
 }, capability);
+
+// The calibration knob (§5.2): den publishes the layout it computed, so a
+// script can assert it against the header it is binding. The arithmetic itself
+// is already checked against libffi's at open() — this is the part a human
+// checks against a struct definition.
+assertEquals(layout(padded), { size: 8, align: 4, offsets: { b: 0, n: 4 } });
+assertEquals(layout(point), { size: 8, align: 4, offsets: { x: 0, y: 4 } });
+assertEquals(layout(triple), {
+  size: 24,
+  align: probe.alignof_double(),
+  offsets: { a: 0, b: 8, c: 16 },
+});
+assertEquals(layout(nested), {
+  size: 12,
+  align: 4,
+  offsets: { origin: 0, z: 8 },
+});
+
+// `layout` describes a struct; a scalar has no fields to describe, and an
+// empty struct is not a C type.
+assertEquals(assertThrows(() => layout("i32")).kind, "Schema");
+assertEquals(assertThrows(() => layout({ struct: {} })).kind, "Schema");
 
 // Eight bytes: SysV register class, in and out.
 assertEquals(probe.point_scale({ x: 3, y: 4 }, 3), { x: 9, y: 12 });

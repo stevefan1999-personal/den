@@ -1,6 +1,6 @@
 import { assertEquals, assertThrows } from "den:assert";
 import { grant, layout, open } from "den:ffi";
-import { library } from "./probe.js";
+import { library, outside as outsidePath } from "./probe.js";
 
 const capability = grant();
 const add = { params: ["i32", "i32"], result: "i32" };
@@ -10,7 +10,7 @@ assertEquals(missing.kind, "Open");
 
 // The grant is scoped to the fixture directory, so a path outside it is
 // refused even though it exists.
-const outside = assertThrows(() => open("/proc/self/maps", { add }, capability));
+const outside = assertThrows(() => open(outsidePath, { add }, capability));
 assertEquals(outside.kind, "NotCapable");
 
 // Every symbol is resolved at open(), so a name the library does not export
