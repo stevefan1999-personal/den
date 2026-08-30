@@ -220,7 +220,7 @@ fn canonicalize_file_specifier(target: String) -> String {
     if target.starts_with("http://") || target.starts_with("https://") {
         return target;
     }
-    match Path::new(&target).canonicalize() {
+    match dunce::canonicalize(&target) {
         Ok(path) => {
             let mut name = path.to_string_lossy().replace('\\', "/");
             if target.ends_with('/') && !name.ends_with('/') {

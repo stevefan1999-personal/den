@@ -15,6 +15,7 @@ on:
       - "den-*/**"
       - "src/**"
       - "tests/**"
+      - "vendor/rquickjs-core/**"
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
@@ -27,6 +28,7 @@ on:
       - "den-*/**"
       - "src/**"
       - "tests/**"
+      - "vendor/rquickjs-core/**"
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
@@ -124,7 +126,7 @@ jobs:
           root=$(cd "$(dirname "$(command -v clang)")/.." && pwd -W)
           resource=$(clang --print-resource-dir | sed 's#\\#/#g')
           target_key=$(printf %s '${{ matrix.target }}' | tr '-' '_')
-          printf 'CONFIG_SHELL=/usr/bin/sh\nSHELL=/usr/bin/sh\n' >> "$GITHUB_ENV"
+          printf 'CONFIG_SHELL=sh\nSHELL=sh\n' >> "$GITHUB_ENV"
           printf 'CC_%s=%s\n' "$target_key" '${{ matrix.cc }}' >> "$GITHUB_ENV"
           printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s --sysroot="%s" -isystem "%s/include" -isystem "%s/include"\n' \
             '${{ matrix.bindgen_target }}' "$root" "$resource" "$root" >> "$GITHUB_ENV"
@@ -305,6 +307,80 @@ jobs:
               --test-threads 1 --retries 2
           '
 
+  powerpc-musl:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: powerpc64-unknown-linux-musl
+            qemu: qemu-ppc64
+            sha256: 960816352183939183e4d738356533ac36759ea4deb0ce32d59dc8f9f34dd1bc
+          - target: powerpc64le-unknown-linux-musl
+            qemu: qemu-ppc64le
+            sha256: 29eb5a3c3d7ce946cec2ff62251e9b3c754ce4661b9e0486d97c8d682a6527b4
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
+      RUSTFLAGS: -C target-feature=-crt-static
+      RUST_TEST_THREADS: "1"
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Install Rust, QEMU, and libclang
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET"
+          sudo apt-get update
+          sudo apt-get install -y libclang-dev qemu-user qemu-user-binfmt
+          sudo update-binfmts --enable '${{ matrix.qemu }}'
+      - name: Install musl cross-toolchain
+        shell: bash
+        run: |
+          archive="$TARGET.tar.xz"
+          base="https://github.com/cross-tools/musl-cross/releases/download/20260823"
+          root="$RUNNER_TEMP/musl-cross"
+          mkdir -p "$root"
+          curl --proto '=https' --tlsv1.2 -fsSLO "$base/$archive"
+          printf '%s  %s\n' '${{ matrix.sha256 }}' "$archive" | sha256sum -c -
+          tar -xJf "$archive" -C "$root"
+
+          toolchain="$root/$TARGET"
+          sysroot="$toolchain/$TARGET/sysroot"
+          key=$(printf %s "$TARGET" | tr '-' '_')
+          upper=$(printf %s "$key" | tr '[:lower:]' '[:upper:]')
+          printf '%s/bin\n' "$toolchain" >> "$GITHUB_PATH"
+          {
+            printf 'AR_%s=%s/bin/%s-ar\n' "$key" "$toolchain" "$TARGET"
+            printf 'BINDGEN_EXTRA_CLANG_ARGS_%s=--sysroot=%s\n' "$key" "$sysroot"
+            printf 'CARGO_TARGET_%s_LINKER=%s/bin/%s-gcc\n' "$upper" "$toolchain" "$TARGET"
+            printf 'CARGO_TARGET_%s_RUNNER=%s -cpu power10 -L %s\n' \
+              "$upper" '${{ matrix.qemu }}' "$sysroot"
+            printf 'CC_%s=%s/bin/%s-gcc\n' "$key" "$toolchain" "$TARGET"
+            printf 'DEN_TEST_CC=%s/bin/%s-gcc\n' "$toolchain" "$TARGET"
+            printf 'QEMU_CPU=power10\nQEMU_LD_PREFIX=%s\n' "$sysroot"
+          } >> "$GITHUB_ENV"
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Build and run unit and integration tests
+        run: >-
+          cargo nextest run --locked --profile compat --no-fail-fast --workspace
+          --exclude den-stdlib-wasm --target ${{ matrix.target }}
+          --no-default-features
+          --features stdlib,typescript,react,mimalloc,rquickjs/bindgen
+          --test-threads 1
+
   musl-release:
     name: x86_64-unknown-linux-musl release
     runs-on: ubuntu-24.04
@@ -405,3 +481,139 @@ jobs:
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --target ${{ matrix.target }} --no-default-features \
               --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+
+  illumos:
+    name: x86_64-unknown-illumos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CARGO_BUILD_JOBS: "2"
+      DEN_TEST_CC: gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Build and test on OmniOS r151058
+        uses: vmactions/omnios-vm@317e4f8069dad8a65e1520808f1a68ef3fd20565 # v1.3.6
+        with:
+          release: r151058-build
+          mem: 10240
+          copyback: false
+          envs: >-
+            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
+            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
+          prepare: |
+            pkg install build-essential developer/nasm developer/pkg-config \
+              developer/versioning/git web/curl runtime/perl
+            pkg publisher extra.omnios >/dev/null 2>&1 || \
+              pkg set-publisher -g https://pkg.omnios.org/r151058/extra/ extra.omnios
+            pkg install ooce/developer/cmake ooce/developer/clang-19
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            mkdir -p "$HOME/.cargo/bin"
+            archive=/tmp/cargo-nextest.tar.gz
+            curl --proto '=https' --tlsv1.2 -fsSLo "$archive" \
+              https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-illumos.tar.gz
+            test "$(digest -a sha256 "$archive")" = \
+              91e6d9fa6bd5c4f30ab8b8bdc3cd3a7e225d2f91b4a2c35a1164c9e5d972e9c9
+            tar -xzf "$archive" -C "$HOME/.cargo/bin"
+          run: |
+            export PATH="$HOME/.cargo/bin:/opt/ooce/bin:/usr/gnu/bin:$PATH"
+            export LIBCLANG_PATH=/opt/ooce/llvm-19/lib
+            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
+              --target x86_64-unknown-illumos --no-default-features \
+              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen \
+              --test-threads 1
+
+  netbsd:
+    name: x86_64-unknown-netbsd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CARGO_BUILD_JOBS: "2"
+      DEN_TEST_CC: cc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Build and test on NetBSD 10.1
+        uses: vmactions/netbsd-vm@07366ff288a2661e3998b69c5d48eda270050635 # v1.4.8
+        with:
+          release: "10.1"
+          arch: x86_64
+          mem: 10240
+          copyback: false
+          envs: >-
+            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
+            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
+          prepare: |
+            test -x /usr/pkg/bin/pkgin || /usr/sbin/pkg_add pkgin
+            /usr/pkg/bin/pkgin -y update
+            /usr/pkg/bin/pkgin -y install bash clang cmake curl git gmake llvm \
+              mozilla-rootcerts-openssl nasm perl pkgconf
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            . "$HOME/.cargo/env"
+            cargo install cargo-nextest --version 0.9.143 --locked --no-default-features
+          run: |
+            export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
+            export LIBCLANG_PATH=/usr/pkg/lib
+            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
+              --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
+              --no-default-features \
+              --features stdlib,typescript,react,mimalloc,rquickjs/bindgen \
+              --test-threads 1
+
+  solaris:
+    name: x86_64-pc-solaris
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      CARGO_BUILD_JOBS: "2"
+      DEN_TEST_CC: clang
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned WPT fixture
+        run: |
+          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
+          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
+          mkdir -p "$(dirname "$fixture")"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
+            -o "$fixture"
+      - name: Build and test on Solaris 11.4
+        uses: vmactions/solaris-vm@96d8d976f9e67d82ec6c7e8ce9c1060731f9e21c # v1.3.9
+        with:
+          release: 11.4-clang-19
+          mem: 10240
+          copyback: false
+          envs: >-
+            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
+            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
+          prepare: |
+            export PATH="/usr/llvm-19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
+            pkg install --accept developer/nasm runtime/perl
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            . "$HOME/.cargo/env"
+            cargo install cargo-nextest --version 0.9.143 --locked --no-default-features
+          run: |
+            export PATH="$HOME/.cargo/bin:/usr/llvm-19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
+            export LIBCLANG_PATH="$(dirname "$(find /usr/llvm-19 -type f -name 'libclang.so*' | head -1)")"
+            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
+              --exclude den-stdlib-wasm --target x86_64-pc-solaris \
+              --no-default-features \
+              --features stdlib,typescript,react,mimalloc,rquickjs/bindgen \
+              --test-threads 1
