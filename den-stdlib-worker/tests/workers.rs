@@ -257,6 +257,7 @@ async fn a_transferred_array_buffer_is_detached_here_and_intact_there() -> eyre:
 /// detach keys — and the instance would go on running against freed pages.
 /// The refusal has to be a `DataCloneError` *and* leave the memory untouched,
 /// which is asserted by using it afterwards.
+#[cfg(feature = "wasm")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_webassembly_memory_buffer_refuses_to_be_transferred() -> eyre::Result<()> {
     let fixture = Fixture::new("wasm-detach-key", &[("worker.js", ECHO)])?;

@@ -287,8 +287,11 @@ jobs:
       - name: Run nextest in the target image
         shell: bash
         run: |
+          # cross-util discards the container exit status, so require a success marker.
+          status_file="target/.nextest-$TARGET.ok"
+          rm -f "$status_file"
           cross-util run --target "$TARGET" -- '
-            set -euo pipefail
+            set -eu
             archive=/tmp/cargo-nextest.tar.gz
             curl --proto "=https" --tlsv1.2 -fsSLo "$archive" \
               https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-linux-gnu.tar.gz
@@ -297,15 +300,17 @@ jobs:
               "$archive" | sha256sum -c -
             tar -xzf "$archive" -C /tmp
 
-            excludes=()
+            set --
             if [ "${TARGET_WASM:-1}" = 0 ]; then
-              excludes=(--exclude den-stdlib-wasm)
+              set -- --exclude den-stdlib-wasm
             fi
             PATH=/tmp:$PATH cargo nextest run --locked --profile compat --no-fail-fast \
-              --workspace "${excludes[@]}" --target "$TARGET" \
+              --workspace "$@" --target "$TARGET" \
               --no-default-features --features "$TARGET_FEATURES" \
               --test-threads 1 --retries 2
+            touch "/target/.nextest-$TARGET.ok"
           '
+          test -f "$status_file"
 
   powerpc-musl:
     name: ${{ matrix.target }}
@@ -527,7 +532,7 @@ jobs:
             export LIBCLANG_PATH=/opt/ooce/llvm-19/lib
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --target x86_64-unknown-illumos --no-default-features \
-              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen \
+              --features stdlib,typescript,react,wasm,wasi,jit,rquickjs/bindgen \
               --test-threads 1
 
   netbsd:
@@ -565,7 +570,7 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
             . "$HOME/.cargo/env"
-            # 0.9.115+ pairs nix <0.31 with libc >=0.2.178, which does not compile on NetBSD.
+            # Newer releases pull a pager stack that does not compile on NetBSD or Solaris.
             cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
           run: |
             export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
@@ -573,7 +578,7 @@ jobs:
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
               --no-default-features \
-              --features stdlib,typescript,react,mimalloc,rquickjs/bindgen \
+              --features stdlib,typescript,react,rquickjs/bindgen \
               --test-threads 1
 
   solaris:
@@ -608,12 +613,13 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
             . "$HOME/.cargo/env"
-            cargo install cargo-nextest --version 0.9.143 --locked --no-default-features
+            # Newer releases pull a pager stack that does not compile on NetBSD or Solaris.
+            cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
           run: |
             export PATH="$HOME/.cargo/bin:/usr/llvm-19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
             export LIBCLANG_PATH="$(dirname "$(find /usr/llvm-19 -type f -name 'libclang.so*' | head -1)")"
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-pc-solaris \
               --no-default-features \
-              --features stdlib,typescript,react,mimalloc,rquickjs/bindgen \
+              --features stdlib,typescript,react,rquickjs/bindgen \
               --test-threads 1

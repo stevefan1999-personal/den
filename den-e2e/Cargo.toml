@@ -17,6 +17,7 @@ test = false
 [dev-dependencies]
 color-eyre.workspace = true
 den-core = { workspace = true }
+rquickjs.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
