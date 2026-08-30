@@ -89,9 +89,14 @@ impl Probe {
         // The fixtures are copied next to the library so that they can name it
         // through a generated module rather than an environment variable, which
         // two tests running at once would race over.
+        let outside = env::current_exe()?;
         fs::write(
             directory.path().join("probe.js"),
-            format!("export const library = {:?};\n", library.to_string_lossy()),
+            format!(
+                "export const library = {:?};\nexport const outside = {:?};\n",
+                library.to_string_lossy(),
+                outside.to_string_lossy()
+            ),
         )?;
         for fixture in fs::read_dir(fixtures.join("js"))? {
             let fixture = fixture?.path();

@@ -191,6 +191,8 @@ typedef struct {
   double c;
 } Triple;
 
+DEN_EXPORT uint32_t alignof_double(void) { return (uint32_t)_Alignof(double); }
+
 DEN_EXPORT Triple triple_sum(Triple triple, double addend) {
   Triple summed = {triple.a + addend, triple.b + addend, triple.c + addend};
   return summed;

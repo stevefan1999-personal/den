@@ -33,7 +33,17 @@ impl Den {
         let scratch = tempfile::tempdir().expect("scratch dir");
         let path = scratch.path().join("case.js");
         std::fs::write(&path, script).expect("write case");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_den"))
+        let mut command = std::env::var("DEN_TEST_RUNNER")
+            .ok()
+            .filter(|runner| !runner.is_empty())
+            .map(|runner| {
+                let mut parts = runner.split_whitespace();
+                let mut command = Command::new(parts.next().expect("non-empty test runner"));
+                command.args(parts).arg(env!("CARGO_BIN_EXE_den"));
+                command
+            })
+            .unwrap_or_else(|| Command::new(env!("CARGO_BIN_EXE_den")));
+        let mut child = command
             .args(flags)
             .arg(&path)
             .stdin(Stdio::null())

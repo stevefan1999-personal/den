@@ -287,18 +287,21 @@ impl SignalHub {
         }
         #[cfg(windows)]
         {
-            let stream = if sig == "SIGINT" {
-                tokio::signal::windows::ctrl_c()
+            if sig == "SIGINT" {
+                let mut stream = tokio::signal::windows::ctrl_c()
+                    .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+                tokio::spawn(async move {
+                    while stream.recv().await.is_some() && inbox_tx.send(sig.clone()).is_ok() {}
+                });
             } else if sig == "SIGBREAK" {
-                tokio::signal::windows::ctrl_break()
+                let mut stream = tokio::signal::windows::ctrl_break()
+                    .map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
+                tokio::spawn(async move {
+                    while stream.recv().await.is_some() && inbox_tx.send(sig.clone()).is_ok() {}
+                });
             } else {
                 return Ok(());
-            };
-            let mut stream =
-                stream.map_err(|error| Exception::throw_internal(ctx, &error.to_string()))?;
-            tokio::spawn(async move {
-                while stream.recv().await.is_some() && inbox_tx.send(sig.clone()).is_ok() {}
-            });
+            }
             Ok(())
         }
         #[cfg(not(any(unix, windows)))]
