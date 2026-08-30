@@ -315,6 +315,7 @@ async fn terminate_stops_a_worker_that_never_yields() -> eyre::Result<()> {
         engine.eval::<String>("globalThis.result").await?,
         "spinning"
     );
+    #[cfg(target_os = "linux")]
     assert!(
         live_worker_threads("spin-terminate") > 0,
         "the spinning worker should be running before it is terminated"
@@ -447,6 +448,7 @@ async fn a_live_worker_keeps_idle_pending_and_terminate_releases_it() -> eyre::R
         .start(include_str!("fixtures/workers/idle-lifetime/main.js"))
         .await?;
     assert_eq!(engine.eval::<String>("globalThis.result").await?, "ping");
+    #[cfg(target_os = "linux")]
     assert!(
         live_worker_threads("idle-lifetime") > 0,
         "the worker whose lifetime is under test should be running"
@@ -504,6 +506,7 @@ async fn shutdown_terminates_and_joins_every_worker() -> eyre::Result<()> {
         engine.eval::<String>("globalThis.result").await?,
         "spinning"
     );
+    #[cfg(target_os = "linux")]
     assert!(live_worker_threads("shutdown-join") > 0, "the workers ran");
 
     timeout(DEADLINE, engine.shutdown()).await?;

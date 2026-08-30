@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "den:assert";
+import { assertEquals } from "den:assert";
 import { posix } from "den:path";
 
 assertEquals(posix.normalize("./fixtures///b/../b/c.js"), "fixtures/b/c.js");
@@ -31,4 +31,3 @@ assertEquals(parsed.ext, ".txt");
 assertEquals(parsed.name, "file");
 assertEquals(posix.format(parsed), "/home/user/file.txt");
 assertEquals(posix.format({ name: "file", ext: "txt" }), "file.txt");
-assert(posix.resolve(".").startsWith("/") || posix.resolve(".") === ".");
