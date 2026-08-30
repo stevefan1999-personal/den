@@ -76,6 +76,7 @@ derive_more = { version = "2.1.1", features = [
     "debug",
 ] }
 dlopen2 = "0.8.2"
+dunce = "1.0.5"
 either = "1.18.0"
 encoding_rs = "0.8.35"
 flate2 = "1"

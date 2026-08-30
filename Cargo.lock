@@ -1105,6 +1105,7 @@ dependencies = [
  "den-stdlib-worker",
  "den-transpiler-oxc",
  "derive_more",
+ "dunce",
  "futures",
  "libtest-mimic",
  "reqwest",

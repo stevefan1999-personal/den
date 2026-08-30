@@ -552,7 +552,7 @@ impl Engine {
         // name a base URL and a script name that agree with each other, and
         // `AbsolutePathResolver` is what makes the import below find it.
         let path = from_url.unwrap_or(filename);
-        let path = path.canonicalize().unwrap_or(path);
+        let path = dunce::canonicalize(&path).unwrap_or(path);
 
         #[cfg(feature = "stdlib-worker")]
         if let Some(directory) = path

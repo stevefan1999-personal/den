@@ -40,15 +40,15 @@ impl Resolver for FileUrlResolver {
         &mut self, ctx: &Ctx<'js>, base: &str, name: &str,
         _attributes: Option<rquickjs::loader::ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        let base = Url::parse(base)
+        let base = Url::from_file_path(base)
             .ok()
-            .or_else(|| Url::from_file_path(base).ok());
+            .or_else(|| Url::parse(base).ok());
         Url::options()
             .base_url(base.as_ref())
             .parse(name)
             .ok()
             .and_then(|url| url.to_file_path().ok())
-            .map(|path| path.to_string_lossy().into_owned())
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
             .ok_or_else(|| {
                 Exception::throw_message(ctx, &format!("cannot resolve module {name:?}"))
             })

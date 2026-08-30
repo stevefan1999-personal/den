@@ -81,7 +81,7 @@ impl Resolver for AbsolutePathResolver {
             // — `./lib.js` and `./sub/../lib.js` are the same script — and so
             // that the loaders below get a path rather than the `file:` URL a
             // specifier may have been written as.
-            .and_then(|path| path.canonicalize().ok())
+            .and_then(|path| dunce::canonicalize(path).ok())
             .and_then(|path| path.to_str().map(|path| path.replace('\\', "/")))
             .ok_or_else(|| Error::new_resolving(base, name))
     }

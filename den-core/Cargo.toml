@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 derive_more.workspace = true
+dunce.workspace = true
 # `default-tls` is rustls, and `charset`/`http2`/`system-proxy` come with the defaults too; only
 # the body codecs and the streaming body are extra.
 reqwest = { workspace = true, features = [
