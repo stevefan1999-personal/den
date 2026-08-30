@@ -574,7 +574,8 @@ impl Engine {
     /// worker base URL.
     pub async fn run_module(&self, specifier: &str) -> Result<(), EngineError> {
         #[cfg(feature = "stdlib-worker")]
-        if let Ok(url) = Url::parse(specifier)
+        if !Path::new(specifier).is_absolute()
+            && let Ok(url) = Url::parse(specifier)
             && let Ok(directory) = url.join(".")
         {
             self.set_base_url(BaseUrl(directory.into())).await?;
