@@ -748,4 +748,5 @@ lto = "fat"
 workspace = true
 
 [patch.crates-io]
+fs2 = { path = "vendor/fs2" }
 rquickjs-core = { path = "vendor/rquickjs-core" }

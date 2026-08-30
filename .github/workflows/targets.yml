@@ -15,7 +15,7 @@ on:
       - "den-*/**"
       - "src/**"
       - "tests/**"
-      - "vendor/rquickjs-core/**"
+      - "vendor/**"
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
@@ -28,7 +28,7 @@ on:
       - "den-*/**"
       - "src/**"
       - "tests/**"
-      - "vendor/rquickjs-core/**"
+      - "vendor/**"
       - Cargo.lock
       - Cargo.toml
       - rust-toolchain.toml
@@ -126,7 +126,7 @@ jobs:
           root=$(cd "$(dirname "$(command -v clang)")/.." && pwd -W)
           resource=$(clang --print-resource-dir | sed 's#\\#/#g')
           target_key=$(printf %s '${{ matrix.target }}' | tr '-' '_')
-          printf 'CONFIG_SHELL=sh\nSHELL=sh\n' >> "$GITHUB_ENV"
+          printf 'CONFIG_SHELL=C:/PROGRA~1/Git/usr/bin/sh.exe\nSHELL=C:/PROGRA~1/Git/usr/bin/sh.exe\nMSYS2_ENV_CONV_EXCL=CONFIG_SHELL;SHELL\n' >> "$GITHUB_ENV"
           printf 'CC_%s=%s\n' "$target_key" '${{ matrix.cc }}' >> "$GITHUB_ENV"
           printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s --sysroot="%s" -isystem "%s/include" -isystem "%s/include"\n' \
             '${{ matrix.bindgen_target }}' "$root" "$resource" "$root" >> "$GITHUB_ENV"
@@ -341,8 +341,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET"
           sudo apt-get update
-          sudo apt-get install -y libclang-dev qemu-user qemu-user-binfmt
-          sudo update-binfmts --enable '${{ matrix.qemu }}'
+          sudo apt-get install -y libclang-dev qemu-user
       - name: Install musl cross-toolchain
         shell: bash
         run: |
@@ -566,7 +565,8 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
             . "$HOME/.cargo/env"
-            cargo install cargo-nextest --version 0.9.143 --locked --no-default-features
+            # 0.9.115+ pairs nix <0.31 with libc >=0.2.178, which does not compile on NetBSD.
+            cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
           run: |
             export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
             export LIBCLANG_PATH=/usr/pkg/lib
@@ -604,7 +604,7 @@ jobs:
             DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
           prepare: |
             export PATH="/usr/llvm-19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
-            pkg install --accept developer/nasm runtime/perl
+            pkg install --accept developer/nasm
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
             . "$HOME/.cargo/env"
