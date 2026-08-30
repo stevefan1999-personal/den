@@ -1,5 +1,5 @@
 import { assert } from "den:assert";
 const listener = () => {};
-process.addSignalListener("SIGTERM", listener);
-process.removeSignalListener("SIGTERM", listener);
+process.addSignalListener("SIGINT", listener);
+process.removeSignalListener("SIGINT", listener);
 assert(true);
