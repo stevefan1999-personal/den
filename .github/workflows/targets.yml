@@ -112,20 +112,26 @@ jobs:
             -o "$fixture"
       - name: Install Rust target
         run: rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
+      - name: Install LLVM MinGW
+        if: matrix.bindgen_target != ''
+        uses: taiki-e/setup-cross-toolchain-action@12b7ad4acfa95a1476779d6c06699b96ec1691f8 # v1.42.0
+        with:
+          target: ${{ matrix.target }}
       - name: Configure bindgen for the LLVM MinGW ABI
         if: matrix.bindgen_target != ''
         shell: bash
         run: |
+          root=$(cd "$(dirname "$(command -v clang)")/.." && pwd -W)
           resource=$(clang --print-resource-dir | sed 's#\\#/#g')
-          printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s -isystem "%s/include"\n' \
-            '${{ matrix.bindgen_target }}' "$resource" >> "$GITHUB_ENV"
+          printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s --sysroot="%s" -isystem "%s/include"\n' \
+            '${{ matrix.bindgen_target }}' "$root" "$resource" >> "$GITHUB_ENV"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: cargo-nextest@0.9.143
       - name: Build and run unit and integration tests
         run: >-
-          cargo nextest run --locked --profile compat --workspace
+          cargo nextest run --locked --profile compat --no-fail-fast --workspace
           --target ${{ matrix.target }} --no-default-features
           --features ${{ matrix.features }}
 
@@ -290,7 +296,7 @@ jobs:
             if [ "${TARGET_WASM:-1}" = 0 ]; then
               excludes=(--exclude den-stdlib-wasm)
             fi
-            PATH=/tmp:$PATH cargo nextest run --locked --profile compat \
+            PATH=/tmp:$PATH cargo nextest run --locked --profile compat --no-fail-fast \
               --workspace "${excludes[@]}" --target "$TARGET" \
               --no-default-features --features "$TARGET_FEATURES" \
               --test-threads 1 --retries 2
@@ -378,6 +384,7 @@ jobs:
             DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
           prepare: |
             pkg install -y bash ca_root_nss cmake-core curl git gmake llvm19-lite nasm perl5 pkgconf
+            tzsetup UTC
             mkdir -p "$HOME/.cargo/bin"
             if [ "${{ matrix.arch }}" = x86_64 ]; then
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -392,6 +399,6 @@ jobs:
           run: |
             export PATH="$HOME/.cargo/bin:$PATH"
             export LIBCLANG_PATH=/usr/local/llvm19/lib
-            cargo nextest run --locked --profile compat --workspace \
+            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --target ${{ matrix.target }} --no-default-features \
               --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen

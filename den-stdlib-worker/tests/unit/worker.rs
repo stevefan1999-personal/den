@@ -573,6 +573,8 @@ async fn terminate_alone_stops_a_worker_that_can_never_see_its_port() {
         ))
         .await;
     assert_eq!(started, "spinning");
+    // Only Linux's /proc-backed helper can prove this intermediate state.
+    #[cfg(target_os = "linux")]
     assert!(
         threads_named("den-worker:tttt") > 0,
         "the worker is running"
@@ -691,6 +693,8 @@ async fn shutdown_returns_with_every_thread_of_every_worker_already_gone() {
     // The round trip is the proof that the worker has an engine, a tokio
     // runtime and the threads that come with it.
     assert_eq!(reply, "echo:up");
+    // Only Linux's /proc-backed helper can count the worker's runtime threads.
+    #[cfg(target_os = "linux")]
     assert!(
         threads_named("den-worker:cccc") >= 2,
         "the worker should have its own thread and its runtime's, got {}",
