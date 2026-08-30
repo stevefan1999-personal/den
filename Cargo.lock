@@ -3778,8 +3778,6 @@ dependencies = [
 [[package]]
 name = "rquickjs-core"
 version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16e4f499ac5b943d97ee6dbc44f23c2c10426f420f7d2f1793d6318911b6608c"
 dependencies = [
  "async-lock",
  "chrono",
