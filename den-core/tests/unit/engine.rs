@@ -1,7 +1,7 @@
 use std::{env::temp_dir, fs, path::PathBuf, process};
 
 use color_eyre::eyre;
-use rquickjs::{embed, loader::Bundle};
+use rquickjs::{CatchResultExt, embed, loader::Bundle};
 
 use crate::engine::{Engine, EngineError, PendingRejections};
 
@@ -39,10 +39,28 @@ fn write_special_script(name: &str, source: &str) -> PathBuf {
     path
 }
 
+async fn run_embedded(engine: &Engine, specifier: &str) -> eyre::Result<()> {
+    match engine.run_module(specifier).await {
+        Ok(()) => Ok(()),
+        Err(EngineError::Rquickjs(error)) => {
+            let caught = engine
+                .context
+                .with(|ctx| {
+                    Err::<(), _>(error)
+                        .catch(&ctx)
+                        .map_err(|error| error.to_string())
+                })
+                .await;
+            caught.map_err(|error| eyre::eyre!(error))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_embedded_entry_imports_its_embedded_sibling() -> eyre::Result<()> {
     let engine = Engine::new_with_bundle(EMBEDDED_BUNDLE).await;
-    engine.run_module("den-embed:/main.js").await?;
+    run_embedded(&engine, "den-embed:/main.js").await?;
     assert_eq!(engine.eval::<usize>("globalThis.embeddedAnswer").await?, 42);
     Ok(())
 }
@@ -53,7 +71,7 @@ async fn embedded_modules_are_available_inside_module_workers() -> eyre::Result<
     let engine = Engine::new_with_bundle(EMBEDDED_BUNDLE).await;
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        engine.run_module("den-embed:/worker_parent.js"),
+        run_embedded(&engine, "den-embed:/worker_parent.js"),
     )
     .await??;
     assert_eq!(

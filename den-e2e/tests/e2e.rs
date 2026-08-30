@@ -4,7 +4,8 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre;
-use den_core::engine::Engine;
+use den_core::engine::{Engine, EngineError};
+use rquickjs::CatchResultExt;
 
 fn case(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,9 +15,27 @@ fn case(name: &str) -> PathBuf {
 
 async fn run(name: &str) -> eyre::Result<()> {
     let engine = Engine::new().await;
-    engine.run_file(case(name)).await?;
+    run_file(&engine, case(name)).await?;
     engine.shutdown().await;
     Ok(())
+}
+
+async fn run_file(engine: &Engine, path: PathBuf) -> eyre::Result<()> {
+    match engine.run_file(path).await {
+        Ok(()) => Ok(()),
+        Err(EngineError::Rquickjs(error)) => {
+            let caught = engine
+                .context
+                .with(|ctx| {
+                    Err::<(), _>(error)
+                        .catch(&ctx)
+                        .map_err(|error| error.to_string())
+                })
+                .await;
+            caught.map_err(|error| eyre::eyre!(error))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn example(name: &str) -> PathBuf {
@@ -27,7 +46,7 @@ fn example(name: &str) -> PathBuf {
 
 async fn run_example(name: &str) -> eyre::Result<()> {
     let engine = Engine::new().await;
-    engine.run_file(example(name)).await?;
+    run_file(&engine, example(name)).await?;
     engine.shutdown().await;
     Ok(())
 }
