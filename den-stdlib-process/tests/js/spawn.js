@@ -13,8 +13,10 @@ async function firstExisting(paths) {
   return paths[0];
 }
 
-const echo = await firstExisting(["/bin/echo", "/usr/bin/echo"]);
-const child = process.spawn([echo, "hello-from-den"], { stdout: "pipe", stderr: "ignore" });
+const command = process.env.ComSpec
+  ? [process.env.ComSpec, "/d", "/s", "/c", "echo hello-from-den"]
+  : [await firstExisting(["/bin/echo", "/usr/bin/echo"]), "hello-from-den"];
+const child = process.spawn(command, { stdout: "pipe", stderr: "ignore" });
 const out = await child.stdout.text();
 const status = await child.wait();
 assert(child.pid > 0);

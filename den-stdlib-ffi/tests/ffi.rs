@@ -1,7 +1,8 @@
 //! `docs/research/19-den-ffi.md` §6, phases 1 to 6: the scalar vocabulary,
 //! borrowed buffers, callbacks on den's thread and on C's, and `nonblocking`
-//! symbols, structs by value — all against a real `.so`, built here with the C
-//! compiler of this machine, so the ABI under test is the one it really uses.
+//! symbols, structs by value — all against a real shared library, built here
+//! with the target's C compiler, so the ABI under test is the one it really
+//! uses.
 
 use std::{
     env,
@@ -44,17 +45,34 @@ impl Probe {
     fn build() -> eyre::Result<Option<Self>> {
         let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
         let directory = TempDir::new()?;
-        let library = directory.path().join("libprobe.so");
-        let compiler = env::var("CC").unwrap_or_else(|_| "cc".into());
-        let built = Command::new(&compiler)
-            .args(["-shared", "-fPIC", "-pthread", "-o"])
+        let library = directory.path().join(format!(
+            "{}probe{}",
+            env::consts::DLL_PREFIX,
+            env::consts::DLL_SUFFIX
+        ));
+        // CI sets DEN_TEST_CC for cross tests without poisoning the compiler
+        // used by Cargo build scripts. Native builds retain the conventional
+        // CC/cc fallback.
+        let compiler = env::var("DEN_TEST_CC")
+            .or_else(|_| env::var("CC"))
+            .unwrap_or_else(|_| "cc".into());
+        let mut command = Command::new(&compiler);
+        if let Ok(args) = env::var("DEN_TEST_CC_ARGS") {
+            command.args(args.split_whitespace());
+        }
+        command.arg("-shared");
+        #[cfg(unix)]
+        command.args(["-fPIC", "-pthread"]);
+        let built = command
+            .arg("-o")
             .arg(&library)
             .arg(fixtures.join("c/probe.c"))
             .output();
         match built {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 eprintln!(
-                    "skipping den:ffi tests: no C compiler — `{compiler}` was not found (set CC)"
+                    "skipping den:ffi tests: no C compiler — `{compiler}` was not found (set \
+                     DEN_TEST_CC/DEN_TEST_CC_ARGS or CC)"
                 );
                 return Ok(None);
             }
@@ -87,7 +105,13 @@ impl Probe {
 
     fn case(&self, name: &str) -> PathBuf { self.directory.path().join(name) }
 
-    fn library(&self) -> PathBuf { self.directory.path().join("libprobe.so") }
+    fn library(&self) -> PathBuf {
+        self.directory.path().join(format!(
+            "{}probe{}",
+            env::consts::DLL_PREFIX,
+            env::consts::DLL_SUFFIX
+        ))
+    }
 
     fn root(&self) -> &Path { self.directory.path() }
 }

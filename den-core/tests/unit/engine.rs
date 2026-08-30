@@ -277,14 +277,14 @@ async fn dropping_an_engine_with_a_pending_timer_returns_promptly() -> eyre::Res
     Ok(())
 }
 
-/// The embedder recipe cancels by dropping the `Engine`, and a server spends
-/// its life inside the entry module's top-level await — so the drop lands
-/// mid-`async_with`, with the module's promise and the op it is parked on both
-/// still pending. QuickJS has to free that context without waiting for them.
+/// A server spends its life inside the entry module's top-level await. The
+/// host drops that program future, then reacquires the runtime through
+/// `shutdown` before dropping the engine so deferred QuickJS values are freed
+/// under the runtime lock.
 /// `multi_thread` so the stop can arrive while the JS loop owns the runtime.
 #[cfg(feature = "stdlib-timer")]
 #[tokio::test(flavor = "multi_thread")]
-async fn hosts_token_drops_an_engine_parked_on_a_top_level_await() -> eyre::Result<()> {
+async fn hosts_token_shuts_down_an_engine_parked_on_a_top_level_await() -> eyre::Result<()> {
     let entry = write_special_script(
         "parked_on_a_long_await.js",
         "await new Promise((resolve) => setTimeout(resolve, 60000));\n",
@@ -298,6 +298,7 @@ async fn hosts_token_drops_an_engine_parked_on_a_top_level_await() -> eyre::Resu
         _ = engine.run_file(entry) => false,
         () = tokio::time::sleep(std::time::Duration::from_millis(100)) => true,
     };
+    engine.shutdown().await;
     drop(engine);
     let elapsed = started.elapsed();
 

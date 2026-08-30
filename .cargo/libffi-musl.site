@@ -1,0 +1,5 @@
+case "${host_alias:-}" in
+  *-linux-musl)
+    CPPFLAGS="-I${CONFIG_SITE%/*}/libffi-musl${CPPFLAGS:+ ${CPPFLAGS}}"
+    ;;
+esac

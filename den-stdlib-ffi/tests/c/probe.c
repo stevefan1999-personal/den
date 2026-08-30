@@ -1,59 +1,65 @@
 /* The scalar vocabulary den:ffi claims to marshal, one function per shape,
  * plus the two exported variables the static-symbol form reads. Built at test
- * time by tests/ffi.rs with `cc -shared -fPIC`, so the .so is always this
- * compiler's ABI. */
+ * time by tests/ffi.rs, so the shared library is always this compiler's ABI. */
 
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#define DEN_EXPORT __declspec(dllexport)
+#else
 #include <pthread.h>
+#define DEN_EXPORT
+#endif
 
-int add(int left, int right) { return left + right; }
+DEN_EXPORT int add(int left, int right) { return left + right; }
 
-double mul_f64(double left, double right) { return left * right; }
+DEN_EXPORT double mul_f64(double left, double right) { return left * right; }
 
-void no_op(void) {}
+DEN_EXPORT void no_op(void) {}
 
 /* Every width echoes its argument: a round trip is what catches a marshaller
  * that widens, wraps or truncates. */
-int8_t echo_i8(int8_t value) { return value; }
-uint8_t echo_u8(uint8_t value) { return value; }
-int16_t echo_i16(int16_t value) { return value; }
-uint16_t echo_u16(uint16_t value) { return value; }
-uint32_t echo_u32(uint32_t value) { return value; }
-int64_t echo_i64(int64_t value) { return value; }
-uint64_t echo_u64(uint64_t value) { return value; }
-intptr_t echo_isize(intptr_t value) { return value; }
-size_t echo_usize(size_t value) { return value; }
-float echo_f32(float value) { return value; }
+DEN_EXPORT int8_t echo_i8(int8_t value) { return value; }
+DEN_EXPORT uint8_t echo_u8(uint8_t value) { return value; }
+DEN_EXPORT int16_t echo_i16(int16_t value) { return value; }
+DEN_EXPORT uint16_t echo_u16(uint16_t value) { return value; }
+DEN_EXPORT uint32_t echo_u32(uint32_t value) { return value; }
+DEN_EXPORT int64_t echo_i64(int64_t value) { return value; }
+DEN_EXPORT uint64_t echo_u64(uint64_t value) { return value; }
+DEN_EXPORT intptr_t echo_isize(intptr_t value) { return value; }
+DEN_EXPORT size_t echo_usize(size_t value) { return value; }
+DEN_EXPORT float echo_f32(float value) { return value; }
 
 /* A sub-register return with no argument to carry it: the case where a cell
  * sized to a register rather than to the type would show. */
-int8_t minus_one_i8(void) { return -1; }
+DEN_EXPORT int8_t minus_one_i8(void) { return -1; }
 
-_Bool negate(_Bool value) { return !value; }
+DEN_EXPORT _Bool negate(_Bool value) { return !value; }
 
 /* Pointers: one out, one in, one null, and two C strings. */
 static int32_t the_cell = 7;
-int32_t *cell_address(void) { return &the_cell; }
-int32_t read_i32(const int32_t *address) { return *address; }
-void *null_pointer(void) { return NULL; }
+DEN_EXPORT int32_t *cell_address(void) { return &the_cell; }
+DEN_EXPORT int32_t read_i32(const int32_t *address) { return *address; }
+DEN_EXPORT void *null_pointer(void) { return NULL; }
 
-const char *hello(void) { return "hello"; }
+DEN_EXPORT const char *hello(void) { return "hello"; }
 
 /* Eight bytes with no terminator, for the bounded-scan refusal. */
 static const char unterminated_bytes[8] = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'};
-const char *unterminated(void) { return unterminated_bytes; }
+DEN_EXPORT const char *unterminated(void) { return unterminated_bytes; }
 
 /* Exported variables, read by the `{ type }` schema form. */
-int32_t version = 3;
-double ratio = 0.5;
+DEN_EXPORT int32_t version = 3;
+DEN_EXPORT double ratio = 0.5;
 
 /* The buffer argument: C writes through the pointer den hands it, so a view
  * built at a byteOffset shows exactly where that pointer landed. Each byte is
  * its own index plus one, which no zeroed buffer can be mistaken for. */
-void fill_bytes(uint8_t *out, size_t length) {
+DEN_EXPORT void fill_bytes(uint8_t *out, size_t length) {
   for (size_t index = 0; index < length; index++) {
     out[index] = (uint8_t)(index + 1);
   }
@@ -61,11 +67,15 @@ void fill_bytes(uint8_t *out, size_t length) {
 
 /* Callbacks. `apply` is the same-thread case: den's trampoline runs inside the
  * very call JS made, so the realm's runtime lock is held throughout. */
-int32_t apply(int32_t (*function)(int32_t), int32_t value) { return function(value); }
+DEN_EXPORT int32_t apply(int32_t (*function)(int32_t), int32_t value) {
+  return function(value);
+}
 
-double apply_f64(double (*function)(double), double value) { return function(value); }
+DEN_EXPORT double apply_f64(double (*function)(double), double value) {
+  return function(value);
+}
 
-void notify(void (*function)(int32_t), int32_t value) { function(value); }
+DEN_EXPORT void notify(void (*function)(int32_t), int32_t value) { function(value); }
 
 /* qsort-shaped: C owns the loop and calls back once per comparison, handing
  * the callback two addresses rather than values.
@@ -76,7 +86,7 @@ void notify(void (*function)(int32_t), int32_t value) { function(value); }
 static int32_t sorted[8];
 static size_t sorted_count = 0;
 
-void load_values(const uint8_t *bytes, size_t length) {
+DEN_EXPORT void load_values(const uint8_t *bytes, size_t length) {
   if (length > sizeof(sorted)) {
     length = sizeof(sorted);
   }
@@ -84,9 +94,9 @@ void load_values(const uint8_t *bytes, size_t length) {
   sorted_count = length / sizeof(int32_t);
 }
 
-const int32_t *sorted_values(void) { return sorted; }
+DEN_EXPORT const int32_t *sorted_values(void) { return sorted; }
 
-void sort_values(int (*compare)(const void *, const void *)) {
+DEN_EXPORT void sort_values(int (*compare)(const void *, const void *)) {
   qsort(sorted, sorted_count, sizeof(int32_t), compare);
 }
 
@@ -99,19 +109,44 @@ struct fired {
   int32_t result;
 };
 
+#ifdef _WIN32
+static DWORD WINAPI fire(void *raw) {
+  struct fired *call = raw;
+  call->result = call->function(call->value);
+  return 0;
+}
+
+static int run_on_thread(struct fired *call) {
+  HANDLE thread = CreateThread(NULL, 0, fire, call, 0, NULL);
+  if (thread == NULL) {
+    return -1;
+  }
+  WaitForSingleObject(thread, INFINITE);
+  CloseHandle(thread);
+  return 0;
+}
+#else
 static void *fire(void *raw) {
   struct fired *call = raw;
   call->result = call->function(call->value);
   return NULL;
 }
 
-int32_t call_on_thread(int32_t (*function)(int32_t), int32_t value) {
-  struct fired call = {function, value, -1};
+static int run_on_thread(struct fired *call) {
   pthread_t thread;
-  if (pthread_create(&thread, NULL, fire, &call) != 0) {
+  if (pthread_create(&thread, NULL, fire, call) != 0) {
     return -1;
   }
   pthread_join(thread, NULL);
+  return 0;
+}
+#endif
+
+DEN_EXPORT int32_t call_on_thread(int32_t (*function)(int32_t), int32_t value) {
+  struct fired call = {function, value, -1};
+  if (run_on_thread(&call) != 0) {
+    return -1;
+  }
   return call.result;
 }
 
@@ -122,17 +157,15 @@ int32_t call_on_thread(int32_t (*function)(int32_t), int32_t value) {
  * deadlock: the realm is inside this function and so cannot answer. */
 static int32_t (*stored)(int32_t) = NULL;
 
-void store_callback(int32_t (*function)(int32_t)) { stored = function; }
+DEN_EXPORT void store_callback(int32_t (*function)(int32_t)) { stored = function; }
 
-int32_t fire_stored(int32_t value) { return stored ? stored(value) : -1; }
+DEN_EXPORT int32_t fire_stored(int32_t value) { return stored ? stored(value) : -1; }
 
-int32_t fire_on_thread_and_join(int32_t value) {
+DEN_EXPORT int32_t fire_on_thread_and_join(int32_t value) {
   struct fired call = {stored, value, -1};
-  pthread_t thread;
-  if (stored == NULL || pthread_create(&thread, NULL, fire, &call) != 0) {
+  if (stored == NULL || run_on_thread(&call) != 0) {
     return -1;
   }
-  pthread_join(thread, NULL);
   return call.result;
 }
 
@@ -147,7 +180,7 @@ typedef struct {
   int32_t y;
 } Point;
 
-Point point_scale(Point point, int32_t factor) {
+DEN_EXPORT Point point_scale(Point point, int32_t factor) {
   Point scaled = {point.x * factor, point.y * factor};
   return scaled;
 }
@@ -158,7 +191,7 @@ typedef struct {
   double c;
 } Triple;
 
-Triple triple_sum(Triple triple, double addend) {
+DEN_EXPORT Triple triple_sum(Triple triple, double addend) {
   Triple summed = {triple.a + addend, triple.b + addend, triple.c + addend};
   return summed;
 }
@@ -170,7 +203,7 @@ typedef struct {
   int32_t n;
 } Padded;
 
-int32_t padded_sum(Padded padded) { return padded.b + padded.n; }
+DEN_EXPORT int32_t padded_sum(Padded padded) { return padded.b + padded.n; }
 
 /* A struct inside a struct, which is where a layout that only handles scalars
  * stops being right. */
@@ -179,23 +212,23 @@ typedef struct {
   int32_t z;
 } Nested;
 
-int32_t nested_sum(Nested nested) {
+DEN_EXPORT int32_t nested_sum(Nested nested) {
   return nested.origin.x + nested.origin.y + nested.z;
 }
 
 /* An exported struct variable, for the `{ type: { struct } }` form. */
-Point base_point = {2, 3};
+DEN_EXPORT Point base_point = {2, 3};
 
 /* Marshalling an argument runs JS — a struct field is an ordinary property
  * read — so these three exist to put a JS-running argument *after* one whose
  * cell is an address den has already taken. */
-void fill_then_padded(uint8_t *out, size_t length, Padded amount) {
+DEN_EXPORT void fill_then_padded(uint8_t *out, size_t length, Padded amount) {
   for (size_t index = 0; index < length; index++) {
     out[index] = (uint8_t)(amount.b + amount.n);
   }
 }
 
-int32_t read_i32_after(const int32_t *address, Padded ignored) {
+DEN_EXPORT int32_t read_i32_after(const int32_t *address, Padded ignored) {
   (void)ignored;
   return *address;
 }
@@ -204,7 +237,7 @@ int32_t read_i32_after(const int32_t *address, Padded ignored) {
  * earlier and then writes into the buffer den lent it. Running JS there could
  * detach that store, so den refuses and this returns the zero the trampoline
  * wrote. */
-int32_t fill_then_fire(uint8_t *out, size_t length, int32_t value) {
+DEN_EXPORT int32_t fill_then_fire(uint8_t *out, size_t length, int32_t value) {
   int32_t answer = stored ? stored(value) : -1;
   for (size_t index = 0; index < length; index++) {
     out[index] = 0x42;

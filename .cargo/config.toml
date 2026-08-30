@@ -1,2 +1,7 @@
-# [build]
-# rustflags = ["--cfg", "tokio_unstable"]
+# libffi's static trampoline includes two Linux UAPI headers which plain
+# musl-gcc sysroots omit. Autoconf supplies private portable shims only for
+# musl, preserving the non-executable-data trampoline hardening.
+# ponytail: libffi-sys 4.2.1 uses only PATH_MAX from those headers; remove the
+# shims when its bundled libffi switches to standard <limits.h> upstream.
+[env]
+CONFIG_SITE = { value = ".cargo/libffi-musl.site", relative = true }
