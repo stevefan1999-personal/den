@@ -686,3 +686,7 @@ fn array_buffer_method_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<
     )?;
     readable_from_source(ctx, source)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/body.rs"]
+mod tests;

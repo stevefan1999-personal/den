@@ -113,6 +113,11 @@ async fn text_stream_decodes_a_buffered_body_without_aborting() -> eyre::Result<
 async fn xhr_get_and_post_against_den_http() -> eyre::Result<()> { run("xhr.js").await }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn response_static_constructors_and_body_extracts() -> eyre::Result<()> {
+    run("fetch_response_construct.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn event_source_reads_two_events_from_den_http() -> eyre::Result<()> {
     run("event_source.js").await
 }
