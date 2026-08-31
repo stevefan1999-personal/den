@@ -2,7 +2,7 @@ githubConfigUrl: https://github.com/stevefan1999-personal/den
 githubConfigSecret: arc-github-auth
 runnerScaleSetName: k0s-arc-runners
 minRunners: 0
-maxRunners: 2
+maxRunners: 4
 controllerServiceAccount:
   name: arc-controller
   namespace: arc-systems
