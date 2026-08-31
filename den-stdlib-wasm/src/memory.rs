@@ -6,7 +6,7 @@ use std::cell::RefCell;
 
 use indexmap::indexmap;
 use rquickjs::{
-    ArrayBuffer, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime,
+    ArrayBuffer, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs as _, JsLifetime,
     Object, Result, Value, class::Trace, qjs,
 };
 use wasmtime::{AsContext, Memory as WasmMemory, MemoryTypeBuilder, RefType, ValType};
@@ -116,7 +116,7 @@ impl ValueTypeName {
             ValType::F32 => "f32",
             ValType::F64 => "f64",
             ValType::V128 => "v128",
-            ValType::Ref(reference) if reference.matches(&RefType::FUNCREF) => "anyfunc",
+            ValType::Ref(reference) if reference.matches(&RefType::FUNCREF) => "funcref",
             ValType::Ref(reference) if reference.matches(&RefType::EXTERNREF) => "externref",
             ValType::Ref(reference) if reference.matches(&RefType::ANYREF) => "anyref",
             ValType::Ref(_) => return None,
@@ -125,6 +125,10 @@ impl ValueTypeName {
 }
 
 /// A `MemoryDescriptor`, in pages.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "WebAssembly names this dictionary MemoryDescriptor"
+)]
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryDescriptor {
     initial: u32,
@@ -162,6 +166,10 @@ impl<'js> FromJs<'js> for MemoryDescriptor {
 /// zero-page memories whose bases coincide would share one empty buffer. They
 /// have no bytes to confuse and separate again the moment either grows; keying
 /// by identity would need an `Eq` wasmtime does not give `Memory`.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the registry stores buffers belonging to WebAssembly memories"
+)]
 #[derive(Default)]
 pub struct MemoryBuffers<'js> {
     live: RefCell<Vec<LiveBuffer<'js>>>,
@@ -369,7 +377,7 @@ impl<'js> MemoryBuffers<'js> {
                 "the WebAssembly memory buffer registry is missing from this context",
             )
         })?;
-        let mut live = registry.live.try_borrow_mut().map_err(|_| {
+        let mut live = registry.live.try_borrow_mut().map_err(|_error| {
             Exception::throw_internal(
                 ctx,
                 "the WebAssembly memory buffer registry is already in use",
@@ -537,19 +545,19 @@ impl Memory {
             })
         })?;
         let max_byte_length =
-            usize::try_from(max_pages.saturating_mul(0x0001_0000)).map_err(|_| {
+            usize::try_from(max_pages.saturating_mul(0x0001_0000)).map_err(|_error| {
                 Exception::throw_range(&ctx, "the memory maximum does not fit in a buffer")
             })?;
         MemoryBuffers::to_resizable(&ctx, &self.inner, max_byte_length)
     }
 
     /// Grow by `delta` pages, returning the page count *before* the growth.
-    pub fn grow(&self, delta: Coerced<u64>, ctx: Ctx<'_>) -> Result<u64> {
+    pub fn grow(&self, delta: EnforceRange, ctx: Ctx<'_>) -> Result<u64> {
         // Read before growing: once the memory has moved, its old base — the key
         // the buffer is registered under — is no longer reachable from it.
         let (base, _) = MemoryBuffers::extent(&ctx, &self.inner)?;
         let previous = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
-            self.inner.grow(&mut *store, delta.0).map_err(|error| {
+            self.inner.grow(&mut *store, delta.size()).map_err(|error| {
                 Exception::throw_range(&ctx, &format!("cannot grow memory: {error}"))
             })
         })?;

@@ -100,41 +100,29 @@ impl Script {
                 Ok(())
             }
             WastDirective::ModuleInstance {
-                instance,
-                module,
-                span: _,
+                instance, module, ..
             } => {
                 let compiled = self.lookup_defined(module)?;
                 let created = self.instantiate(&compiled)?;
                 self.remember(instance.map(|id| id.name()), created)?;
                 Ok(())
             }
-            WastDirective::Register {
-                name,
-                module,
-                span: _,
-            } => self.register(name, module.map(|id| id.name())),
+            WastDirective::Register { name, module, .. } => {
+                self.register(name, module.map(|id| id.name()))
+            }
             WastDirective::Invoke(call) => {
                 match self.invoke(call)? {
                     Outcome::Values(_) => Ok(()),
                     Outcome::Trap(error) => Err(format!("invoke trapped: {error}")),
                 }
             }
-            WastDirective::AssertReturn {
-                exec,
-                results,
-                span: _,
-            } => {
+            WastDirective::AssertReturn { exec, results, .. } => {
                 match self.execute(exec)? {
                     Outcome::Values(values) => match_vals(&mut self.store, &values, &results),
                     Outcome::Trap(error) => Err(format!("expected return, trapped: {error}")),
                 }
             }
-            WastDirective::AssertTrap {
-                exec,
-                message,
-                span: _,
-            } => {
+            WastDirective::AssertTrap { exec, message, .. } => {
                 match self.execute(exec)? {
                     Outcome::Values(values) => {
                         Err(format!("expected trap ({message}), got {values:?}"))
@@ -142,11 +130,7 @@ impl Script {
                     Outcome::Trap(error) => require_trap(&error, message),
                 }
             }
-            WastDirective::AssertExhaustion {
-                call,
-                message,
-                span: _,
-            } => {
+            WastDirective::AssertExhaustion { call, message, .. } => {
                 match self.invoke(call)? {
                     Outcome::Values(values) => {
                         Err(format!("expected exhaustion ({message}), got {values:?}"))
@@ -154,31 +138,13 @@ impl Script {
                     Outcome::Trap(error) => require_trap(&error, message),
                 }
             }
-            WastDirective::AssertMalformed {
-                mut module,
-                message: _,
-                span: _,
+            WastDirective::AssertMalformed { mut module, .. }
+            | WastDirective::AssertMalformedCustom { mut module, .. }
+            | WastDirective::AssertInvalid { mut module, .. }
+            | WastDirective::AssertInvalidCustom { mut module, .. } => {
+                require_rejected(compile_quote(self.store.engine(), &mut module))
             }
-            | WastDirective::AssertMalformedCustom {
-                mut module,
-                message: _,
-                span: _,
-            } => require_rejected(compile_quote(self.store.engine(), &mut module)),
-            WastDirective::AssertInvalid {
-                mut module,
-                message: _,
-                span: _,
-            }
-            | WastDirective::AssertInvalidCustom {
-                mut module,
-                message: _,
-                span: _,
-            } => require_rejected(compile_quote(self.store.engine(), &mut module)),
-            WastDirective::AssertUnlinkable {
-                mut module,
-                message: _,
-                span: _,
-            } => {
+            WastDirective::AssertUnlinkable { mut module, .. } => {
                 let bytes = module.encode().map_err(|error| error.to_string())?;
                 let compiled = Module::from_binary(self.store.engine(), &bytes)
                     .map_err(|error| format!("unlinkable module must compile: {error}"))?;
@@ -187,7 +153,7 @@ impl Script {
                     Err(_) => Ok(()),
                 }
             }
-            WastDirective::AssertException { exec, span: _ } => {
+            WastDirective::AssertException { exec, .. } => {
                 match self.execute(exec)? {
                     Outcome::Values(values) => Err(format!("expected exception, got {values:?}")),
                     Outcome::Trap(error) => {
@@ -301,7 +267,7 @@ impl Script {
         };
         let mut args = Vec::new();
         for arg in call.args {
-            args.push(self.to_val(arg)?);
+            args.push(self.convert_arg(arg)?);
         }
         let n = func.ty(&self.store).results().len();
         let mut results = vec![Val::null_func_ref(); n];
@@ -312,18 +278,18 @@ impl Script {
     }
 
     fn resolve(&self, module: Option<Id<'_>>) -> Result<Instance, String> {
-        match module {
-            Some(id) => {
+        module.map_or_else(
+            || self.active.ok_or_else(|| "no previous instance".to_owned()),
+            |id| {
                 self.bound
                     .get(id.name())
                     .copied()
                     .ok_or_else(|| format!("no instance {}", id.name()))
-            }
-            None => self.active.ok_or_else(|| "no previous instance".to_owned()),
-        }
+            },
+        )
     }
 
-    fn to_val(&mut self, arg: WastArg<'_>) -> Result<Val, String> {
+    fn convert_arg(&mut self, arg: WastArg<'_>) -> Result<Val, String> {
         match arg {
             WastArg::Core(core) => self.core_val(core),
             WastArg::Component(_) => Err("component values are not executed".to_owned()),
@@ -340,7 +306,7 @@ impl Script {
             WastArgCore::V128(lanes) => {
                 Ok(Val::V128(u128::from_le_bytes(lanes.to_le_bytes()).into()))
             }
-            WastArgCore::RefNull(heap) => null_val(heap),
+            WastArgCore::RefNull(heap) => Ok(null_val(heap)),
             WastArgCore::RefExtern(host) => {
                 let handle =
                     ExternRef::new(&mut self.store, host).map_err(|error| error.to_string())?;
@@ -472,10 +438,10 @@ fn define_global(
         .map(drop)
 }
 
-fn null_val(heap: HeapType<'_>) -> Result<Val, String> {
+const fn null_val(heap: HeapType<'_>) -> Val {
     match heap {
         HeapType::Abstract { ty, .. } => {
-            Ok(match ty {
+            match ty {
                 AbstractHeapType::Func | AbstractHeapType::NoFunc => Val::FuncRef(None),
                 AbstractHeapType::Extern | AbstractHeapType::NoExtern => Val::ExternRef(None),
                 AbstractHeapType::Exn | AbstractHeapType::NoExn => Val::ExnRef(None),
@@ -486,9 +452,9 @@ fn null_val(heap: HeapType<'_>) -> Result<Val, String> {
                 | AbstractHeapType::Array
                 | AbstractHeapType::I31
                 | AbstractHeapType::None => Val::AnyRef(None),
-            })
+            }
         }
-        HeapType::Concrete(_) | HeapType::Exact(_) => Ok(Val::AnyRef(None)),
+        HeapType::Concrete(_) | HeapType::Exact(_) => Val::AnyRef(None),
     }
 }
 
@@ -532,7 +498,7 @@ fn match_core(
         }
         WastRetCore::F32(pattern) => {
             match actual {
-                Val::F32(bits) => match_nan32(*bits, pattern),
+                Val::F32(bits) => match_nan32(*bits, *pattern),
                 _ => Err(format!("expected f32, got {actual:?}")),
             }
         }
@@ -702,14 +668,8 @@ fn match_eq(store: &Store<()>, actual: &Val) -> Result<(), String> {
         return Err(format!("expected eqref, got {actual:?}"));
     };
     let i31 = handle.is_i31(store).unwrap_or(false);
-    let structure = handle
-        .as_struct(store)
-        .ok()
-        .is_some_and(|value| value.is_some());
-    let array = handle
-        .as_array(store)
-        .ok()
-        .is_some_and(|value| value.is_some());
+    let structure = handle.as_struct(store).is_ok_and(|value| value.is_some());
+    let array = handle.as_array(store).is_ok_and(|value| value.is_some());
     if i31 || structure || array {
         Ok(())
     } else {
@@ -717,8 +677,8 @@ fn match_eq(store: &Store<()>, actual: &Val) -> Result<(), String> {
     }
 }
 
-fn match_nan32(bits: u32, pattern: &NanPattern<F32>) -> Result<(), String> {
-    match pattern {
+fn match_nan32(bits: u32, pattern: NanPattern<F32>) -> Result<(), String> {
+    match &pattern {
         NanPattern::CanonicalNan if is_canon_single(bits) => Ok(()),
         NanPattern::ArithmeticNan if is_arith_single(bits) => Ok(()),
         NanPattern::Value(F32 { bits: want }) if bits == *want => Ok(()),
@@ -815,7 +775,7 @@ fn lanes_i64(le: &[u8; 16], want: &[i64; 2]) -> Result<(), String> {
 fn lanes_f32(le: &[u8; 16], want: &[NanPattern<F32>; 4]) -> Result<(), String> {
     for (lane, pattern) in want.iter().enumerate() {
         let bits = read_i32(le, lane)? as u32;
-        match_nan32(bits, pattern).map_err(|error| format!("f32x4 lane {lane}: {error}"))?;
+        match_nan32(bits, *pattern).map_err(|error| format!("f32x4 lane {lane}: {error}"))?;
     }
     Ok(())
 }
@@ -840,7 +800,7 @@ fn read_i16(le: &[u8; 16], lane: usize) -> Result<i16, String> {
         .ok_or_else(|| format!("missing i16x8 lane {lane}"))?;
     let arr: [u8; 2] = bytes
         .try_into()
-        .map_err(|_| format!("short i16x8 lane {lane}"))?;
+        .map_err(|_error| format!("short i16x8 lane {lane}"))?;
     Ok(i16::from_le_bytes(arr))
 }
 
@@ -856,7 +816,7 @@ fn read_i32(le: &[u8; 16], lane: usize) -> Result<i32, String> {
         .ok_or_else(|| format!("missing i32x4 lane {lane}"))?;
     let arr: [u8; 4] = bytes
         .try_into()
-        .map_err(|_| format!("short i32x4 lane {lane}"))?;
+        .map_err(|_error| format!("short i32x4 lane {lane}"))?;
     Ok(i32::from_le_bytes(arr))
 }
 
@@ -872,6 +832,6 @@ fn read_i64(le: &[u8; 16], lane: usize) -> Result<i64, String> {
         .ok_or_else(|| format!("missing i64x2 lane {lane}"))?;
     let arr: [u8; 8] = bytes
         .try_into()
-        .map_err(|_| format!("short i64x2 lane {lane}"))?;
+        .map_err(|_error| format!("short i64x2 lane {lane}"))?;
     Ok(i64::from_le_bytes(arr))
 }

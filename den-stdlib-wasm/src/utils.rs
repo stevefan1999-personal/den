@@ -10,12 +10,12 @@
 use std::cell::RefCell;
 
 use rquickjs::{
-    Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Result, Symbol,
-    Value, function::Rest,
+    Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs as _, JsLifetime, Result,
+    Symbol, Value, function::Rest,
 };
 use wasmtime::{Func, RefType, Val, ValType};
 
-use crate::{backend, error::throw_runtime_error, memory::MemoryBuffers, store::Store};
+use crate::{backend, error::throw_runtime, memory::MemoryBuffers, store::Store};
 
 /// A wasm value together with the coercions that move it across the JS
 /// boundary.
@@ -131,7 +131,7 @@ impl WasmValue {
         }
     }
 
-    pub fn into_inner(self) -> Val { self.0 }
+    pub const fn into_inner(self) -> Val { self.0 }
 
     /// `ToBigInt64(v)`: a Number is a `TypeError` (that is the whole reason
     /// `i64` needs its own path), everything else goes through JS's own
@@ -198,13 +198,13 @@ enum Reference {
 }
 
 impl Reference {
-    fn read(ctx: &Ctx<'_>, store: &mut backend::Store, value: &Val) -> Result<Self> {
+    fn read(ctx: &Ctx<'_>, store: &backend::Store, value: &Val) -> Result<Self> {
         Ok(match value {
             Val::FuncRef(Some(func)) => Self::Func(*func),
             Val::ExternRef(Some(reference)) => {
                 reference
-                    .data(&*store)
-                    .map_err(|err| throw_runtime_error(ctx, err))?
+                    .data(store)
+                    .map_err(|err| throw_runtime(ctx, err))?
                     .and_then(|data| data.downcast_ref::<usize>().copied())
                     .map_or(Self::Foreign, Self::Host)
             }
@@ -220,10 +220,10 @@ impl Reference {
     fn host(ctx: &Ctx<'_>, store: &mut backend::Store, index: usize) -> Result<Val> {
         ::wasmtime::ExternRef::new(store, index)
             .map(|reference| Val::ExternRef(Some(reference)))
-            .map_err(|err| throw_runtime_error(ctx, err))
+            .map_err(|err| throw_runtime(ctx, err))
     }
 
-    fn function(func: Func) -> Val { Val::FuncRef(Some(func)) }
+    const fn function(func: Func) -> Val { Val::FuncRef(Some(func)) }
 
     /// Identity of a `Func`, the key of the Exported Function cache.
     /// `to_raw` is the `VMFuncRef` pointer — wasmtime's own notion of which
@@ -274,7 +274,7 @@ impl<'js> HostReferences<'js> {
             let mut values = registry
                 .values
                 .try_borrow_mut()
-                .map_err(|_| Self::busy(ctx))?;
+                .map_err(|_error| Self::busy(ctx))?;
             values.push(value.clone());
             Ok(values.len() - 1)
         })?;
@@ -287,7 +287,7 @@ impl<'js> HostReferences<'js> {
             registry
                 .values
                 .try_borrow()
-                .map_err(|_| Self::busy(ctx))?
+                .map_err(|_error| Self::busy(ctx))?
                 .get(index)
                 .cloned()
                 .ok_or_else(|| {
@@ -310,7 +310,7 @@ impl<'js> HostReferences<'js> {
             Ok(registry
                 .functions
                 .try_borrow()
-                .map_err(|_| Self::busy(ctx))?
+                .map_err(|_error| Self::busy(ctx))?
                 .iter()
                 .find(|entry| {
                     address.as_ref().is_some_and(|id| *id == entry.identity)
@@ -373,7 +373,7 @@ impl<'js> HostReferences<'js> {
             Ok(registry
                 .functions
                 .try_borrow()
-                .map_err(|_| Self::busy(ctx))?
+                .map_err(|_error| Self::busy(ctx))?
                 .iter()
                 .find(|entry| entry.identity == identity)
                 .map(|entry| entry.object.clone()))
@@ -402,7 +402,7 @@ impl<'js> HostReferences<'js> {
             registry
                 .functions
                 .try_borrow_mut()
-                .map_err(|_| Self::busy(ctx))?
+                .map_err(|_error| Self::busy(ctx))?
                 .push(ExportedFunction {
                     identity,
                     func,
@@ -421,7 +421,7 @@ impl<'js> HostReferences<'js> {
     fn with<R>(ctx: &Ctx<'js>, f: impl FnOnce(&Self) -> Result<R>) -> Result<R> {
         if ctx.userdata::<Self>().is_none() {
             ctx.store_userdata(Self::default())
-                .map_err(|_| Self::busy(ctx))?;
+                .map_err(|_error| Self::busy(ctx))?;
         }
         let registry = ctx.userdata::<Self>().ok_or_else(|| {
             Exception::throw_internal(
@@ -525,7 +525,7 @@ impl<'js> HostWrappers<'js> {
         Self::with(ctx, |wrappers| {
             Ok(slot(wrappers)
                 .try_borrow()
-                .map_err(|_| Self::busy(ctx))?
+                .map_err(|_error| Self::busy(ctx))?
                 .iter()
                 .find(|(cached, _)| cached == identity)
                 .map(|(_, object)| object.clone()))
@@ -547,7 +547,7 @@ impl<'js> HostWrappers<'js> {
         Self::with(ctx, |wrappers| {
             let mut entries = slot(wrappers)
                 .try_borrow_mut()
-                .map_err(|_| Self::busy(ctx))?;
+                .map_err(|_error| Self::busy(ctx))?;
             if !entries.iter().any(|(cached, _)| cached == &identity) {
                 entries.push((identity, object));
             }
@@ -558,7 +558,7 @@ impl<'js> HostWrappers<'js> {
     fn with<R>(ctx: &Ctx<'js>, f: impl FnOnce(&Self) -> Result<R>) -> Result<R> {
         if ctx.userdata::<Self>().is_none() {
             ctx.store_userdata(Self::default())
-                .map_err(|_| Self::busy(ctx))?;
+                .map_err(|_error| Self::busy(ctx))?;
         }
         let wrappers = ctx.userdata::<Self>().ok_or_else(|| {
             Exception::throw_internal(
@@ -644,7 +644,7 @@ impl<'js> ExportedFunction<'js> {
         if ctx.has_exception() {
             rquickjs::Error::Exception
         } else {
-            throw_runtime_error(ctx, error)
+            throw_runtime(ctx, error)
         }
     }
 }

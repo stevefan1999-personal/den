@@ -2,10 +2,10 @@
 
 use std::{cell::RefCell, collections::HashMap};
 
-use den_util::Probe;
+use den_util::Probe as _;
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
-    Value,
+    Array, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs as _, JsLifetime, Object,
+    Result, Value,
     class::Trace,
     function::{Args, Opt, This},
 };
@@ -19,7 +19,7 @@ use crate::store::WasiImports;
 use crate::{
     backend,
     engine::Engine,
-    error::{throw_link_error, throw_runtime_error},
+    error::{throw_link, throw_runtime},
     memory::{MemoryBuffers, ValueTypeName},
     module::Module,
     store::{ActiveHostCall, Store},
@@ -47,7 +47,7 @@ impl<'js> ImportedFunctions<'js> {
         let mut functions = registry
             .functions
             .try_borrow_mut()
-            .map_err(|_| Self::busy(ctx))?;
+            .map_err(|_error| Self::busy(ctx))?;
         functions.push(function);
         Ok(functions.len() - 1)
     }
@@ -57,7 +57,7 @@ impl<'js> ImportedFunctions<'js> {
         let function = registry
             .functions
             .try_borrow()
-            .map_err(|_| Self::busy(ctx))?
+            .map_err(|_error| Self::busy(ctx))?
             .get(index)
             .cloned();
         function.ok_or_else(|| {
@@ -114,8 +114,8 @@ impl HostFunction {
             // same `Caller` so `Memory.buffer` can still see the pages.
             ActiveHostCall::enter(ctx, &caller)
                 .and_then(|_guard| {
-                    MemoryBuffers::refresh_in(ctx, &caller)
-                        .and_then(|()| self.call(ctx, params, results))
+                    let () = MemoryBuffers::refresh_in(ctx, &caller)?;
+                    self.call(ctx, params, results)
                 })
                 .map_err(|err| Error::msg(format!("imported function failed: {err}")))
         })
@@ -125,7 +125,7 @@ impl HostFunction {
         let function = ImportedFunctions::get(ctx, self.index)?;
         let arguments = params
             .iter()
-            .map(|value| WasmValue(value.clone()).to_js(ctx))
+            .map(|value| WasmValue(*value).to_js(ctx))
             .collect::<Result<Vec<_>>>()?;
         let mut call_arguments = Args::new(ctx.clone(), arguments.len());
         call_arguments.push_args(arguments)?;
@@ -139,8 +139,13 @@ impl HostFunction {
         match results.len() {
             0 => Ok(()),
             1 => {
-                let ty = &types[0];
-                results[0] = WasmValue::from_js(ctx, &returned, ty)?.into_inner();
+                let Some((ty, result)) = types.first().zip(results.first_mut()) else {
+                    return Err(Exception::throw_internal(
+                        ctx,
+                        "missing WebAssembly result slot",
+                    ));
+                };
+                *result = WasmValue::from_js(ctx, &returned, ty)?.into_inner();
                 Ok(())
             }
             arity => {
@@ -155,9 +160,9 @@ impl HostFunction {
                         ),
                     ));
                 }
-                for (index, ty) in types.iter().enumerate() {
+                for (index, (result, ty)) in results.iter_mut().zip(&types).enumerate() {
                     let value: Value = values.get(index)?;
-                    results[index] = WasmValue::from_js(ctx, &value, ty)?.into_inner();
+                    *result = WasmValue::from_js(ctx, &value, ty)?.into_inner();
                 }
                 Ok(())
             }
@@ -379,7 +384,7 @@ impl<'js> Instance<'js> {
         } else if let Some(ty) = ty.table() {
             Self::table_import(ctx, store, ty, value)?
         } else {
-            return Err(throw_link_error(
+            return Err(throw_link(
                 ctx,
                 format_args!(
                     "cannot import {namespace}.{name}: a {} import is not supported",
@@ -390,7 +395,7 @@ impl<'js> Instance<'js> {
         linker
             .define(store, namespace, name, external)
             .map(|_| false)
-            .map_err(|err| throw_link_error(ctx, err))
+            .map_err(|err| throw_link(ctx, err))
     }
 
     fn define_host_function(
@@ -402,11 +407,11 @@ impl<'js> Instance<'js> {
         if let Some(func) = HostReferences::existing_func(ctx, value)? {
             linker
                 .define(store, namespace, name, func)
-                .map_err(|err| throw_link_error(ctx, err))?;
+                .map_err(|err| throw_link(ctx, err))?;
             return Ok(true);
         }
         let function = value.as_function().cloned().ok_or_else(|| {
-            throw_link_error(
+            throw_link(
                 ctx,
                 format_args!("import {namespace}.{name} is not a function"),
             )
@@ -423,7 +428,7 @@ impl<'js> Instance<'js> {
                 move |caller, params, results| host.run(caller, params, results),
             )
             .map(|_| false)
-            .map_err(|err| throw_link_error(ctx, err))
+            .map_err(|err| throw_link(ctx, err))
     }
 
     /// A global import is either an existing `WebAssembly.Global` or a plain
@@ -440,7 +445,7 @@ impl<'js> Instance<'js> {
             let provided = inner.ty(&*store);
             if !provided.content().matches(ty.content()) || provided.mutability() != ty.mutability()
             {
-                return Err(throw_link_error(
+                return Err(throw_link(
                     ctx,
                     "imported global does not match the declared type or mutability",
                 ));
@@ -451,7 +456,7 @@ impl<'js> Instance<'js> {
         // A mutable global import cannot be a primitive: the spec only
         // allocates a fresh const global from a Number/BigInt.
         if matches!(ty.mutability(), Mutability::Var) {
-            return Err(throw_link_error(
+            return Err(throw_link(
                 ctx,
                 "a mutable global import must be a WebAssembly.Global object",
             ));
@@ -460,7 +465,7 @@ impl<'js> Instance<'js> {
         // failure, not something to coerce: without this an omitted import
         // would silently become the default value of its type.
         if !(value.is_number() || value.as_big_int().is_some()) {
-            return Err(throw_link_error(
+            return Err(throw_link(
                 ctx,
                 "a global import must be a WebAssembly.Global, a Number or a BigInt",
             ));
@@ -476,7 +481,7 @@ impl<'js> Instance<'js> {
             || matches!(content, wasmtime::ValType::I64) && value.is_number()
             || !matches!(content, wasmtime::ValType::I64) && value.as_big_int().is_some();
         if mismatched {
-            return Err(throw_link_error(
+            return Err(throw_link(
                 ctx,
                 format_args!(
                     "a {} global import cannot be initialised from this value",
@@ -487,11 +492,11 @@ impl<'js> Instance<'js> {
         let initial = WasmValue::from_js(ctx, value, &content)?;
         wasmtime::Global::new(store, ty.clone(), initial.into_inner())
             .map(Into::into)
-            .map_err(|err| throw_link_error(ctx, err))
+            .map_err(|err| throw_link(ctx, err))
     }
 
     fn memory_import(
-        ctx: &Ctx<'js>, store: &mut backend::Store, ty: &MemoryType, value: &Value<'js>,
+        ctx: &Ctx<'js>, store: &backend::Store, ty: &MemoryType, value: &Value<'js>,
     ) -> Result<Extern> {
         let memory = ctx
             .probe(|| {
@@ -500,7 +505,7 @@ impl<'js> Instance<'js> {
                     .and_then(Class::<crate::memory::Memory>::from_object)
             })
             .ok_or_else(|| {
-                throw_link_error(ctx, "a memory import must be a WebAssembly.Memory object")
+                throw_link(ctx, "a memory import must be a WebAssembly.Memory object")
             })?;
         let inner = Self::borrow_import(ctx, &memory, "memory")?.inner;
         HostWrappers::remember_memory(ctx, inner, value.clone())?;
@@ -508,13 +513,13 @@ impl<'js> Instance<'js> {
             ctx,
             "memory",
             (ty.minimum(), ty.maximum()),
-            (inner.size(&*store), inner.ty(&*store).maximum()),
+            (inner.size(store), inner.ty(store).maximum()),
         )?;
         Ok(inner.into())
     }
 
     fn table_import(
-        ctx: &Ctx<'js>, store: &mut backend::Store, ty: &TableType, value: &Value<'js>,
+        ctx: &Ctx<'js>, store: &backend::Store, ty: &TableType, value: &Value<'js>,
     ) -> Result<Extern> {
         let table = ctx
             .probe(|| {
@@ -522,9 +527,7 @@ impl<'js> Instance<'js> {
                     .as_object()
                     .and_then(Class::<crate::table::Table>::from_object)
             })
-            .ok_or_else(|| {
-                throw_link_error(ctx, "a table import must be a WebAssembly.Table object")
-            })?;
+            .ok_or_else(|| throw_link(ctx, "a table import must be a WebAssembly.Table object"))?;
         let inner = Self::borrow_import(ctx, &table, "table")?.inner;
         HostWrappers::remember_table(ctx, inner, value.clone())?;
         // The element type is left to the engine: a mismatch fails
@@ -533,7 +536,7 @@ impl<'js> Instance<'js> {
             ctx,
             "table",
             (ty.minimum(), ty.maximum()),
-            (inner.size(&*store), inner.ty(&*store).maximum()),
+            (inner.size(store), inner.ty(store).maximum()),
         )?;
         Ok(inner.into())
     }
@@ -550,8 +553,8 @@ impl<'js> Instance<'js> {
     where
         C: rquickjs::class::JsClass<'js>,
     {
-        class.try_borrow().map_err(|_| {
-            throw_link_error(
+        class.try_borrow().map_err(|_error| {
+            throw_link(
                 ctx,
                 format_args!("the imported {kind} is already in use by an outer call"),
             )
@@ -579,7 +582,7 @@ impl<'js> Instance<'js> {
         if matches {
             Ok(())
         } else {
-            Err(throw_link_error(
+            Err(throw_link(
                 ctx,
                 format_args!(
                     "imported {kind} does not match the declared type: the module requires at \
@@ -606,7 +609,7 @@ impl<'js> Instance<'js> {
                     instance
                         .get_export(&mut *backend_store, name)
                         .ok_or_else(|| {
-                            throw_link_error(
+                            throw_link(
                                 ctx,
                                 format_args!(
                                     "the instance is missing its declared export \"{name}\""
@@ -655,7 +658,7 @@ impl<'js> Instance<'js> {
                 // today — the engine is built without the threads proposal, so
                 // such a module never compiles — but it is the mismatch, not
                 // the reachability, that this branch is about.
-                return Err(throw_link_error(
+                return Err(throw_link(
                     ctx,
                     format_args!(
                         "the export \"{name}\" is of a kind this build cannot represent in JS"
@@ -699,9 +702,9 @@ impl<'js> Instance<'js> {
         if ctx.has_exception() {
             rquickjs::Error::Exception
         } else if Self::is_trap(&error) {
-            throw_runtime_error(ctx, error)
+            throw_runtime(ctx, error)
         } else {
-            throw_link_error(ctx, error)
+            throw_link(ctx, error)
         }
     }
 }

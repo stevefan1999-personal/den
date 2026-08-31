@@ -43,7 +43,9 @@ impl<'js> Exception<'js> {
         // outstanding `borrow_mut` is to arrange today.
         let parameters = tag
             .try_borrow()
-            .map_err(|_| JsException::throw_type(&ctx, "this WebAssembly.Tag is already in use"))?
+            .map_err(|_error| {
+                JsException::throw_type(&ctx, "this WebAssembly.Tag is already in use")
+            })?
             .parameters(&ctx)?;
         if parameters.len() != payload.len() {
             return Err(JsException::throw_type(
@@ -105,18 +107,18 @@ impl<'js> Exception<'js> {
                 "this exception was not thrown with the given tag",
             ));
         }
-        let index = usize::try_from(index.0)
+        usize::try_from(index.0)
             .ok()
-            .filter(|index| *index < self.payload.len());
-        match index {
-            Some(index) => self.payload[index].to_js(&ctx),
-            None => {
-                Err(JsException::throw_range(
-                    &ctx,
-                    "the payload index is out of range",
-                ))
-            }
-        }
+            .and_then(|index| self.payload.get(index))
+            .map_or_else(
+                || {
+                    Err(JsException::throw_range(
+                        &ctx,
+                        "the payload index is out of range",
+                    ))
+                },
+                |value| value.to_js(&ctx),
+            )
     }
 
     pub fn is(&self, tag: Class<'js, Tag>) -> bool { self.tag == tag }

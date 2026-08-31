@@ -4,13 +4,15 @@ use std::sync::Arc;
 
 use den_util::BufferSource;
 use indexmap::{IndexMap, indexmap};
-use rquickjs::{ArrayBuffer, Ctx, JsLifetime, Result, class::Trace};
+use rquickjs::{
+    ArrayBuffer, Coerced, Ctx, Error, JsLifetime, Result, String as JsString, class::Trace,
+};
 use wasmtime::{
     Module as WasmModule,
     wasmparser::{ExternalKind, Parser, Payload},
 };
 
-use crate::{backend, engine::Engine, error::throw_compile_error};
+use crate::{backend, engine::Engine, error::throw_compile};
 
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class]
@@ -29,8 +31,8 @@ impl Module {
     /// the JS API requires.
     pub fn compile(ctx: &Ctx<'_>, bytes: Vec<u8>) -> Result<Self> {
         let engine = Engine::from_ctx(ctx)?;
-        let inner = backend::compile_module(&engine, &bytes)
-            .map_err(|err| throw_compile_error(ctx, err))?;
+        let inner =
+            backend::compile_module(&engine, &bytes).map_err(|err| throw_compile(ctx, err))?;
         Ok(Self {
             inner,
             bytes: Arc::from(bytes),
@@ -116,8 +118,16 @@ impl Module {
 
     #[qjs(static)]
     pub fn custom_sections<'js>(
-        module: &Module, section_name: String, ctx: Ctx<'js>,
+        module: &Module, section_name: Coerced<JsString<'js>>, ctx: Ctx<'js>,
     ) -> Result<Vec<ArrayBuffer<'js>>> {
+        // Wasm section names are valid UTF-8, so a JS string containing an
+        // unpaired UTF-16 surrogate cannot match one. Do not fold it onto
+        // U+FFFD, which is a valid and distinct section name.
+        let section_name = match section_name.0.to_string() {
+            Ok(section_name) => section_name,
+            Err(Error::Utf8(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
         module
             .custom_section_payloads(&section_name)
             .into_iter()

@@ -113,6 +113,10 @@ fn i64_accepts_the_values_to_big_int_accepts() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "WebAssembly f32 conversion must preserve the exact narrowed value"
+)]
 fn f32_narrows_to_nearest_and_keeps_the_value_not_the_bits() {
     with_context(|ctx| {
         let Ok(value) = from_js(ctx, "0.1", "f32") else {

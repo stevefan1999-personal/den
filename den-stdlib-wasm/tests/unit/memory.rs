@@ -38,7 +38,7 @@ fn grow_returns_the_previous_page_count_and_detaches_the_old_buffer() {
         let stale = memory.buffer(ctx.clone()).expect("buffer");
         assert_eq!(stale.len(), PAGE_SIZE);
 
-        let previous = memory.grow(Coerced(2), ctx.clone()).expect("grow");
+        let previous = memory.grow(EnforceRange(2), ctx.clone()).expect("grow");
         assert_eq!(previous, 1);
         assert_eq!(stale.as_bytes(), None, "the old buffer must be detached");
 
@@ -53,7 +53,7 @@ fn growing_past_the_maximum_is_a_range_error() {
     with_wasm_context(|ctx| {
         let memory = memory(ctx, "({ initial: 1, maximum: 2 })").expect("one page");
         let _ = memory
-            .grow(Coerced(5), ctx.clone())
+            .grow(EnforceRange(5), ctx.clone())
             .expect_err("over maximum");
         assert_eq!(pending_error_name(ctx), "RangeError");
     })
