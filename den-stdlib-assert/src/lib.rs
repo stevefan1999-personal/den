@@ -419,10 +419,6 @@ pub mod assert {
         Ok(())
     }
 
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "assertAlmostEquals is defined as IEEE-754 distance"
-    )]
     #[rquickjs::function]
     pub fn assertAlmostEquals(
         ctx: Ctx<'_>, actual: f64, expected: f64, tolerance: Opt<f64>, msg: Opt<String>,

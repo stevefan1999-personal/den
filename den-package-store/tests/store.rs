@@ -7,10 +7,6 @@ use sea_orm::{ConnectionTrait as _, Database, DbBackend, Statement};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions preserve useful diffs"
-)]
 async fn creates_migrates_and_reopens_store() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("packages.sqlite3");
@@ -50,10 +46,6 @@ async fn creates_migrates_and_reopens_store() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies native relative-path handling"
-)]
 async fn relative_store_paths_create_and_reopen() -> TestResult {
     let directory = tempfile::tempdir_in(".")?;
     let current = std::env::current_dir()?;
@@ -78,10 +70,6 @@ async fn relative_store_paths_create_and_reopen() -> TestResult {
 
 #[cfg(unix)]
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion documents the SQLite driver's UTF-8 path limit"
-)]
 async fn non_utf8_store_paths_fail_with_an_explicit_driver_limit() -> TestResult {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
 
@@ -97,10 +85,6 @@ async fn non_utf8_store_paths_fail_with_an_explicit_driver_limit() -> TestResult
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies error shape"
-)]
 async fn rejects_newer_schema() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("future.sqlite3");
@@ -125,10 +109,6 @@ async fn rejects_newer_schema() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies migration refusal"
-)]
 async fn rejects_unknown_seaorm_migration() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("unknown-migration.sqlite3");
@@ -153,10 +133,6 @@ async fn rejects_unknown_seaorm_migration() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies forged migration state is rejected before stamping"
-)]
 async fn rejects_known_migration_with_missing_table_before_stamping_version() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("missing-table.sqlite3");
@@ -187,10 +163,6 @@ async fn rejects_known_migration_with_missing_table_before_stamping_version() ->
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies altered required columns are rejected"
-)]
 async fn rejects_altered_required_column() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("altered-column.sqlite3");
@@ -235,10 +207,6 @@ async fn rejects_altered_check_unique_and_foreign_key_constraints() -> TestResul
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies a foreign application id is neither accepted nor replaced"
-)]
 async fn rejects_and_preserves_foreign_application_identity() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("foreign.sqlite3");
@@ -264,10 +232,6 @@ async fn rejects_and_preserves_foreign_application_identity() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions preserve useful diffs"
-)]
 async fn blobs_deduplicate() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let digest = store.insert_blob(b"original").await?;
@@ -277,10 +241,6 @@ async fn blobs_deduplicate() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions verify registry canonicalization and validation"
-)]
 async fn registries_are_canonical_and_reject_embedded_credentials() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let first = store
@@ -300,10 +260,6 @@ async fn registries_are_canonical_and_reject_embedded_credentials() -> TestResul
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies concurrent upsert convergence"
-)]
 async fn concurrent_stores_insert_distinct_versions_of_one_new_package() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("concurrent.sqlite3");
@@ -329,10 +285,6 @@ async fn concurrent_stores_insert_distinct_versions_of_one_new_package() -> Test
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions verify atomic rejection"
-)]
 async fn invalid_release_leaves_no_partial_package() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let registry_id = store.add_registry("jsr", "https://jsr.example/").await?;
@@ -354,10 +306,6 @@ async fn invalid_release_leaves_no_partial_package() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions verify dangling exports fail atomically"
-)]
 async fn dangling_export_is_rejected_before_commit() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let registry_id = store.add_registry("jsr", "https://jsr.example/").await?;
@@ -376,10 +324,6 @@ async fn dangling_export_is_rejected_before_commit() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions preserve useful diffs"
-)]
 async fn module_round_trips_from_sqlite_cas() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let registry_id = store.add_registry("jsr", "https://jsr.example/").await?;
@@ -409,10 +353,6 @@ async fn module_round_trips_from_sqlite_cas() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions verify reachability-based content collection"
-)]
 async fn prune_removes_only_unreferenced_blobs() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let registry_id = store.add_registry("jsr", "https://jsr.example/").await?;
@@ -437,10 +377,6 @@ async fn prune_removes_only_unreferenced_blobs() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion preserves solver diff"
-)]
 async fn solver_selects_highest_compatible_transitive_version() -> TestResult {
     let (store, registry_id) = store_with_registry().await?;
     insert_release(
@@ -468,10 +404,6 @@ async fn solver_selects_highest_compatible_transitive_version() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions verify diagnostics"
-)]
 async fn solver_reports_conflicts_and_excludes_yanked_versions() -> TestResult {
     let (store, registry_id) = store_with_registry().await?;
     insert_release(
@@ -525,10 +457,6 @@ async fn solver_reports_conflicts_and_excludes_yanked_versions() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion preserves deterministic diff"
-)]
 async fn repeated_solves_are_deterministic() -> TestResult {
     let (store, registry_id) = store_with_registry().await?;
     insert_release(&store, registry_id, "app", "1.0.0", &[("dep", "*")], None).await?;
@@ -545,10 +473,6 @@ async fn repeated_solves_are_deterministic() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies cancellation shape"
-)]
 async fn solve_can_be_cancelled_before_start() -> TestResult {
     let (store, registry_id) = store_with_registry().await?;
     insert_release(&store, registry_id, "app", "1.0.0", &[], None).await?;
@@ -566,10 +490,6 @@ async fn solve_can_be_cancelled_before_start() -> TestResult {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertion verifies unsupported semantics fail explicitly"
-)]
 async fn flat_solver_rejects_optional_or_peer_semantics_instead_of_lying() -> TestResult {
     let (store, registry_id) = store_with_registry().await?;
     let mut release = NewRelease::new(registry_id, "app", "1.0.0");
@@ -593,10 +513,6 @@ async fn flat_solver_rejects_optional_or_peer_semantics_instead_of_lying() -> Te
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "test assertions verify aliases wait for persisted edge identities"
-)]
 async fn flat_solver_excludes_dependency_aliases_instead_of_dropping_them() -> TestResult {
     let (store, registry_id) = store_with_registry().await?;
     let mut release = NewRelease::new(registry_id, "app", "1.0.0");

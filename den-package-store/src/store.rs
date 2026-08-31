@@ -859,10 +859,6 @@ mod tests {
     use crate::{NewRelease, PackageStoreError};
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "test assertions report mismatched PRAGMAs"
-    )]
     async fn configures_connection_pragmas() -> Result<(), Box<dyn std::error::Error>> {
         let store = PackageStore::open_in_memory().await?;
         assert_eq!(super::pragma_i64(&store.database, "foreign_keys").await?, 1);
@@ -879,10 +875,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "test assertions report corruption behavior"
-    )]
     async fn detects_corrupt_blob_content() -> Result<(), Box<dyn std::error::Error>> {
         let store = PackageStore::open_in_memory().await?;
         let digest = store.insert_blob(b"original").await?;
@@ -911,10 +903,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "test assertion proves a database failure rolls back the release transaction"
-    )]
     async fn release_transaction_rolls_back_package_on_mid_commit_failure()
     -> Result<(), Box<dyn std::error::Error>> {
         let store = PackageStore::open_in_memory().await?;

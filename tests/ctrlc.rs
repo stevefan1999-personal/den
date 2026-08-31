@@ -29,10 +29,6 @@ struct Den {
 }
 
 impl Den {
-    #[expect(
-        clippy::expect_used,
-        reason = "a failed process-test setup cannot produce a meaningful Den harness"
-    )]
     fn start(flags: &[&str], script: &str) -> Self {
         let scratch = tempfile::tempdir().expect("scratch dir");
         let path = scratch.path().join("case.js");
@@ -100,10 +96,6 @@ impl Den {
         );
     }
 
-    #[expect(
-        clippy::expect_used,
-        reason = "failure to query the owned child is a test harness failure"
-    )]
     fn wait(&mut self) -> ExitStatus {
         let start = Instant::now();
         while start.elapsed() < DEADLINE {

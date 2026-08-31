@@ -189,10 +189,6 @@ impl Server {
         Self::finished_promise(ctx, self.phase.subscribe())
     }
 
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "the JavaScript API supplies fractional milliseconds as f64"
-    )]
     pub fn close<'js>(&self, ctx: Ctx<'js>, options: Opt<Value<'js>>) -> Result<Promise<'js>> {
         let options = options
             .0

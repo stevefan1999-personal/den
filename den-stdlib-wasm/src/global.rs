@@ -14,10 +14,6 @@ use crate::{
 };
 
 /// A `GlobalDescriptor`.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "WebAssembly names this dictionary GlobalDescriptor"
-)]
 #[derive(Clone, Debug)]
 pub struct GlobalDescriptor {
     value:   String,

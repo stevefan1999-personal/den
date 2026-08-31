@@ -17,10 +17,6 @@ use crate::{
 /// A `TableDescriptor`. `element` is kept as written so that the `TypeError`
 /// for an unknown element type is raised where the spec raises it — when the
 /// table is created.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "WebAssembly names this dictionary TableDescriptor"
-)]
 #[derive(Clone, Debug)]
 pub struct TableDescriptor {
     initial: u32,

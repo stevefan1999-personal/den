@@ -476,10 +476,7 @@ pub fn integer<T: TryFrom<i64>>(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>
             format_args!("{number} is not an exact integer for `{declared}`"),
         ));
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "checked exact and inside the safe-integer range immediately above"
-    )]
+
     T::try_from(number as i64).map_err(|_out_of_range| {
         ErrorKind::Range.throw(
             ctx,
@@ -517,10 +514,6 @@ fn float(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f64> {
 }
 
 /// `f32` loses precision silently, exactly as C does at the same call.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the declared C parameter is a float; narrowing is the conversion"
-)]
 fn narrowing(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f32> {
     Ok(float(ctx, declared, value)? as f32)
 }

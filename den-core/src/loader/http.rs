@@ -21,10 +21,6 @@ fn install_default_crypto_provider() {
 #[cfg(not(feature = "ring"))]
 const fn install_default_crypto_provider() {}
 
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the qualified name distinguishes this loader from file loaders"
-)]
 #[derive(Debug)]
 pub struct HttpLoader;
 

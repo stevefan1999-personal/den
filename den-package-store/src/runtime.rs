@@ -937,10 +937,6 @@ mod tests {
     const CHILD_SOURCE: &[u8] = b"export default 42";
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions preserve snapshot-resolution failure details"
-    )]
     async fn snapshot_resolves_exact_exports_and_contained_relative_files() -> TestResult {
         let (store, selected) = fixture().await?;
         let snapshot = store.hydrate_modules(&selected).await?;
@@ -964,10 +960,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions verify exact hydration-limit boundaries and typed failures"
-    )]
     async fn hydration_limits_accept_boundaries_and_reject_the_next_unit() -> TestResult {
         let (store, selected) = fixture().await?;
         let total_bytes = u64::try_from(MAIN_SOURCE.len())?
@@ -1082,10 +1074,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertion verifies dependency rows are counted before loading"
-    )]
     async fn hydration_counts_dependency_rows_before_loading_them() -> TestResult {
         let (store, selected) = fixture().await?;
         let package = selected
@@ -1117,10 +1105,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertion verifies blob length is limited before content verification"
-    )]
     async fn hydration_checks_blob_length_before_loading_corrupt_content() -> TestResult {
         let (store, selected) = fixture().await?;
         store
@@ -1142,10 +1126,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions preserve hydration failure variants"
-    )]
     async fn hydration_rejects_invalid_selection_and_store_content() -> TestResult {
         let (store, selected) = fixture().await?;
         let mut mismatched = selected.clone();
@@ -1232,10 +1212,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions verify importer-scoped cross-registry resolution"
-    )]
     async fn snapshot_exposes_only_roots_self_and_exact_dependencies() -> TestResult {
         let (store, app_registry, dependency_registry) = edge_fixture().await?;
         let solved = store.repository_snapshot().await?.solve(&[
@@ -1293,10 +1269,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertion verifies solved edges cannot be forged or omitted"
-    )]
     async fn hydration_rejects_dependency_edges_that_disagree_with_metadata() -> TestResult {
         let (store, app_registry, dependency_registry) = edge_fixture().await?;
         let solved = store

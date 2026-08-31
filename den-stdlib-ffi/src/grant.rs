@@ -72,10 +72,6 @@ impl FfiGrant {
     // rquickjs exports a class only if it declares a constructor, and a `()`
     // return makes `new FfiGrant()` throw — which is the point: a forgeable
     // grant is not a capability.
-    #[expect(
-        clippy::new_ret_no_self,
-        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-    )]
     #[qjs(constructor)]
-    pub const fn new() {}
+    pub const fn new_js() {}
 }
