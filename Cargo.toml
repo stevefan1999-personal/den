@@ -772,5 +772,5 @@ lto = "fat"
 workspace = true
 
 [patch.crates-io]
-fs2 = { path = "vendor/fs2" }
+# QuickJS may pass four-byte-aligned JSValue arrays on i686 MSVC; read them unaligned.
 rquickjs-core = { path = "vendor/rquickjs-core" }
