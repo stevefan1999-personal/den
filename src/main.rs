@@ -1,91 +1,16 @@
-use std::{env, ffi::OsString, path::PathBuf};
+use std::{ffi::OsString, path::PathBuf};
 
 use app::App;
+use clap::{CommandFactory as _, Parser as _};
+use cli::{Cli, Command};
+use den_core::{EngineBuilder, engine::EngineError};
+use rquickjs::convert::Coerced;
 #[cfg(not(all(feature = "tokio-console", tokio_unstable)))]
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-#[derive(Debug, Default)]
-struct Cli {
-    file: Option<PathBuf>,
-    repl: bool,
-    /// The FFI capability this run hands the realm, if any. Off by default,
-    /// and absent entirely from a build without `stdlib-ffi` — where
-    /// `--allow-ffi` is an unknown option rather than a silent no-op.
-    #[cfg(feature = "stdlib-ffi")]
-    ffi:  Option<den_core::FfiGrant>,
-}
-
-impl Cli {
-    #[cfg(feature = "stdlib-ffi")]
-    const USAGE: &'static str = "Usage: den [--repl] [--allow-ffi[=PATH,...]] [FILE]";
-    #[cfg(not(feature = "stdlib-ffi"))]
-    const USAGE: &'static str = "Usage: den [--repl] [FILE]";
-
-    fn parse() -> color_eyre::eyre::Result<Option<Self>> {
-        Self::parse_args(env::args_os().skip(1))
-    }
-
-    fn parse_args<I>(args: I) -> color_eyre::eyre::Result<Option<Self>>
-    where
-        I: IntoIterator<Item = OsString>,
-    {
-        let mut cli = Self::default();
-        let mut positional_only = false;
-        for arg in args {
-            let text = arg.to_str();
-            if !positional_only && text == Some("--") {
-                positional_only = true;
-            } else if !positional_only && matches!(text, Some("-h" | "--help")) {
-                println!("{}\n\n{}", env!("CARGO_PKG_DESCRIPTION"), Self::USAGE);
-                return Ok(None);
-            } else if !positional_only && matches!(text, Some("-V" | "--version")) {
-                println!("den {}", env!("CARGO_PKG_VERSION"));
-                return Ok(None);
-            } else if !positional_only && text == Some("--repl") {
-                cli.repl = true;
-            } else if !positional_only && cli.take_ffi_flag(text) {
-            } else if !positional_only && text.is_some_and(|value| value.starts_with('-')) {
-                return Err(color_eyre::eyre::eyre!(
-                    "unknown option: {}",
-                    arg.to_string_lossy()
-                ));
-            } else if cli.file.replace(PathBuf::from(arg)).is_some() {
-                return Err(color_eyre::eyre::eyre!("only one input file is supported"));
-            }
-        }
-        Ok(Some(cli))
-    }
-
-    /// `--allow-ffi` grants every path, `--allow-ffi=A,B` only paths under A or
-    /// B — a directory or a single library either way. Answers whether the
-    /// argument was this flag.
-    #[cfg(feature = "stdlib-ffi")]
-    fn take_ffi_flag(&mut self, text: Option<&str>) -> bool {
-        let Some(flag) =
-            text.filter(|value| *value == "--allow-ffi" || value.starts_with("--allow-ffi="))
-        else {
-            return false;
-        };
-        self.ffi = Some(match flag.split_once('=') {
-            None => den_core::FfiGrant::any(),
-            Some((_, roots)) => den_core::FfiGrant::under(roots.split(',').map(PathBuf::from)),
-        });
-        true
-    }
-
-    /// Without the feature there is no grant to mint, so `--allow-ffi` stays an
-    /// unknown option — a flag that silently granted nothing would be worse.
-    #[cfg(not(feature = "stdlib-ffi"))]
-    #[expect(
-        clippy::unused_self,
-        reason = "the mutating half of the pair is the one that is compiled in"
-    )]
-    const fn take_ffi_flag(&self, _text: Option<&str>) -> bool { false }
-}
 
 #[tokio::main]
 async fn main() -> color_eyre::eyre::Result<()> {
@@ -104,25 +29,71 @@ async fn main() -> color_eyre::eyre::Result<()> {
         .pretty()
         .init();
 
-    let Some(cli) = Cli::parse()? else {
+    let cli = Cli::parse();
+    if let Some(Command::Completions(args)) = &cli.command {
+        #[cfg(feature = "stdlib-ffi")]
+        let has_ffi = cli.allow_ffi.is_some();
+        #[cfg(not(feature = "stdlib-ffi"))]
+        let has_ffi = false;
+        if cli.repl || has_ffi {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "runtime options cannot be used with completions",
+                )
+                .exit();
+        }
+        clap_complete::generate(
+            args.shell,
+            &mut Cli::command(),
+            "den",
+            &mut std::io::stdout(),
+        );
         return Ok(());
-    };
-    let mut app = App::new().await;
+    }
+
     #[cfg(feature = "stdlib-ffi")]
-    if let Some(grant) = cli.ffi.clone() {
+    let ffi = cli.allow_ffi.clone().map(|paths| {
+        if paths.is_empty() {
+            den_core::FfiGrant::any()
+        } else {
+            den_core::FfiGrant::under(paths)
+        }
+    });
+    let (entry, script_arguments, eval, repl) = match cli.command {
+        Some(Command::Run(run)) => (Some(run.entry), run.args, None, cli.repl),
+        Some(Command::Eval(eval)) => (None, Vec::new(), Some(eval), cli.repl),
+        Some(Command::Repl) => (None, Vec::new(), None, true),
+        Some(Command::Completions(_)) => unreachable!("completions returned before runtime setup"),
+        None => (cli.entry, cli.script_args, None, cli.repl),
+    };
+    let process_arguments = script_argv(entry.as_deref(), script_arguments);
+    let has_entry = entry.is_some();
+    let has_eval = eval.is_some();
+    let engine = EngineBuilder::new().argv(process_arguments).build().await;
+    let mut app = App::with_engine(engine);
+    #[cfg(feature = "stdlib-ffi")]
+    if let Some(grant) = ffi {
         app.engine.set_ffi_grant(grant).await?;
     }
 
-    if let Some(x) = cli.file.clone()
-        && let Err(error) = app.engine.run_file(x).await
+    if let Some(eval) = eval {
+        if eval.print {
+            match app.engine.eval::<Coerced<String>>(&eval.code).await {
+                Ok(Coerced(value)) => println!("{value}"),
+                Err(error) => fatal(error),
+            }
+        } else if let Err(error) = app.engine.eval::<()>(&eval.code).await {
+            fatal(error)
+        }
+    }
+    if let Some(entry) = entry
+        && let Err(error) = run_entry(&app.engine, &entry).await
     {
-        eprintln!("{error}");
-        // A failed entry file is fatal: Node and Deno exit here and never fall
-        // through into the REPL.
-        std::process::exit(1)
+        fatal(error)
     }
 
-    if cli.repl || cli.file.is_none() {
+    if repl || (!has_entry && !has_eval) {
         println!("Welcome to den, one word less than Deno");
         app.start_repl_session();
     }
@@ -131,10 +102,42 @@ async fn main() -> color_eyre::eyre::Result<()> {
     Ok(())
 }
 
+fn script_argv(entry: Option<&str>, script_arguments: Vec<OsString>) -> Vec<String> {
+    let mut process_arguments = Vec::with_capacity(script_arguments.len() + 2);
+    process_arguments.push(
+        std::env::current_exe()
+            .map_or_else(|_| "den".into(), |path| path.to_string_lossy().into_owned()),
+    );
+    process_arguments.extend(entry.map(str::to_owned));
+    process_arguments.extend(
+        script_arguments
+            .into_iter()
+            .map(|argument| argument.to_string_lossy().into_owned()),
+    );
+    process_arguments
+}
+
+async fn run_entry(engine: &den_core::engine::Engine, entry: &str) -> Result<(), EngineError> {
+    #[cfg(windows)]
+    if matches!(
+        PathBuf::from(entry).components().next(),
+        Some(std::path::Component::Prefix(_))
+    ) {
+        return engine.run_file(PathBuf::from(entry)).await;
+    }
+    if url::Url::parse(entry).is_ok_and(|url| url.scheme() != "file") {
+        engine.run_module(entry).await
+    } else {
+        engine.run_file(PathBuf::from(entry)).await
+    }
+}
+
+fn fatal(error: impl std::fmt::Display) -> ! {
+    eprintln!("{error}");
+    std::process::exit(1)
+}
+
 mod app;
+mod cli;
 mod history;
 mod repl;
-
-#[cfg(test)]
-#[path = "../tests/unit/cli.rs"]
-mod tests;

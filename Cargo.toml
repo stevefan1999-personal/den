@@ -67,6 +67,8 @@ den-util = { version = "0.4.0", path = "den-util" }
 # members name features (and optional / default-features) at the call site.
 base64-simd = "0.8.0"
 bytes = "1.12.1"
+clap = { version = "4.6.6", features = ["derive"] }
+clap_complete = "4.6.9"
 color-eyre = { version = "0.6.5", default-features = false }
 console-subscriber = "0.5.0"
 data-url = "0.3.2"
@@ -172,8 +174,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 # One module layout only: `foo.rs` + `foo/`, never `foo/mod.rs`. A tree of
 # identically named `mod.rs` files is the one thing an editor tab strip, a
 # stack trace and a grep hit all fail to tell apart.
-allow_attributes = "forbid"
-allow_attributes_without_reason = "forbid"
+# clap's derive expansion contains its own lint allows. Keep handwritten allows
+# denied while permitting dependency macro expansions required by the CLI.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 bind_instead_of_map = "deny"
 bool_assert_comparison = "deny"
 bool_comparison = "deny"
@@ -708,6 +712,8 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+clap.workspace = true
+clap_complete.workspace = true
 color-eyre = { workspace = true, default-features = false }
 console-subscriber = { workspace = true, optional = true }
 den-core = { workspace = true, default-features = false }
@@ -720,6 +726,7 @@ rustyline = { workspace = true, default-features = false, features = ["derive"] 
 surrealkv.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"] }
+url.workspace = true
 
 [dev-dependencies]
 libc.workspace = true
