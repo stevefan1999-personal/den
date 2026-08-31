@@ -4,7 +4,6 @@
 use std::{
     any::Any,
     cmp::Ordering,
-    fs,
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
@@ -195,51 +194,6 @@ fn assert_insta_snapshot(name: &str, value: &str) -> std::result::Result<(), Str
     let path = std::env::current_dir()
         .map_err(|error| error.to_string())?
         .join("snapshots");
-    let snapshot_file = path.join(format!("{name}.snap"));
-    let exists = snapshot_file.is_file();
-    let matches = if exists {
-        let snapshot = insta::Snapshot::from_file(&snapshot_file).ok();
-        let current = insta::internals::TextSnapshotContents::new(
-            value.to_owned(),
-            insta::TextSnapshotKind::File,
-        );
-        snapshot
-            .as_ref()
-            .and_then(insta::Snapshot::as_text)
-            .is_some_and(|stored| stored.matches_latest(&current))
-    } else {
-        false
-    };
-    if !matches {
-        let update = std::env::var("INSTA_UPDATE").unwrap_or_else(|_| "auto".to_owned());
-        let in_place = match update.as_str() {
-            "always" | "force" => Some(true),
-            "unseen" => Some(!exists),
-            "new" => Some(false),
-            "auto" if std::env::var_os("CI").is_none() => Some(false),
-            "auto" | "no" => None,
-            _ => return Err(format!("invalid INSTA_UPDATE mode: {update}")),
-        };
-        if let Some(in_place) = in_place {
-            fs::create_dir_all(&path).map_err(|error| error.to_string())?;
-            let target = if in_place {
-                snapshot_file
-            } else {
-                snapshot_file.with_extension("snap.new")
-            };
-            fs::write(
-                target,
-                format!("---\nsource: den-stdlib-assert/src/lib.rs\n---\n{value}\n"),
-            )
-            .map_err(|error| error.to_string())?;
-            if in_place {
-                return Ok(());
-            }
-            return Err("snapshot differs; review the generated .snap.new file".into());
-        }
-        return Err("snapshot differs and INSTA_UPDATE forbids updates".into());
-    }
-
     let workspace = insta::_get_workspace_root!();
     let mut settings = insta::Settings::clone_current();
     settings.set_snapshot_path(path);
