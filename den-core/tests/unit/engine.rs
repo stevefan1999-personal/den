@@ -180,6 +180,7 @@ async fn a_top_level_throw_is_not_also_an_unhandled_rejection() -> eyre::Result<
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "transpile")]
 async fn eval_returns_an_owned_source_mapped_javascript_error() -> eyre::Result<()> {
     let engine = Engine::new().await;
     let outcome = engine
