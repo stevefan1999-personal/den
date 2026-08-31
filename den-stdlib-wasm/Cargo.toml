@@ -14,7 +14,7 @@ keywords.workspace = true
 [dependencies]
 den-util.workspace = true
 indexmap.workspace = true
-rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
+rquickjs = { workspace = true, features = ["macro", "futures"] }
 wasmtime = { workspace = true, features = ["reexport-wasmparser", "pulley"] }
 wasmtime-wasi = { workspace = true, optional = true }
 
