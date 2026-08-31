@@ -30,14 +30,17 @@ Made during the Easter holiday of 2023.
 - Official suites, one nextest test per vendored file (sources are never rewritten):
   test262 Temporal (`cargo nextest run -p den-stdlib-temporal --test test262`),
   WebAssembly spec (`cargo nextest run -p den-stdlib-wasm --test spec_core`),
-  WPT (`cargo nextest run -p den-core --test wpt --features stdlib`).
-  All three: `cargo nextest run --profile official --build-jobs 8`
+  WPT (`cargo nextest run -p den-core --test wpt --features stdlib`),
+  WebGPU CTS (`cargo nextest run -p den-stdlib-webgpu --test cts`).
+  All four: `cargo nextest run --profile official --build-jobs 8`
   WPT expects the official `vendor/wpt` server on ports 8000–8002; the CI workflow contains the
   matching startup and cleanup command.
 - Import maps and import attributes (`json` / `text` / `bytes`)
-- Headless WebGPU compute as `den:webgpu` and `navigator.gpu` (wgpu 30; adapter,
-  device, WGSL compute, buffers, mapping, error scopes). No canvas or surface
-  API. `DENO_WEBGPU_BACKEND=noop` is the hermetic test backend.
+- Headless WebGPU as `den:webgpu` and `navigator.gpu` (wgpu 30; adapter, device,
+  buffers, textures, samplers, query sets, WGSL compute and render pipelines,
+  command encoding, mapping, error scopes). No canvas or surface API.
+  `DEN_WEBGPU_BACKEND` (or `DENO_WEBGPU_BACKEND`) selects backends; `noop` is
+  the hermetic test backend.
 - The WebAssembly JS API on wasmtime 48, with a `jit` feature (native Cranelift)
   and Pulley for no-JIT / unsupported hosts (App Store, hardened runtime, iOS)
 - Optional WASI preview1 imports as `den:wasm`'s `wasiImports` (`--features wasi`)

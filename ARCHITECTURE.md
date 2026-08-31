@@ -95,13 +95,19 @@ workers, WebAssembly and WebGPU. WHATWG is evaluated after workers because its
 APIs extend worker-owned event classes. WebGPU is evaluated after workers so
 `navigator.gpu` attaches to the existing `Navigator` instance.
 
-`den:webgpu` is a native rquickjs slice of the WebGPU compute path (adapter,
-device, buffers, WGSL compute pipelines, bind groups, command encoding, mapping
-and error scopes). Canvas, surfaces and Deno's BYOW window-handle bridge are
-out of scope: den has no host-owned surface. The public `wgpu` crate owns
-validation; mapped buffers are copy-in/copy-out `ArrayBuffer`s detached on
-`unmap`. `DENO_WEBGPU_BACKEND` selects backends (`noop` is the hermetic test
-backend).
+`den:webgpu` is a native rquickjs slice of WebGPU (adapter, device, buffers,
+textures, samplers, query sets, WGSL compute and render pipelines, bind groups,
+command encoding, mapping and error scopes). Canvas, surfaces and Deno's BYOW
+window-handle bridge are out of scope: den has no host-owned surface. The
+public `wgpu` crate owns validation; mapped buffers are copy-in/copy-out
+`ArrayBuffer`s detached on `unmap`. `DEN_WEBGPU_BACKEND` (or
+`DENO_WEBGPU_BACKEND`) selects backends; `noop` is the hermetic test backend.
+
+Official WebGPU CTS files live in [`vendor/cts`](vendor/cts) (`src/webgpu/**/*.spec.ts`).
+The harness is [`den-stdlib-webgpu/tests/cts.rs`](den-stdlib-webgpu/tests/cts.rs):
+one nextest test per official spec file, sources never rewritten. TypeScript is
+transpiled into `target/cts-js/`. Canvas/DOM/worker suites are registered then
+`#[ignore]`d with a skip reason, matching the other official suites.
 
 The loader chain is:
 
@@ -142,9 +148,9 @@ produce synthetic modules; other types fail loading.
   module surface, not a separate crate.
 - [`den:wasm`](den-stdlib-wasm/src/lib.rs) uses Cranelift under `jit` and Pulley
   otherwise. WASI is independently gated by the `wasi` feature.
-- [`den:webgpu`](den-stdlib-webgpu/src/lib.rs) is a headless compute slice of
-  WebGPU. It installs `navigator.gpu` and the GPU constructors as globals.
-  Canvas, surfaces and Deno's BYOW bridge are excluded.
+- [`den:webgpu`](den-stdlib-webgpu/src/lib.rs) is a headless WebGPU slice. It
+  installs `navigator.gpu` and the GPU constructors as globals. Canvas,
+  surfaces and Deno's BYOW bridge are excluded.
 - `den:ffi` is denied at runtime unless the host grants the requested library
   path, even when the crate is compiled in.
 
@@ -170,9 +176,10 @@ cargo nextest run --workspace --profile official --build-jobs 8 \
 ```
 
 Focused conformance suites are Test262 Temporal, the WebAssembly spec runner,
-and WPT. WPT uses the vendored sparse checkout and the official `wptserve`
-process on ports 8000–8002; [the workflow](.github/workflows/wpt.yml) owns that
-server lifecycle.
+WPT, and WebGPU CTS (`cargo nextest run -p den-stdlib-webgpu --test cts`).
+WPT uses the vendored sparse checkout and the official `wptserve` process on
+ports 8000–8002; [the workflow](.github/workflows/wpt.yml) owns that server
+lifecycle.
 
 Closed investigation notes stay available in Git history. The remaining
 [research index](docs/research/README.md) points back here.

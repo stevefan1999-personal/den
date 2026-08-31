@@ -24,10 +24,18 @@ wgpu.workspace = true
 [dev-dependencies]
 color-eyre.workspace = true
 den-core = { workspace = true, default-features = false, features = [
-    "stdlib-assert",
-    "stdlib-webgpu",
+    "stdlib",
+    "typescript",
 ] }
+den-transpiler-oxc = { workspace = true, features = ["typescript"] }
+libtest-mimic.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+
+[[test]]
+name = "cts"
+path = "tests/cts.rs"
+harness = false
 
 [lints]
 workspace = true

@@ -1,0 +1,36 @@
+name: webgpu-cts
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "den-stdlib-webgpu/**"
+      - "vendor/cts/**"
+      - ".gitmodules"
+      - Cargo.lock
+      - .github/workflows/webgpu-cts.yml
+      - .github/workflows/runner-route.yml
+
+jobs:
+  route:
+    uses: ./.github/workflows/runner-route.yml
+
+  cts:
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: cargo-nextest@0.9.143
+      - run: git submodule update --init --depth 1 vendor/cts
+      - run: cargo nextest run --profile official -p den-stdlib-webgpu --test cts --build-jobs 2
+        env:
+          DEN_WEBGPU_BACKEND: noop

@@ -1839,7 +1839,9 @@ version = "0.4.0"
 dependencies = [
  "color-eyre",
  "den-core",
+ "den-transpiler-oxc",
  "den-util",
+ "libtest-mimic",
  "log",
  "rquickjs",
  "serde_json",
