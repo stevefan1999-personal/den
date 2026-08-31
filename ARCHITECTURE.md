@@ -8,6 +8,7 @@ and tests so they cannot drift into a second specification.
 ```text
 den                              CLI, REPL, signals and tracing
 └── den-core                     embeddable QuickJS runtime, loaders, resolvers
+    ├── den-capabilities         deny-by-default policy values and attenuation
     ├── den-transpiler-oxc       optional TypeScript and JSX lowering
     ├── den-stdlib-assert        den:assert
     ├── den-stdlib-console       console
@@ -28,6 +29,8 @@ den                              CLI, REPL, signals and tracing
     ├── den-stdlib-wasm          WebAssembly through wasmtime
     └── den-stdlib-worker        workers, events and structured clone
 
+den-config                       config foundation; not yet wired into the CLI
+den-package-store                SeaORM package store, solver and module snapshots
 den-e2e                          file-based cross-crate runtime tests
 ```
 
@@ -35,11 +38,25 @@ The workspace manifest is the authoritative member and feature graph:
 [Cargo.toml](Cargo.toml). Each standard-library crate owns one JS-facing
 surface and must not depend on `den-core`; `den-core` composes them.
 
+The CLI uses clap derive and advertises only implemented commands. Downloaded
+package bytes and metadata belong to `den-package-store`; its schema is created
+through versioned SeaORM migrations and package content is addressed by SHA-256.
+Resolvo operates on a validated in-memory snapshot, never from inside QuickJS's
+synchronous loader. A host solves and hydrates a `PackageModuleSnapshot`, then
+passes it to `EngineBuilder::package_modules`; workers inherit that immutable
+snapshot. The current solver is intentionally flat (one version per
+registry/package key); optional, peer and nested multi-version graphs are
+excluded until scoped instance identities exist.
+
 ## Runtime invariants
 
 - [`Engine`](den-core/src/engine.rs) owns one `rquickjs::AsyncRuntime` and
   `AsyncContext`. JavaScript work runs on that context, never on an arbitrary
   Tokio worker.
+- [`EngineBuilder`](den-core/src/builder.rs) owns stack, GC and optional heap
+  limits together with the realm's capability policy and process arguments.
+  Workers inherit the same settings; a child policy may only attenuate its
+  parent.
 - `AsyncRuntime::idle()` is the event loop. Do not run a second driver beside
   it; two schedulers would compete for the same runtime lock.
 - A host stops work by cancelling its program future, calling
