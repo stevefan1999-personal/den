@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use derive_more::{Display, Error, From};
-use import_map::{ImportMapErrorKind, parse_from_json};
+use import_map::{ImportMapDiagnostic, ImportMapErrorKind, parse_from_json};
 use rquickjs::{
     Ctx, Error, JsLifetime, Result,
     loader::{ImportAttributes, Resolver},
@@ -29,6 +29,8 @@ pub enum ImportMapError {
     #[display("{_0}")]
     #[from]
     Parse(import_map::ImportMapError),
+    #[display("{_0}")]
+    Diagnostic(#[error(not(source))] String),
     #[display("import map base directory cannot be used as a URL")]
     BaseDirectory,
 }
@@ -38,6 +40,14 @@ impl ImportMap {
     /// implementation.
     pub fn parse(json: &str, base_dir: &Path) -> std::result::Result<Self, ImportMapError> {
         let parsed = parse_from_json(directory_url(base_dir)?, json)?;
+        if let Some(diagnostic) = parsed.diagnostics.iter().find(|diagnostic| {
+            matches!(
+                diagnostic,
+                ImportMapDiagnostic::InvalidAddressNotString(value, _) if value != "null"
+            )
+        }) {
+            return Err(ImportMapError::Diagnostic(diagnostic.to_string()));
+        }
         Ok(Self(parsed.import_map))
     }
 
