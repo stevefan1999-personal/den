@@ -18,6 +18,5 @@ pub mod networking {
         tls::{TlsListenerWrapper as TlsListener, TlsStreamWrapper as TlsStream},
         udp::UdpSocketWrapper as UdpSocket,
         unix::{UnixListenerWrapper as UnixListener, UnixStreamWrapper as UnixStream},
-        websocket::WebSocketWrapper as WebSocket,
     };
 }
