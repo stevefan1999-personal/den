@@ -13,6 +13,7 @@ keywords.workspace = true
 [dependencies]
 derive_more.workspace = true
 dunce.workspace = true
+import_map.workspace = true
 oxc_sourcemap.workspace = true
 # The workspace selects reqwest's provider-neutral rustls transport; only the
 # body codecs and streaming body are extra here.
