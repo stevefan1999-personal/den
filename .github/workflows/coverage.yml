@@ -16,6 +16,7 @@ jobs:
     timeout-minutes: 240
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
       CARGO_TERM_COLOR: always
       INSTA_UPDATE: "no"
       RUSTC_WRAPPER: sccache
