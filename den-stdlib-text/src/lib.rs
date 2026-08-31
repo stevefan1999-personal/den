@@ -1,6 +1,8 @@
-use den_util::BufferSource;
+use either::Either;
 use encoding_rs::{DecoderResult, Encoding};
-use rquickjs::{Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*};
+use rquickjs::{
+    ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
+};
 
 pub use crate::js_text_module as js_text;
 
@@ -42,7 +44,9 @@ impl TextDecoder {
     #[qjs(get, enumerable)]
     pub fn encoding(&self) -> String { self.encoding.name().to_ascii_lowercase() }
 
-    pub fn decode(&self, buffer: Option<BufferSource>, ctx: Ctx<'_>) -> Result<String> {
+    pub fn decode<'js>(
+        &self, buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>, ctx: Ctx<'js>,
+    ) -> Result<String> {
         buffer.map_or_else(
             || Ok(String::new()),
             |buffer| {
@@ -52,7 +56,13 @@ impl TextDecoder {
                     self.encoding.new_decoder()
                 };
 
-                let buffer = buffer.bytes();
+                // Native rquickjs conversions are immune to replaced globals and
+                // shadowing properties on the view.
+                let buffer = match &buffer {
+                    Either::Left(buffer) => buffer.as_bytes(),
+                    Either::Right(buffer) => buffer.as_bytes(),
+                }
+                .ok_or_else(|| Exception::throw_type(&ctx, "buffer is detached"))?;
 
                 let len = if self.fatal {
                     decoder.max_utf8_buffer_length_without_replacement(buffer.len())
