@@ -1,7 +1,11 @@
-import { assertEquals } from "den:assert";
+import { assert, assertEquals } from "den:assert";
 const key = `DEN_PROCESS_TEST_${process.pid}`;
 process.env[key] = 123;
 assertEquals(process.env[key], "123");
 assertEquals(key in process.env, true);
+assert(Object.keys(process.env).includes(key));
+const descriptor = Object.getOwnPropertyDescriptor(process.env, key);
+assertEquals(descriptor.value, "123");
 delete process.env[key];
 assertEquals(process.env[key], undefined);
+assertEquals(key in process.env, false);
