@@ -270,50 +270,61 @@ impl Engine {
         runtime.set_max_stack_size(0).await;
 
         {
+            let mut builtin_resolver = BuiltinResolver::default();
+            let mut builtin_loader = ModuleLoader::default();
+            macro_rules! register {
+                    ($(#[$config:meta] $name:literal => $module:path),* $(,)?) => {
+                    $(#[$config] {
+                            builtin_resolver.add_module($name);
+                            builtin_loader.add_module($name, $module);
+                    })*
+                };
+            }
+            register!(
+            #[cfg(feature = "stdlib-assert")]
+            "den:assert" => den_stdlib_assert::js_assert,
+            #[cfg(feature = "stdlib-core")]
+            "den:core" => den_stdlib_core::js_core,
+            #[cfg(feature = "stdlib-console")]
+            "den:console" => den_stdlib_console::js_console,
+            #[cfg(feature = "stdlib-networking")]
+            "den:networking" => den_stdlib_networking::js_networking,
+            #[cfg(feature = "stdlib-path")]
+            "den:path" => den_stdlib_path::js_path,
+            #[cfg(feature = "stdlib-text")]
+            "den:text" => den_stdlib_text::js_text,
+            #[cfg(feature = "stdlib-timer")]
+            "den:timer" => den_stdlib_timer::js_timer,
+            #[cfg(feature = "stdlib-fs")]
+            "den:fs" => den_stdlib_fs::js_fs,
+            #[cfg(feature = "stdlib-http")]
+            "den:http" => den_stdlib_http::js_http,
+            #[cfg(feature = "stdlib-kv")]
+            "den:kv" => den_stdlib_kv::js_kv,
+            #[cfg(feature = "stdlib-ffi")]
+            "den:ffi" => den_stdlib_ffi::js_ffi,
+            #[cfg(feature = "stdlib-sqlite")]
+            "den:sqlite" => den_stdlib_sqlite::js_sqlite,
+            #[cfg(feature = "stdlib-whatwg-fetch")]
+            "den:whatwg-fetch" => den_stdlib_whatwg::fetch::js_whatwg,
+            #[cfg(feature = "stdlib-crypto")]
+            "den:crypto" => den_stdlib_crypto::js_crypto,
+            #[cfg(feature = "stdlib-process")]
+            "den:process" => den_stdlib_process::js_process,
+            #[cfg(feature = "stdlib-temporal")]
+            "den:temporal" => den_stdlib_temporal::js_temporal,
+            #[cfg(feature = "wasm")]
+            "den:wasm" => den_stdlib_wasm::js_wasm,
+            #[cfg(feature = "stdlib-worker")]
+            "den:worker" => den_stdlib_worker::js_worker,
+            #[cfg(feature = "stdlib-whatwg")]
+            "den:whatwg" => den_stdlib_whatwg::js_whatwg,
+            );
+            let builtin_resolver = std::mem::take(&mut builtin_resolver);
+            let builtin_loader = std::mem::take(&mut builtin_loader);
             let resolver = (
                 ImportMapResolver,
-                {
-                    let resolver = BuiltinResolver::default();
-                    #[cfg(feature = "stdlib-assert")]
-                    let resolver = resolver.with_module("den:assert");
-                    #[cfg(feature = "stdlib-core")]
-                    let resolver = resolver.with_module("den:core");
-                    #[cfg(feature = "stdlib-console")]
-                    let resolver = resolver.with_module("den:console");
-                    #[cfg(feature = "stdlib-networking")]
-                    let resolver = resolver.with_module("den:networking");
-                    #[cfg(feature = "stdlib-path")]
-                    let resolver = resolver.with_module("den:path");
-                    #[cfg(feature = "stdlib-text")]
-                    let resolver = resolver.with_module("den:text");
-                    #[cfg(feature = "stdlib-timer")]
-                    let resolver = resolver.with_module("den:timer");
-                    #[cfg(feature = "stdlib-fs")]
-                    let resolver = resolver.with_module("den:fs");
-                    #[cfg(feature = "stdlib-http")]
-                    let resolver = resolver.with_module("den:http");
-                    #[cfg(feature = "stdlib-kv")]
-                    let resolver = resolver.with_module("den:kv");
-                    #[cfg(feature = "stdlib-ffi")]
-                    let resolver = resolver.with_module("den:ffi");
-                    #[cfg(feature = "stdlib-sqlite")]
-                    let resolver = resolver.with_module("den:sqlite");
-                    #[cfg(feature = "stdlib-whatwg-fetch")]
-                    let resolver = resolver.with_module("den:whatwg-fetch");
-                    #[cfg(feature = "stdlib-crypto")]
-                    let resolver = resolver.with_module("den:crypto");
-                    #[cfg(feature = "stdlib-process")]
-                    let resolver = resolver.with_module("den:process");
-                    #[cfg(feature = "stdlib-temporal")]
-                    let resolver = resolver.with_module("den:temporal");
-                    #[cfg(feature = "wasm")]
-                    let resolver = resolver.with_module("den:wasm");
-                    #[cfg(feature = "stdlib-worker")]
-                    let resolver = resolver.with_module("den:worker");
-                    #[cfg(feature = "stdlib-whatwg")]
-                    let resolver = resolver.with_module("den:whatwg");
-                    resolver
-                },
+                builtin_resolver,
                 bundle,
                 HttpResolver,
                 // Ahead of `FileResolver`, which reads every name as relative
@@ -327,77 +338,16 @@ impl Engine {
             );
             let loader = (
                 BuiltinLoader::default(),
-                {
-                    let loader = ModuleLoader::default();
-                    #[cfg(feature = "stdlib-core")]
-                    let loader = loader.with_module("den:core", den_stdlib_core::js_core);
-                    #[cfg(feature = "stdlib-assert")]
-                    let loader = loader.with_module("den:assert", den_stdlib_assert::js_assert);
-                    #[cfg(feature = "stdlib-console")]
-                    let loader = loader.with_module("den:console", den_stdlib_console::js_console);
-                    #[cfg(feature = "stdlib-networking")]
-                    let loader =
-                        loader.with_module("den:networking", den_stdlib_networking::js_networking);
-                    #[cfg(feature = "stdlib-path")]
-                    let loader = loader.with_module("den:path", den_stdlib_path::js_path);
-                    #[cfg(feature = "stdlib-text")]
-                    let loader = loader.with_module("den:text", den_stdlib_text::js_text);
-                    #[cfg(feature = "stdlib-timer")]
-                    let loader = loader.with_module("den:timer", den_stdlib_timer::js_timer);
-                    #[cfg(feature = "stdlib-fs")]
-                    let loader = loader.with_module("den:fs", den_stdlib_fs::js_fs);
-                    #[cfg(feature = "stdlib-http")]
-                    let loader = loader.with_module("den:http", den_stdlib_http::js_http);
-                    #[cfg(feature = "stdlib-kv")]
-                    let loader = loader.with_module("den:kv", den_stdlib_kv::js_kv);
-                    #[cfg(feature = "stdlib-ffi")]
-                    let loader = loader.with_module("den:ffi", den_stdlib_ffi::js_ffi);
-                    #[cfg(feature = "stdlib-sqlite")]
-                    let loader = loader.with_module("den:sqlite", den_stdlib_sqlite::js_sqlite);
-                    #[cfg(feature = "stdlib-whatwg-fetch")]
-                    let loader =
-                        loader.with_module("den:whatwg-fetch", den_stdlib_whatwg::fetch::js_whatwg);
-                    #[cfg(feature = "stdlib-crypto")]
-                    let loader = loader.with_module("den:crypto", den_stdlib_crypto::js_crypto);
-                    #[cfg(feature = "stdlib-process")]
-                    let loader = loader.with_module("den:process", den_stdlib_process::js_process);
-                    #[cfg(feature = "stdlib-temporal")]
-                    let loader =
-                        loader.with_module("den:temporal", den_stdlib_temporal::js_temporal);
-                    #[cfg(feature = "wasm")]
-                    let loader = loader.with_module("den:wasm", den_stdlib_wasm::js_wasm);
-                    #[cfg(feature = "stdlib-worker")]
-                    let loader = loader.with_module("den:worker", den_stdlib_worker::js_worker);
-                    #[cfg(feature = "stdlib-whatwg")]
-                    let loader = loader.with_module("den:whatwg", den_stdlib_whatwg::js_whatwg);
-                    loader
-                },
+                builtin_loader,
                 bundle,
                 HttpLoader,
-                {
-                    let mut loader = MmapScriptLoader::default();
-
-                    loader = loader.with_extension("js");
-                    loader = loader.with_extension("mjs");
-
-                    #[cfg(feature = "react")]
-                    {
-                        loader = loader.with_extension("jsx");
-                        loader = loader.with_extension("mjsx");
-                    }
-
-                    #[cfg(feature = "typescript")]
-                    {
-                        loader = loader.with_extension("ts");
-
-                        #[cfg(feature = "react")]
-                        {
-                            loader = loader.with_extension("tsx");
-                        }
-                    }
-
-                    loader
-                },
+                Self::SCRIPT_PATTERNS
+                    .iter()
+                    .filter_map(|pattern| pattern.strip_prefix("{}."))
+                    .fold(
+                        MmapScriptLoader::default(),
+                        MmapScriptLoader::with_extension,
+                    ),
             );
             runtime.set_loader(resolver, loader).await;
         }
@@ -414,10 +364,7 @@ impl Engine {
             .with(|ctx| {
                 den_util::stack::install(&ctx)?;
                 Self::store_userdata(&ctx, EvalSequence::default())?;
-                // Every stdlib module is wired the same way: evaluate its
-                // definition under its `den:` name. The resolver and loader
-                // lists above decide which modules exist; this list decides
-                // which of them run.
+
                 #[cfg(any(
                     feature = "stdlib-console",
                     feature = "stdlib-core",
@@ -439,28 +386,20 @@ impl Engine {
 
                 #[cfg(feature = "stdlib-console")]
                 evaluate_stdlib_module!(den_stdlib_console::js_console, "den:console");
-
                 #[cfg(feature = "stdlib-core")]
                 evaluate_stdlib_module!(den_stdlib_core::js_core, "den:core");
-
                 #[cfg(feature = "stdlib-text")]
                 evaluate_stdlib_module!(den_stdlib_text::js_text, "den:text");
-
                 #[cfg(feature = "stdlib-timer")]
                 evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
-
                 #[cfg(feature = "stdlib-whatwg-fetch")]
                 evaluate_stdlib_module!(den_stdlib_whatwg::fetch::js_whatwg, "den:whatwg-fetch");
-
                 #[cfg(feature = "stdlib-crypto")]
                 evaluate_stdlib_module!(den_stdlib_crypto::js_crypto, "den:crypto");
-
                 #[cfg(feature = "stdlib-process")]
                 evaluate_stdlib_module!(den_stdlib_process::js_process, "den:process");
-
                 #[cfg(feature = "stdlib-temporal")]
                 evaluate_stdlib_module!(den_stdlib_temporal::js_temporal, "den:temporal");
-
                 #[cfg(feature = "wasm")]
                 evaluate_stdlib_module!(den_stdlib_wasm::js_wasm, "den:wasm");
 
