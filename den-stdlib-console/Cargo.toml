@@ -15,8 +15,8 @@ test = false
 
 
 [dependencies]
+den-util.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
-tracing.workspace = true
 
 [dev-dependencies]
 color-eyre.workspace = true
