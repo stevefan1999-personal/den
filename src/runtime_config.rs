@@ -268,7 +268,7 @@ mod tests {
             r#"{
                 "imports": { "answer": "./answer.js" },
                 "permissions": { "read": ["."] },
-                "budgets": { "stackBytes": 65536, "heapBytes": 16777216 },
+                "budgets": { "stackBytes": 1048576, "heapBytes": 16777216 },
                 "preloads": ["preload.js"]
             }"#,
         )?;
