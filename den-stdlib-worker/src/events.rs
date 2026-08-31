@@ -80,21 +80,12 @@ fn time_stamp(ctx: &Ctx<'_>) -> f64 {
     unix_ms() - origin
 }
 
-fn to_bool<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<bool> {
-    Ok(Coerced::<bool>::from_js(ctx, value)?.0)
-}
-
-/// WebIDL `unsigned long`: `ToUint32`, which is `ToInt32` bit-cast.
-fn to_unsigned_long<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<u32> {
-    Ok(Coerced::<i32>::from_js(ctx, value)?.0 as u32)
-}
-
-fn dict_get<'js>(options: Option<&Value<'js>>, key: &str) -> Result<Option<Value<'js>>> {
-    den_util::dict_get(options, key)
-}
-
-fn dict_bool<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>, key: &str) -> Result<bool> {
-    dict_get(options, key)?.map_or(Ok(false), |value| to_bool(ctx, value))
+fn dictionary<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Object<'js>> {
+    match options.0 {
+        None => Object::new(ctx.clone()),
+        Some(value) if value.is_undefined() || value.is_null() => Object::new(ctx.clone()),
+        Some(value) => Object::from_js(ctx, value),
+    }
 }
 
 fn call_with_this<'js>(
@@ -186,15 +177,13 @@ impl<'js> EventFields<'js> {
         }
     }
 
-    fn from_args(
-        ctx: &Ctx<'js>, event_type: Value<'js>, options: Option<&Value<'js>>,
-    ) -> Result<Self> {
+    fn from_args(ctx: &Ctx<'js>, event_type: Value<'js>, options: &Object<'js>) -> Result<Self> {
         Ok(Self::new(
             ctx,
             coerce_string(ctx, event_type)?,
-            dict_bool(ctx, options, "bubbles")?,
-            dict_bool(ctx, options, "cancelable")?,
-            dict_bool(ctx, options, "composed")?,
+            options.get::<_, Coerced<bool>>("bubbles")?.0,
+            options.get::<_, Coerced<bool>>("cancelable")?.0,
+            options.get::<_, Coerced<bool>>("composed")?.0,
         ))
     }
 
@@ -239,8 +228,9 @@ pub struct Event<'js> {
 impl<'js> Event<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
+        let options = dictionary(&ctx, options)?;
         Ok(Self {
-            fields: EventFields::from_args(&ctx, event_type, options.0.as_ref())?,
+            fields: EventFields::from_args(&ctx, event_type, &options)?,
         })
     }
 
@@ -306,9 +296,9 @@ impl<'js> Event<'js> {
 
     #[qjs(set, rename = "cancelBubble")]
     pub fn set_cancel_bubble(
-        this: This<Value<'js>>, ctx: Ctx<'js>, value: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, value: Coerced<bool>,
     ) -> Result<()> {
-        if to_bool(&ctx, value)? {
+        if value.0 {
             with_event_fields(&ctx, &this.0, |fields| {
                 fields.stop_propagation = true;
                 Ok(())
@@ -324,9 +314,9 @@ impl<'js> Event<'js> {
 
     #[qjs(set, rename = "returnValue")]
     pub fn set_return_value(
-        this: This<Value<'js>>, ctx: Ctx<'js>, value: Value<'js>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, value: Coerced<bool>,
     ) -> Result<()> {
-        if !to_bool(&ctx, value)? {
+        if !value.0 {
             with_event_fields(&ctx, &this.0, |fields| {
                 fields.prevent_default();
                 Ok(())
@@ -347,18 +337,12 @@ impl<'js> Event<'js> {
     }
 
     pub fn init_event(
-        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, bubbles: Opt<Value<'js>>,
-        cancelable: Opt<Value<'js>>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, bubbles: Opt<Coerced<bool>>,
+        cancelable: Opt<Coerced<bool>>,
     ) -> Result<()> {
         let event_type = coerce_string(&ctx, event_type)?;
-        let bubbles = match bubbles.0 {
-            Some(value) => to_bool(&ctx, value)?,
-            None => false,
-        };
-        let cancelable = match cancelable.0 {
-            Some(value) => to_bool(&ctx, value)?,
-            None => false,
-        };
+        let bubbles = bubbles.0.is_some_and(|value| value.0);
+        let cancelable = cancelable.0.is_some_and(|value| value.0);
         with_event_fields(&ctx, &this.0, |fields| {
             if fields.dispatch {
                 return Ok(());
@@ -413,18 +397,22 @@ pub struct CustomEvent<'js> {
 impl<'js> CustomEvent<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
-        let options = options.0;
-        let detail =
-            dict_get(options.as_ref(), "detail")?.unwrap_or_else(|| Value::new_null(ctx.clone()));
+        let options = dictionary(&ctx, options)?;
+        let detail: Value = options.get("detail")?;
+        let detail = if detail.is_undefined() {
+            Value::new_null(ctx.clone())
+        } else {
+            detail
+        };
         Ok(Self {
-            fields: EventFields::from_args(&ctx, event_type, options.as_ref())?,
+            fields: EventFields::from_args(&ctx, event_type, &options)?,
             detail,
         })
     }
 
     pub fn init_custom_event(
-        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, bubbles: Opt<Value<'js>>,
-        cancelable: Opt<Value<'js>>, detail: Opt<Value<'js>>,
+        this: This<Value<'js>>, ctx: Ctx<'js>, event_type: Value<'js>, bubbles: Opt<Coerced<bool>>,
+        cancelable: Opt<Coerced<bool>>, detail: Opt<Value<'js>>,
     ) -> Result<()> {
         Event::init_event(
             This(this.0.clone()),
@@ -485,10 +473,11 @@ impl<'js> MessageEvent<'js> {
         Ok(value)
     }
 
-    fn string_or(ctx: &Ctx<'js>, value: Option<Value<'js>>, fallback: &str) -> Result<String> {
-        match value {
-            Some(value) if !value.is_undefined() => coerce_string(ctx, value),
-            _ => Ok(fallback.to_owned()),
+    fn string_or(ctx: &Ctx<'js>, value: Value<'js>, fallback: &str) -> Result<String> {
+        if value.is_undefined() {
+            Ok(fallback.to_owned())
+        } else {
+            coerce_string(ctx, value)
         }
     }
 }
@@ -497,17 +486,28 @@ impl<'js> MessageEvent<'js> {
 impl<'js> MessageEvent<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
-        let options = options.0;
-        let data =
-            dict_get(options.as_ref(), "data")?.unwrap_or_else(|| Value::new_null(ctx.clone()));
+        let options = dictionary(&ctx, options)?;
+        let data: Value = options.get("data")?;
+        let data = if data.is_undefined() {
+            Value::new_null(ctx.clone())
+        } else {
+            data
+        };
+        let source: Value = options.get("source")?;
+        let source = if source.is_undefined() {
+            Value::new_null(ctx.clone())
+        } else {
+            source
+        };
+        let ports: Value = options.get("ports")?;
+        let ports = (!ports.is_undefined()).then_some(ports);
         Ok(Self {
-            fields: EventFields::from_args(&ctx, event_type, options.as_ref())?,
+            fields: EventFields::from_args(&ctx, event_type, &options)?,
             data,
-            origin: Self::string_or(&ctx, dict_get(options.as_ref(), "origin")?, "")?,
-            last_event_id: Self::string_or(&ctx, dict_get(options.as_ref(), "lastEventId")?, "")?,
-            source: dict_get(options.as_ref(), "source")?
-                .unwrap_or_else(|| Value::new_null(ctx.clone())),
-            ports: Self::freeze_ports(&ctx, dict_get(options.as_ref(), "ports")?)?,
+            origin: Self::string_or(&ctx, options.get("origin")?, "")?,
+            last_event_id: Self::string_or(&ctx, options.get("lastEventId")?, "")?,
+            source,
+            ports: Self::freeze_ports(&ctx, ports)?,
         })
     }
 
@@ -535,27 +535,14 @@ pub struct ErrorEvent<'js> {
 impl<'js> ErrorEvent<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
-        let options = options.0;
-        let message = match dict_get(options.as_ref(), "message")? {
-            Some(value) if !value.is_undefined() => coerce_string(&ctx, value)?,
-            _ => String::new(),
-        };
-        let filename = match dict_get(options.as_ref(), "filename")? {
-            Some(value) if !value.is_undefined() => coerce_string(&ctx, value)?,
-            _ => String::new(),
-        };
-        let lineno = match dict_get(options.as_ref(), "lineno")? {
-            Some(value) => to_unsigned_long(&ctx, value)?,
-            None => 0,
-        };
-        let colno = match dict_get(options.as_ref(), "colno")? {
-            Some(value) => to_unsigned_long(&ctx, value)?,
-            None => 0,
-        };
-        let error = dict_get(options.as_ref(), "error")?
-            .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+        let options = dictionary(&ctx, options)?;
+        let message = MessageEvent::string_or(&ctx, options.get("message")?, "")?;
+        let filename = MessageEvent::string_or(&ctx, options.get("filename")?, "")?;
+        let lineno = options.get::<_, Coerced<i32>>("lineno")?.0 as u32;
+        let colno = options.get::<_, Coerced<i32>>("colno")?.0 as u32;
+        let error: Value = options.get("error")?;
         Ok(Self {
-            fields: EventFields::from_args(&ctx, event_type, options.as_ref())?,
+            fields: EventFields::from_args(&ctx, event_type, &options)?,
             message,
             filename,
             lineno,
@@ -581,13 +568,11 @@ pub struct PromiseRejectionEvent<'js> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> PromiseRejectionEvent<'js> {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Value<'js>) -> Result<Self> {
+    pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Object<'js>) -> Result<Self> {
         Ok(Self {
-            fields:  EventFields::from_args(&ctx, event_type, Some(&options))?,
-            promise: dict_get(Some(&options), "promise")?
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-            reason:  dict_get(Some(&options), "reason")?
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+            fields:  EventFields::from_args(&ctx, event_type, &options)?,
+            promise: options.get("promise")?,
+            reason:  options.get("reason")?,
         })
     }
 
@@ -714,14 +699,8 @@ impl<'js> EventTarget<'js> {
         let Some(object) = options.as_object() else {
             return Ok((false, false, None));
         };
-        let capture = match object.get::<_, Value<'js>>("capture")? {
-            value if value.is_undefined() => false,
-            value => to_bool(object.ctx(), value)?,
-        };
-        let once = match object.get::<_, Value<'js>>("once")? {
-            value if value.is_undefined() => false,
-            value => to_bool(object.ctx(), value)?,
-        };
+        let capture = object.get::<_, Coerced<bool>>("capture")?.0;
+        let once = object.get::<_, Coerced<bool>>("once")?.0;
         let signal = match object.get::<_, Value<'js>>("signal")? {
             value if value.is_undefined() => None,
             value => Some(value),
@@ -733,10 +712,7 @@ impl<'js> EventTarget<'js> {
         let Some(object) = signal.as_object() else {
             return Ok(false);
         };
-        match object.get::<_, Value<'js>>("aborted")? {
-            value if value.is_undefined() => Ok(false),
-            value => to_bool(signal.ctx(), value),
-        }
+        Ok(object.get::<_, Coerced<bool>>("aborted")?.0)
     }
 
     fn add_abort_listener(

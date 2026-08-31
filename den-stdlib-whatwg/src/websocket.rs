@@ -9,7 +9,7 @@ use rquickjs::{
     ArrayBuffer, Class, Coerced, Ctx, FromJs as _, Function, JsLifetime, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
-    function::{Opt, Rest, This},
+    function::{Opt, This},
 };
 
 use crate::{blob::Blob, host::Host};
@@ -346,22 +346,22 @@ impl WebSocket {
     }
 
     pub fn close<'js>(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, args: Rest<Value<'js>>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, code: Opt<Value<'js>>, reason: Opt<Value<'js>>,
     ) -> Result<()> {
         let ready = this.0.borrow().ready_state;
         if ready == CLOSING || ready == CLOSED {
             return Ok(());
         }
-        let code = match args.0.first() {
+        let code = match code.0 {
             None => None,
             Some(value) if value.is_undefined() => None,
             Some(value) => {
-                let number = Coerced::<f64>::from_js(&ctx, value.clone())?.0;
+                let number = Coerced::<f64>::from_js(&ctx, value)?.0;
                 Some(Self::clamp_unsigned_short(number))
             }
         };
-        let reason = match args.0.get(1) {
-            Some(value) if !value.is_undefined() => Host::coerce_usv_string(&ctx, value.clone())?,
+        let reason = match reason.0 {
+            Some(value) if !value.is_undefined() => Host::coerce_usv_string(&ctx, value)?,
             _ => String::new(),
         };
         if let Some(code) = code

@@ -4,15 +4,15 @@ use std::{cell::RefCell, rc::Rc};
 
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Class, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsLifetime, Object, Result,
-    Symbol, Value,
+    Array, Class, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsIterator, JsLifetime, Object,
+    Result, Symbol, Value,
     atom::PredefinedAtom,
     class::Trace,
-    function::{Opt, Rest, This},
+    function::{Opt, This},
 };
 use url::{Url, form_urlencoded, quirks};
 
-use crate::host::Host;
+use crate::host::{Host, UsvString};
 
 type Pair = (String, String);
 
@@ -660,23 +660,8 @@ fn coerce_url_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<String> {
     Host::coerce_usv_string(ctx, value)
 }
 
-fn coerce_required<'js>(ctx: &Ctx<'js>, args: &[Value<'js>], name: &str) -> Result<String> {
-    if args.is_empty() {
-        return Err(Host::throw_type(
-            ctx,
-            &format!("Failed to execute '{name}': 1 argument required, but only 0 present."),
-        ));
-    }
-    Host::coerce_usv_string(
-        ctx,
-        args.first()
-            .cloned()
-            .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-    )
-}
-
-fn optional_usv<'js>(ctx: &Ctx<'js>, args: &[Value<'js>]) -> Result<Option<String>> {
-    let Some(value) = args.get(1) else {
+fn optional_usv<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<Option<String>> {
+    let Some(value) = value.0 else {
         return Ok(None);
     };
     if value.is_undefined() {
@@ -685,7 +670,7 @@ fn optional_usv<'js>(ctx: &Ctx<'js>, args: &[Value<'js>]) -> Result<Option<Strin
     Host::coerce_usv_string(ctx, value.clone()).map(Some)
 }
 
-fn iterator_method<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<Function<'js>>> {
+fn js_iterator<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<JsIterator<'js>>> {
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
@@ -693,39 +678,18 @@ fn iterator_method<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<Fun
     if method.is_null() || method.is_undefined() {
         return Ok(None);
     }
-    Function::from_js(ctx, method).map(Some)
-}
-
-fn collect_iter<'js>(
-    ctx: &Ctx<'js>, value: Value<'js>, iterator_fn: Function<'js>,
-) -> Result<Vec<Value<'js>>> {
-    let Some(object) = value.as_object() else {
-        return Err(Host::throw_type(ctx, "Value is not iterable"));
-    };
-    let iterator_val: Value = iterator_fn.call((This(object.clone()),))?;
-    let Some(iterator) = iterator_val.as_object() else {
-        return Err(Host::throw_type(ctx, "Value is not iterable"));
-    };
-    let next: Function = iterator.get("next")?;
-    let mut items = Vec::new();
-    loop {
-        let result: Object = next.call((This(iterator.clone()),))?;
-        if result.get::<_, bool>("done").unwrap_or(false) {
-            break;
-        }
-        items.push(result.get("value")?);
-    }
-    Ok(items)
+    let iterator: Value = Function::from_js(ctx, method)?.call((This(object.clone()),))?;
+    JsIterator::from_js(ctx, iterator).map(Some)
 }
 
 fn pair_from_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Pair> {
-    let Some(iterator) = iterator_method(ctx, &value)? else {
+    let Some(iterator) = js_iterator(ctx, &value)? else {
         return Err(Host::throw_type(
             ctx,
             "Expected name/value pair to be iterable",
         ));
     };
-    let items = collect_iter(ctx, value, iterator)?;
+    let items = iterator.collect::<Result<Vec<_>>>()?;
     if items.len() != 2 {
         return Err(Host::throw_type(
             ctx,
@@ -765,12 +729,8 @@ fn pairs_from_init<'js>(ctx: &Ctx<'js>, init: Option<Value<'js>>) -> Result<Vec<
     if value.as_string().is_some() || !value.is_object() {
         return Ok(parse_urlencoded(&Host::coerce_usv_string(ctx, value)?));
     }
-    if let Some(iterator) = iterator_method(ctx, &value)? {
-        let mut pairs = Vec::new();
-        for item in collect_iter(ctx, value, iterator)? {
-            pairs.push(pair_from_value(ctx, item)?);
-        }
-        return Ok(pairs);
+    if let Some(iterator) = js_iterator(ctx, &value)? {
+        return iterator.map(|item| pair_from_value(ctx, item?)).collect();
     }
     let Some(object) = value.as_object() else {
         return Ok(parse_urlencoded(&Host::coerce_usv_string(ctx, value)?));
@@ -791,22 +751,11 @@ fn pairs_from_init<'js>(ctx: &Ctx<'js>, init: Option<Value<'js>>) -> Result<Vec<
 }
 
 fn parse_ctor_args<'js>(
-    ctx: &Ctx<'js>, args: &[Value<'js>], name: &str,
+    ctx: &Ctx<'js>, input: Value<'js>, base: Option<Value<'js>>,
 ) -> Result<std::result::Result<WebUrl, ()>> {
-    if args.is_empty() {
-        return Err(Host::throw_type(
-            ctx,
-            &format!("Failed to construct '{name}': 1 argument required, but only 0 present."),
-        ));
-    }
-    let input = coerce_url_string(
-        ctx,
-        args.first()
-            .cloned()
-            .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-    )?;
-    let base = args
-        .get(1)
+    let input = coerce_url_string(ctx, input)?;
+    let base = base
+        .as_ref()
         .filter(|value| !value.is_undefined())
         .map_or(Ok::<_, rquickjs::Error>(None), |value| {
             coerce_url_string(ctx, value.clone()).map(Some)
@@ -842,8 +791,8 @@ impl URL {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl URL {
     #[qjs(constructor)]
-    pub fn new<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Self> {
-        match parse_ctor_args(&ctx, &args.0, "URL")? {
+    pub fn new<'js>(ctx: Ctx<'js>, input: Value<'js>, base: Opt<Value<'js>>) -> Result<Self> {
+        match parse_ctor_args(&ctx, input, base.0)? {
             Ok(url) => Ok(Self::from_url(url)),
             Err(()) => {
                 Err(Host::throw_type(
@@ -855,16 +804,18 @@ impl URL {
     }
 
     #[qjs(static)]
-    pub fn parse<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Value<'js>> {
-        match parse_ctor_args(&ctx, &args.0, "URL")? {
+    pub fn parse<'js>(
+        ctx: Ctx<'js>, input: Value<'js>, base: Opt<Value<'js>>,
+    ) -> Result<Value<'js>> {
+        match parse_ctor_args(&ctx, input, base.0)? {
             Ok(url) => Class::instance(ctx, Self::from_url(url)).map(rquickjs::Class::into_value),
             Err(()) => Ok(Value::new_null(ctx)),
         }
     }
 
     #[qjs(static, rename = "canParse")]
-    pub fn can_parse<'js>(ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
-        Ok(parse_ctor_args(&ctx, &args.0, "URL")?.is_ok())
+    pub fn can_parse<'js>(ctx: Ctx<'js>, input: Value<'js>, base: Opt<Value<'js>>) -> Result<bool> {
+        Ok(parse_ctor_args(&ctx, input, base.0)?.is_ok())
     }
 
     #[qjs(get)]
@@ -1044,39 +995,16 @@ impl URLSearchParams {
         })
     }
 
-    pub fn append<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
-        if args.0.len() < 2 {
-            return Err(Host::throw_type(
-                &ctx,
-                &format!(
-                    "Failed to execute 'append' on 'URLSearchParams': 2 arguments required, but \
-                     only {} present.",
-                    args.0.len()
-                ),
-            ));
-        }
-        let name = Host::coerce_usv_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        let value = Host::coerce_usv_string(
-            &ctx,
-            args.0
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        self.query.borrow_mut().push((name, value));
+    pub fn append(&self, name: UsvString, value: UsvString) {
+        self.query.borrow_mut().push((name.0, value.0));
         self.sync();
-        Ok(())
     }
 
-    pub fn delete<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
-        let name = coerce_required(&ctx, &args.0, "delete")?;
-        let value = optional_usv(&ctx, &args.0)?;
+    pub fn delete<'js>(
+        &self, ctx: Ctx<'js>, name: UsvString, value: Opt<Value<'js>>,
+    ) -> Result<()> {
+        let name = name.0;
+        let value = optional_usv(&ctx, value)?;
         self.query
             .borrow_mut()
             .retain(|(existing, existing_value)| {
@@ -1091,30 +1019,27 @@ impl URLSearchParams {
         Ok(())
     }
 
-    pub fn get<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Value<'js>> {
-        let name = coerce_required(&ctx, &args.0, "get")?;
+    pub fn get<'js>(&self, ctx: Ctx<'js>, name: UsvString) -> Result<Value<'js>> {
         for (existing, value) in self.query.borrow().iter() {
-            if existing == &name {
+            if existing == &name.0 {
                 return value.clone().into_js(&ctx);
             }
         }
         Ok(Value::new_null(ctx))
     }
 
-    pub fn get_all<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Vec<String>> {
-        let name = coerce_required(&ctx, &args.0, "getAll")?;
-        Ok(self
-            .query
+    pub fn get_all(&self, name: UsvString) -> Vec<String> {
+        self.query
             .borrow()
             .iter()
-            .filter(|(existing, _)| existing == &name)
+            .filter(|(existing, _)| existing == &name.0)
             .map(|(_, value)| value.clone())
-            .collect())
+            .collect()
     }
 
-    pub fn has<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
-        let name = coerce_required(&ctx, &args.0, "has")?;
-        let value = optional_usv(&ctx, &args.0)?;
+    pub fn has<'js>(&self, ctx: Ctx<'js>, name: UsvString, value: Opt<Value<'js>>) -> Result<bool> {
+        let name = name.0;
+        let value = optional_usv(&ctx, value)?;
         Ok(self
             .query
             .borrow()
@@ -1124,31 +1049,9 @@ impl URLSearchParams {
             }))
     }
 
-    pub fn set<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
-        if args.0.len() < 2 {
-            return Err(Host::throw_type(
-                &ctx,
-                &format!(
-                    "Failed to execute 'set' on 'URLSearchParams': 2 arguments required, but only \
-                     {} present.",
-                    args.0.len()
-                ),
-            ));
-        }
-        let name = Host::coerce_usv_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        let value = Host::coerce_usv_string(
-            &ctx,
-            args.0
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
+    pub fn set(&self, name: UsvString, value: UsvString) {
+        let name = name.0;
+        let value = value.0;
         let mut pairs = self.query.borrow_mut();
         let mut replaced = false;
         let mut result = Vec::new();
@@ -1168,7 +1071,6 @@ impl URLSearchParams {
         *pairs = result;
         drop(pairs);
         self.sync();
-        Ok(())
     }
 
     pub fn sort(&self) {
@@ -1194,26 +1096,11 @@ impl URLSearchParams {
     }
 
     pub fn for_each<'js>(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, args: Rest<Value<'js>>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, callback: Function<'js>,
+        this_arg: Opt<Value<'js>>,
     ) -> Result<()> {
-        if args.0.is_empty() {
-            return Err(Host::throw_type(
-                &ctx,
-                "Failed to execute 'forEach' on 'URLSearchParams': 1 argument required, but only \
-                 0 present.",
-            ));
-        }
-        let callback = Function::from_js(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        let this_arg = args
+        let this_arg = this_arg
             .0
-            .get(1)
-            .cloned()
             .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
         let snapshot = this.0.borrow().query.borrow().clone();
         for (name, value) in snapshot {
