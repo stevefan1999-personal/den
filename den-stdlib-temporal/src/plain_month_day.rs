@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use den_util::ObjectExt as _;
 use rquickjs::{
@@ -38,7 +38,7 @@ pub struct PlainMonthDay {
 }
 
 impl PlainMonthDay {
-    pub(crate) fn wrap(inner: temporal_rs::PlainMonthDay) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::PlainMonthDay) -> Self { Self { inner } }
 
     pub fn new<'js>(
         iso_month: Opt<Value<'js>>, iso_day: Opt<Value<'js>>, calendar: Opt<Value<'js>>,
@@ -243,7 +243,12 @@ impl PlainMonthDay {
                 "with() requires a PlainMonthDay-like object",
             ));
         }
-        let object = item.as_object().expect("partial temporal object").clone();
+        let Some(object) = item.as_object().cloned() else {
+            return Err(Exception::throw_type(
+                &ctx,
+                "with() requires a PlainMonthDay-like object",
+            ));
+        };
         let bag = month_day_bag(&ctx, &object)?;
         if bag.is_empty() {
             return Err(Exception::throw_type(
@@ -293,7 +298,7 @@ impl PlainMonthDay {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.PlainMonthDay" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.PlainMonthDay" }
 }
 
 struct MonthDayBag {
@@ -304,7 +309,7 @@ struct MonthDayBag {
 }
 
 impl MonthDayBag {
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.day.is_none()
             && self.month.is_none()
             && self.month_code.is_none()
@@ -339,8 +344,7 @@ fn to_temporal_month_day<'js>(
         overflow_option(ctx, options)?;
         return Ok(inner);
     }
-    if item.is_object() {
-        let object = item.as_object().expect("object").clone();
+    if let Some(object) = item.as_object().cloned() {
         let calendar = calendar_from_item(ctx, &object)?;
         let bag = month_day_bag(ctx, &object)?;
         let overflow = overflow_option(ctx, options)?;
@@ -397,10 +401,8 @@ fn month_day_bag<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<MonthDayBa
 }
 
 fn calendar_from_item<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calendar> {
-    match get_defined(object, "calendar")? {
-        None => Ok(Calendar::ISO),
-        Some(value) => calendar_from_value(ctx, &value),
-    }
+    get_defined(object, "calendar")?
+        .map_or(Ok(Calendar::ISO), |value| calendar_from_value(ctx, &value))
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
@@ -453,21 +455,20 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    match get_defined(&object, "overflow")? {
-        None => Ok(None),
-        Some(value) => option_overflow(ctx, &value).map(Some),
-    }
+    get_defined(&object, "overflow")?
+        .map_or(Ok(None), |value| option_overflow(ctx, &value).map(Some))
 }
 
 fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
     let name = to_js_string(ctx, value)?;
-    Overflow::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid overflow option"))
+    Overflow::from_str(&name)
+        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
 fn option_display_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<DisplayCalendar> {
     let name = to_js_string(ctx, value)?;
     DisplayCalendar::from_str(&name)
-        .map_err(|_| Exception::throw_range(ctx, "invalid calendarName option"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid calendarName option"))
 }
 
 fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {

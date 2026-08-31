@@ -17,10 +17,7 @@ fn host_time_zone() -> temporal_rs::TemporalResult<TimeZone> {
 }
 
 fn time_zone_or_host<'js>(time_zone: Opt<Value<'js>>, ctx: &Ctx<'js>) -> Result<TimeZone> {
-    match optional_time_zone(ctx, time_zone)? {
-        Some(time_zone) => Ok(time_zone),
-        None => unwrap_temporal(ctx, host_time_zone()),
-    }
+    optional_time_zone(ctx, time_zone)?.map_or_else(|| unwrap_temporal(ctx, host_time_zone()), Ok)
 }
 
 #[rquickjs::function]

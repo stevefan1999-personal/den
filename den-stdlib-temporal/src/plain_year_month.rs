@@ -34,7 +34,7 @@ pub struct PlainYearMonth {
 }
 
 impl PlainYearMonth {
-    pub(crate) fn wrap(inner: temporal_rs::PlainYearMonth) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::PlainYearMonth) -> Self { Self { inner } }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -204,7 +204,7 @@ impl PlainYearMonth {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.PlainYearMonth" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.PlainYearMonth" }
 }
 
 struct RawYearMonthFields {
@@ -214,7 +214,7 @@ struct RawYearMonthFields {
 }
 
 impl RawYearMonthFields {
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.year.is_none() && self.month.is_none() && self.month_code.is_none()
     }
 
@@ -341,27 +341,19 @@ fn is_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
 }
 
 fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
-    match options_object(ctx, options)? {
-        None => Ok(None),
-        Some(object) => {
-            match get_defined(&object, "overflow")? {
-                None => Ok(None),
-                Some(value) => parse_enum(ctx, &value, "invalid overflow option").map(Some),
-            }
-        }
-    }
+    options_object(ctx, options)?.map_or(Ok(None), |object| {
+        get_defined(&object, "overflow")?.map_or(Ok(None), |value| {
+            parse_enum(ctx, &value, "invalid overflow option").map(Some)
+        })
+    })
 }
 
 fn display_calendar<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<DisplayCalendar> {
-    match options_object(ctx, options)? {
-        None => Ok(DisplayCalendar::Auto),
-        Some(object) => {
-            match get_defined(&object, "calendarName")? {
-                None => Ok(DisplayCalendar::Auto),
-                Some(value) => parse_enum(ctx, &value, "invalid calendarName option"),
-            }
-        }
-    }
+    options_object(ctx, options)?.map_or(Ok(DisplayCalendar::Auto), |object| {
+        get_defined(&object, "calendarName")?.map_or(Ok(DisplayCalendar::Auto), |value| {
+            parse_enum(ctx, &value, "invalid calendarName option")
+        })
+    })
 }
 
 fn difference_settings<'js>(
@@ -397,7 +389,7 @@ fn optional_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Opt
 fn parse_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<T> {
     let name = option_string(ctx, value)?;
     name.parse()
-        .map_err(|_| Exception::throw_range(ctx, message))
+        .map_err(|_error| Exception::throw_range(ctx, message))
 }
 
 fn option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -493,7 +485,7 @@ fn month_u8(ctx: &Ctx<'_>, month: Option<i128>, overflow: Overflow) -> Result<Op
     }
     u8::try_from(month)
         .map(Some)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+        .map_err(|_error| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 fn constrain_u8(ctx: &Ctx<'_>, integer: i128) -> Result<u8> {

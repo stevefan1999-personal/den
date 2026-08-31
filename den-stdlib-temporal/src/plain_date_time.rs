@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use rquickjs::{
     Ctx, Exception, JsLifetime, Object, Result, Value,
@@ -40,7 +40,7 @@ pub struct PlainDateTime {
 }
 
 impl PlainDateTime {
-    pub(crate) fn wrap(inner: temporal_rs::PlainDateTime) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::PlainDateTime) -> Self { Self { inner } }
 }
 
 /// `ToPrimitive` with hint string. `String(object)` in this engine prefers
@@ -108,7 +108,7 @@ fn to_month_code_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Strin
     Ok(code)
 }
 
-fn get_overflow<'js>(ctx: &Ctx<'js>, options: &Option<Object<'js>>) -> Result<Option<Overflow>> {
+fn get_overflow<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> Result<Option<Overflow>> {
     let Some(object) = options else {
         return Ok(None);
     };
@@ -118,7 +118,7 @@ fn get_overflow<'js>(ctx: &Ctx<'js>, options: &Option<Object<'js>>) -> Result<Op
     let name = temporal_to_string(ctx, &value)?;
     Overflow::from_str(&name)
         .map(Some)
-        .map_err(|_| Exception::throw_range(ctx, "invalid overflow option"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
 fn get_unit_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
@@ -128,7 +128,7 @@ fn get_unit_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Resu
     let name = temporal_to_string(ctx, &value)?;
     Unit::from_str(&name)
         .map(Some)
-        .map_err(|_| Exception::throw_range(ctx, "invalid Temporal unit"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn get_rounding_mode_option<'js>(
@@ -140,7 +140,7 @@ fn get_rounding_mode_option<'js>(
     let name = temporal_to_string(ctx, &value)?;
     RoundingMode::from_str(&name)
         .map(Some)
-        .map_err(|_| Exception::throw_range(ctx, "invalid roundingMode"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
 
 fn get_rounding_increment<'js>(
@@ -219,10 +219,8 @@ fn to_constructor_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Ca
 }
 
 fn get_calendar_with_iso_default<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calendar> {
-    match get_defined(object, "calendar")? {
-        None => Ok(Calendar::ISO),
-        Some(value) => to_calendar_like(ctx, &value),
-    }
+    get_defined(object, "calendar")?
+        .map_or(Ok(Calendar::ISO), |value| to_calendar_like(ctx, &value))
 }
 
 /// PrepareTemporalFields Get order: day, hour, micro, milli, minute, month,
@@ -269,8 +267,8 @@ fn datetime_fields_from_object<'js>(
     ))
 }
 
-fn apply_month_code<'js>(
-    ctx: &Ctx<'js>, mut fields: DateTimeFields, month_code: Option<String>,
+fn apply_month_code(
+    ctx: &Ctx<'_>, mut fields: DateTimeFields, month_code: Option<String>,
 ) -> Result<DateTimeFields> {
     if let Some(code) = month_code {
         let month_code = unwrap_temporal(ctx, MonthCode::try_from_utf8(code.as_bytes()))?;
@@ -284,17 +282,17 @@ fn to_pdt<'js>(
 ) -> Result<temporal_rs::PlainDateTime> {
     if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
         let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, &options)?;
+        let _overflow = get_overflow(ctx, options.as_ref())?;
         return Ok(date_time.inner);
     }
     if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
         let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, &options)?;
+        let _overflow = get_overflow(ctx, options.as_ref())?;
         return Ok(zoned.inner.to_plain_date_time());
     }
     if let Some(date) = probe_class::<PlainDate>(ctx, value) {
         let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, &options)?;
+        let _overflow = get_overflow(ctx, options.as_ref())?;
         return unwrap_temporal(ctx, date.inner.to_plain_date_time(None));
     }
     if value.is_string() {
@@ -304,14 +302,14 @@ fn to_pdt<'js>(
             temporal_rs::PlainDateTime::from_utf8(string.as_bytes()),
         )?;
         let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, &options)?;
+        let _overflow = get_overflow(ctx, options.as_ref())?;
         return Ok(parsed);
     }
     let object = require_object(ctx, value, "cannot convert value to Temporal.PlainDateTime")?;
     let calendar = get_calendar_with_iso_default(ctx, &object)?;
     let (fields, month_code) = datetime_fields_from_object(ctx, &object)?;
     let options = options_object(ctx, options)?;
-    let overflow = get_overflow(ctx, &options)?;
+    let overflow = get_overflow(ctx, options.as_ref())?;
     let fields = apply_month_code(ctx, fields, month_code)?;
     unwrap_temporal(
         ctx,
@@ -364,7 +362,7 @@ fn rounding_from_value<'js>(ctx: &Ctx<'js>, options: Value<'js>) -> Result<Round
         rounding.smallest_unit = Some({
             let name = temporal_to_string(ctx, &options)?;
             Unit::from_str(&name)
-                .map_err(|_| Exception::throw_range(ctx, "invalid Temporal unit"))?
+                .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))?
         });
         return Ok(rounding);
     }
@@ -381,7 +379,7 @@ fn rounding_from_value<'js>(ctx: &Ctx<'js>, options: Value<'js>) -> Result<Round
 }
 
 fn get_disambiguation<'js>(
-    ctx: &Ctx<'js>, options: &Option<Object<'js>>,
+    ctx: &Ctx<'js>, options: Option<&Object<'js>>,
 ) -> Result<Disambiguation> {
     let Some(object) = options else {
         return Ok(Disambiguation::Compatible);
@@ -391,7 +389,7 @@ fn get_disambiguation<'js>(
     };
     let name = temporal_to_string(ctx, &value)?;
     Disambiguation::from_str(&name)
-        .map_err(|_| Exception::throw_range(ctx, "invalid disambiguation"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid disambiguation"))
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -515,7 +513,7 @@ impl PlainDateTime {
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let duration = to_duration(&ctx, &duration_like)?;
-        let overflow = get_overflow(&ctx, &options_object(&ctx, options)?)?;
+        let overflow = get_overflow(&ctx, options_object(&ctx, options)?.as_ref())?;
         unwrap_temporal(&ctx, self.inner.add(&duration, overflow)).map(Self::wrap)
     }
 
@@ -523,7 +521,7 @@ impl PlainDateTime {
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let duration = to_duration(&ctx, &duration_like)?;
-        let overflow = get_overflow(&ctx, &options_object(&ctx, options)?)?;
+        let overflow = get_overflow(&ctx, options_object(&ctx, options)?.as_ref())?;
         unwrap_temporal(&ctx, self.inner.subtract(&duration, overflow)).map(Self::wrap)
     }
 
@@ -564,7 +562,7 @@ impl PlainDateTime {
             "timeZone is not allowed in with()",
         )?;
         let (fields, month_code) = datetime_fields_from_object(&ctx, &object)?;
-        let overflow = get_overflow(&ctx, &options_object(&ctx, options)?)?;
+        let overflow = get_overflow(&ctx, options_object(&ctx, options)?.as_ref())?;
         let fields = apply_month_code(&ctx, fields, month_code)?;
         unwrap_temporal(&ctx, self.inner.with(fields, overflow)).map(Self::wrap)
     }
@@ -599,7 +597,7 @@ impl PlainDateTime {
         &self, time_zone: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<ZonedDateTime> {
         let zone = to_time_zone(&ctx, &time_zone)?;
-        let disambiguation = get_disambiguation(&ctx, &options_object(&ctx, options)?)?;
+        let disambiguation = get_disambiguation(&ctx, options_object(&ctx, options)?.as_ref())?;
         unwrap_temporal(&ctx, self.inner.to_zoned_date_time(zone, disambiguation))
             .map(ZonedDateTime::wrap)
     }
@@ -613,7 +611,7 @@ impl PlainDateTime {
                     None => DisplayCalendar::Auto,
                     Some(value) => {
                         let name = temporal_to_string(&ctx, &value)?;
-                        DisplayCalendar::from_str(&name).map_err(|_| {
+                        DisplayCalendar::from_str(&name).map_err(|_error| {
                             Exception::throw_range(&ctx, "invalid calendarName option")
                         })?
                     }
@@ -654,5 +652,5 @@ impl PlainDateTime {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.PlainDateTime" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.PlainDateTime" }
 }

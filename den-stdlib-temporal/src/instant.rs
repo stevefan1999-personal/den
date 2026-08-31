@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use rquickjs::{
     BigInt, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
@@ -33,36 +33,33 @@ pub struct Instant {
 }
 
 impl Instant {
-    pub(crate) fn wrap(inner: temporal_rs::Instant) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::Instant) -> Self { Self { inner } }
 }
 
 fn instant_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
     let name = to_js_string(ctx, value)?;
     temporal_rs::options::Unit::from_str(&name)
-        .map_err(|_| Exception::throw_range(ctx, "invalid Temporal unit"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn instant_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
     let name = to_js_string(ctx, value)?;
-    RoundingMode::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid roundingMode"))
+    RoundingMode::from_str(&name)
+        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
 
 fn optional_unit<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<temporal_rs::options::Unit>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => instant_unit(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| instant_unit(ctx, &value).map(Some))
 }
 
 fn optional_rounding_mode<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<RoundingMode>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => instant_rounding_mode(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| {
+        instant_rounding_mode(ctx, &value).map(Some)
+    })
 }
 
 fn optional_rounding_increment<'js>(
@@ -239,7 +236,7 @@ impl Instant {
         };
         let milliseconds = to_integer_if_integral(&ctx, &epoch_milliseconds)?;
         let milliseconds = i64::try_from(milliseconds)
-            .map_err(|_| Exception::throw_range(&ctx, "epochMilliseconds is out of range"))?;
+            .map_err(|_error| Exception::throw_range(&ctx, "epochMilliseconds is out of range"))?;
         unwrap_temporal(
             &ctx,
             temporal_rs::Instant::from_epoch_milliseconds(milliseconds),
@@ -334,5 +331,5 @@ impl Instant {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.Instant" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.Instant" }
 }

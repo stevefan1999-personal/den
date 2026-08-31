@@ -1,7 +1,7 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Ctx, Exception, FromJs, Function, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    Ctx, Exception, FromJs as _, Function, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
     class::Trace, function::This, prelude::Opt,
 };
 use temporal_rs::{
@@ -62,10 +62,7 @@ const fn snap_i128(value: i128) -> i128 { value as f64 as i128 }
 /// `compare` and `toString` read options from an always-present object, so a
 /// missing argument becomes an empty bag rather than no options at all.
 fn options_object<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Object<'js>> {
-    match crate::convert::options_object(ctx, options)? {
-        None => Object::new(ctx.clone()),
-        Some(object) => Ok(object),
-    }
+    crate::convert::options_object(ctx, options)?.map_or_else(|| Object::new(ctx.clone()), Ok)
 }
 
 fn required_options_object<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result<Object<'js>> {
@@ -83,7 +80,7 @@ fn required_options_object<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result<
     Err(Exception::throw_type(ctx, "options must be an object"))
 }
 
-fn out_of_range<'js>(ctx: &Ctx<'js>, error: impl core::fmt::Debug) -> rquickjs::Error {
+fn out_of_range(ctx: &Ctx<'_>, error: impl core::fmt::Debug) -> rquickjs::Error {
     drop(error);
     Exception::throw_range(ctx, "integer is out of range")
 }
@@ -290,6 +287,10 @@ fn rounding_mode_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Opt
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Duration {
     #[qjs(constructor)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Temporal.Duration has ten positional constructor fields"
+    )]
     pub fn new<'js>(
         years: Opt<Value<'js>>, months: Opt<Value<'js>>, weeks: Opt<Value<'js>>,
         days: Opt<Value<'js>>, hours: Opt<Value<'js>>, minutes: Opt<Value<'js>>,
