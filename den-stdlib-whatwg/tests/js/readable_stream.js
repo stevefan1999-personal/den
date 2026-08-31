@@ -17,3 +17,16 @@ await (async () => {
   }
   assertEquals(out.join(","), "1,2,3");
 })();
+
+const sentinel = new Error("sentinel");
+let thrown;
+try {
+  new ReadableStream({
+    get start() {
+      throw sentinel;
+    },
+  });
+} catch (error) {
+  thrown = error;
+}
+assertEquals(thrown, sentinel);
