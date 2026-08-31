@@ -13,6 +13,7 @@ keywords.workspace = true
 test = false
 
 [dependencies]
+den-util.workspace = true
 rusqlite.workspace = true
 either.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
