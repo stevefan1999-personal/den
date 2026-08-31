@@ -1,4 +1,5 @@
-use super::{UnixListenerWrapper, UnixStreamWrapper};
+#[cfg(unix)] use super::UnixListenerWrapper;
+use super::UnixStreamWrapper;
 
 #[cfg(unix)]
 #[tokio::test]

@@ -1,8 +1,9 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
+#[cfg(unix)] use std::time::Duration;
 
 use color_eyre::eyre;
 use den_core::engine::Engine;
-use tokio::time::timeout;
+#[cfg(unix)] use tokio::time::timeout;
 
 fn case(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
