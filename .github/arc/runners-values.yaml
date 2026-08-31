@@ -47,4 +47,4 @@ template:
           - { name: work, mountPath: /home/runner/_work }
     volumes:
       - name: work
-        emptyDir: { sizeLimit: 5Gi }
+        emptyDir: { sizeLimit: 30Gi }
