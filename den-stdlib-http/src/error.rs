@@ -66,3 +66,7 @@ impl HttpError {
     #[qjs(get, enumerable)]
     pub fn message(&self) -> String { self.message.clone() }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/error.rs"]
+mod tests;
