@@ -15,6 +15,16 @@ use crate::{
 
 pub struct Host;
 
+/// Web IDL `USVString`: JavaScript string coercion followed by replacement of
+/// unpaired UTF-16 surrogates.
+pub struct UsvString(pub String);
+
+impl<'js> rquickjs::FromJs<'js> for UsvString {
+    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
+        Host::coerce_usv_string(ctx, value).map(Self)
+    }
+}
+
 impl Host {
     pub fn throw_type(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
         Exception::throw_type(ctx, message)

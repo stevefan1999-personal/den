@@ -1349,7 +1349,6 @@ dependencies = [
  "data-url",
  "den-core",
  "den-stdlib-networking",
- "den-stdlib-text",
  "den-stdlib-worker",
  "den-util",
  "flate2",

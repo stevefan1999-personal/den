@@ -38,7 +38,6 @@ urlpattern.workspace = true
 [dev-dependencies]
 color-eyre.workspace = true
 den-core = { workspace = true, features = ["stdlib"] }
-den-stdlib-text.workspace = true
 den-stdlib-worker = { workspace = true, features = ["transpile"] }
 http.workspace = true
 insta.workspace = true

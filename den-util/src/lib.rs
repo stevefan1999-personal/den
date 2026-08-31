@@ -206,29 +206,6 @@ pub fn new_dom_exception<'js>(ctx: &Ctx<'js>, message: &str, name: &str) -> Resu
     ctor.construct((message, name))
 }
 
-/// WebIDL dictionary member read: `None` for a missing/`undefined` bag or key,
-/// a `TypeError` for a bag that is not an object.
-pub fn dict_get<'js>(options: Option<&Value<'js>>, key: &str) -> Result<Option<Value<'js>>> {
-    let Some(options) = options else {
-        return Ok(None);
-    };
-    if options.is_undefined() {
-        return Ok(None);
-    }
-    let Some(object) = options.as_object() else {
-        return Err(Exception::throw_type(
-            options.ctx(),
-            "The provided value cannot be converted to a dictionary",
-        ));
-    };
-    let value: Value<'js> = object.get(key)?;
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
-}
-
 /// QuickJS class id (`JS_GetClassID`).
 pub trait ClassId {
     fn class_id(&self) -> qjs::JSClassID;

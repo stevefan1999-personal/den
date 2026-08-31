@@ -2,10 +2,10 @@
 
 use den_util::coerce_string;
 use rquickjs::{
-    Class, Ctx, FromJs as _, Function, IntoJs as _, Iterable, JsLifetime, Result, Value,
+    Class, Coerced, Ctx, Function, IntoJs as _, Iterable, JsLifetime, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
-    function::{Opt, Rest, This},
+    function::{Opt, This},
 };
 
 use crate::{
@@ -130,16 +130,6 @@ impl FormData {
             .replace('\r', "%0D")
             .replace('"', "%22")
     }
-
-    fn ensure(ctx: &Ctx<'_>, args: usize, expected: usize) -> Result<()> {
-        if args < expected {
-            return Err(Host::throw_type(
-                ctx,
-                &format!("{expected} argument required, but only {args} present."),
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -160,116 +150,50 @@ impl FormData {
         })
     }
 
-    pub fn append<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
-        Self::ensure(&ctx, args.0.len(), 2)?;
-        let name = coerce_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        let filename = args
-            .0
-            .get(2)
-            .cloned()
-            .and_then(|value| coerce_string(&ctx, value).ok());
-        let entry = Self::normalize(
-            &ctx,
-            name,
-            args.0
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-            filename,
-        )?;
+    pub fn append<'js>(
+        &mut self, ctx: Ctx<'js>, name: Coerced<String>, value: Value<'js>,
+        filename: Opt<Value<'js>>,
+    ) -> Result<()> {
+        let filename = filename.0.and_then(|value| coerce_string(&ctx, value).ok());
+        let entry = Self::normalize(&ctx, name.0, value, filename)?;
         self.entries.push(entry);
         Ok(())
     }
 
-    pub fn delete<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
-        Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        self.entries.retain(|(existing, _)| existing != &name);
-        Ok(())
+    pub fn delete(&mut self, name: Coerced<String>) {
+        self.entries.retain(|(existing, _)| existing != &name.0);
     }
 
-    pub fn get<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Value<'js>> {
-        Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
+    pub fn get<'js>(&self, ctx: Ctx<'js>, name: Coerced<String>) -> Result<Value<'js>> {
         for (existing, value) in &self.entries {
-            if existing == &name {
+            if existing == &name.0 {
                 return Self::value_js(&ctx, value);
             }
         }
         Ok(Value::new_null(ctx))
     }
 
-    pub fn get_all<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Vec<Value<'js>>> {
-        Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
+    pub fn get_all<'js>(&self, ctx: Ctx<'js>, name: Coerced<String>) -> Result<Vec<Value<'js>>> {
         let mut result = Vec::new();
         for (existing, value) in &self.entries {
-            if existing == &name {
+            if existing == &name.0 {
                 result.push(Self::value_js(&ctx, value)?);
             }
         }
         Ok(result)
     }
 
-    pub fn has<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
-        Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        Ok(self.entries.iter().any(|(existing, _)| existing == &name))
+    pub fn has(&self, name: Coerced<String>) -> bool {
+        self.entries.iter().any(|(existing, _)| existing == &name.0)
     }
 
-    pub fn set<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
-        Self::ensure(&ctx, args.0.len(), 2)?;
-        let name = coerce_string(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        let filename = args
-            .0
-            .get(2)
-            .cloned()
-            .and_then(|value| coerce_string(&ctx, value).ok());
-        let replacement = Self::normalize(
-            &ctx,
-            name.clone(),
-            args.0
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-            filename,
-        )?;
+    pub fn set<'js>(
+        &mut self, ctx: Ctx<'js>, name: Coerced<String>, value: Value<'js>,
+        filename: Opt<Value<'js>>,
+    ) -> Result<()> {
+        let name = name.0;
+        let filename = filename.0.and_then(|value| coerce_string(&ctx, value).ok());
+        let replacement = Self::normalize(&ctx, name.clone(), value, filename)?;
         let mut result = Vec::new();
         let mut replace = true;
         for entry in self.entries.drain(..) {
@@ -314,20 +238,11 @@ impl FormData {
     }
 
     pub fn for_each<'js>(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, args: Rest<Value<'js>>,
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, callback: Function<'js>,
+        this_arg: Opt<Value<'js>>,
     ) -> Result<()> {
-        Self::ensure(&ctx, args.0.len(), 1)?;
-        let callback = Function::from_js(
-            &ctx,
-            args.0
-                .first()
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-        )?;
-        let this_arg = args
+        let this_arg = this_arg
             .0
-            .get(1)
-            .cloned()
             .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
         let form = this.0.borrow();
         for (name, value) in &form.entries {
