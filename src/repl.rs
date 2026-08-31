@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    io::{self, IsTerminal as _},
+    path::PathBuf,
+};
 
 use rustyline::{
     Behavior, Completer, Config, Editor, Helper, Highlighter, Hinter, Validator,
@@ -21,9 +24,15 @@ pub async fn run_repl(output_sink: mpsc::UnboundedSender<String>) {
         brackets: MatchingBracketValidator::new(),
     };
     let mut interrupted = false;
-    // rustyline 18 dropped `Configurer::set_behavior`: the behaviour has to be
-    // baked into the `Config` before the editor creates its terminal.
-    let config = Config::builder().behavior(Behavior::PreferTerm).build();
+    // Prefer the real console for interactive editing, but honor redirected
+    // stdin in scripts and tests. On Windows, `PreferTerm` opens CONIN$ and
+    // CONOUT$ directly, which would bypass the caller's pipes.
+    let behavior = if io::stdin().is_terminal() {
+        Behavior::PreferTerm
+    } else {
+        Behavior::Stdio
+    };
+    let config = Config::builder().behavior(behavior).build();
     let path = PathBuf::from(HISTORY_PATH);
     let history = match Surreal::open(&config, path.clone()) {
         Ok(history) => history,
