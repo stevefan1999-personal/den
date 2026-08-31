@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use futures::{SinkExt as _, StreamExt as _};
+#[cfg(feature = "ring")]
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     accept_async, accept_hdr_async,
@@ -195,12 +197,10 @@ async fn wss_connects_with_tokio_rustls() {
         rcgen::generate_simple_self_signed(["localhost".to_string()]).expect("self-signed cert");
     let cert_pem = certified.cert.pem();
     let key_pem = certified.signing_key.serialize_pem();
-    let chain = rustls_pemfile::certs(&mut cert_pem.as_bytes())
-        .collect::<std::io::Result<Vec<_>>>()
+    let chain = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+        .collect::<std::result::Result<Vec<_>, _>>()
         .expect("certificate chain");
-    let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
-        .expect("key pem")
-        .expect("a private key");
+    let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).expect("key pem");
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(
         rustls::ServerConfig::builder()
             .with_no_client_auth()

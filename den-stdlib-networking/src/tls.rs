@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use derive_more::{Deref, DerefMut, From, Into};
 use rquickjs::{Ctx, JsLifetime, Result, TypedArray, class::Trace, convert::List, function::Opt};
-use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
+use rustls::{
+    ClientConfig, RootCertStore, ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject as _},
+};
 use rustls_platform_verifier::BuilderVerifierExt as _;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -53,8 +56,10 @@ impl TlsStreamWrapper {
                 .map_err(std::io::Error::other);
         };
         let mut roots = RootCertStore::empty();
-        for certificate in rustls_pemfile::certs(&mut pem.as_bytes()) {
-            roots.add(certificate?).map_err(std::io::Error::other)?;
+        for certificate in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+            roots
+                .add(certificate.map_err(std::io::Error::other)?)
+                .map_err(std::io::Error::other)?;
         }
         Ok(ClientConfig::builder()
             .with_root_certificates(roots)
@@ -104,10 +109,11 @@ impl TlsListenerWrapper {
     /// A PEM certificate chain and private key, with no client certificate.
     fn acceptor(cert_pem: &str, key_pem: &str) -> Result<TlsAcceptor> {
         install_default_crypto_provider();
-        let chain =
-            rustls_pemfile::certs(&mut cert_pem.as_bytes()).collect::<std::io::Result<Vec<_>>>()?;
-        let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())?
-            .ok_or_else(|| std::io::Error::other("the key PEM holds no private key"))?;
+        let chain = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(std::io::Error::other)?;
+        let key =
+            PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).map_err(std::io::Error::other)?;
         let config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(chain, key)

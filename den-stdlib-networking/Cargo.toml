@@ -17,7 +17,6 @@ either.workspace = true
 futures.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 rustls.workspace = true
-rustls-pemfile.workspace = true
 rustls-platform-verifier.workspace = true
 tokio = { workspace = true, features = ["net", "io-util", "sync", "rt", "macros"] }
 tokio-rustls.workspace = true
