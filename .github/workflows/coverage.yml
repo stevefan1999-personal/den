@@ -1,0 +1,125 @@
+name: coverage
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  route:
+    uses: ./.github/workflows/runner-route.yml
+
+  coverage:
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
+    timeout-minutes: 240
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      INSTA_UPDATE: "no"
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.16.0
+      - name: Install coverage toolchain
+        run: rustup toolchain install nightly --profile minimal --component llvm-tools-preview
+      - name: Install coverage tools
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: cargo-llvm-cov@0.9.0,cargo-nextest@0.9.143
+          fallback: none
+      - name: Init official suites
+        run: |
+          git submodule update --init vendor/test262
+          git submodule update --init --depth 1 vendor/spec
+          git submodule update --init --depth 1 --filter=blob:none vendor/wpt
+          git -C vendor/wpt sparse-checkout init --cone
+          git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI streams xhr tools/serve tools/wptserve tools/manifest tools/metadata tools/gitignore tools/third_party
+      - name: Reset coverage data
+        run: cargo +nightly llvm-cov clean --workspace
+      - id: project-tests
+        name: Cover unit and end-to-end tests
+        continue-on-error: true
+        run: >-
+          cargo +nightly llvm-cov nextest --locked --branch --no-report
+          --workspace --all-features --profile compat --no-fail-fast
+      - id: official-tests
+        name: Cover Test262, WPT, and WebAssembly spec
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/wptserve.log"
+          (
+            cd vendor/wpt
+            exec setsid python3 -c 'from tools import localpaths; from tools.serve import serve; raise SystemExit(serve.main())' \
+              --config ../../den-core/tests/wpt-serve.json --no-h2
+          ) >"$log" 2>&1 &
+          pid=$!
+          cleanup() {
+            kill -TERM -- -"$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT INT TERM
+
+          ready=false
+          for _ in {1..60}; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              break
+            fi
+            if curl --fail --silent --output /dev/null http://127.0.0.1:8000/resources/testharness.js \
+              && curl --fail --silent --output /dev/null http://127.0.0.1:8001/resources/testharness.js \
+              && python3 -c 'import socket; socket.create_connection(("127.0.0.1", 8002), 1).close()'; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            tail -200 "$log"
+            exit 1
+          fi
+
+          cargo +nightly llvm-cov nextest --locked --branch --no-report \
+            --workspace --all-features --profile official --no-fail-fast
+      - name: Render coverage reports
+        if: ${{ always() }}
+        run: |
+          mkdir -p target/llvm-cov
+          cargo +nightly llvm-cov report --workspace --color never \
+            | tee target/llvm-cov/summary.txt
+          cargo +nightly llvm-cov report --workspace \
+            --html --output-dir target/llvm-cov
+          cargo +nightly llvm-cov report --workspace \
+            --lcov --output-path target/llvm-cov/lcov.info
+          cargo +nightly llvm-cov report --workspace \
+            --cobertura --output-path target/llvm-cov/cobertura.xml
+          {
+            echo "## Rust coverage"
+            echo
+            echo '```text'
+            tail -n 2 target/llvm-cov/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-coverage
+          path: |
+            target/llvm-cov/html
+            target/llvm-cov/lcov.info
+            target/llvm-cov/cobertura.xml
+            target/llvm-cov/summary.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Propagate test failures
+        if: ${{ always() && (steps.project-tests.outcome == 'failure' || steps.official-tests.outcome == 'failure') }}
+        run: exit 1
