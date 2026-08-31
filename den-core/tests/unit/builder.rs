@@ -23,11 +23,33 @@ fn builder_defaults_are_bounded_and_deny_by_default() {
         builder.settings.heap_limit, None,
         "hosts opt in to a heap ceiling"
     );
+    assert!(
+        builder.settings.import_map.is_none(),
+        "hosts opt in to an import map"
+    );
     assert_eq!(
         builder.settings.policy.query_all(Capability::Read),
         Decision::Denied,
         "default authority must deny access"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn builder_installs_the_import_map_before_evaluation() -> eyre::Result<()> {
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/import_map_engine");
+    let engine = EngineBuilder::new()
+        .import_map(
+            r#"{ "imports": { "answer": "./exact/lib.js" } }"#,
+            &directory,
+        )?
+        .build()
+        .await;
+    let answer = engine
+        .eval::<i32>("await import('answer').then(module => module.x)")
+        .await?;
+    eyre::ensure!(answer == 42);
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -742,12 +742,6 @@ fn validate_root_edge(
     selected: &BTreeMap<PackageKey, ResolvedPackage>, edge: &ResolvedRootEdge,
 ) -> HydrationResult<()> {
     validation::package_name(&edge.specifier)?;
-    if edge.specifier != edge.target.name {
-        return Err(PackageHydrationError::InvalidSolutionEdge(format!(
-            "root alias `{}` for `{}` is unsupported",
-            edge.specifier, edge.target
-        )));
-    }
     let target = validate_edge_endpoint(
         selected,
         &edge.target,

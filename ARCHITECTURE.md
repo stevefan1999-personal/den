@@ -29,7 +29,7 @@ den                              CLI, REPL, signals and tracing
     ├── den-stdlib-wasm          WebAssembly through wasmtime
     └── den-stdlib-worker        workers, events and structured clone
 
-den-config                       config foundation; not yet wired into the CLI
+den-config                       JSONC discovery and capability-policy conversion
 den-package-store                SeaORM package store, solver and module snapshots
 den-e2e                          file-based cross-crate runtime tests
 ```
@@ -38,7 +38,10 @@ The workspace manifest is the authoritative member and feature graph:
 [Cargo.toml](Cargo.toml). Each standard-library crate owns one JS-facing
 surface and must not depend on `den-core`; `den-core` composes them.
 
-The CLI uses clap derive and advertises only implemented commands. Downloaded
+The CLI uses clap derive and advertises only implemented commands. It discovers
+`den.json`/`den.jsonc` (or accepts `--config`) before building the engine.
+Root preloads run before the entry; imports, policy metadata, stack/heap budgets
+and an optional feature-gated package snapshot are inherited by workers. Downloaded
 package bytes and metadata belong to `den-package-store`; its schema is created
 through versioned SeaORM migrations, validated against the same SeaQuery table
 definitions when opened, and package content is addressed by SHA-256.

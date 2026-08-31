@@ -1,3 +1,4 @@
+use std::path::Path;
 #[cfg(feature = "package-store")]
 use std::sync::Arc;
 
@@ -6,7 +7,10 @@ use den_capabilities::Policy;
 use den_package_store::PackageModuleSnapshot;
 use rquickjs::loader::Bundle;
 
-use crate::engine::Engine;
+use crate::{
+    engine::Engine,
+    resolver::import_map::{ImportMap, ImportMapError},
+};
 
 /// QuickJS' native defaults, made explicit so worker engines cannot silently
 /// reset them while cloning the rest of the host configuration.
@@ -22,6 +26,7 @@ pub(crate) struct EngineSettings {
     pub(crate) heap_limit:      Option<usize>,
     pub(crate) policy:          Policy,
     pub(crate) argv:            Vec<String>,
+    pub(crate) import_map:      Option<ImportMap>,
     #[cfg(feature = "package-store")]
     pub(crate) package_modules: Option<Arc<PackageModuleSnapshot>>,
 }
@@ -36,6 +41,7 @@ impl Default for EngineSettings {
             argv:                                              std::env::args_os()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
+            import_map:                                        None,
             #[cfg(feature = "package-store")]
             package_modules:                                   None,
         }
@@ -91,6 +97,15 @@ impl EngineBuilder {
     pub fn argv(mut self, argv: Vec<String>) -> Self {
         self.settings.argv = argv;
         self
+    }
+
+    /// Parse and install an import map before the realm or any of its workers
+    /// is built.
+    pub fn import_map<P: AsRef<Path>>(
+        mut self, json: &str, base_dir: P,
+    ) -> Result<Self, ImportMapError> {
+        self.settings.import_map = Some(ImportMap::parse(json, base_dir.as_ref())?);
+        Ok(self)
     }
 
     #[cfg(feature = "package-store")]

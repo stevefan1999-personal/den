@@ -1,6 +1,4 @@
-use std::ffi::OsString;
-#[cfg(feature = "stdlib-ffi")]
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
@@ -21,6 +19,9 @@ pub struct Cli {
     /// Start a REPL after an optional default-run entry finishes.
     #[arg(long)]
     pub repl:        bool,
+    /// Load this configuration instead of discovering den.json/den.jsonc.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config:      Option<PathBuf>,
     /// Grant FFI access to every library, or only comma-separated paths.
     #[cfg(feature = "stdlib-ffi")]
     #[arg(long, global = true, value_delimiter = ',', num_args = 0.., require_equals = true)]
@@ -95,6 +96,21 @@ mod tests {
         };
         assert_eq!(run.entry, "https://example.test/main.ts");
         assert_eq!(run.args, [OsString::from("--port")]);
+    }
+
+    #[test]
+    fn config_is_global_to_run_and_eval() {
+        for args in [["den", "--config", "custom.json", "run"], [
+            "den",
+            "eval",
+            "--config",
+            "custom.json",
+        ]] {
+            let mut arguments = Vec::from(args);
+            arguments.extend(["main.js"]);
+            let cli = Cli::try_parse_from(arguments).expect("parse global config");
+            assert_eq!(cli.config, Some(std::path::PathBuf::from("custom.json")));
+        }
     }
 
     #[cfg(feature = "stdlib-ffi")]

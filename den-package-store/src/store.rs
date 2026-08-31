@@ -124,6 +124,17 @@ impl PackageStore {
         }
     }
 
+    /// Look up a configured registry without mutating the store.
+    pub async fn registry_id(&self, kind: &str, base_url: &str) -> Result<Option<RegistryId>> {
+        let base_url = validate_registry(kind, base_url)?;
+        registry::Entity::find()
+            .filter(registry::Column::BaseUrl.eq(base_url))
+            .one(&self.database)
+            .await?
+            .map(|model| registry_identity(model, kind))
+            .transpose()
+    }
+
     pub async fn registry(&self, id: RegistryId) -> Result<Option<Registry>> {
         Ok(registry::Entity::find_by_id(id.0)
             .one(&self.database)

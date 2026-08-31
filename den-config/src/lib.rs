@@ -4,6 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use den_capabilities::{
+    Capability, ImportScope, NameScope, NetworkScope, NormalizedPath, Policy, PortRange, Rule,
+    Scope, ScopeError,
+};
 use jsonc_parser::{ParseOptions, errors::ParseError, parse_to_serde_value};
 use serde::Deserialize;
 use thiserror::Error;
@@ -32,6 +36,15 @@ pub enum ConfigError {
     },
     #[error("cannot represent configuration path `{path}` as a file URL")]
     InvalidFileUrl { path: PathBuf },
+}
+
+#[derive(Debug, Error)]
+#[error("invalid {capability} permission `{value}`: {source}")]
+pub struct PolicyError {
+    capability: Capability,
+    value:      String,
+    #[source]
+    source:     ScopeError,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -249,6 +262,13 @@ impl Config {
 
     pub const fn permissions(&self) -> Option<&PermissionsConfig> { self.permissions.as_ref() }
 
+    /// Convert configured permissions to den's deny-by-default host policy.
+    pub fn policy(&self) -> std::result::Result<Policy, PolicyError> {
+        self.permissions
+            .as_ref()
+            .map_or_else(|| Ok(Policy::default()), PermissionsConfig::policy)
+    }
+
     pub const fn budgets(&self) -> Option<&BudgetsConfig> { self.budgets.as_ref() }
 
     pub const fn tasks(&self) -> Option<&BTreeMap<String, TaskConfig>> { self.tasks.as_ref() }
@@ -391,6 +411,62 @@ impl Config {
 }
 
 impl PermissionsConfig {
+    pub fn policy(&self) -> std::result::Result<Policy, PolicyError> {
+        let mut rules = Vec::new();
+        append_access(&mut rules, Capability::Read, self.read.as_ref(), |value| {
+            NormalizedPath::new(value).map(Scope::Read)
+        })?;
+        append_access(
+            &mut rules,
+            Capability::Write,
+            self.write.as_ref(),
+            |value| NormalizedPath::new(value).map(Scope::Write),
+        )?;
+        append_access(
+            &mut rules,
+            Capability::NetConnect,
+            self.net_connect.as_ref(),
+            |value| network_scope(value, Capability::NetConnect),
+        )?;
+        append_access(
+            &mut rules,
+            Capability::NetListen,
+            self.net_listen.as_ref(),
+            |value| network_scope(value, Capability::NetListen),
+        )?;
+        append_access(&mut rules, Capability::Env, self.env.as_ref(), |value| {
+            NameScope::exact(value).map(Scope::Env)
+        })?;
+        append_access(&mut rules, Capability::Run, self.run.as_ref(), |value| {
+            NormalizedPath::new(value).map(Scope::Run)
+        })?;
+        append_access(&mut rules, Capability::Sys, self.sys.as_ref(), |value| {
+            NameScope::exact(value).map(Scope::Sys)
+        })?;
+        append_access(&mut rules, Capability::Ffi, self.ffi.as_ref(), |value| {
+            NormalizedPath::new(value).map(Scope::Ffi)
+        })?;
+        append_access(
+            &mut rules,
+            Capability::Import,
+            self.imports.as_ref(),
+            |value| {
+                if value.ends_with('/') {
+                    ImportScope::prefix(value).map(Scope::Import)
+                } else {
+                    ImportScope::exact(value).map(Scope::Import)
+                }
+            },
+        )?;
+        append_access(
+            &mut rules,
+            Capability::Secrets,
+            self.secrets.as_ref(),
+            |value| NameScope::exact(value).map(Scope::Secrets),
+        )?;
+        Ok(Policy::new(rules))
+    }
+
     fn merge(&mut self, higher: Self) {
         replace(&mut self.read, higher.read);
         replace(&mut self.write, higher.write);
@@ -411,6 +487,101 @@ impl PermissionsConfig {
         resolve_access_paths(root, source_path, "run", &mut self.run)?;
         resolve_access_paths(root, source_path, "ffi", &mut self.ffi)
     }
+}
+
+fn append_access<T>(
+    rules: &mut Vec<Rule>, capability: Capability, access: Option<&Access<T>>,
+    scope: impl Fn(&T) -> std::result::Result<Scope, ScopeError>,
+) -> std::result::Result<(), PolicyError>
+where
+    T: std::fmt::Debug,
+{
+    let Some(access) = access else { return Ok(()) };
+    match access {
+        Access::All(allowed) => {
+            rules.push(if *allowed {
+                Rule::allow(Scope::All(capability))
+            } else {
+                Rule::deny(Scope::All(capability))
+            });
+        }
+        Access::List(values) => {
+            append_scoped_rules(rules, capability, values, Rule::allow, &scope)?
+        }
+        Access::Rules(access) => {
+            if let Some(allow) = &access.allow {
+                append_access_value(rules, capability, allow, Rule::allow, &scope)?;
+            }
+            if let Some(deny) = &access.deny {
+                append_access_value(rules, capability, deny, Rule::deny, &scope)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn append_access_value<T>(
+    rules: &mut Vec<Rule>, capability: Capability, access: &AccessValue<T>,
+    rule: fn(Scope) -> Rule, scope: &impl Fn(&T) -> std::result::Result<Scope, ScopeError>,
+) -> std::result::Result<(), PolicyError>
+where
+    T: std::fmt::Debug,
+{
+    match access {
+        AccessValue::All(true) => rules.push(rule(Scope::All(capability))),
+        AccessValue::All(false) => {}
+        AccessValue::List(values) => append_scoped_rules(rules, capability, values, rule, scope)?,
+    }
+    Ok(())
+}
+
+fn append_scoped_rules<T>(
+    rules: &mut Vec<Rule>, capability: Capability, values: &[T], rule: fn(Scope) -> Rule,
+    scope: &impl Fn(&T) -> std::result::Result<Scope, ScopeError>,
+) -> std::result::Result<(), PolicyError>
+where
+    T: std::fmt::Debug,
+{
+    for value in values {
+        rules.push(rule(scope(value).map_err(|source| {
+            PolicyError {
+                capability,
+                value: format!("{value:?}"),
+                source,
+            }
+        })?));
+    }
+    Ok(())
+}
+
+fn network_scope(value: &str, capability: Capability) -> std::result::Result<Scope, ScopeError> {
+    let explicit_port = value
+        .strip_prefix('[')
+        .and_then(|value| value.split_once("]:"))
+        .or_else(|| {
+            (value.matches(':').count() == 1)
+                .then(|| value.split_once(':'))
+                .flatten()
+        });
+    let (host, ports) = explicit_port.map_or_else(
+        || Ok((value, PortRange::new(0, u16::MAX)?)),
+        |(host, port)| {
+            let port = port
+                .parse::<u16>()
+                .map_err(|_error| ScopeError::InvalidPortRange)?;
+            Ok((host, PortRange::exact(port)))
+        },
+    )?;
+    let network = if host.contains('/') {
+        NetworkScope::cidr(host, ports)?
+    } else {
+        NetworkScope::host(host.trim_matches(['[', ']']), ports)?
+    };
+    Ok(match capability {
+        Capability::NetConnect => Scope::NetConnect(network),
+        Capability::NetListen => Scope::NetListen(network),
+        _ => return Err(ScopeError::InvalidHost),
+    })
 }
 
 impl BudgetsConfig {
@@ -621,6 +792,7 @@ fn merge_nested<T>(lower: &mut Option<T>, higher: Option<T>, merge: impl FnOnce(
 mod tests {
     use std::{collections::BTreeMap, fs, path::Path};
 
+    use den_capabilities::{Decision, Request};
     use tempfile::tempdir;
 
     use super::{
@@ -841,5 +1013,57 @@ mod tests {
             };
             assert_eq!(task.cwd.as_deref(), Some(root.as_path()));
         }
+    }
+
+    #[test]
+    fn permissions_build_a_scoped_deny_by_default_policy() {
+        let temp = tempdir().expect("create temp directory");
+        let path = temp.path().join("den.json");
+        write(
+            &path,
+            r#"{
+                "permissions": {
+                    "read": { "allow": ["data"], "deny": ["data/private"] },
+                    "env": ["PUBLIC_TOKEN"],
+                    "netConnect": ["example.com:443", "10.0.0.0/8"]
+                }
+            }"#,
+        );
+        let policy = Config::load(path)
+            .expect("load configuration")
+            .policy()
+            .expect("build policy");
+
+        let allowed = Request::read(temp.path().join("data/file.txt")).expect("read request");
+        let denied = Request::read(temp.path().join("data/private/key")).expect("read request");
+        let outside = Request::read(temp.path().join("other.txt")).expect("read request");
+        assert_eq!(policy.query(&allowed).decision(), Decision::Allowed);
+        assert_eq!(policy.query(&denied).decision(), Decision::Denied);
+        assert_eq!(policy.query(&outside).decision(), Decision::Denied);
+        assert!(
+            policy
+                .check(&Request::env("PUBLIC_TOKEN").expect("env request"))
+                .is_ok()
+        );
+        assert!(
+            policy
+                .check(&Request::env("SECRET").expect("env request"))
+                .is_err()
+        );
+        assert!(
+            policy
+                .check(&Request::net_connect("example.com", 443).expect("network request"))
+                .is_ok()
+        );
+        assert!(
+            policy
+                .check(&Request::net_connect("example.com", 80).expect("network request"))
+                .is_err()
+        );
+        assert!(
+            policy
+                .check(&Request::net_connect("10.2.3.4", 80).expect("network request"))
+                .is_ok()
+        );
     }
 }

@@ -23,6 +23,7 @@ use crate::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootRequirement {
+    pub specifier:   String,
     pub registry_id: crate::RegistryId,
     pub package:     String,
     pub requirement: String,
@@ -33,7 +34,21 @@ impl RootRequirement {
     pub fn new<P: Into<String>, R: Into<String>>(
         registry_id: crate::RegistryId, package: P, requirement: R,
     ) -> Self {
+        let package = package.into();
         Self {
+            specifier: package.clone(),
+            registry_id,
+            package,
+            requirement: requirement.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn aliased<S: Into<String>, P: Into<String>, R: Into<String>>(
+        specifier: S, registry_id: crate::RegistryId, package: P, requirement: R,
+    ) -> Self {
+        Self {
+            specifier: specifier.into(),
             registry_id,
             package: package.into(),
             requirement: requirement.into(),
@@ -124,7 +139,7 @@ impl RepositorySnapshot {
                     ))
                 })?;
                 Ok(ResolvedRootEdge {
-                    specifier: root.package.clone(),
+                    specifier: root.specifier.clone(),
                     requirement: root.requirement.clone(),
                     target,
                     target_version_id: selected.version_id,

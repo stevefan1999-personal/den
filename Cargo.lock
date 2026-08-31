@@ -1443,7 +1443,9 @@ dependencies = [
  "clap_complete",
  "color-eyre",
  "console-subscriber",
+ "den-config",
  "den-core",
+ "den-package-store",
  "den-util",
  "libc",
  "log",
@@ -1451,6 +1453,7 @@ dependencies = [
  "oxc_sourcemap",
  "rquickjs",
  "rustyline",
+ "serde_json",
  "surrealkv",
  "tempfile",
  "tokio",
@@ -1473,6 +1476,7 @@ dependencies = [
 name = "den-config"
 version = "0.4.0"
 dependencies = [
+ "den-capabilities",
  "jsonc-parser",
  "serde",
  "tempfile",

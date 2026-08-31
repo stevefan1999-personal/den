@@ -3,6 +3,8 @@ use std::{env::temp_dir, fs, path::PathBuf, process};
 use color_eyre::eyre;
 use rquickjs::{embed, loader::Bundle};
 
+#[cfg(feature = "stdlib-worker")]
+use crate::EngineBuilder;
 use crate::engine::{Engine, EngineError, PendingRejections};
 
 static EMBEDDED_BUNDLE: Bundle = {
@@ -61,6 +63,32 @@ async fn embedded_modules_are_available_inside_module_workers() -> eyre::Result<
         .eval::<usize>("globalThis.embeddedWorkerAnswer")
         .await?;
     eyre::ensure!(answer == 42, "expected worker answer 42, got {answer}");
+    engine.shutdown().await;
+    Ok(())
+}
+
+#[cfg(feature = "stdlib-worker")]
+#[tokio::test(flavor = "multi_thread")]
+async fn builder_import_maps_are_available_inside_module_workers() -> eyre::Result<()> {
+    let directory = fixture("worker_import_map");
+    let engine = EngineBuilder::new()
+        .import_map(
+            r#"{ "imports": { "worker-answer": "./mapped.js" } }"#,
+            &directory,
+        )?
+        .build()
+        .await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        engine.run_file(directory.join("parent.js")),
+    )
+    .await??;
+    eyre::ensure!(
+        engine
+            .eval::<usize>("globalThis.mappedWorkerAnswer")
+            .await?
+            == 42
+    );
     engine.shutdown().await;
     Ok(())
 }

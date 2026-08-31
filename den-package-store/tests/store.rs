@@ -260,6 +260,27 @@ async fn registries_are_canonical_and_reject_embedded_credentials() -> TestResul
 }
 
 #[tokio::test]
+async fn registry_lookup_does_not_create_missing_rows() -> TestResult {
+    let store = PackageStore::open_in_memory().await?;
+    assert_eq!(
+        store.registry_id("jsr", "https://jsr.example/").await?,
+        None
+    );
+    let id = store.add_registry("jsr", "https://jsr.example/").await?;
+    assert_eq!(
+        store.registry_id("jsr", "https://jsr.example").await?,
+        Some(id)
+    );
+    assert!(
+        store
+            .registry_id("npm", "https://jsr.example/")
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn concurrent_stores_insert_distinct_versions_of_one_new_package() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("concurrent.sqlite3");

@@ -3,7 +3,7 @@ use std::{ffi::OsString, path::PathBuf};
 use app::App;
 use clap::{CommandFactory as _, Parser as _};
 use cli::{Cli, Command};
-use den_core::{EngineBuilder, engine::EngineError};
+use den_core::engine::EngineError;
 use rquickjs::convert::Coerced;
 #[cfg(not(all(feature = "tokio-console", tokio_unstable)))]
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
@@ -35,7 +35,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
         let has_ffi = cli.allow_ffi.is_some();
         #[cfg(not(feature = "stdlib-ffi"))]
         let has_ffi = false;
-        if cli.repl || has_ffi {
+        if cli.repl || has_ffi || cli.config.is_some() {
             Cli::command()
                 .error(
                     clap::error::ErrorKind::ArgumentConflict,
@@ -60,6 +60,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
             den_core::FfiGrant::under(paths)
         }
     });
+    let config_path = cli.config.clone();
     let (entry, script_arguments, eval, repl) = match cli.command {
         Some(Command::Run(run)) => (Some(run.entry), run.args, None, cli.repl),
         Some(Command::Eval(eval)) => (None, Vec::new(), Some(eval), cli.repl),
@@ -70,12 +71,14 @@ async fn main() -> color_eyre::eyre::Result<()> {
     let process_arguments = script_argv(entry.as_deref(), script_arguments);
     let has_entry = entry.is_some();
     let has_eval = eval.is_some();
-    let engine = EngineBuilder::new().argv(process_arguments).build().await;
+    let config = den_config::Config::discover(std::env::current_dir()?, config_path.as_deref())?;
+    let engine = runtime_config::build_engine(config.as_ref(), process_arguments).await?;
     let mut app = App::with_engine(engine);
     #[cfg(feature = "stdlib-ffi")]
     if let Some(grant) = ffi {
         app.engine.set_ffi_grant(grant).await?;
     }
+    runtime_config::run_preloads(&app.engine, config.as_ref()).await?;
 
     if let Some(eval) = eval {
         if eval.print {
@@ -145,6 +148,7 @@ mod app;
 mod cli;
 mod history;
 mod repl;
+mod runtime_config;
 
 #[cfg(test)]
 mod tests {
