@@ -1090,6 +1090,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "den-config"
+version = "0.4.0"
+dependencies = [
+ "jsonc-parser",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "url",
+]
+
+[[package]]
 name = "den-core"
 version = "0.4.0"
 dependencies = [
@@ -2494,6 +2505,15 @@ name = "json-escape-simd"
 version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c22a2041e3874a055a4eb03ea2395aaccdefa84ce75b31d542d72a741c3c6ad3"
+
+[[package]]
+name = "jsonc-parser"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0560e3f9a9a03ea6b6e90b41138c5db9e21526c99eb192c1a26c68176593285"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "lazy_static"

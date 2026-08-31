@@ -2,6 +2,7 @@
 
 members = [
     "den-capabilities",
+    "den-config",
     "den-core",
     "den-e2e",
     "den-stdlib-assert",
@@ -41,6 +42,7 @@ keywords = ["javascript", "quickjs", "tokio", "typescript", "oxc"]
 [workspace.dependencies]
 # Workspace members (call sites keep optional / default-features / extra features).
 den-capabilities = { version = "0.4.0", path = "den-capabilities" }
+den-config = { version = "0.4.0", path = "den-config" }
 den-core = { version = "0.4.0", path = "den-core", default-features = false }
 den-stdlib-assert = { version = "0.4.0", path = "den-stdlib-assert" }
 den-stdlib-console = { version = "0.4.0", path = "den-stdlib-console" }
@@ -97,6 +99,7 @@ import_map = "0.25.0"
 indexmap = "2.14.0"
 insta = { version = "=1.48.0", default-features = false }
 ipnet = "2.12.1"
+jsonc-parser = "0.33.1"
 libc = "0.2"
 libffi = "5.2.0"
 libtest-mimic = "0.8.2"
