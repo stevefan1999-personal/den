@@ -521,6 +521,8 @@ jobs:
         with:
           release: "10.1"
           arch: x86_64
+          # Avoid intermittent EBADF while nextest lists test binaries concurrently.
+          cpu: 1
           mem: 10240
           copyback: false
           envs: >-
