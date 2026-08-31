@@ -128,6 +128,28 @@ mod tests {
     }
 
     #[test]
+    fn eval_print_and_repl_and_completions_parse() {
+        let eval = Cli::try_parse_from(["den", "eval", "--print", "1 + 1"]).expect("eval");
+        let Some(Command::Eval(eval)) = eval.command else {
+            panic!("eval command expected")
+        };
+        assert_eq!(eval.code, "1 + 1");
+        assert!(eval.print);
+
+        let repl = Cli::try_parse_from(["den", "repl"]).expect("repl");
+        assert!(matches!(repl.command, Some(Command::Repl)));
+        let after = Cli::try_parse_from(["den", "--repl", "main.js"]).expect("repl flag");
+        assert!(after.repl);
+        assert_eq!(after.entry.as_deref(), Some("main.js"));
+
+        let completions = Cli::try_parse_from(["den", "completions", "zsh"]).expect("completions");
+        let Some(Command::Completions(completions)) = completions.command else {
+            panic!("completions command expected")
+        };
+        assert_eq!(completions.shell, clap_complete::Shell::Zsh);
+    }
+
+    #[test]
     fn help_lists_only_implemented_commands() {
         let command = Cli::command();
         let names = command
