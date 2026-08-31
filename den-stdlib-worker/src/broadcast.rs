@@ -12,7 +12,7 @@ use std::{
     cell::{Cell, RefCell},
     sync::{
         LazyLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -37,7 +37,7 @@ use crate::{
 struct Subscriber {
     /// Identity, so that a post can skip its own channel. A raw pointer would
     /// do it too, but an id is comparable across threads without being one.
-    id:    u64,
+    id:    usize,
     inbox: UnboundedSender<Message>,
 }
 
@@ -50,7 +50,7 @@ struct Subscriber {
 /// which is why [`NativeBroadcast::unregister`] is written the way it is.
 static SUBSCRIBERS: LazyLock<DashMap<String, Vec<Subscriber>>> = LazyLock::new(DashMap::new);
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// The transport end of one `BroadcastChannel`.
 #[derive(Trace, JsLifetime)]
@@ -59,7 +59,7 @@ pub struct NativeBroadcast {
     #[qjs(skip_trace)]
     name:  String,
     #[qjs(skip_trace)]
-    id:    u64,
+    id:    usize,
     /// This channel's own inbox, until the pump takes it.
     #[qjs(skip_trace)]
     inbox: RefCell<Option<UnboundedReceiver<Message>>>,

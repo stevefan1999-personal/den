@@ -23,13 +23,20 @@ const handled = await new Promise<Record<string, unknown>>((resolve, reject) => 
   worker.onerror = (event: ErrorEvent) => reject(new Error(event.message));
   worker.postMessage({ id: 1, method: "GET", path: "/", body: "" });
 });
-worker.terminate();
 
 assertEquals(handled.id, 1);
 const body = (handled.reply as { body: string }).body;
 assert(body.startsWith("<!DOCTYPE html>"));
 assert(body.includes("Notes"));
 assert(body.includes("Hello from den"));
+
+const closed = await new Promise<Record<string, unknown>>((resolve, reject) => {
+  worker.onmessage = (event: MessageEvent) => resolve(event.data);
+  worker.onerror = (event: ErrorEvent) => reject(new Error(event.message));
+  worker.postMessage({ type: "close" });
+});
+assertEquals(closed.type, "closed");
+worker.terminate();
 
 const check = Connection.open(dbPath);
 check.close();

@@ -4,6 +4,7 @@ import { route, type HttpReply, type HttpRequest } from "./http.ts";
 import { Page, type Note } from "./site.tsx";
 
 export interface Sqlite {
+  close(): void;
   execute(sql: string, params?: unknown[]): number;
   queryRows?(sql: string, params?: unknown[]): unknown[][] | null;
   query_rows?(sql: string, params?: unknown[]): unknown[][] | null;

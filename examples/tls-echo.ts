@@ -69,7 +69,6 @@ const server = (async (): Promise<void> => {
     const text: string = new TextDecoder().decode(chunk);
     console.log("server received", JSON.stringify(text), "from", peer.toString());
     await writeAll(stream, "pong");
-    await stream.shutdown();
     break;
   }
 })();
@@ -79,7 +78,6 @@ const client = (async (): Promise<void> => {
   await writeAll(stream, "ping");
   const reply: string = new TextDecoder().decode(await stream.read(64));
   console.log("client received", JSON.stringify(reply));
-  await stream.shutdown();
 })();
 
 await Promise.all([server, client]);
