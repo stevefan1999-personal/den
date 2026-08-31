@@ -146,7 +146,7 @@ jobs:
         run: >-
           cargo nextest run --locked --profile compat --no-fail-fast --workspace
           --target ${{ matrix.target }} --no-default-features
-          --features ${{ matrix.features }},ring
+          --features ${{ matrix.features }},package-store,ring
 
   cross-linux:
     name: ${{ matrix.target }}
@@ -252,7 +252,7 @@ jobs:
       RUST_TEST_THREADS: "1"
       SCCACHE_GHA_ENABLED: "true"
       TARGET: ${{ matrix.target }}
-      TARGET_FEATURES: ${{ matrix.features }},ring
+      TARGET_FEATURES: ${{ matrix.features }},package-store,ring
       TARGET_WASM: ${{ matrix.wasm }}
     steps:
       - uses: actions/checkout@v4
@@ -388,7 +388,7 @@ jobs:
           cargo nextest run --locked --profile compat --no-fail-fast --workspace
           --exclude den-stdlib-wasm --target ${{ matrix.target }}
           --no-default-features
-          --features stdlib,typescript,react,mimalloc,ring,rquickjs/bindgen
+          --features stdlib,typescript,react,mimalloc,package-store,ring,rquickjs/bindgen
           --test-threads 1
 
   musl-release:
@@ -497,7 +497,7 @@ jobs:
             export LIBCLANG_PATH=/usr/local/llvm19/lib
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --target ${{ matrix.target }} --no-default-features \
-              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,ring,rquickjs/bindgen
+              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,package-store,ring,rquickjs/bindgen
 
   netbsd:
     name: x86_64-unknown-netbsd
@@ -542,5 +542,5 @@ jobs:
             cargo +1.97.1 nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
               --no-default-features \
-              --features stdlib,typescript,react,ring,rquickjs/bindgen \
+              --features stdlib,typescript,react,package-store,ring,rquickjs/bindgen \
               --test-threads 1
