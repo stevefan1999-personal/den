@@ -345,9 +345,9 @@ impl Engine {
             let resolver = (
                 ImportMapResolver,
                 builtin_resolver,
-                bundle,
                 #[cfg(feature = "package-store")]
                 PackageResolver::optional(package_modules.clone()),
+                bundle,
                 HttpResolver,
                 // Ahead of `FileResolver`, which reads every name as relative
                 // to the working directory and so can answer neither for an
@@ -361,9 +361,9 @@ impl Engine {
             let loader = (
                 BuiltinLoader::default(),
                 builtin_loader,
-                bundle,
                 #[cfg(feature = "package-store")]
                 PackageLoader::optional(package_modules),
+                bundle,
                 HttpLoader,
                 Self::SCRIPT_PATTERNS
                     .iter()
