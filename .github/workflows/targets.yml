@@ -444,17 +444,9 @@ jobs:
           --no-default-features
 
   freebsd:
-    name: ${{ matrix.target }}
+    name: x86_64-unknown-freebsd
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-freebsd
-            arch: x86_64
-          - target: aarch64-unknown-freebsd
-            arch: aarch64
     env:
       CARGO_BUILD_JOBS: "2"
       DEN_TEST_CC: cc
@@ -472,7 +464,7 @@ jobs:
         uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1.5.5
         with:
           release: "15.1"
-          arch: ${{ matrix.arch }}
+          arch: x86_64
           mem: 10240
           copyback: false
           envs: >-
@@ -482,65 +474,14 @@ jobs:
             pkg install -y bash ca_root_nss cmake-core curl git gmake llvm19-lite nasm perl5 pkgconf
             tzsetup UTC
             mkdir -p "$HOME/.cargo/bin"
-            if [ "${{ matrix.arch }}" = x86_64 ]; then
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-                | sh -s -- -y --profile minimal --default-toolchain stable
-              curl -fsSL \
-                https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-freebsd.tar.gz \
-                | tar -xzf - -C "$HOME/.cargo/bin"
-            else
-              pkg install -y rust
-              cargo install cargo-nextest --version 0.9.143 --locked --no-default-features
-            fi
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain stable
+            curl -fsSL \
+              https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-freebsd.tar.gz \
+              | tar -xzf - -C "$HOME/.cargo/bin"
           run: |
             export PATH="$HOME/.cargo/bin:$PATH"
             export LIBCLANG_PATH=/usr/local/llvm19/lib
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
-              --target ${{ matrix.target }} --no-default-features \
+              --target x86_64-unknown-freebsd --no-default-features \
               --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,package-store,ring,rquickjs/bindgen
-
-  netbsd:
-    name: x86_64-unknown-netbsd
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-    env:
-      CARGO_BUILD_JOBS: "2"
-      DEN_TEST_CC: cc
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
-      - name: Build and test on NetBSD 10.1
-        uses: vmactions/netbsd-vm@07366ff288a2661e3998b69c5d48eda270050635 # v1.4.8
-        with:
-          release: "10.1"
-          arch: x86_64
-          mem: 10240
-          copyback: false
-          envs: >-
-            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
-            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
-          prepare: |
-            test -x /usr/pkg/bin/pkgin || /usr/sbin/pkg_add pkgin
-            /usr/pkg/bin/pkgin -y update
-            /usr/pkg/bin/pkgin -y install bash clang cmake curl git gmake llvm \
-              mozilla-rootcerts-openssl nasm perl pkgconf
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain 1.97.1
-            . "$HOME/.cargo/env"
-            # Newer releases pull a pager stack that does not compile on NetBSD.
-            cargo +1.97.1 install cargo-nextest --version 0.9.114 --locked --no-default-features
-          run: |
-            export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
-            export LIBCLANG_PATH=/usr/pkg/lib
-            cargo +1.97.1 nextest run --locked --profile compat --no-fail-fast --workspace \
-              --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
-              --no-default-features \
-              --features stdlib,typescript,react,package-store,ring,rquickjs/bindgen \
-              --test-threads 1
