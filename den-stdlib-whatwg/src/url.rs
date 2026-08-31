@@ -4,8 +4,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Class, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsLifetime, Object, Result,
-    Symbol, Value,
+    Array, Class, Coerced, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsLifetime, Object,
+    Result, Symbol, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
@@ -695,7 +695,7 @@ fn collect_iter<'js>(
     let mut items = Vec::new();
     loop {
         let result: Object = next.call((This(iterator.clone()),))?;
-        if result.get::<_, bool>("done").unwrap_or(false) {
+        if result.get::<_, Coerced<bool>>("done")?.0 {
             break;
         }
         items.push(result.get("value")?);

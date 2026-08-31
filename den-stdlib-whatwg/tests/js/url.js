@@ -57,6 +57,41 @@ assertEquals(iteratorCalls, 1);
 assertEquals(nextReads, 1);
 assertEquals(custom.get("once"), "yes");
 
+let coercingSteps = 0;
+const truthyDone = new URLSearchParams({
+  [Symbol.iterator]() {
+    return {
+      next() {
+        coercingSteps++;
+        return coercingSteps === 1
+          ? { done: "yes", value: ["wrong", "value"] }
+          : { done: true };
+      },
+    };
+  },
+});
+assertEquals(coercingSteps, 1);
+assertEquals(truthyDone.get("wrong"), null);
+
+const doneError = new Error("done getter");
+let caughtDoneError;
+try {
+  new URLSearchParams({
+    [Symbol.iterator]() {
+      return {
+        next() {
+          return Object.defineProperty({}, "done", {
+            get() { throw doneError; },
+          });
+        },
+      };
+    },
+  });
+} catch (error) {
+  caughtDoneError = error;
+}
+assertEquals(caughtDoneError, doneError);
+
 assert(URL.canParse("/ok", "https://example.com"));
 assertEquals(URL.parse("not a url"), null);
 
