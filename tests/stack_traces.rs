@@ -1,9 +1,10 @@
 use std::{
     fs,
-    io::Write as _,
+    io::{BufRead as _, BufReader, Write as _},
     process::{Command, Stdio},
+    sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use color_eyre::eyre;
@@ -212,20 +213,47 @@ fn console_trace_starts_at_the_javascript_caller() -> TestResult {
 
 #[test]
 fn repl_exception_is_not_reprinted_as_an_unhandled_rejection() -> TestResult {
+    const COMPLETE: &str = "__den_repl_done__";
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_den"))
         .arg("--repl")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| eyre::eyre!("missing REPL stdout"))?;
+    let (line_tx, line_rx) = mpsc::channel();
+    let stdout_reader = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
     let mut stdin = child
         .stdin
         .take()
         .ok_or_else(|| eyre::eyre!("missing REPL stdin"))?;
     writeln!(stdin, "throw new TypeError('repl boom')")?;
-    thread::sleep(Duration::from_millis(200));
+    writeln!(stdin, "console.log(['__den_repl', '_done__'].join(''))")?;
+    stdin.flush()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| eyre::eyre!("REPL did not print {COMPLETE}"))?;
+        if line_rx.recv_timeout(remaining)?.contains(COMPLETE) {
+            break;
+        }
+    }
     drop(stdin);
     let output = child.wait_with_output()?;
+    stdout_reader
+        .join()
+        .map_err(|_panic| eyre::eyre!("REPL stdout reader panicked"))?;
     let stderr = String::from_utf8(output.stderr)?;
     eyre::ensure!(
         stderr.matches("TypeError: repl boom").count() == 1,
