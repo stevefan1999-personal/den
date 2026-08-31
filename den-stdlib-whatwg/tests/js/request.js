@@ -10,3 +10,23 @@ const request = new Request("http://127.0.0.1/post", {
 assertEquals(request.method, "POST");
 assertEquals(request.headers.get("x-a"), "b");
 assertEquals(request.url, "http://127.0.0.1/post");
+
+assertEquals(new Request("http://127.0.0.1/", { keepalive: 0n }).keepalive, false);
+assertThrows(
+  () => new Request("http://127.0.0.1/", { credentials: null }),
+  TypeError,
+);
+assertThrows(() => new Request("http://127.0.0.1/", 1), TypeError);
+
+assertEquals(new Response(null, { status: "204" }).status, 204);
+assertEquals(new Response(null, { statusText: null }).statusText, "null");
+const statusError = new Error("status getter");
+let caughtStatusError;
+try {
+  new Response(null, Object.defineProperty({}, "status", {
+    get() { throw statusError; },
+  }));
+} catch (error) {
+  caughtStatusError = error;
+}
+assertEquals(caughtStatusError, statusError);
