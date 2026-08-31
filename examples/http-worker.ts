@@ -9,6 +9,12 @@ self.onmessage = (event: MessageEvent) => {
     postMessage({ type: "ready" });
     return;
   }
+  if (data?.type === "close") {
+    db?.close();
+    db = undefined;
+    postMessage({ type: "closed" });
+    return;
+  }
   if (db === undefined) {
     postMessage({ id: data?.id, error: "worker has no database" });
     return;

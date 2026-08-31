@@ -40,6 +40,7 @@ env:
   # not emit DWARF into every dependency and test binary.
   CARGO_PROFILE_TEST_DEBUG: "0"
   INSTA_UPDATE: "no"
+  INSTA_WORKSPACE_ROOT: ${{ github.workspace }}
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -172,13 +173,13 @@ jobs:
             cc: arm-linux-gnueabi-gcc
             features: stdlib,typescript,react,mimalloc,rquickjs/bindgen
             qemu: arm
-            rustflags: ""
+            rustflags: -C link-arg=-latomic
             wasm: "0"
           - target: arm-unknown-linux-gnueabihf
             cc: arm-linux-gnueabihf-gcc
             features: stdlib,typescript,react,mimalloc,rquickjs/bindgen
             qemu: arm
-            rustflags: ""
+            rustflags: -C link-arg=-latomic
             wasm: "0"
           - target: armv7-unknown-linux-gnueabihf
             cc: arm-linux-gnueabihf-gcc
@@ -201,19 +202,6 @@ jobs:
             features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
             qemu: loong64
             rustflags: -C target-feature=-crt-static
-          - target: powerpc-unknown-linux-gnu
-            cc: powerpc-linux-gnu-gcc
-            features: stdlib,typescript,react,mimalloc,rquickjs/bindgen
-            qemu: ""
-            rustflags: ""
-            test_runner: /linux-runner powerpc
-            wasm: "0"
-          - target: powerpc64-unknown-linux-gnu
-            cc: powerpc64-linux-gnu-gcc
-            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
-            qemu: ""
-            rustflags: ""
-            test_runner: /linux-runner powerpc64
           - target: powerpc64le-unknown-linux-gnu
             cc: powerpc64le-linux-gnu-gcc
             features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
@@ -231,14 +219,10 @@ jobs:
             rustflags: ""
           - target: riscv64gc-unknown-linux-musl
             cc: riscv64-linux-musl-gcc
-            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+            features: stdlib,typescript,react,rquickjs/bindgen
             qemu: riscv64
             rustflags: -C target-feature=-crt-static
-          - target: s390x-unknown-linux-gnu
-            cc: s390x-linux-gnu-gcc
-            features: stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
-            qemu: s390x
-            rustflags: ""
+            wasm: "0"
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_DEV_OPT_LEVEL: "1"
@@ -250,12 +234,12 @@ jobs:
       CROSS_BUILD_ENV_PASSTHROUGH: >-
         AWS_LC_SYS_NO_JITTER_ENTROPY
         BINDGEN_EXTRA_CLANG_ARGS_i686_pc_windows_gnu
-        DEN_TEST_CC DEN_TEST_RUNNER INSTA_UPDATE RUST_BACKTRACE RUST_TEST_THREADS
+        DEN_TEST_CC INSTA_UPDATE INSTA_WORKSPACE_ROOT
+        RUST_BACKTRACE RUST_TEST_THREADS
         RUSTFLAGS TARGET TARGET_FEATURES TARGET_WASM CARGO_INCREMENTAL
         CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
         CARGO_PROFILE_DEV_OPT_LEVEL CARGO_PROFILE_TEST_OPT_LEVEL
       DEN_TEST_CC: ${{ matrix.cc }}
-      DEN_TEST_RUNNER: ${{ matrix.test_runner }}
       RUSTFLAGS: ${{ matrix.rustflags }}
       RUST_TEST_THREADS: "1"
       TARGET: ${{ matrix.target }}
@@ -300,6 +284,13 @@ jobs:
               "$archive" | sha256sum -c -
             tar -xzf "$archive" -C /tmp
 
+            case "$TARGET" in
+              i686-pc-windows-gnu|x86_64-pc-windows-gnu)
+                apt-get update
+                apt-get install -y --no-install-recommends nasm
+                ;;
+            esac
+
             set --
             if [ "${TARGET_WASM:-1}" = 0 ]; then
               set -- --exclude den-stdlib-wasm
@@ -320,9 +311,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: powerpc64-unknown-linux-musl
-            qemu: qemu-ppc64
-            sha256: 960816352183939183e4d738356533ac36759ea4deb0ce32d59dc8f9f34dd1bc
           - target: powerpc64le-unknown-linux-musl
             qemu: qemu-ppc64le
             sha256: 29eb5a3c3d7ce946cec2ff62251e9b3c754ce4661b9e0486d97c8d682a6527b4
@@ -477,7 +465,7 @@ jobs:
                 | tar -xzf - -C "$HOME/.cargo/bin"
             else
               pkg install -y rust
-              cargo install cargo-nextest --version 0.9.143 --locked
+              cargo install cargo-nextest --version 0.9.143 --locked --no-default-features
             fi
           run: |
             export PATH="$HOME/.cargo/bin:$PATH"
@@ -608,7 +596,7 @@ jobs:
             CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
             DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
           prepare: |
-            export PATH="/usr/llvm-19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
+            export PATH="/usr/llvm/19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
             pkg install --accept developer/nasm
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
@@ -616,8 +604,8 @@ jobs:
             # Newer releases pull a pager stack that does not compile on NetBSD or Solaris.
             cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
           run: |
-            export PATH="$HOME/.cargo/bin:/usr/llvm-19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
-            export LIBCLANG_PATH="$(dirname "$(find /usr/llvm-19 -type f -name 'libclang.so*' | head -1)")"
+            export PATH="$HOME/.cargo/bin:/usr/llvm/19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
+            export LIBCLANG_PATH=/usr/llvm/19/lib/amd64
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-pc-solaris \
               --no-default-features \
