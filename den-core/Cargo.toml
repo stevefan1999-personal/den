@@ -13,7 +13,9 @@ keywords.workspace = true
 [dependencies]
 derive_more.workspace = true
 dunce.workspace = true
-# The workspace selects reqwest's provider-neutral rustls backend; client sites install ring.
+oxc_sourcemap.workspace = true
+# The workspace selects reqwest's provider-neutral rustls transport; only the
+# body codecs and streaming body are extra here.
 reqwest = { workspace = true, features = [
     "stream",
     "deflate",
@@ -35,6 +37,8 @@ den-stdlib-core = { workspace = true, optional = true }
 den-stdlib-crypto = { workspace = true, optional = true }
 den-stdlib-ffi = { workspace = true, optional = true }
 den-stdlib-fs = { workspace = true, optional = true }
+den-stdlib-http = { workspace = true, optional = true }
+den-stdlib-kv = { workspace = true, optional = true }
 den-stdlib-networking = { workspace = true, optional = true }
 den-stdlib-path = { workspace = true, optional = true }
 den-stdlib-process = { workspace = true, optional = true }
@@ -44,22 +48,25 @@ den-stdlib-text = { workspace = true, optional = true }
 den-stdlib-timer = { workspace = true, optional = true }
 den-stdlib-wasm = { workspace = true, optional = true, default-features = false }
 den-stdlib-whatwg = { workspace = true, optional = true }
-den-stdlib-whatwg-fetch = { workspace = true, optional = true }
 den-stdlib-worker = { workspace = true, optional = true, default-features = false }
 den-transpiler-oxc = { workspace = true, default-features = false, optional = true }
+den-util.workspace = true
 
 [dev-dependencies]
 color-eyre.workspace = true
 futures.workspace = true
 libtest-mimic.workspace = true
-rquickjs.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "net"] }
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
-# Reference assembler for WebAssembly fixtures.
-wat.workspace = true
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm", "wasi", "jit"]
+default = ["stdlib", "typescript", "react", "wasm", "jit", "ring"]
+ring = [
+    "rustls/ring",
+    "den-stdlib-http?/ring",
+    "den-stdlib-networking?/ring",
+    "den-stdlib-whatwg?/ring",
+]
 typescript = [
     "transpile",
     "den-transpiler-oxc?/typescript",
@@ -75,7 +82,10 @@ stdlib = [
     "stdlib-console",
     "stdlib-core",
     "stdlib-crypto",
+    "stdlib-ffi",
     "stdlib-fs",
+    "stdlib-http",
+    "stdlib-kv",
     "stdlib-networking",
     "stdlib-path",
     "stdlib-process",
@@ -93,6 +103,11 @@ stdlib-core = ["dep:den-stdlib-core"]
 stdlib-crypto = ["dep:den-stdlib-crypto"]
 stdlib-ffi = ["dep:den-stdlib-ffi"]
 stdlib-fs = ["dep:den-stdlib-fs"]
+stdlib-http = [
+    "dep:den-stdlib-http",
+    "stdlib-whatwg-fetch",
+]
+stdlib-kv = ["dep:den-stdlib-kv"]
 stdlib-networking = ["dep:den-stdlib-networking"]
 stdlib-path = ["dep:den-stdlib-path"]
 stdlib-process = ["dep:den-stdlib-process"]
@@ -101,7 +116,9 @@ stdlib-temporal = ["dep:den-stdlib-temporal"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
 stdlib-whatwg = ["dep:den-stdlib-whatwg"]
-stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg-fetch"]
+# Compatibility feature: Fetch now lives in den-stdlib-whatwg, while its
+# `den:whatwg-fetch` module remains independently selectable.
+stdlib-whatwg-fetch = ["dep:den-stdlib-whatwg", "stdlib-worker"]
 stdlib-worker = ["dep:den-stdlib-worker"]
 
 # `default-features = false` on the dep keeps `--features wasm` (no `jit`) from

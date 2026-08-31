@@ -1,6 +1,10 @@
 //! CompressionStream / DecompressionStream wrapping flate2.
 
-use std::{cell::RefCell, io::Write, rc::Rc};
+use std::{
+    cell::RefCell,
+    io::{self, Write},
+    rc::Rc,
+};
 
 use flate2::{
     Compression,
@@ -41,163 +45,88 @@ impl Format {
     }
 }
 
-enum Encoder {
-    Gzip(GzEncoder<Vec<u8>>),
-    Zlib(ZlibEncoder<Vec<u8>>),
-    Raw(DeflateEncoder<Vec<u8>>),
+trait Codec: Write {
+    fn output(&self) -> &[u8];
+
+    fn finish(&mut self) -> io::Result<()> { self.flush() }
+
+    fn process(&mut self, input: &[u8], finish: bool, emitted: &mut usize) -> io::Result<Vec<u8>> {
+        self.write_all(input)?;
+        if finish {
+            self.finish()?;
+        } else {
+            self.flush()?;
+        }
+        let output = self.output();
+        let delta = output.get(*emitted..).unwrap_or_default().to_vec();
+        *emitted = output.len();
+        Ok(delta)
+    }
 }
 
-enum Decoder {
-    Gzip(GzDecoder<Vec<u8>>),
-    Zlib(ZlibDecoder<Vec<u8>>),
-    Raw(DeflateDecoder<Vec<u8>>),
+macro_rules! codecs {
+    (encoders: [$($encoder:ty),*], decoders: [$($decoder:ty),*]) => {
+        $(
+            impl Codec for $encoder {
+                fn output(&self) -> &[u8] { self.get_ref() }
+                fn finish(&mut self) -> io::Result<()> { self.try_finish() }
+            }
+        )*
+        $(
+            impl Codec for $decoder {
+                fn output(&self) -> &[u8] { self.get_ref() }
+            }
+        )*
+    };
 }
+
+codecs!(
+    encoders: [GzEncoder<Vec<u8>>, ZlibEncoder<Vec<u8>>, DeflateEncoder<Vec<u8>>],
+    decoders: [GzDecoder<Vec<u8>>, ZlibDecoder<Vec<u8>>, DeflateDecoder<Vec<u8>>]
+);
 
 pub struct Compressor {
-    encoder: Encoder,
+    codec:   Box<dyn Codec>,
     emitted: usize,
 }
 
 pub struct Decompressor {
-    decoder: Decoder,
+    codec:   Box<dyn Codec>,
     emitted: usize,
 }
 
 impl Compressor {
-    fn take_delta(buffer: &[u8], emitted: &mut usize) -> Vec<u8> {
-        let out = buffer[*emitted..].to_vec();
-        *emitted = buffer.len();
-        out
-    }
-
     pub fn new(ctx: &Ctx<'_>, format: &str) -> Result<Self> {
         let level = Compression::default();
-        let encoder = match Format::from_label(ctx, format)? {
-            Format::Gzip => Encoder::Gzip(GzEncoder::new(Vec::new(), level)),
-            Format::Deflate => Encoder::Zlib(ZlibEncoder::new(Vec::new(), level)),
-            Format::DeflateRaw => Encoder::Raw(DeflateEncoder::new(Vec::new(), level)),
+        let codec: Box<dyn Codec> = match Format::from_label(ctx, format)? {
+            Format::Gzip => Box::new(GzEncoder::new(Vec::new(), level)),
+            Format::Deflate => Box::new(ZlibEncoder::new(Vec::new(), level)),
+            Format::DeflateRaw => Box::new(DeflateEncoder::new(Vec::new(), level)),
         };
-        Ok(Self {
-            encoder,
-            emitted: 0,
-        })
+        Ok(Self { codec, emitted: 0 })
     }
 
     pub fn process(&mut self, ctx: &Ctx<'_>, input: &[u8], finish: bool) -> Result<Vec<u8>> {
-        match &mut self.encoder {
-            Encoder::Gzip(encoder) => {
-                encoder
-                    .write_all(input)
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                if finish {
-                    let encoder = std::mem::replace(
-                        encoder,
-                        GzEncoder::new(Vec::new(), Compression::default()),
-                    );
-                    let full = encoder.finish().map_err(|err| {
-                        rquickjs::Exception::throw_internal(ctx, &format!("{err}"))
-                    })?;
-                    Ok(Self::take_delta(&full, &mut self.emitted))
-                } else {
-                    encoder.flush().map_err(|err| {
-                        rquickjs::Exception::throw_internal(ctx, &format!("{err}"))
-                    })?;
-                    Ok(Self::take_delta(encoder.get_ref(), &mut self.emitted))
-                }
-            }
-            Encoder::Zlib(encoder) => {
-                encoder
-                    .write_all(input)
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                if finish {
-                    let encoder = std::mem::replace(
-                        encoder,
-                        ZlibEncoder::new(Vec::new(), Compression::default()),
-                    );
-                    let full = encoder.finish().map_err(|err| {
-                        rquickjs::Exception::throw_internal(ctx, &format!("{err}"))
-                    })?;
-                    Ok(Self::take_delta(&full, &mut self.emitted))
-                } else {
-                    encoder.flush().map_err(|err| {
-                        rquickjs::Exception::throw_internal(ctx, &format!("{err}"))
-                    })?;
-                    Ok(Self::take_delta(encoder.get_ref(), &mut self.emitted))
-                }
-            }
-            Encoder::Raw(encoder) => {
-                encoder
-                    .write_all(input)
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                if finish {
-                    let encoder = std::mem::replace(
-                        encoder,
-                        DeflateEncoder::new(Vec::new(), Compression::default()),
-                    );
-                    let full = encoder.finish().map_err(|err| {
-                        rquickjs::Exception::throw_internal(ctx, &format!("{err}"))
-                    })?;
-                    Ok(Self::take_delta(&full, &mut self.emitted))
-                } else {
-                    encoder.flush().map_err(|err| {
-                        rquickjs::Exception::throw_internal(ctx, &format!("{err}"))
-                    })?;
-                    Ok(Self::take_delta(encoder.get_ref(), &mut self.emitted))
-                }
-            }
-        }
+        self.codec
+            .process(input, finish, &mut self.emitted)
+            .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))
     }
 }
 
 impl Decompressor {
-    fn take_delta(buffer: &[u8], emitted: &mut usize) -> Vec<u8> {
-        let out = buffer[*emitted..].to_vec();
-        *emitted = buffer.len();
-        out
-    }
-
     pub fn new(ctx: &Ctx<'_>, format: &str) -> Result<Self> {
-        let decoder = match Format::from_label(ctx, format)? {
-            Format::Gzip => Decoder::Gzip(GzDecoder::new(Vec::new())),
-            Format::Deflate => Decoder::Zlib(ZlibDecoder::new(Vec::new())),
-            Format::DeflateRaw => Decoder::Raw(DeflateDecoder::new(Vec::new())),
+        let codec: Box<dyn Codec> = match Format::from_label(ctx, format)? {
+            Format::Gzip => Box::new(GzDecoder::new(Vec::new())),
+            Format::Deflate => Box::new(ZlibDecoder::new(Vec::new())),
+            Format::DeflateRaw => Box::new(DeflateDecoder::new(Vec::new())),
         };
-        Ok(Self {
-            decoder,
-            emitted: 0,
-        })
+        Ok(Self { codec, emitted: 0 })
     }
 
     pub fn process(&mut self, ctx: &Ctx<'_>, input: &[u8]) -> Result<Vec<u8>> {
-        match &mut self.decoder {
-            Decoder::Gzip(decoder) => {
-                decoder
-                    .write_all(input)
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                decoder
-                    .flush()
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                Ok(Self::take_delta(decoder.get_ref(), &mut self.emitted))
-            }
-            Decoder::Zlib(decoder) => {
-                decoder
-                    .write_all(input)
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                decoder
-                    .flush()
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                Ok(Self::take_delta(decoder.get_ref(), &mut self.emitted))
-            }
-            Decoder::Raw(decoder) => {
-                decoder
-                    .write_all(input)
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                decoder
-                    .flush()
-                    .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))?;
-                Ok(Self::take_delta(decoder.get_ref(), &mut self.emitted))
-            }
-        }
+        self.codec
+            .process(input, false, &mut self.emitted)
+            .map_err(|err| rquickjs::Exception::throw_internal(ctx, &format!("{err}")))
     }
 }
 
@@ -266,7 +195,7 @@ impl<'js> CompressionStream<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "CompressionStream" }
+    pub const fn to_string_tag() -> &'static str { "CompressionStream" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -308,5 +237,5 @@ impl<'js> DecompressionStream<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "DecompressionStream" }
+    pub const fn to_string_tag() -> &'static str { "DecompressionStream" }
 }

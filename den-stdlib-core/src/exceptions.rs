@@ -1,9 +1,7 @@
 //! Reporting an error nobody caught — DOM §2.11 "report an exception" — and
 //! the per-realm sink it goes to.
 
-use rquickjs::{
-    Coerced, Ctx, Error, FromJs as _, Function, JsLifetime, Object, Persistent, Result, Value,
-};
+use rquickjs::{Ctx, Error, Function, JsLifetime, Object, Persistent, Result, Value};
 
 /// The property [`ExceptionSink`] looks the reporter up under, read afresh on
 /// every report: a realm may *replace* its reporter long after installing the
@@ -85,13 +83,7 @@ pub fn report_uncaught(ctx: &Ctx<'_>, outcome: Result<()>) {
 /// This is the end of the line — what a realm with no sink does, and what the
 /// sink itself falls back to.
 pub fn print_exception<'js>(ctx: &Ctx<'js>, value: &Value<'js>) {
-    if let Some(exception) = value.as_exception() {
-        eprintln!("{exception}")
-    } else if let Ok(Coerced(text)) = Coerced::<String>::from_js(ctx, value.clone()) {
-        eprintln!("{text}")
-    } else {
-        eprintln!("unknown error")
-    }
+    eprintln!("{}", den_util::stack::format_thrown(ctx, value));
 }
 
 /// The sink's `name` entry, if this realm has a sink carrying a callable one.

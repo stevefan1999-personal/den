@@ -1,11 +1,11 @@
-#[cfg(any(feature = "typescript", feature = "react"))]
 use std::path::Path;
 
 use derive_more::{Debug, Display, Error};
 use oxc_allocator::Allocator;
-use oxc_codegen::{Codegen, CodegenReturn};
+use oxc_codegen::{Codegen, CodegenOptions, CodegenReturn};
 use oxc_diagnostics::{NamedSource, OxcDiagnostic};
 use oxc_parser::{Parser, ParserReturn};
+pub use oxc_sourcemap::OwnedSourceMap;
 pub use oxc_span::SourceType;
 
 /// Virtual file name used for diagnostics and the transformer's `source_path`.
@@ -13,12 +13,26 @@ pub use oxc_span::SourceType;
 const ANONYMOUS_SOURCE: &str = "<anonymous>";
 
 pub fn transpile(source: &str, source_type: SourceType) -> Result<String, EasyOxcTranspilerError> {
+    Ok(transpile_with_source_map(source, source_type, ANONYMOUS_SOURCE)?.code)
+}
+
+/// Generated JavaScript and the map from it back to the authored source.
+pub struct TranspiledSource {
+    pub code:       String,
+    pub source_map: OwnedSourceMap,
+}
+
+/// Parse, transform and print one source while retaining its original name and
+/// source map for runtime stack traces.
+pub fn transpile_with_source_map(
+    source: &str, source_type: SourceType, source_name: &str,
+) -> Result<TranspiledSource, EasyOxcTranspilerError> {
     // ponytail: fresh arena per call; use AllocatorPool if profiling justifies it.
     let allocator = Allocator::new();
 
     #[cfg_attr(
         not(any(feature = "typescript", feature = "react")),
-        allow(
+        expect(
             unused_mut,
             reason = "only the transformer mutates the program in place"
         )
@@ -33,7 +47,7 @@ pub fn transpile(source: &str, source_type: SourceType) -> Result<String, EasyOx
     // an empty module instead of surfacing the syntax error.
     if panicked || diagnostics.has_errors() {
         return Err(EasyOxcTranspilerError::Parse(
-            EasyOxcTranspilerError::render(source, diagnostics),
+            EasyOxcTranspilerError::render(source, source_name, diagnostics),
         ));
     }
 
@@ -48,26 +62,32 @@ pub fn transpile(source: &str, source_type: SourceType) -> Result<String, EasyOx
             .build(&program);
         if semantic.diagnostics.has_errors() {
             return Err(EasyOxcTranspilerError::Semantic(
-                EasyOxcTranspilerError::render(source, semantic.diagnostics),
+                EasyOxcTranspilerError::render(source, source_name, semantic.diagnostics),
             ));
         }
         let scoping = semantic.semantic.into_scoping();
 
-        let transformed = Transformer::new(
-            &allocator,
-            Path::new(ANONYMOUS_SOURCE),
-            &transform_options(),
-        )
-        .build_with_scoping(scoping, &mut program);
+        let transformed =
+            Transformer::new(&allocator, Path::new(source_name), &transform_options())
+                .build_with_scoping(scoping, &mut program);
         if transformed.diagnostics.has_errors() {
             return Err(EasyOxcTranspilerError::Transform(
-                EasyOxcTranspilerError::render(source, transformed.diagnostics),
+                EasyOxcTranspilerError::render(source, source_name, transformed.diagnostics),
             ));
         }
     }
 
-    let CodegenReturn { code, .. } = Codegen::new().build(&program);
-    Ok(code)
+    let CodegenReturn { code, map, .. } = Codegen::new()
+        .with_options(CodegenOptions {
+            source_map_path: Some(Path::new(source_name).to_path_buf()),
+            ..CodegenOptions::default()
+        })
+        .build(&program);
+    let source_map = map
+        .map(oxc_sourcemap::SourceMap::into_owned)
+        .map(OwnedSourceMap::new)
+        .ok_or(EasyOxcTranspilerError::SourceMap)?;
+    Ok(TranspiledSource { code, source_map })
 }
 
 /// Strip types, downlevel nothing, and use the classic JSX runtime: den's
@@ -98,16 +118,20 @@ pub enum EasyOxcTranspilerError {
     Semantic(#[error(not(source))] String),
     #[display("failed to transform source:\n{_0}")]
     Transform(#[error(not(source))] String),
+    #[display("code generation did not return the requested source map")]
+    SourceMap,
 }
 
 impl EasyOxcTranspilerError {
     /// oxc diagnostics carry spans only, so they are worthless once the source
     /// text is gone — render them eagerly instead of storing the pair.
-    fn render(source: &str, diagnostics: impl IntoIterator<Item = OxcDiagnostic>) -> String {
+    fn render(
+        source: &str, source_name: &str, diagnostics: impl IntoIterator<Item = OxcDiagnostic>,
+    ) -> String {
         diagnostics
             .into_iter()
             .map(|diagnostic| {
-                diagnostic.render_with_source_code(NamedSource::new(ANONYMOUS_SOURCE, source))
+                diagnostic.render_with_source_code(NamedSource::new(source_name, source))
             })
             .collect::<Vec<_>>()
             .join("\n")

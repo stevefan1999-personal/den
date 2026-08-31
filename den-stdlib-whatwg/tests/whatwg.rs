@@ -66,3 +66,53 @@ async fn locking_a_response_body_marks_it_used() -> eyre::Result<()> {
 async fn websocket_constructor_and_send_follow_idl() -> eyre::Result<()> {
     run("websocket_idl.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn headers_request_and_fetch_exports_are_constructible() -> eyre::Result<()> {
+    run("headers.js").await?;
+    run("fetch_globals.js").await?;
+    run("request.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fetch_get_post_range_and_retry_against_den_http() -> eyre::Result<()> {
+    run("fetch_http.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fetch_aborts_when_the_signal_is_already_aborted() -> eyre::Result<()> {
+    run("fetch_abort_already.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fetch_aborts_an_in_flight_request() -> eyre::Result<()> {
+    run("fetch_abort_inflight.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cloning_a_stream_backed_response_tees_it() -> eyre::Result<()> {
+    run("response_clone_stream.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cacheable_response_streams_and_still_fills_the_cache() -> eyre::Result<()> {
+    run("fetch_stream_body.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_request_body_is_uploaded_without_buffering() -> eyre::Result<()> {
+    run("fetch_stream_upload.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_stream_decodes_a_buffered_body_without_aborting() -> eyre::Result<()> {
+    run("response_text_stream.js").await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn xhr_get_and_post_against_den_http() -> eyre::Result<()> { run("xhr.js").await }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn event_source_reads_two_events_from_den_http() -> eyre::Result<()> {
+    run("event_source.js").await
+}

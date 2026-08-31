@@ -1,6 +1,6 @@
 use rquickjs::{
-    ArrayBuffer, AsyncContext, AsyncRuntime, CatchResultExt, CaughtError, Class, Context, FromJs,
-    Function, Module, Runtime, Value,
+    ArrayBuffer, AsyncContext, AsyncRuntime, CatchResultExt as _, CaughtError, Class, Context,
+    FromJs, Function, Module, Runtime, Value,
 };
 
 use super::Message;
@@ -419,7 +419,7 @@ fn a_transferred_port_moves_its_channel_and_detaches_the_source() {
             .map_err(|err| err.to_string())
             .expect("the message deserialises");
         assert_eq!(ports.len(), 1, "exactly one port arrived");
-        let port = &ports[0];
+        let port = ports.first().expect("exactly one port arrived");
         assert!(port.borrow().is_open());
         port.borrow()
             .take_handle()
@@ -553,7 +553,7 @@ async fn a_started_port_is_refused_before_any_buffer_or_port_is_transferred() {
                     .borrow()
                     .start(ctx.clone(), noop.clone(), noop.clone(), noop.clone());
 
-                let buffer = ArrayBuffer::new_copy(ctx.clone(), [1u8, 2, 3, 4])?;
+                let buffer = ArrayBuffer::new_copy(ctx.clone(), [1_u8, 2, 3, 4])?;
                 let failure = Message::serialize(
                     &ctx,
                     Value::new_null(ctx.clone()),

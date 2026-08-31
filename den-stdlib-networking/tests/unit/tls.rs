@@ -1,27 +1,27 @@
 use den_core::engine::Engine;
 use either::Either;
-use rquickjs::{CatchResultExt, convert::List, function::Opt};
+use rquickjs::{CatchResultExt as _, convert::List, function::Opt};
 
 use super::{TlsListenerWrapper, TlsStreamWrapper};
 
 struct TestCert;
 
 impl TestCert {
-    fn localhost() -> (String, String) {
+    fn localhost() -> rquickjs::Result<(String, String)> {
         let certified = rcgen::generate_simple_self_signed(["localhost".to_string()])
-            .expect("self-signed cert");
-        (certified.cert.pem(), certified.signing_key.serialize_pem())
+            .map_err(|_error| rquickjs::Error::Unknown)?;
+        Ok((certified.cert.pem(), certified.signing_key.serialize_pem()))
     }
 }
 
 #[tokio::test]
 async fn connect_to_a_local_acceptor_round_trips() {
     let engine = Engine::new().await;
-    let outcome: String = engine
+    let outcome = engine
         .context
         .async_with(async |ctx| {
             let run = async {
-                let (cert_pem, key_pem) = TestCert::localhost();
+                let (cert_pem, key_pem) = TestCert::localhost()?;
                 let listener =
                     TlsListenerWrapper::listen("127.0.0.1:0".into(), cert_pem.clone(), key_pem)
                         .await?;
@@ -38,16 +38,15 @@ async fn connect_to_a_local_acceptor_round_trips() {
                     .await?;
                 let received = {
                     let chunk = server.read(11, ctx.clone()).await?;
-                    chunk
-                        .as_bytes()
-                        .expect("the chunk is still attached")
-                        .to_vec()
+                    let Some(bytes) = chunk.as_bytes() else {
+                        return Err(rquickjs::Error::Unknown);
+                    };
+                    bytes.to_vec()
                 };
                 Ok::<_, rquickjs::Error>(format!("bytes:{}", received == b"hello TLS!"))
             };
             run.await.catch(&ctx).map_err(|err| err.to_string())
         })
-        .await
-        .expect("the tls stream round-trips");
-    assert_eq!(outcome, "bytes:true");
+        .await;
+    assert_eq!(outcome.as_deref(), Ok("bytes:true"));
 }

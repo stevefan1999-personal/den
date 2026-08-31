@@ -86,13 +86,13 @@ impl<'js> FileReader<'js> {
     }
 
     #[qjs(static, get, rename = "EMPTY")]
-    pub fn empty_const() -> i32 { EMPTY }
+    pub const fn empty_const() -> i32 { EMPTY }
 
     #[qjs(static, get, rename = "LOADING")]
-    pub fn loading_const() -> i32 { LOADING }
+    pub const fn loading_const() -> i32 { LOADING }
 
     #[qjs(static, get, rename = "DONE")]
-    pub fn done_const() -> i32 { DONE }
+    pub const fn done_const() -> i32 { DONE }
 
     pub fn abort(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<()> {
         let ready = this.0.borrow().ready_state;
@@ -152,7 +152,7 @@ impl<'js> FileReader<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "FileReader" }
+    pub const fn to_string_tag() -> &'static str { "FileReader" }
 }
 
 #[derive(Clone, Copy)]
@@ -193,10 +193,10 @@ impl<'js> FileReader<'js> {
                 if !FileReader::is_loading(&this, &aborted) {
                     return;
                 }
-                if let Ok(event) = Host::progress_event(&ctx, "loadstart", false, 0.0, 0.0) {
-                    if FileReader::is_loading(&this, &aborted) {
-                        let _ = FileReader::dispatch(&this, &ctx, event);
-                    }
+                if let Ok(event) = Host::progress_event(&ctx, "loadstart", false, 0.0, 0.0)
+                    && FileReader::is_loading(&this, &aborted)
+                {
+                    let _ = FileReader::dispatch(&this, &ctx, event);
                 }
                 if !FileReader::is_loading(&this, &aborted) {
                     return;
@@ -274,15 +274,17 @@ impl<'js> FileReader<'js> {
         this: Class<'js, Self>, ctx: Ctx<'js>, bytes: Vec<u8>, kind: ReadKind,
         encoding: Option<String>, mime: String, aborted: Rc<Cell<bool>>,
     ) {
+        std::future::ready(()).await;
         if !FileReader::is_loading(&this, &aborted) {
             return;
         }
         let size = bytes.len() as f64;
         let result = match kind {
             ReadKind::ArrayBuffer => {
-                ArrayBuffer::new_copy(ctx.clone(), &bytes)
-                    .map(|buffer| buffer.into_value())
-                    .unwrap_or_else(|_| Value::new_null(ctx.clone()))
+                ArrayBuffer::new_copy(ctx.clone(), &bytes).map_or_else(
+                    |_| Value::new_null(ctx.clone()),
+                    rquickjs::ArrayBuffer::into_value,
+                )
             }
             ReadKind::Text => {
                 let label = FileReader::resolve_encoding(encoding.as_deref(), &mime);
@@ -337,26 +339,19 @@ impl<'js> FileReader<'js> {
         };
         let promise: Promise = array_buffer.call((This(obj.clone()),))?;
         let buffer: ArrayBuffer = promise.into_future().await?;
-        Ok(buffer
-            .as_bytes()
-            .map(|bytes| bytes.to_vec())
-            .unwrap_or_default())
+        Ok(buffer.as_bytes().map(<[u8]>::to_vec).unwrap_or_default())
     }
 
     fn decode(ctx: &Ctx<'js>, bytes: &[u8], encoding: &str) -> String {
         if let Ok(ctor) = ctx
             .globals()
             .get::<_, rquickjs::function::Constructor>("TextDecoder")
+            && let Ok(decoder) = ctor.construct::<_, Object>((encoding,))
+            && let Ok(decode) = decoder.get::<_, Function>("decode")
+            && let Ok(view) = TypedArray::<u8>::new_copy(ctx.clone(), bytes)
+            && let Ok(text) = decode.call::<_, String>((This(decoder), view))
         {
-            if let Ok(decoder) = ctor.construct::<_, Object>((encoding,)) {
-                if let Ok(decode) = decoder.get::<_, Function>("decode") {
-                    if let Ok(view) = TypedArray::<u8>::new_copy(ctx.clone(), bytes) {
-                        if let Ok(text) = decode.call::<_, String>((This(decoder), view)) {
-                            return text;
-                        }
-                    }
-                }
-            }
+            return text;
         }
         String::from_utf8_lossy(bytes).into_owned()
     }

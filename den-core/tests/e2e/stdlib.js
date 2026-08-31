@@ -1,5 +1,7 @@
 import { assert, assertEquals } from "den:assert";
 import { metadata, write, createDirAll } from "den:fs";
+import { serve } from "den:http";
+import { Kv } from "den:kv";
 import * as net from "den:networking";
 import path from "den:path";
 
@@ -18,6 +20,8 @@ if (typeof WebAssembly === "object" && WebAssembly) {
   assertEquals(typeof WebAssembly.validate, "function");
 }
 assertEquals(typeof net.TcpListener, "function");
+assertEquals(typeof Kv.open, "function");
+assertEquals(typeof serve, "function");
 assertEquals(path.posix.normalize("/srv/app/../data"), "/srv/data");
 assertEquals(path.windows.join("C:\\srv", "data"), "C:\\srv\\data");
 

@@ -14,19 +14,18 @@ pub struct ProgressEvent {}
 #[rquickjs::methods]
 impl ProgressEvent {
     #[qjs(constructor)]
-    pub fn new<'js>(
+    pub fn construct<'js>(
         ctx: Ctx<'js>, type_: String, options: Opt<Object<'js>>,
     ) -> Result<Object<'js>> {
-        let event = match ctx
+        let event = if let Ok(ctor) = ctx
             .globals()
             .get::<_, rquickjs::function::Constructor>("Event")
         {
-            Ok(ctor) => ctor.construct::<_, Object>((type_.as_str(), options.0.clone()))?,
-            Err(_) => {
-                let object = Object::new(ctx.clone())?;
-                object.set("type", type_.as_str())?;
-                object
-            }
+            ctor.construct::<_, Object>((type_.as_str(), options.0.clone()))?
+        } else {
+            let object = Object::new(ctx.clone())?;
+            object.set("type", type_.as_str())?;
+            object
         };
         let (length_computable, loaded, total) = Self::fields(options.0.as_ref());
         event.set("lengthComputable", length_computable)?;
@@ -36,7 +35,7 @@ impl ProgressEvent {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "ProgressEvent" }
+    pub const fn to_string_tag() -> &'static str { "ProgressEvent" }
 
     #[qjs(skip)]
     fn fields(options: Option<&Object<'_>>) -> (bool, f64, f64) {
@@ -71,19 +70,18 @@ pub struct CloseEvent {}
 #[rquickjs::methods]
 impl CloseEvent {
     #[qjs(constructor)]
-    pub fn new<'js>(
+    pub fn construct<'js>(
         ctx: Ctx<'js>, type_: String, options: Opt<Object<'js>>,
     ) -> Result<Object<'js>> {
-        let event = match ctx
+        let event = if let Ok(ctor) = ctx
             .globals()
             .get::<_, rquickjs::function::Constructor>("Event")
         {
-            Ok(ctor) => ctor.construct::<_, Object>((type_.as_str(), options.0.clone()))?,
-            Err(_) => {
-                let object = Object::new(ctx.clone())?;
-                object.set("type", type_.as_str())?;
-                object
-            }
+            ctor.construct::<_, Object>((type_.as_str(), options.0.clone()))?
+        } else {
+            let object = Object::new(ctx.clone())?;
+            object.set("type", type_.as_str())?;
+            object
         };
         let (code, reason, was_clean) = Self::fields(options.0.as_ref());
         event.set("code", code)?;
@@ -93,7 +91,7 @@ impl CloseEvent {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "CloseEvent" }
+    pub const fn to_string_tag() -> &'static str { "CloseEvent" }
 
     #[qjs(skip)]
     fn fields(options: Option<&Object<'_>>) -> (f64, String, bool) {

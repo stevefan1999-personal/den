@@ -18,12 +18,13 @@ use std::{
     task::Poll,
 };
 
-use den_stdlib_whatwg::streams::{ReadableStream, StreamError, WritableStream, mark_handled};
 use rquickjs::{
     Class, Ctx, Result,
     function::{Opt, This},
 };
 use tokio::sync::mpsc;
+
+use crate::streams::{ReadableStream, StreamError, WritableStream, mark_handled};
 
 /// Chunks the transport may hold. One is enough to keep the socket busy while
 /// still stopping the producer a chunk after the network does.
@@ -35,7 +36,7 @@ type Chunks = mpsc::Sender<io::Result<Vec<u8>>>;
 
 /// Pipe `source` into a fresh `reqwest::Body`. The pipe runs on the JS event
 /// loop and outlives this call; the returned body ends when the stream closes.
-pub(crate) fn stream_request_body<'js>(
+pub fn stream_request_body<'js>(
     ctx: &Ctx<'js>, source: &Class<'js, ReadableStream<'js>>,
 ) -> Result<reqwest::Body> {
     let (sender, mut receiver) = mpsc::channel::<io::Result<Vec<u8>>>(IN_FLIGHT_CHUNKS);
@@ -91,7 +92,7 @@ pub(crate) fn stream_request_body<'js>(
     // promise from tripping the unhandled-rejection tracker. Reading `then` off
     // the promise here would let a script that patched `Promise.prototype`
     // break the upload, so this goes through the core's pristine `then`.
-    mark_handled(&ctx, &pipe);
+    mark_handled(ctx, &pipe);
 
     Ok(reqwest::Body::wrap_stream(futures::stream::poll_fn(
         move |cx| {

@@ -14,7 +14,11 @@ keywords.workspace = true
 test = false
 
 [dependencies]
+base64-simd.workspace = true
+oxc_sourcemap.workspace = true
+percent-encoding.workspace = true
 rquickjs.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

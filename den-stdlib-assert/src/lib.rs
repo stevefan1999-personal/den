@@ -8,7 +8,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
-use den_util::{instance_of_global, json_stringify};
+use den_util::instance_of_global;
 pub use insta;
 use rquickjs::{
     Class, Coerced, Ctx, Error, Filter, FromJs as _, Function, Object, Result, Value, class::Trace,
@@ -163,9 +163,8 @@ fn own_keys(object: &Object<'_>) -> Result<Vec<String>> {
 }
 
 fn stringify<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> String {
-    if let Ok(json) = json_stringify(ctx, value)
-        && let Some(string) = json.as_string()
-        && let Ok(text) = string.to_string()
+    if let Ok(Some(json)) = ctx.json_stringify(value.clone())
+        && let Ok(text) = json.to_string()
     {
         return text;
     }

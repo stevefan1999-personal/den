@@ -17,10 +17,11 @@ test = false
 derive_more = { workspace = true, features = ["display", "debug", "error"] }
 
 oxc_allocator.workspace = true
-oxc_codegen.workspace = true
+oxc_codegen = { workspace = true, features = ["sourcemap"] }
 oxc_diagnostics.workspace = true
 oxc_parser.workspace = true
 oxc_semantic = { workspace = true, optional = true }
+oxc_sourcemap.workspace = true
 oxc_span.workspace = true
 oxc_transformer = { workspace = true, optional = true }
 

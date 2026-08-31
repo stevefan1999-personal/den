@@ -1,6 +1,6 @@
 //! WHATWG XMLHttpRequest on top of `fetch()`.
 
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{cell::Cell, fmt::Write as _, rc::Rc, time::Duration};
 
 use rquickjs::{
     ArrayBuffer, Class, Constructor, Ctx, Function, JsLifetime, Object, Promise, Result,
@@ -70,11 +70,10 @@ impl XMLHttpRequest {
         let lower = mime.to_ascii_lowercase();
         let marker = "charset=";
         let pos = lower.find(marker)?;
-        let rest = mime[pos + marker.len()..].trim();
+        let rest = mime.get(pos + marker.len()..)?.trim();
         let rest = rest
             .strip_prefix('"')
-            .map(|value| value.split('"').next().unwrap_or(value))
-            .unwrap_or(rest);
+            .map_or(rest, |value| value.split('"').next().unwrap_or(value));
         let value = rest.split(';').next().unwrap_or(rest).trim();
         if value.is_empty() {
             None
@@ -93,38 +92,25 @@ impl XMLHttpRequest {
                     .and_then(|mime| Self::charset(&mime)),
             )
         };
-        let label = override_charset.or(header_charset);
-        if let Some(label) = label {
-            if let Ok(ctor) = ctx
-                .globals()
-                .get::<_, rquickjs::function::Constructor>("TextDecoder")
-            {
-                if let Ok(decoder) = ctor.construct::<_, Object>((label,)) {
-                    if let Ok(decode) = decoder.get::<_, Function>("decode") {
-                        if let Ok(view) = TypedArray::<u8>::new_copy(ctx.clone(), &body) {
-                            if let Ok(text) = decode.call::<_, String>((This(decoder), view)) {
-                                return text;
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(text) = override_charset
+            .or(header_charset)
+            .and_then(|label| Self::decode_with_label(ctx, &body, &label))
+        {
+            return text;
         }
-        if let Ok(ctor) = ctx
+        Self::decode_with_label(ctx, &body, "utf-8")
+            .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn decode_with_label(ctx: &Ctx<'_>, body: &[u8], label: &str) -> Option<String> {
+        let constructor = ctx
             .globals()
             .get::<_, rquickjs::function::Constructor>("TextDecoder")
-        {
-            if let Ok(decoder) = ctor.construct::<_, Object>(()) {
-                if let Ok(decode) = decoder.get::<_, Function>("decode") {
-                    if let Ok(view) = TypedArray::<u8>::new_copy(ctx.clone(), &body) {
-                        if let Ok(text) = decode.call::<_, String>((This(decoder), view)) {
-                            return text;
-                        }
-                    }
-                }
-            }
-        }
-        String::from_utf8_lossy(&body).into_owned()
+            .ok()?;
+        let decoder = constructor.construct::<_, Object>((label,)).ok()?;
+        let decode = decoder.get::<_, Function>("decode").ok()?;
+        let view = TypedArray::<u8>::new_copy(ctx.clone(), body).ok()?;
+        decode.call::<_, String>((This(decoder), view)).ok()
     }
 }
 
@@ -151,10 +137,8 @@ impl XMLHttpRequest {
     }
 }
 
-#[rquickjs::methods(rename_all = "camelCase")]
-impl XMLHttpRequest {
-    #[qjs(constructor)]
-    pub fn new() -> Self {
+impl Default for XMLHttpRequest {
+    fn default() -> Self {
         Self {
             ready_state:      UNSENT,
             status:           0,
@@ -173,24 +157,30 @@ impl XMLHttpRequest {
             timed_out:        Rc::new(Cell::new(false)),
         }
     }
+}
+
+#[rquickjs::methods(rename_all = "camelCase")]
+impl XMLHttpRequest {
+    #[qjs(constructor)]
+    pub fn new() -> Self { Self::default() }
 
     #[qjs(static, get, rename = "UNSENT")]
-    pub fn unsent_const() -> i32 { UNSENT }
+    pub const fn unsent_const() -> i32 { UNSENT }
 
     #[qjs(static, get, rename = "OPENED")]
-    pub fn opened_const() -> i32 { OPENED }
+    pub const fn opened_const() -> i32 { OPENED }
 
     #[qjs(static, get, rename = "HEADERS_RECEIVED")]
-    pub fn headers_received_const() -> i32 { HEADERS_RECEIVED }
+    pub const fn headers_received_const() -> i32 { HEADERS_RECEIVED }
 
     #[qjs(static, get, rename = "LOADING")]
-    pub fn loading_const() -> i32 { LOADING }
+    pub const fn loading_const() -> i32 { LOADING }
 
     #[qjs(static, get, rename = "DONE")]
-    pub fn done_const() -> i32 { DONE }
+    pub const fn done_const() -> i32 { DONE }
 
     #[qjs(get)]
-    pub fn timeout(&self) -> u64 { self.timeout }
+    pub const fn timeout(&self) -> u64 { self.timeout }
 
     #[qjs(set, rename = "timeout")]
     pub fn set_timeout(&mut self, value: f64) {
@@ -222,14 +212,12 @@ impl XMLHttpRequest {
             "" | "text" => rquickjs::IntoJs::into_js(Self::decode(&this.0, &ctx), &ctx),
             "arraybuffer" => {
                 let body = this.0.borrow().response_body.clone();
-                ArrayBuffer::new_copy(ctx, body).map(|buffer| buffer.into_value())
+                ArrayBuffer::new_copy(ctx, body).map(rquickjs::ArrayBuffer::into_value)
             }
             "json" => {
                 let text = Self::decode(&this.0, &ctx);
-                match den_util::json_parse(&ctx, &text) {
-                    Ok(value) => Ok(value),
-                    Err(_) => Ok(Value::new_null(ctx)),
-                }
+                ctx.json_parse(text)
+                    .map_or_else(|_error| Ok(Value::new_null(ctx)), Ok)
             }
             _ => Ok(Value::new_null(ctx)),
         }
@@ -310,6 +298,13 @@ impl XMLHttpRequest {
                 "InvalidStateError",
             ));
         }
+        if name.contains('\0') || value.contains('\0') {
+            return Err(Host::throw_dom(
+                &ctx,
+                "The header contains an invalid NUL character",
+                "SyntaxError",
+            ));
+        }
         this.0.borrow_mut().request_headers.push((name, value));
         Ok(())
     }
@@ -347,7 +342,7 @@ impl XMLHttpRequest {
         let fetch: Function = ctx
             .globals()
             .get("fetch")
-            .map_err(|_| Host::throw_type(&ctx, "fetch is not defined"))?;
+            .map_err(|_error| Host::throw_type(&ctx, "fetch is not defined"))?;
         let init = Object::new(ctx.clone())?;
         init.set("method", method.clone())?;
         let header_pairs = rquickjs::Array::new(ctx.clone())?;
@@ -368,10 +363,11 @@ impl XMLHttpRequest {
         let payload = body
             .0
             .filter(|value| !value.is_null() && !value.is_undefined());
-        if let Some(payload) = payload {
-            if method != "GET" && method != "HEAD" {
-                init.set("body", payload)?;
-            }
+        if let Some(payload) = payload
+            && method != "GET"
+            && method != "HEAD"
+        {
+            init.set("body", payload)?;
         }
         if timeout > 0
             && let Some(abort) = abort.as_ref()
@@ -406,12 +402,10 @@ impl XMLHttpRequest {
                         }
                         let _ = XMLHttpRequest::set_ready_state(&this, &ctx, HEADERS_RECEIVED);
                         let _ = XMLHttpRequest::set_ready_state(&this, &ctx, LOADING);
-                        let bytes = match XMLHttpRequest::response_bytes(&ctx, &response).await {
-                            Ok(bytes) => bytes,
-                            Err(_) => {
-                                XMLHttpRequest::fail(&this, &ctx, &aborted, &timed_out);
-                                return;
-                            }
+                        let Ok(bytes) = XMLHttpRequest::response_bytes(&ctx, &response).await
+                        else {
+                            XMLHttpRequest::fail(&this, &ctx, &aborted, &timed_out);
+                            return;
                         };
                         if aborted.get() {
                             return;
@@ -447,7 +441,7 @@ impl XMLHttpRequest {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "XMLHttpRequest" }
+    pub const fn to_string_tag() -> &'static str { "XMLHttpRequest" }
 }
 
 impl XMLHttpRequest {
@@ -461,7 +455,7 @@ impl XMLHttpRequest {
             if let Ok(callback) = Function::new(
                 ctx.clone(),
                 move |value: String, name: String| -> Result<()> {
-                    sink.borrow_mut().push_str(&format!("{name}: {value}\r\n"));
+                    let _ = write!(sink.borrow_mut(), "{name}: {value}\r\n");
                     Ok(())
                 },
             ) {
@@ -476,10 +470,7 @@ impl XMLHttpRequest {
         let array_buffer: Function = response.get("arrayBuffer")?;
         let promise: Promise = array_buffer.call((This(response.clone()),))?;
         let buffer: ArrayBuffer = promise.into_future().await?;
-        Ok(buffer
-            .as_bytes()
-            .map(|bytes| bytes.to_vec())
-            .unwrap_or_default())
+        Ok(buffer.as_bytes().map(<[u8]>::to_vec).unwrap_or_default())
     }
 
     fn fail<'js>(

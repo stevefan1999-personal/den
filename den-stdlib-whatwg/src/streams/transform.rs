@@ -42,6 +42,24 @@ struct TransformInner<'js> {
     /// nothing but an id.
     parked:              Vec<(u64, Value<'js>, Cap<'js>)>,
     next_parked:         u64,
+    finish:              Option<(Cap<'js>, FinishAction<'js>)>,
+    finish_error:        Option<Value<'js>>,
+}
+
+#[derive(Clone)]
+enum FinishAction<'js> {
+    SourceCancel(Value<'js>),
+    SinkAbort(Value<'js>),
+    SinkClose,
+}
+
+impl<'js> Trace<'js> for FinishAction<'js> {
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        match self {
+            Self::SourceCancel(reason) | Self::SinkAbort(reason) => reason.trace(tracer),
+            Self::SinkClose => {}
+        }
+    }
 }
 
 // SAFETY: see the matching impl in `readable`.
@@ -55,13 +73,18 @@ impl<'js> Trace<'js> for TransformInner<'js> {
         self.transform_fn.trace(tracer);
         self.flush_fn.trace(tracer);
         self.cancel_fn.trace(tracer);
-        self.backpressure_change
-            .as_ref()
-            .map(|cap| cap.trace(tracer));
+        if let Some(cap) = self.backpressure_change.as_ref() {
+            cap.trace(tracer);
+        }
         for (_, chunk, cap) in &self.parked {
             chunk.trace(tracer);
             cap.trace(tracer);
         }
+        if let Some((cap, action)) = &self.finish {
+            cap.trace(tracer);
+            action.trace(tracer);
+        }
+        self.finish_error.trace(tracer);
     }
 }
 
@@ -130,7 +153,178 @@ fn error_both<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, reason: Value<'js>) {
     if let Some(writable) = writable_of(shared) {
         WritableStream::start_erroring(ctx, &writable, reason);
     }
+    clear_algorithms(shared);
     unblock_write(ctx, shared);
+}
+
+fn clear_algorithms(shared: &Shared<'_>) {
+    if let Some(owned) = shared.upgrade() {
+        let mut borrow = owned.borrow_mut();
+        borrow.transform_fn = None;
+        borrow.flush_fn = None;
+        borrow.cancel_fn = None;
+    }
+}
+
+fn settle_finish<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, rejected: Option<Value<'js>>) {
+    let Some(owned) = shared.upgrade() else {
+        return;
+    };
+    let Some(action) = owned
+        .borrow()
+        .finish
+        .as_ref()
+        .map(|(_, action)| action.clone())
+    else {
+        return;
+    };
+    let error = match (rejected, action) {
+        (Some(reason), FinishAction::SourceCancel(_)) => {
+            let reason = owned.borrow_mut().finish_error.take().unwrap_or(reason);
+            if let Some(writable) = writable_of(shared) {
+                WritableStream::start_erroring(ctx, &writable, reason.clone());
+            }
+            unblock_write(ctx, shared);
+            Some(reason)
+        }
+        (Some(reason), FinishAction::SinkAbort(_) | FinishAction::SinkClose) => {
+            if let Some(readable) = readable_of(shared) {
+                ReadableStream::error(ctx, &readable, reason.clone());
+            }
+            Some(reason)
+        }
+        (None, FinishAction::SourceCancel(reason)) => {
+            let error = owned.borrow_mut().finish_error.take();
+            if error.is_none() {
+                if let Some(writable) = writable_of(shared) {
+                    WritableStream::start_erroring(ctx, &writable, reason);
+                }
+                unblock_write(ctx, shared);
+            }
+            error
+        }
+        (None, FinishAction::SinkAbort(reason)) => {
+            let error =
+                readable_of(shared).and_then(|readable| ReadableStream::stored_error(&readable));
+            if error.is_none()
+                && let Some(readable) = readable_of(shared)
+            {
+                ReadableStream::error(ctx, &readable, reason);
+            }
+            error
+        }
+        (None, FinishAction::SinkClose) => {
+            let error =
+                readable_of(shared).and_then(|readable| ReadableStream::stored_error(&readable));
+            if error.is_none()
+                && let Some(readable) = readable_of(shared)
+            {
+                let _ = ReadableStream::close_requested(ctx, &readable);
+            }
+            error
+        }
+    };
+    if let Some((cap, _)) = owned.borrow_mut().finish.as_mut() {
+        match error {
+            Some(reason) => cap.reject(reason),
+            None => cap.fulfill(ctx),
+        }
+    }
+}
+
+fn cancel_finish<'js>(
+    ctx: &Ctx<'js>, shared: &Shared<'js>, reason: Value<'js>, from_source: bool,
+) -> Result<Promise<'js>> {
+    let Some(owned) = shared.upgrade() else {
+        return Cap::undefined(ctx);
+    };
+    if let Some((cap, _)) = owned.borrow().finish.as_ref() {
+        return Ok(cap.promise());
+    }
+    let cap = Cap::new(ctx)?;
+    let promise = cap.promise();
+    let action = if from_source {
+        FinishAction::SourceCancel(reason.clone())
+    } else {
+        FinishAction::SinkAbort(reason.clone())
+    };
+    owned.borrow_mut().finish = Some((cap, action));
+    let (cancel_fn, transformer) = {
+        let borrow = owned.borrow();
+        (borrow.cancel_fn.clone(), borrow.transformer.clone())
+    };
+    let capture_error = from_source
+        && writable_of(shared)
+            .and_then(|writable| WritableStream::stored_error_for_pipe(&writable))
+            .is_none();
+    let cancelled = match cancel_fn {
+        Some(cancel) => {
+            match cancel.call::<_, Value>((This(transformer), reason)) {
+                Ok(value) => value,
+                Err(error) => Cap::rejected(ctx, thrown(ctx, error))?.into_value(),
+            }
+        }
+        None => Value::new_undefined(ctx.clone()),
+    };
+    if capture_error {
+        owned.borrow_mut().finish_error = writable_of(shared)
+            .and_then(|writable| WritableStream::stored_error_for_pipe(&writable));
+    }
+    clear_algorithms(shared);
+    let on_ok = {
+        let shared = shared.clone();
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+            settle_finish(&ctx, &shared, None);
+        })?
+    };
+    let on_err = {
+        let shared = shared.clone();
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+            settle_finish(&ctx, &shared, Some(reason));
+        })?
+    };
+    react(ctx, cancelled, Some(on_ok), Some(on_err))?;
+    Ok(promise)
+}
+
+fn close_finish<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>) -> Result<Promise<'js>> {
+    let Some(owned) = shared.upgrade() else {
+        return Cap::undefined(ctx);
+    };
+    if let Some((cap, _)) = owned.borrow().finish.as_ref() {
+        return Ok(cap.promise());
+    }
+    let cap = Cap::new(ctx)?;
+    let promise = cap.promise();
+    owned.borrow_mut().finish = Some((cap, FinishAction::SinkClose));
+    let (flush_fn, transformer) = {
+        let borrow = owned.borrow();
+        (borrow.flush_fn.clone(), borrow.transformer.clone())
+    };
+    let flushed = match (flush_fn, controller_of(shared)) {
+        (Some(flush), Some(controller)) => {
+            match flush.call::<_, Value>((This(transformer), controller)) {
+                Ok(value) => value,
+                Err(error) => Cap::rejected(ctx, thrown(ctx, error))?.into_value(),
+            }
+        }
+        _ => Value::new_undefined(ctx.clone()),
+    };
+    clear_algorithms(shared);
+    let on_ok = {
+        let shared = shared.clone();
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+            settle_finish(&ctx, &shared, None);
+        })?
+    };
+    let on_err = {
+        let shared = shared.clone();
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+            settle_finish(&ctx, &shared, Some(reason));
+        })?
+    };
+    react(ctx, flushed, Some(on_ok), Some(on_err))?;
+    Ok(promise)
 }
 
 /// TransformStreamUnblockWrite.
@@ -197,19 +391,27 @@ fn perform_transform<'js>(
     let controller = controller_of(shared);
     let Some(transform) = transform_fn else {
         let readable = readable_of(shared);
-        if let Some(readable) = readable
-            && let Err(error) = ReadableStream::enqueue(ctx, &readable, chunk)
-        {
-            let reason = thrown(ctx, error);
-            error_both(ctx, shared, reason.clone());
-            return Cap::rejected(ctx, reason);
+        if let Some(readable) = readable {
+            if let Err(error) = ReadableStream::enqueue(ctx, &readable, chunk) {
+                let reason = thrown(ctx, error);
+                error_both(ctx, shared, reason.clone());
+                return Cap::rejected(ctx, reason);
+            }
+            let backpressure =
+                ReadableStream::desired_size(&readable).is_none_or(|size| size <= 0.0);
+            if shared
+                .upgrade()
+                .is_some_and(|owned| owned.borrow().backpressure != backpressure)
+            {
+                set_backpressure(ctx, shared, backpressure);
+            }
         }
         return Cap::undefined(ctx);
     };
-    let outcome = match controller {
-        Some(controller) => transform.call::<_, Value>((This(transformer), chunk, controller)),
-        None => Ok(Value::new_undefined(ctx.clone())),
-    };
+    let outcome = controller.map_or_else(
+        || Ok(Value::new_undefined(ctx.clone())),
+        |controller| transform.call::<_, Value>((This(transformer), chunk, controller)),
+    );
     let value = match outcome {
         Ok(value) => value,
         Err(error) => {
@@ -268,6 +470,8 @@ impl<'js> TransformStream<'js> {
             backpressure_change: None,
             parked: Vec::new(),
             next_parked: 0,
+            finish: None,
+            finish_error: None,
         }));
         let shared: Shared<'js> = Rc::downgrade(&owned);
         // The specification starts a transform under backpressure and lets the
@@ -281,7 +485,7 @@ impl<'js> TransformStream<'js> {
         let readable_inner = ReadableStream::new_inner(&ctx)?;
         {
             let mut borrow = readable_inner.borrow_mut();
-            borrow.started = true;
+            borrow.started = false;
             borrow.hwm = readable_hwm;
             borrow.size_fn = readable_size;
             borrow.pull_fn = Some(Function::new(ctx.clone(), {
@@ -290,25 +494,11 @@ impl<'js> TransformStream<'js> {
             })?);
             borrow.cancel_fn = Some(Function::new(ctx.clone(), {
                 let shared = shared.clone();
-                move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Value<'js>> {
+                move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Promise<'js>> {
                     let reason = reason
                         .0
                         .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-                    let (cancel_fn, transformer) = match shared.upgrade() {
-                        Some(owned) => {
-                            let borrow = owned.borrow();
-                            (borrow.cancel_fn.clone(), borrow.transformer.clone())
-                        }
-                        None => (None, Object::new(ctx.clone())?),
-                    };
-                    if let Some(writable) = writable_of(&shared) {
-                        WritableStream::start_erroring(&ctx, &writable, reason.clone());
-                    }
-                    unblock_write(&ctx, &shared);
-                    match cancel_fn {
-                        Some(cancel) => cancel.call((This(transformer), reason)),
-                        None => Ok(Value::new_undefined(ctx.clone())),
-                    }
+                    cancel_finish(&ctx, &shared, reason, true)
                 }
             })?);
         }
@@ -361,78 +551,18 @@ impl<'js> TransformStream<'js> {
             "close",
             Function::new(ctx.clone(), {
                 let shared = shared.clone();
-                move |ctx: Ctx<'js>| -> Result<Promise<'js>> {
-                    let (flush_fn, transformer) = match shared.upgrade() {
-                        Some(owned) => {
-                            let borrow = owned.borrow();
-                            (borrow.flush_fn.clone(), borrow.transformer.clone())
-                        }
-                        None => (None, Object::new(ctx.clone())?),
-                    };
-                    let controller = controller_of(&shared);
-                    let readable = readable_of(&shared);
-                    let flushed = match (flush_fn, controller) {
-                        (Some(flush), Some(controller)) => {
-                            match flush.call::<_, Value>((This(transformer), controller)) {
-                                Ok(value) => value,
-                                Err(error) => {
-                                    let reason = thrown(&ctx, error);
-                                    error_both(&ctx, &shared, reason.clone());
-                                    return Cap::rejected(&ctx, reason);
-                                }
-                            }
-                        }
-                        _ => Value::new_undefined(ctx.clone()),
-                    };
-                    let (promise, resolve, reject) = ctx.promise()?;
-                    let on_ok = {
-                        let readable = readable.clone();
-                        let reject = reject.clone();
-                        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                            if let Some(readable) = readable.as_ref() {
-                                if let Some(reason) = ReadableStream::stored_error(readable) {
-                                    let _ = reject.call::<_, ()>((reason,));
-                                    return;
-                                }
-                                let _ = ReadableStream::close_requested(&ctx, readable);
-                            }
-                            let _ = resolve.call::<_, ()>(());
-                        })?
-                    };
-                    let on_err = {
-                        let shared = shared.clone();
-                        Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                            error_both(&ctx, &shared, reason.clone());
-                            let _ = reject.call::<_, ()>((reason,));
-                        })?
-                    };
-                    react(&ctx, flushed, Some(on_ok), Some(on_err))?;
-                    Ok(promise)
-                }
+                move |ctx: Ctx<'js>| -> Result<Promise<'js>> { close_finish(&ctx, &shared) }
             })?,
         )?;
         sink.set(
             "abort",
             Function::new(ctx.clone(), {
                 let shared = shared.clone();
-                move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Value<'js>> {
+                move |ctx: Ctx<'js>, reason: Opt<Value<'js>>| -> Result<Promise<'js>> {
                     let reason = reason
                         .0
                         .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-                    let (cancel_fn, transformer) = match shared.upgrade() {
-                        Some(owned) => {
-                            let borrow = owned.borrow();
-                            (borrow.cancel_fn.clone(), borrow.transformer.clone())
-                        }
-                        None => (None, Object::new(ctx.clone())?),
-                    };
-                    if let Some(readable) = readable_of(&shared) {
-                        ReadableStream::error(&ctx, &readable, reason.clone());
-                    }
-                    match cancel_fn {
-                        Some(cancel) => cancel.call((This(transformer), reason)),
-                        None => Ok(Value::new_undefined(ctx.clone())),
-                    }
+                    cancel_finish(&ctx, &shared, reason, false)
                 }
             })?,
         )?;
@@ -443,6 +573,7 @@ impl<'js> TransformStream<'js> {
             borrow.size_fn = writable_size;
         }
         WritableStream::setup_with_sink(&ctx, &writable_inner, sink, writable_hwm)?;
+        writable_inner.borrow_mut().started = false;
         let writable = WritableStream::wrap(&ctx, Rc::clone(&writable_inner))?;
 
         let controller = Class::instance(ctx.clone(), TransformStreamDefaultController {
@@ -466,7 +597,14 @@ impl<'js> TransformStream<'js> {
         let on_err = {
             let shared = shared.clone();
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+                let writable = writable_of(&shared);
+                if let Some(writable) = &writable {
+                    writable.borrow_mut().started = true;
+                }
                 error_both(&ctx, &shared, reason);
+                if let Some(writable) = writable {
+                    WritableStream::advance_queue(&ctx, &writable);
+                }
             })?
         };
         // The readable half's controller starts already-started, so nothing has
@@ -475,9 +613,13 @@ impl<'js> TransformStream<'js> {
         // with room pulls straight away and lifts the initial backpressure.
         let on_ok = {
             let readable_inner = Rc::clone(&readable_inner);
+            let writable_inner = Rc::clone(&writable_inner);
             let pin = Pins::hold(&ctx, ReadableStream::keeper(&readable_inner));
             Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
                 Pins::release(&ctx, pin);
+                readable_inner.borrow_mut().started = true;
+                writable_inner.borrow_mut().started = true;
+                WritableStream::advance_queue(&ctx, &writable_inner);
                 ReadableStream::pull_if_needed(&ctx, &readable_inner);
             })?
         };
@@ -487,7 +629,7 @@ impl<'js> TransformStream<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "TransformStream" }
+    pub const fn to_string_tag() -> &'static str { "TransformStream" }
 }
 
 /// The controller is the single strong owner of the shared transform record,
@@ -534,8 +676,13 @@ impl<'js> TransformStreamDefaultController<'js> {
             return Ok(());
         };
         let chunk = chunk.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
+        let already_errored = ReadableStream::stored_error(&readable).is_some();
         if let Err(error) = ReadableStream::enqueue(&ctx, &readable, chunk) {
-            let reason = thrown(&ctx, error);
+            let reason = if already_errored {
+                thrown(&ctx, error)
+            } else {
+                ReadableStream::stored_error(&readable).unwrap_or_else(|| thrown(&ctx, error))
+            };
             error_both(&ctx, &shared, reason.clone());
             return Err(ctx.throw(reason));
         }
@@ -568,9 +715,10 @@ impl<'js> TransformStreamDefaultController<'js> {
             let reason = type_error(&ctx, "the transform stream was terminated");
             WritableStream::start_erroring(&ctx, &writable, reason);
         }
+        clear_algorithms(&shared);
         unblock_write(&ctx, &shared);
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "TransformStreamDefaultController" }
+    pub const fn to_string_tag() -> &'static str { "TransformStreamDefaultController" }
 }

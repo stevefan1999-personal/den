@@ -9,6 +9,7 @@ pub mod blob;
 pub mod compression;
 pub mod events;
 pub mod eventsource;
+pub mod fetch;
 pub mod file_reader;
 pub mod form_data;
 pub mod host;
@@ -21,7 +22,7 @@ pub mod xhr;
 #[rquickjs::module]
 pub mod whatwg {
     use den_stdlib_worker::events::{Event, EventTarget, define_event_handler, define_on};
-    use den_util::inherit;
+    use den_util::{ConstructorInstaller as _, inherit};
     use rquickjs::{Class, Ctx, Result, class::JsClass, function::Opt, module::Exports};
 
     use crate::host::Host;
@@ -66,7 +67,7 @@ pub mod whatwg {
         if !globals.contains_key("EventTarget")? {
             define_on(&globals)?;
         }
-        install::<Blob>(ctx, "Blob")?;
+        globals.install_constructor::<Blob>(0)?;
         install::<CloseEvent>(ctx, "CloseEvent")?;
         install::<CompressionStream>(ctx, "CompressionStream")?;
         install::<DecompressionStream>(ctx, "DecompressionStream")?;
@@ -130,6 +131,3 @@ pub mod whatwg {
 #[cfg(test)]
 #[path = "../tests/unit/lib.rs"]
 mod tests;
-
-#[cfg(any(test, feature = "test"))]
-pub mod local_http;

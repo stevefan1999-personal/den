@@ -1,5 +1,4 @@
-//! Native WebSocket client (and a test-oriented accept path) for
-//! `den:networking`.
+//! Native WebSocket client for `den:networking`.
 //!
 //! Handshake, TLS (`wss` via `tokio-rustls`), ping/pong, close frames and
 //! the send/receive loop live here. WHATWG `WebSocket` wraps
@@ -29,13 +28,9 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
 use tokio_tungstenite::{
-    WebSocketStream, accept_hdr_async, client_async,
+    WebSocketStream, client_async,
     tungstenite::{
-        Message,
-        client::IntoClientRequest as _,
-        handshake::server::{Request, Response},
-        http::HeaderValue,
-        protocol::CloseFrame,
+        Message, client::IntoClientRequest as _, http::HeaderValue, protocol::CloseFrame,
     },
 };
 use url::Url;
@@ -113,7 +108,7 @@ enum Command {
 
 enum Transport {
     Tcp(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 impl AsyncRead for Transport {
@@ -152,7 +147,7 @@ impl AsyncWrite for Transport {
     }
 }
 
-/// Background client (or accepted server session) with command/event channels.
+/// Background client with command/event channels.
 pub struct NativeWebSocket {
     commands:   mpsc::UnboundedSender<Command>,
     events:     tokio::sync::Mutex<mpsc::UnboundedReceiver<NativeWsEvent>>,
@@ -261,7 +256,7 @@ impl NativeWebSocket {
                             .connect(server_name, tcp)
                             .await
                             .map_err(|error| NativeWsError::Tls(error.to_string()))?;
-                        Transport::Tls(tls)
+                        Transport::Tls(Box::new(tls))
                     } else {
                         Transport::Tcp(tcp)
                     };
@@ -354,63 +349,6 @@ impl NativeWebSocket {
         })
     }
 
-    /// Server-side handshake on a connected TCP stream, then the same I/O loop.
-    pub async fn accept(stream: TcpStream) -> Result<Self, NativeWsError> {
-        Self::accept_stream(stream, &[]).await
-    }
-
-    pub async fn accept_stream<S>(stream: S, supported: &[String]) -> Result<Self, NativeWsError>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        let handle = match Handle::try_current() {
-            Ok(handle) => handle,
-            Err(error) => {
-                discard_error(error);
-                return Err(NativeWsError::NoRuntime);
-            }
-        };
-        let supported = supported.to_vec();
-        let selected = Arc::new(Mutex::new(String::new()));
-        let selected_cb = Arc::clone(&selected);
-        let socket = accept_hdr_async(stream, move |request: &Request, mut response: Response| {
-            if let Some(header) = request.headers().get("Sec-WebSocket-Protocol")
-                && let Ok(list) = header.to_str()
-                && let Some(protocol) = list
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|token| !token.is_empty())
-                    .find(|token| supported.iter().any(|item| item == *token))
-                    .map(str::to_owned)
-                && let Ok(value) = HeaderValue::from_str(&protocol)
-            {
-                response
-                    .headers_mut()
-                    .insert("Sec-WebSocket-Protocol", value);
-                store_string(&selected_cb, protocol);
-            }
-            Ok::<_, tokio_tungstenite::tungstenite::handshake::server::ErrorResponse>(response)
-        })
-        .await?;
-        let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let protocol = lock_string(&selected);
-        handle.spawn(run(
-            socket,
-            event_tx,
-            command_rx,
-            Arc::new(AtomicUsize::new(0)),
-        ));
-        Ok(Self {
-            commands:   command_tx,
-            events:     tokio::sync::Mutex::new(event_rx),
-            buffered:   Arc::new(AtomicUsize::new(0)),
-            protocol:   Arc::new(Mutex::new(protocol)),
-            extensions: Arc::new(Mutex::new(String::new())),
-            url:        String::new(),
-        })
-    }
-
     pub fn send_text(&self, text: String) -> Result<(), NativeWsError> {
         self.enqueue(text.len(), Command::SendText(text))
     }
@@ -497,7 +435,7 @@ fn header_text(headers: &tokio_tungstenite::tungstenite::http::HeaderMap, name: 
 /// The `wss` connector, over the same trust rules as `TlsStream.connect`:
 /// a custom CA replaces the platform store, otherwise the platform verifier.
 fn tls_connector(ca_pem: Option<&str>) -> Result<TlsConnector, NativeWsError> {
-    crate::tls::client_config(ca_pem)
+    crate::tls::TlsStreamWrapper::client_config(ca_pem)
         .map(|config| TlsConnector::from(Arc::new(config)))
         .map_err(|error| NativeWsError::Tls(error.to_string()))
 }
@@ -657,7 +595,7 @@ impl WebSocketWrapper {
             }
         };
         let inner = NativeWebSocket::connect(&url, &protocols)
-            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+            .map_err(|error| den_util::stack::throw_error(&ctx, &error.to_string()))?;
         Ok(Self {
             inner: std::rc::Rc::new(inner),
         })
@@ -688,7 +626,7 @@ impl WebSocketWrapper {
                 self.inner.send_binary(bytes.to_vec())
             }
         };
-        result.map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+        result.map_err(|error| den_util::stack::throw_error(&ctx, &error.to_string()))
     }
 
     pub fn close(&self, code: Opt<u32>, reason: Opt<String>) {

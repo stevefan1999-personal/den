@@ -1,7 +1,7 @@
 use std::{io::Cursor, sync::Arc};
 
 use den_core::engine::Engine;
-use rquickjs::CatchResultExt;
+use rquickjs::CatchResultExt as _;
 use tokio::sync::RwLock;
 
 use super::AsyncReadWrapper;

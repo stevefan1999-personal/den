@@ -2,18 +2,18 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use den_stdlib_whatwg::streams::ReadableStream;
 use den_util::{BufferSource, Probe as _};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, Object, Result,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs as _, Object, Result,
     TypedArray, Value,
     function::{Async, Constructor, Opt, This},
     promise::MaybePromise,
 };
 
-use crate::headers::Headers;
+use super::headers::Headers;
+use crate::streams::ReadableStream;
 
-pub(crate) fn optional_object<'js>(
+pub fn optional_object<'js>(
     ctx: &Ctx<'js>, value: rquickjs::function::Opt<Value<'js>>,
 ) -> Result<Option<Object<'js>>> {
     match value.0 {
@@ -23,14 +23,14 @@ pub(crate) fn optional_object<'js>(
     }
 }
 
-pub(crate) fn is_readable_stream<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
+pub fn is_readable_stream<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
     let Some(object) = value.as_object() else {
-        return Ok(false);
+        return false;
     };
     is_instance_of_global(ctx, object, "ReadableStream")
 }
 
-pub(crate) fn stream_is_locked<'js>(value: &Value<'js>) -> bool {
+pub fn stream_is_locked(value: &Value<'_>) -> bool {
     let Some(object) = value.as_object() else {
         return false;
     };
@@ -40,7 +40,7 @@ pub(crate) fn stream_is_locked<'js>(value: &Value<'js>) -> bool {
 /// A body may only be taken from a stream nothing has read yet. `releaseLock`
 /// hands the lock back but leaves the stream disturbed, so `locked` alone is
 /// not enough to decide.
-pub(crate) fn stream_is_disturbed<'js>(value: &Value<'js>) -> bool {
+pub fn stream_is_disturbed(value: &Value<'_>) -> bool {
     value.as_object().is_some_and(|object| {
         Class::<ReadableStream>::from_object(object)
             .and_then(|stream| stream.try_borrow().ok().map(|stream| stream.is_disturbed()))
@@ -49,55 +49,52 @@ pub(crate) fn stream_is_disturbed<'js>(value: &Value<'js>) -> bool {
     })
 }
 
-pub(crate) fn is_instance_of_global<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, name: &str,
-) -> Result<bool> {
+pub fn is_instance_of_global<'js>(ctx: &Ctx<'js>, object: &Object<'js>, name: &str) -> bool {
     let Ok(ctor) = ctx.globals().get::<_, Value>(name) else {
-        return Ok(false);
+        return false;
     };
-    Ok(ctor.is_function() && object.is_instance_of(&ctor))
+    ctor.is_function() && object.is_instance_of(&ctor)
 }
 
-pub(crate) fn set_content_type_if_missing(headers: &Class<'_, Headers>, value: &str) -> Result<()> {
+pub fn set_content_type_if_missing(headers: &Class<'_, Headers>, value: &str) {
     let mut headers = headers.borrow_mut();
     if !headers.map.contains_key("content-type") {
         headers.map.insert("content-type".into(), value.to_string());
     }
-    Ok(())
 }
 
-pub(crate) fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>> {
+pub fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>> {
     bytes
         .map(<[u8]>::to_vec)
         .ok_or_else(|| Exception::throw_type(ctx, "buffer is detached"))
 }
 
-pub(crate) fn copy_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
+pub fn copy_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
     BufferSource::view_bytes(ctx, value)
 }
 
-pub(crate) fn apply_body_types<'js>(
+pub fn apply_body_types<'js>(
     ctx: &Ctx<'js>, headers: &Class<'js, Headers>, mut body: Value<'js>,
 ) -> Result<Value<'js>> {
     if let Some(object) = body.as_object()
-        && is_instance_of_global(ctx, object, "URLSearchParams")?
+        && is_instance_of_global(ctx, object, "URLSearchParams")
     {
         // ToString(URLSearchParams) is the urlencoded serialization.
         let text = den_util::coerce_string(ctx, object.clone().into_value())?;
         body = text.into_js(ctx)?;
-        set_content_type_if_missing(headers, "application/x-www-form-urlencoded;charset=UTF-8")?;
+        set_content_type_if_missing(headers, "application/x-www-form-urlencoded;charset=UTF-8");
     }
     if let Some(object) = body.as_object()
-        && is_instance_of_global(ctx, object, "FormData")?
+        && is_instance_of_global(ctx, object, "FormData")
     {
         let empty = form_data_keys_empty(ctx, object)?;
         if empty {
-            set_content_type_if_missing(headers, "multipart/form-data; boundary=----denEmptyForm")?;
+            set_content_type_if_missing(headers, "multipart/form-data; boundary=----denEmptyForm");
             return "".into_js(ctx);
         }
-        if let Some(form) = Class::<den_stdlib_whatwg::form_data::FormData>::from_object(object) {
+        if let Some(form) = Class::<crate::form_data::FormData>::from_object(object) {
             let blob = form.borrow().to_multipart_blob(ctx)?;
-            set_content_type_if_missing(headers, blob.borrow().mime_type())?;
+            set_content_type_if_missing(headers, blob.borrow().mime_type());
             return Ok(blob.into_value());
         }
         let key = rquickjs::Symbol::new_global(ctx.clone(), "den.toMultipartBlob")?;
@@ -113,28 +110,35 @@ pub(crate) fn apply_body_types<'js>(
         }
     }
     if body.as_string().is_some() {
-        set_content_type_if_missing(headers, "text/plain;charset=UTF-8")?;
-    } else if let Some(object) = body.as_object()
-        && is_instance_of_global(ctx, object, "Blob")?
+        set_content_type_if_missing(headers, "text/plain;charset=UTF-8");
+        return Ok(body);
+    }
+    if let Some(object) = body.as_object()
+        && is_instance_of_global(ctx, object, "Blob")
     {
         let mime: Value = object.get("type")?;
         if let Some(mime) = mime.as_string() {
             let mime = mime.to_string()?;
             if !mime.is_empty() {
-                set_content_type_if_missing(headers, &mime)?;
+                set_content_type_if_missing(headers, &mime);
             }
         }
+        return Ok(body);
     }
-    Ok(body)
+    if body.as_object().is_some_and(Object::is_array_buffer)
+        || BufferSource::is_array_buffer_view(ctx, &body)?
+    {
+        return Ok(body);
+    }
+    set_content_type_if_missing(headers, "text/plain;charset=UTF-8");
+    den_util::coerce_string(ctx, body)?.into_js(ctx)
 }
 
-pub(crate) async fn value_to_bytes<'js>(
-    ctx: &Ctx<'js>, body: Option<Value<'js>>,
-) -> Result<Vec<u8>> {
+pub async fn value_to_bytes<'js>(ctx: &Ctx<'js>, body: Option<Value<'js>>) -> Result<Vec<u8>> {
     let Some(body) = body.filter(|value| !value.is_null() && !value.is_undefined()) else {
         return Ok(Vec::new());
     };
-    if is_readable_stream(ctx, &body)? {
+    if is_readable_stream(ctx, &body) {
         return read_stream(ctx, body).await;
     }
     if let Some(string) = body.as_string() {
@@ -159,13 +163,11 @@ pub(crate) async fn value_to_bytes<'js>(
     Ok(den_util::coerce_string(ctx, body)?.into_bytes())
 }
 
-pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<u8>> {
+pub async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<u8>> {
     if let Some(object) = stream.as_object()
-        && let Some(readable) =
-            Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object(object)
+        && let Some(readable) = Class::<ReadableStream>::from_object(object)
     {
-        return den_stdlib_whatwg::streams::ReadableStream::read_all_bytes(&readable, ctx.clone())
-            .await;
+        return ReadableStream::read_all_bytes(&readable, ctx.clone()).await;
     }
     let Some(object) = stream.as_object() else {
         return Err(Exception::throw_type(ctx, "ReadableStream expected"));
@@ -226,24 +228,23 @@ pub(crate) async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Resu
     Ok(out)
 }
 
-pub(crate) fn locked_empty_stream<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
+pub fn locked_empty_stream<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     let stream = ReadableStream::new(ctx.clone(), Opt(None), Opt(None))?;
     let instance = Class::instance(ctx.clone(), stream)?;
     ReadableStream::lock_for_consume(&instance, ctx)?;
     Ok(instance.into_value())
 }
 
-pub(crate) fn bytes_to_stream<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'js>> {
+pub fn bytes_to_stream<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'js>> {
     let queue = if bytes.is_empty() {
         Vec::new()
     } else {
         vec![TypedArray::<u8>::new_copy(ctx.clone(), bytes)?.into_value()]
     };
-    den_stdlib_whatwg::streams::ReadableStream::from_queue(ctx, queue)
-        .map(|stream| stream.into_value())
+    ReadableStream::from_queue(ctx, queue).map(rquickjs::Class::into_value)
 }
 
-pub(crate) fn http_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
+pub fn http_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
     if ctx.globals().get::<_, Value>("ReadableStream").is_err() {
         return Ok(Value::new_null(ctx.clone()));
     }
@@ -277,14 +278,11 @@ pub(crate) fn http_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Re
     readable_from_source(ctx, source)
 }
 
-pub(crate) fn tee_stream<'js>(
-    ctx: &Ctx<'js>, stream: Value<'js>,
-) -> Result<(Value<'js>, Value<'js>)> {
+pub fn tee_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<(Value<'js>, Value<'js>)> {
     if let Some(object) = stream.as_object()
-        && let Some(readable) =
-            Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object(object)
+        && let Some(readable) = Class::<ReadableStream>::from_object(object)
     {
-        return den_stdlib_whatwg::streams::ReadableStream::tee_pair(&readable, ctx);
+        return ReadableStream::tee_pair_for_clone(&readable, ctx);
     }
     Err(Exception::throw_type(
         ctx,
@@ -292,13 +290,46 @@ pub(crate) fn tee_stream<'js>(
     ))
 }
 
-pub(crate) fn blob_from_bytes<'js>(
-    ctx: &Ctx<'js>, bytes: Vec<u8>, mime: &str,
-) -> Result<Value<'js>> {
+pub fn text_stream_from_byte_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Value<'js>> {
+    let source = Object::new(ctx.clone())?;
+    source.set("_stream", stream)?;
+    source.set("_read", false)?;
+    source.set(
+        "pull",
+        Function::new(
+            ctx.clone(),
+            Async(
+                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
+                    let source = this.0;
+                    async move {
+                        let started: bool = source.get("_read")?;
+                        if started {
+                            return Ok(());
+                        }
+                        source.set("_read", true)?;
+                        let stream: Value = source.get("_stream")?;
+                        let bytes = read_stream(&ctx, stream).await?;
+                        if !bytes.is_empty() {
+                            controller_call(
+                                &controller,
+                                "enqueue",
+                                Some(utf8_text(&bytes).into_js(&ctx)?),
+                            )?;
+                        }
+                        controller_call(&controller, "close", None)
+                    }
+                },
+            ),
+        )?,
+    )?;
+    readable_from_source(ctx, source)
+}
+
+pub fn blob_from_bytes<'js>(ctx: &Ctx<'js>, bytes: Vec<u8>, mime: &str) -> Result<Value<'js>> {
     let ctor: Constructor = ctx
         .globals()
         .get("Blob")
-        .map_err(|_| Exception::throw_type(ctx, "Blob is not defined"))?;
+        .map_err(|_error| Exception::throw_type(ctx, "Blob is not defined"))?;
     let parts = Array::new(ctx.clone())?;
     parts.set(0, TypedArray::<u8>::new_copy(ctx.clone(), bytes)?)?;
     let opts = Object::new(ctx.clone())?;
@@ -306,7 +337,7 @@ pub(crate) fn blob_from_bytes<'js>(
     ctor.construct((parts, opts))
 }
 
-pub(crate) fn validate_status(ctx: &Ctx<'_>, status: i32) -> Result<u16> {
+pub fn validate_status(ctx: &Ctx<'_>, status: i32) -> Result<u16> {
     if !(200..=599).contains(&status) {
         return Err(Exception::throw_range(
             ctx,
@@ -316,7 +347,7 @@ pub(crate) fn validate_status(ctx: &Ctx<'_>, status: i32) -> Result<u16> {
     Ok(status as u16)
 }
 
-pub(crate) fn validate_status_text(ctx: &Ctx<'_>, text: &str) -> Result<()> {
+pub fn validate_status_text(ctx: &Ctx<'_>, text: &str) -> Result<()> {
     if text.chars().any(|ch| {
         let code = ch as u32;
         code > 0xff || ch == '\n' || ch == '\r'
@@ -329,9 +360,9 @@ pub(crate) fn validate_status_text(ctx: &Ctx<'_>, text: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn null_body_status(status: u16) -> bool { matches!(status, 204 | 205 | 304) }
+pub const fn null_body_status(status: u16) -> bool { matches!(status, 204 | 205 | 304) }
 
-pub(crate) fn is_valid_method(method: &str) -> bool {
+pub fn is_valid_method(method: &str) -> bool {
     !method.is_empty()
         && method.bytes().all(|byte| {
             matches!(
@@ -358,7 +389,7 @@ pub(crate) fn is_valid_method(method: &str) -> bool {
         })
 }
 
-pub(crate) const BLOCKED_PORTS: &[u16] = &[
+pub const BLOCKED_PORTS: &[u16] = &[
     1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102,
     103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465,
     512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993,
@@ -366,9 +397,9 @@ pub(crate) const BLOCKED_PORTS: &[u16] = &[
     6669, 6697, 10080,
 ];
 
-pub(crate) fn is_blocked_port(port: u16) -> bool { BLOCKED_PORTS.contains(&port) }
+pub fn is_blocked_port(port: u16) -> bool { BLOCKED_PORTS.contains(&port) }
 
-pub(crate) fn utf8_text(bytes: &[u8]) -> String {
+pub fn utf8_text(bytes: &[u8]) -> String {
     let mut text = String::from_utf8_lossy(bytes).into_owned();
     if text.starts_with('\u{FEFF}') {
         text.remove(0);
@@ -376,29 +407,28 @@ pub(crate) fn utf8_text(bytes: &[u8]) -> String {
     text
 }
 
-pub(crate) fn parse_json_js<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'js>> {
+pub fn parse_json_js<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'js>> {
     if bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff]) {
         return Err(Exception::throw_syntax(ctx, "UTF-16 JSON is not supported"));
     }
-    den_util::json_parse(ctx, &utf8_text(bytes))
+    ctx.json_parse(utf8_text(bytes))
 }
 
-pub(crate) fn text_to_stream<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
+pub fn text_to_stream<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
     let queue = if text.is_empty() {
         Vec::new()
     } else {
         vec![text.into_js(ctx)?]
     };
-    den_stdlib_whatwg::streams::ReadableStream::from_queue(ctx, queue)
-        .map(|stream| stream.into_value())
+    ReadableStream::from_queue(ctx, queue).map(rquickjs::Class::into_value)
 }
 
-pub(crate) fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
-    if is_readable_stream(ctx, &value)? {
+pub fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
+    if is_readable_stream(ctx, &value) {
         return Ok(value);
     }
     if let Some(string) = value.as_string() {
-        return text_to_stream(ctx, &string.to_string()?);
+        return bytes_to_stream(ctx, string.to_string()?.as_bytes());
     }
     if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
         return bytes_to_stream(ctx, &copy_buffer(ctx, buffer.as_bytes())?);
@@ -413,16 +443,15 @@ pub(crate) fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Re
         }
         if object
             .get::<_, Value>("buffer")
-            .ok()
-            .is_some_and(|buffer| !buffer.is_undefined() && !buffer.is_null())
+            .is_ok_and(|buffer| !buffer.is_undefined() && !buffer.is_null())
         {
             return bytes_to_stream(ctx, &copy_view(ctx, &value)?);
         }
     }
-    ReadableStream::from_queue(ctx, Vec::new()).map(|stream| stream.into_value())
+    ReadableStream::from_queue(ctx, Vec::new()).map(rquickjs::Class::into_value)
 }
 
-pub(crate) fn text_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
+pub fn text_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
     let decoder = ctx.probe(|| den_util::construct::<_, Object>(ctx, "TextDecoder", ()).ok());
     let remainder = Rc::new(RefCell::new(Vec::new()));
     let source = Object::new(ctx.clone())?;
@@ -462,13 +491,13 @@ pub(crate) fn text_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Re
     readable_from_source(ctx, source)
 }
 
-pub(crate) fn promise_resolve<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
+pub fn promise_resolve<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
     let (promise, resolve, _) = ctx.promise()?;
     let _ = resolve.call::<_, ()>((value,));
     Ok(promise.into_value())
 }
 
-pub(crate) fn promise_reject<'js>(ctx: &Ctx<'js>, reason: Value<'js>) -> Result<Value<'js>> {
+pub fn promise_reject<'js>(ctx: &Ctx<'js>, reason: Value<'js>) -> Result<Value<'js>> {
     let (promise, _, reject) = ctx.promise()?;
     let _ = reject.call::<_, ()>((reason,));
     Ok(promise.into_value())
@@ -499,24 +528,23 @@ fn readable_from_source<'js>(ctx: &Ctx<'js>, source: Object<'js>) -> Result<Valu
         ctx.clone(),
         ReadableStream::new(ctx.clone(), Opt(Some(source.into_value())), Opt(None))?,
     )
-    .map(|stream| stream.into_value())
+    .map(rquickjs::Class::into_value)
 }
 
 fn controller_call<'js>(
     controller: &Object<'js>, method: &str, arg: Option<Value<'js>>,
 ) -> Result<()> {
     let func: Function = controller.get(method)?;
-    match arg {
-        Some(value) => func.call((This(controller.clone()), value)),
-        None => func.call((This(controller.clone()),)),
-    }
+    arg.map_or_else(
+        || func.call((This(controller.clone()),)),
+        |value| func.call((This(controller.clone()), value)),
+    )
 }
 
 fn truthy_prop(object: &Object<'_>, name: &str) -> bool {
     object
         .get::<_, Value>(name)
-        .ok()
-        .is_some_and(|value| value.as_bool() == Some(true))
+        .is_ok_and(|value| value.as_bool() == Some(true))
 }
 
 fn type_error_value<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
@@ -600,11 +628,10 @@ async fn pull_http_chunk<'js>(
 fn decode_utf8_chunk(remainder: &mut Vec<u8>, incoming: &[u8]) -> String {
     remainder.extend_from_slice(incoming);
     let take = match std::str::from_utf8(remainder) {
-        Ok(_) => remainder.len(),
         Err(error) if error.error_len().is_none() => error.valid_up_to(),
-        Err(_) => remainder.len(),
+        Ok(_) | Err(_) => remainder.len(),
     };
-    let text = String::from_utf8_lossy(&remainder[..take]).into_owned();
+    let text = String::from_utf8_lossy(remainder.get(..take).unwrap_or_default()).into_owned();
     remainder.drain(..take);
     text
 }

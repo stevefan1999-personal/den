@@ -10,7 +10,7 @@ use rquickjs::{
 
 /// The WinterTC / txiki import-attribute types den knows how to load.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ImportKind {
+pub enum ImportKind {
     Json,
     Text,
     Bytes,
@@ -20,8 +20,8 @@ pub(crate) enum ImportKind {
 ///
 /// An unknown `type` is a loading error rather than a fall-through: the
 /// attribute is an explicit request, and guessing script would hide it.
-pub(crate) fn import_kind<'js>(
-    name: &str, attributes: Option<&ImportAttributes<'js>>,
+pub fn import_kind(
+    name: &str, attributes: Option<&ImportAttributes<'_>>,
 ) -> Result<Option<ImportKind>> {
     let Some(attributes) = attributes else {
         return Ok(None);
@@ -43,7 +43,7 @@ pub(crate) fn import_kind<'js>(
 }
 
 /// Declare a module whose default export is `bytes` interpreted as `kind`.
-pub(crate) fn declare_import_kind<'js>(
+pub fn declare_import_kind<'js>(
     ctx: &Ctx<'js>, name: &str, bytes: &[u8], kind: ImportKind,
 ) -> Result<Module<'js, Declared>> {
     let source = match kind {
@@ -51,6 +51,7 @@ pub(crate) fn declare_import_kind<'js>(
         ImportKind::Text => text_module_source(ctx, name, bytes)?,
         ImportKind::Bytes => bytes_module_source(bytes),
     };
+    den_util::stack::register_source(ctx, name, source.clone(), std::iter::empty())?;
     Module::declare(ctx.clone(), name, source)
 }
 

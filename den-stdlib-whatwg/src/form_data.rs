@@ -2,14 +2,14 @@
 
 use den_util::coerce_string;
 use rquickjs::{
-    Class, Ctx, FromJs, Function, IntoJs, Iterable, JsLifetime, Result, Value,
+    Class, Ctx, FromJs as _, Function, IntoJs as _, Iterable, JsLifetime, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, Rest, This},
 };
 
 use crate::{
-    blob::{Blob, BlobInner, File},
+    blob::{Blob, File, Inner},
     host::Host,
 };
 
@@ -40,16 +40,18 @@ impl FormData {
                 let file = Class::<File>::from_value(&value)?;
                 return Ok((name, FormValue::File(file.borrow().clone())));
             }
-            let inner = if let Ok(file) = Class::<File>::from_value(&value) {
-                file.borrow().inner().clone()
-            } else if let Ok(blob) = Class::<Blob>::from_value(&value) {
-                blob.borrow().inner().clone()
-            } else {
-                BlobInner::from_bytes(Vec::new(), String::new())
-            };
+            let inner = Class::<File>::from_value(&value).map_or_else(
+                |_error| {
+                    Class::<Blob>::from_value(&value).map_or_else(
+                        |_error| Inner::from_bytes(Vec::new(), String::new()),
+                        |blob| blob.borrow().inner().clone(),
+                    )
+                },
+                |file| file.borrow().inner().clone(),
+            );
             let mime = inner.mime_type().to_string();
             let file = File::from_parts(
-                BlobInner::from_bytes(inner.bytes().to_vec(), mime),
+                Inner::from_bytes(inner.bytes().to_vec(), mime),
                 filename,
                 File::now_millis(),
             );
@@ -58,11 +60,11 @@ impl FormData {
         Ok((name, FormValue::Text(coerce_string(ctx, value)?)))
     }
 
-    fn value_js<'js>(&self, ctx: &Ctx<'js>, value: &FormValue) -> Result<Value<'js>> {
+    fn value_js<'js>(ctx: &Ctx<'js>, value: &FormValue) -> Result<Value<'js>> {
         match value {
             FormValue::Text(text) => rquickjs::IntoJs::into_js(text.clone(), ctx),
             FormValue::File(file) => {
-                Class::instance(ctx.clone(), file.clone()).map(|class| class.into_value())
+                Class::instance(ctx.clone(), file.clone()).map(rquickjs::Class::into_value)
             }
         }
     }
@@ -101,7 +103,7 @@ impl FormData {
         bytes.extend_from_slice(format!("--{boundary}--").as_bytes());
         Class::instance(
             ctx.clone(),
-            Blob::from_inner(BlobInner::from_bytes(
+            Blob::from_inner(Inner::from_bytes(
                 bytes,
                 format!("multipart/form-data; boundary={boundary}"),
             )),
@@ -111,8 +113,7 @@ impl FormData {
     fn boundary() -> String {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |duration| duration.as_nanos());
         format!("----formdata-den-{nanos:x}")
     }
 
@@ -145,13 +146,14 @@ impl FormData {
 impl FormData {
     #[qjs(constructor)]
     pub fn new<'js>(ctx: Ctx<'js>, form: Opt<Value<'js>>) -> Result<Self> {
-        if let Some(form) = form.0 {
-            if !form.is_undefined() && !form.is_null() {
-                return Err(Host::throw_type(
-                    &ctx,
-                    "Failed to construct 'FormData': HTMLFormElement is not supported",
-                ));
-            }
+        if let Some(form) = form.0
+            && !form.is_undefined()
+            && !form.is_null()
+        {
+            return Err(Host::throw_type(
+                &ctx,
+                "Failed to construct 'FormData': HTMLFormElement is not supported",
+            ));
         }
         Ok(Self {
             entries: Vec::new(),
@@ -160,30 +162,56 @@ impl FormData {
 
     pub fn append<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 2)?;
-        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         let filename = args
             .0
             .get(2)
             .cloned()
             .and_then(|value| coerce_string(&ctx, value).ok());
-        let entry = Self::normalize(&ctx, name, args.0[1].clone(), filename)?;
+        let entry = Self::normalize(
+            &ctx,
+            name,
+            args.0
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+            filename,
+        )?;
         self.entries.push(entry);
         Ok(())
     }
 
     pub fn delete<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         self.entries.retain(|(existing, _)| existing != &name);
         Ok(())
     }
 
     pub fn get<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Value<'js>> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         for (existing, value) in &self.entries {
             if existing == &name {
-                return self.value_js(&ctx, value);
+                return Self::value_js(&ctx, value);
             }
         }
         Ok(Value::new_null(ctx))
@@ -191,11 +219,17 @@ impl FormData {
 
     pub fn get_all<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<Vec<Value<'js>>> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         let mut result = Vec::new();
         for (existing, value) in &self.entries {
             if existing == &name {
-                result.push(self.value_js(&ctx, value)?);
+                result.push(Self::value_js(&ctx, value)?);
             }
         }
         Ok(result)
@@ -203,19 +237,39 @@ impl FormData {
 
     pub fn has<'js>(&self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<bool> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         Ok(self.entries.iter().any(|(existing, _)| existing == &name))
     }
 
     pub fn set<'js>(&mut self, ctx: Ctx<'js>, args: Rest<Value<'js>>) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 2)?;
-        let name = coerce_string(&ctx, args.0[0].clone())?;
+        let name = coerce_string(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         let filename = args
             .0
             .get(2)
             .cloned()
             .and_then(|value| coerce_string(&ctx, value).ok());
-        let replacement = Self::normalize(&ctx, name.clone(), args.0[1].clone(), filename)?;
+        let replacement = Self::normalize(
+            &ctx,
+            name.clone(),
+            args.0
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+            filename,
+        )?;
         let mut result = Vec::new();
         let mut replace = true;
         for entry in self.entries.drain(..) {
@@ -243,7 +297,7 @@ impl FormData {
     pub fn values<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let mut values = Vec::new();
         for (_, value) in &self.entries {
-            values.push(self.value_js(&ctx, value)?);
+            values.push(Self::value_js(&ctx, value)?);
         }
         Iterable::from(values).into_js(&ctx)
     }
@@ -253,7 +307,7 @@ impl FormData {
         for (name, value) in &self.entries {
             let pair = rquickjs::Array::new(ctx.clone())?;
             pair.set(0, name.clone())?;
-            pair.set(1, self.value_js(&ctx, value)?)?;
+            pair.set(1, Self::value_js(&ctx, value)?)?;
             pairs.push(pair);
         }
         Iterable::from(pairs).into_js(&ctx)
@@ -263,7 +317,13 @@ impl FormData {
         this: This<Class<'js, Self>>, ctx: Ctx<'js>, args: Rest<Value<'js>>,
     ) -> Result<()> {
         Self::ensure(&ctx, args.0.len(), 1)?;
-        let callback = Function::from_js(&ctx, args.0[0].clone())?;
+        let callback = Function::from_js(
+            &ctx,
+            args.0
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
+        )?;
         let this_arg = args
             .0
             .get(1)
@@ -271,7 +331,7 @@ impl FormData {
             .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
         let form = this.0.borrow();
         for (name, value) in &form.entries {
-            let js_value = form.value_js(&ctx, value)?;
+            let js_value = Self::value_js(&ctx, value)?;
             callback.call::<_, ()>((
                 This(this_arg.clone()),
                 js_value,
@@ -291,5 +351,5 @@ impl FormData {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "FormData" }
+    pub const fn to_string_tag() -> &'static str { "FormData" }
 }

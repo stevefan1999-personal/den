@@ -1,10 +1,19 @@
 use std::time::Duration;
 
+use futures::{SinkExt as _, StreamExt as _};
 use tokio::net::TcpListener;
-
-use super::{
-    NativeWebSocket, NativeWsConnectOptions, NativeWsError, NativeWsEvent, is_valid_subprotocol,
+use tokio_tungstenite::{
+    accept_async, accept_hdr_async,
+    tungstenite::{
+        Message,
+        handshake::server::{Request, Response},
+        http::HeaderValue,
+    },
 };
+
+#[cfg(feature = "ring")]
+use super::NativeWsConnectOptions;
+use super::{NativeWebSocket, NativeWsError, NativeWsEvent, is_valid_subprotocol};
 
 async fn echo_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -16,26 +25,33 @@ async fn echo_port() -> u16 {
             let Ok((stream, _)) = listener.accept().await else {
                 break;
             };
-            tokio::spawn(async move {
-                let Ok(socket) = NativeWebSocket::accept(stream).await else {
-                    return;
-                };
-                while let Some(event) = socket.next_event().await {
-                    match event {
-                        NativeWsEvent::Text(text) => {
-                            let _ = socket.send_text(text);
-                        }
-                        NativeWsEvent::Binary(bytes) => {
-                            let _ = socket.send_binary(bytes);
-                        }
-                        NativeWsEvent::Close { .. } => break,
-                        NativeWsEvent::Open { .. } | NativeWsEvent::Error(_) => {}
-                    }
-                }
-            });
+            tokio::spawn(echo(stream));
         }
     });
     port
+}
+
+async fn echo<S>(stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let Ok(mut socket) = accept_async(stream).await else {
+        return;
+    };
+    while let Some(Ok(message)) = socket.next().await {
+        match message {
+            Message::Text(_) | Message::Binary(_) => {
+                if socket.send(message).await.is_err() {
+                    break;
+                }
+            }
+            Message::Close(frame) => {
+                let _ = socket.send(Message::Close(frame)).await;
+                break;
+            }
+            _ => {}
+        }
+    }
 }
 
 async fn expect_open(socket: &NativeWebSocket) -> NativeWsEvent {
@@ -124,6 +140,10 @@ async fn connect_echoes_binary() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::result_large_err,
+    reason = "Tungstenite fixes the handshake callback's HTTP response error type"
+)]
 async fn protocol_negotiation_picks_from_the_response() {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -133,14 +153,26 @@ async fn protocol_negotiation_picks_from_the_response() {
         let Ok((stream, _)) = listener.accept().await else {
             return;
         };
-        let Ok(socket) =
-            NativeWebSocket::accept_stream(stream, &["superchat".into(), "chat".into()]).await
+        let Ok(mut socket) =
+            accept_hdr_async(stream, |request: &Request, mut response: Response| {
+                let offered = request
+                    .headers()
+                    .get("Sec-WebSocket-Protocol")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                assert!(offered.split(',').any(|item| item.trim() == "superchat"));
+                response.headers_mut().insert(
+                    "Sec-WebSocket-Protocol",
+                    HeaderValue::from_static("superchat"),
+                );
+                Ok(response)
+            })
+            .await
         else {
             return;
         };
-        assert_eq!(socket.protocol(), "superchat");
-        while let Some(event) = socket.next_event().await {
-            if matches!(event, NativeWsEvent::Close { .. }) {
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_))) {
                 break;
             }
         }
@@ -155,8 +187,10 @@ async fn protocol_negotiation_picks_from_the_response() {
     socket.close(1000, String::new());
 }
 
+#[cfg(feature = "ring")]
 #[tokio::test]
 async fn wss_connects_with_tokio_rustls() {
+    crate::tls::install_default_crypto_provider();
     let certified =
         rcgen::generate_simple_self_signed(["localhost".to_string()]).expect("self-signed cert");
     let cert_pem = certified.cert.pem();
@@ -184,18 +218,7 @@ async fn wss_connects_with_tokio_rustls() {
         let Ok(tls) = acceptor.accept(tcp).await else {
             return;
         };
-        let Ok(socket) = NativeWebSocket::accept_stream(tls, &[]).await else {
-            return;
-        };
-        while let Some(event) = socket.next_event().await {
-            match event {
-                NativeWsEvent::Text(text) => {
-                    let _ = socket.send_text(text);
-                }
-                NativeWsEvent::Close { .. } => break,
-                _ => {}
-            }
-        }
+        echo(tls).await;
     });
     let url = format!("wss://127.0.0.1:{port}/");
     let socket = NativeWebSocket::connect_with(&url, NativeWsConnectOptions {

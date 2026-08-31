@@ -21,8 +21,8 @@ use den_stdlib_core::exceptions::{
 };
 use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
-    Result, Value,
+    Array, Class, Coerced, Ctx, Error, Exception, FromJs as _, Function, IntoJs as _, JsLifetime,
+    Object, Result, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Args, Opt, This},
@@ -54,21 +54,29 @@ pub(crate) fn new_dom_exception<'js>(
     den_util::new_dom_exception(ctx, message, name)
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "DOMHighResTimeStamp is specified as fractional milliseconds"
+)]
 fn unix_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
+        .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
 }
 
+#[expect(
+    clippy::float_arithmetic,
+    reason = "Event.timeStamp is specified as fractional milliseconds since the realm origin"
+)]
 fn time_stamp(ctx: &Ctx<'_>) -> f64 {
-    let origin = if let Some(origin) = ctx.userdata::<TimeOrigin>() {
-        origin.0
-    } else {
-        let origin = unix_ms();
-        let _ = ctx.store_userdata(TimeOrigin(origin));
-        origin
-    };
+    let origin = ctx.userdata::<TimeOrigin>().map_or_else(
+        || {
+            let origin = unix_ms();
+            let _ = ctx.store_userdata(TimeOrigin(origin));
+            origin
+        },
+        |origin| origin.0,
+    );
     unix_ms() - origin
 }
 
@@ -86,10 +94,7 @@ fn dict_get<'js>(options: Option<&Value<'js>>, key: &str) -> Result<Option<Value
 }
 
 fn dict_bool<'js>(ctx: &Ctx<'js>, options: Option<&Value<'js>>, key: &str) -> Result<bool> {
-    match dict_get(options, key)? {
-        Some(value) => to_bool(ctx, value),
-        None => Ok(false),
-    }
+    dict_get(options, key)?.map_or(Ok(false), |value| to_bool(ctx, value))
 }
 
 fn call_with_this<'js>(
@@ -193,7 +198,7 @@ impl<'js> EventFields<'js> {
         ))
     }
 
-    fn prevent_default(&mut self) {
+    const fn prevent_default(&mut self) {
         if self.cancelable {
             self.canceled = true;
         }
@@ -393,7 +398,7 @@ impl<'js> Event<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Event" }
+    pub const fn to_string_tag() -> &'static str { "Event" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -409,10 +414,8 @@ impl<'js> CustomEvent<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
         let options = options.0;
-        let detail = match dict_get(options.as_ref(), "detail")? {
-            Some(value) => value,
-            None => Value::new_null(ctx.clone()),
-        };
+        let detail =
+            dict_get(options.as_ref(), "detail")?.unwrap_or_else(|| Value::new_null(ctx.clone()));
         Ok(Self {
             fields: EventFields::from_args(&ctx, event_type, options.as_ref())?,
             detail,
@@ -442,7 +445,7 @@ impl<'js> CustomEvent<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "CustomEvent" }
+    pub const fn to_string_tag() -> &'static str { "CustomEvent" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -495,25 +498,21 @@ impl<'js> MessageEvent<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, event_type: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
         let options = options.0;
-        let data = match dict_get(options.as_ref(), "data")? {
-            Some(value) => value,
-            None => Value::new_null(ctx.clone()),
-        };
+        let data =
+            dict_get(options.as_ref(), "data")?.unwrap_or_else(|| Value::new_null(ctx.clone()));
         Ok(Self {
             fields: EventFields::from_args(&ctx, event_type, options.as_ref())?,
             data,
             origin: Self::string_or(&ctx, dict_get(options.as_ref(), "origin")?, "")?,
             last_event_id: Self::string_or(&ctx, dict_get(options.as_ref(), "lastEventId")?, "")?,
-            source: match dict_get(options.as_ref(), "source")? {
-                Some(value) => value,
-                None => Value::new_null(ctx.clone()),
-            },
+            source: dict_get(options.as_ref(), "source")?
+                .unwrap_or_else(|| Value::new_null(ctx.clone())),
             ports: Self::freeze_ports(&ctx, dict_get(options.as_ref(), "ports")?)?,
         })
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "MessageEvent" }
+    pub const fn to_string_tag() -> &'static str { "MessageEvent" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -553,10 +552,8 @@ impl<'js> ErrorEvent<'js> {
             Some(value) => to_unsigned_long(&ctx, value)?,
             None => 0,
         };
-        let error = match dict_get(options.as_ref(), "error")? {
-            Some(value) => value,
-            None => Value::new_undefined(ctx.clone()),
-        };
+        let error = dict_get(options.as_ref(), "error")?
+            .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
         Ok(Self {
             fields: EventFields::from_args(&ctx, event_type, options.as_ref())?,
             message,
@@ -568,7 +565,7 @@ impl<'js> ErrorEvent<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "ErrorEvent" }
+    pub const fn to_string_tag() -> &'static str { "ErrorEvent" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -595,7 +592,7 @@ impl<'js> PromiseRejectionEvent<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "PromiseRejectionEvent" }
+    pub const fn to_string_tag() -> &'static str { "PromiseRejectionEvent" }
 }
 
 #[derive(Clone, JsLifetime)]
@@ -632,6 +629,10 @@ struct ListenerTable<'js> {
 }
 
 impl<'js> Trace<'js> for ListenerTable<'js> {
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "garbage-collector tracing order is unobservable"
+    )]
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
         for list in self.by_type.values() {
             for listener in list {
@@ -751,7 +752,6 @@ impl<'js> EventTarget<'js> {
         let remover = Function::new(ctx.clone(), {
             let target = target.clone();
             let record = record.clone();
-            let event_type = event_type.clone();
             move |ctx: Ctx<'js>| -> Result<()> {
                 Self::remove_record(&ctx, &target, &event_type, &record);
                 Ok(())
@@ -782,24 +782,23 @@ impl<'js> EventTarget<'js> {
     fn invoke_listener(
         ctx: &Ctx<'js>, record: &Listener<'js>, event: &Value<'js>, current_target: &Value<'js>,
     ) {
-        let outcome = if let Some(function) = record.callback.as_function() {
-            call_with_this(ctx, function, current_target.clone(), [event.clone()]).map(|_| ())
-        } else if let Some(object) = record.callback.as_object() {
-            match object.get::<_, Value<'js>>("handleEvent") {
-                Ok(handle) => {
-                    match handle.as_function() {
-                        Some(function) => {
+        let outcome = record.callback.as_function().map_or_else(
+            || {
+                record.callback.as_object().map_or(Ok(()), |object| {
+                    let handle = object.get::<_, Value<'js>>("handleEvent")?;
+                    handle.as_function().map_or_else(
+                        || Err(Exception::throw_type(ctx, "handleEvent is not a function")),
+                        |function| {
                             call_with_this(ctx, function, record.callback.clone(), [event.clone()])
                                 .map(|_| ())
-                        }
-                        None => Err(Exception::throw_type(ctx, "handleEvent is not a function")),
-                    }
-                }
-                Err(error) => Err(error),
-            }
-        } else {
-            Ok(())
-        };
+                        },
+                    )
+                })
+            },
+            |function| {
+                call_with_this(ctx, function, current_target.clone(), [event.clone()]).map(|_| ())
+            },
+        );
         report_uncaught(ctx, outcome);
     }
 
@@ -831,7 +830,7 @@ impl<'js> EventTarget<'js> {
             let table = inner
                 .table
                 .try_borrow()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             table.by_type.get(&event_type).cloned().unwrap_or_default()
         };
         for record in listeners {
@@ -881,7 +880,7 @@ impl<'js> EventTarget<'js> {
             let mut table = inner
                 .table
                 .try_borrow_mut()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             let list = table.by_type.entry(event_type.clone()).or_default();
             let duplicate = list
                 .iter()
@@ -905,14 +904,13 @@ impl<'js> EventTarget<'js> {
         let mut table = inner
             .table
             .try_borrow_mut()
-            .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+            .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
         if let Some(list) = table.by_type.get_mut(event_type)
             && let Some(index) = list
                 .iter()
                 .position(|other| other.callback == *callback && other.capture == capture)
         {
-            list[index].removed.set(true);
-            list.remove(index);
+            list.remove(index).removed.set(true);
         }
         Ok(())
     }
@@ -925,12 +923,11 @@ impl<'js> EventTarget<'js> {
         let table = inner
             .table
             .try_borrow()
-            .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
-        Ok(table
-            .handlers
-            .get(name)
-            .map(|handler| handler.value.clone())
-            .unwrap_or_else(|| Value::new_null(ctx.clone())))
+            .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+        Ok(table.handlers.get(name).map_or_else(
+            || Value::new_null(ctx.clone()),
+            |handler| handler.value.clone(),
+        ))
     }
 
     pub(crate) fn set_handler(
@@ -948,7 +945,7 @@ impl<'js> EventTarget<'js> {
             let table = inner
                 .table
                 .try_borrow()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             table
                 .handlers
                 .get(name)
@@ -968,7 +965,7 @@ impl<'js> EventTarget<'js> {
             let mut table = inner
                 .table
                 .try_borrow_mut()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             table.handlers.insert(name.to_owned(), HandlerSlot {
                 value:    stored,
                 listener: None,
@@ -980,7 +977,7 @@ impl<'js> EventTarget<'js> {
             let mut table = inner
                 .table
                 .try_borrow_mut()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             if let Some(slot) = table.handlers.get_mut(name) {
                 slot.value = stored;
             }
@@ -1000,7 +997,7 @@ impl<'js> EventTarget<'js> {
             let mut table = inner
                 .table
                 .try_borrow_mut()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             table.handlers.insert(name_owned, HandlerSlot {
                 value:    stored,
                 listener: Some(listener),
@@ -1046,12 +1043,11 @@ impl<'js> EventTarget<'js> {
             let table = inner
                 .table
                 .try_borrow()
-                .map_err(|_| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
             table
                 .handlers
                 .get(name)
-                .map(|slot| slot.value.clone())
-                .unwrap_or_else(|| Value::new_null(ctx.clone()))
+                .map_or_else(|| Value::new_null(ctx.clone()), |slot| slot.value.clone())
         };
         let Some(function) = callback.as_function() else {
             return Ok(());
@@ -1139,7 +1135,7 @@ impl<'js> EventTarget<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "EventTarget" }
+    pub const fn to_string_tag() -> &'static str { "EventTarget" }
 }
 
 /// HTML §8.1.8.1. Defines an `onX` accessor on `target` (usually a prototype).
@@ -1150,7 +1146,7 @@ pub fn define_event_handler<'js>(
     let special = global_on_error.0.unwrap_or(false);
     let name_get = name.clone();
     let name_set = name.clone();
-    let type_set = event_type.clone();
+    let type_set = event_type;
     target.prop(
         name,
         Accessor::new(
@@ -1181,7 +1177,7 @@ pub fn dispatch_trusted<'js>(ctx: Ctx<'js>, target: Value<'js>, event: Value<'js
 
 /// Register the Event family on `target` and finish prototype links, constants
 /// and constructor lengths.
-pub fn define_on<'js>(target: &Object<'js>) -> Result<()> {
+pub fn define_on(target: &Object<'_>) -> Result<()> {
     Class::<EventTarget>::define(target)?;
     Class::<Event>::define(target)?;
     Class::<CustomEvent>::define(target)?;

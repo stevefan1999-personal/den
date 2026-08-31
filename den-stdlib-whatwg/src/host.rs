@@ -4,8 +4,8 @@ use std::ffi::CString;
 
 use den_util::{BufferSource, Probe as _};
 use rquickjs::{
-    ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Symbol, Value,
-    function::Constructor, qjs,
+    ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs as _, Function, Object, Result, Symbol,
+    Value, function::Constructor, qjs,
 };
 
 use crate::{
@@ -21,7 +21,7 @@ impl Host {
     }
 
     pub fn throw_message(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
-        Exception::throw_message(ctx, message)
+        den_util::stack::throw_error(ctx, message)
     }
 
     pub fn throw_dom(ctx: &Ctx<'_>, message: &str, name: &str) -> rquickjs::Error {
@@ -64,7 +64,7 @@ impl Host {
             let _ = exc.set("code", code);
             return ctx.throw(exc.into_value());
         }
-        Exception::throw_message(ctx, message)
+        den_util::stack::throw_error(ctx, message)
     }
 
     /// WebIDL USVString: ToString, then replace unpaired UTF-16 surrogates with
@@ -138,7 +138,7 @@ impl Host {
         None
     }
 
-    pub fn blob_like_type<'js>(value: &Value<'js>) -> String {
+    pub fn blob_like_type(value: &Value<'_>) -> String {
         if let Ok(blob) = Class::<Blob>::from_value(value) {
             return blob.borrow().mime_type().to_string();
         }
@@ -148,15 +148,13 @@ impl Host {
         String::new()
     }
 
-    pub fn is_blob_like<'js>(value: &Value<'js>) -> bool {
+    pub fn is_blob_like(value: &Value<'_>) -> bool {
         Class::<Blob>::from_value(value).is_ok() || Class::<File>::from_value(value).is_ok()
     }
 
-    pub fn is_file_like<'js>(value: &Value<'js>) -> bool {
-        Class::<File>::from_value(value).is_ok()
-    }
+    pub fn is_file_like(value: &Value<'_>) -> bool { Class::<File>::from_value(value).is_ok() }
 
-    pub fn file_name<'js>(value: &Value<'js>) -> Option<String> {
+    pub fn file_name(value: &Value<'_>) -> Option<String> {
         Class::<File>::from_value(value)
             .ok()
             .map(|file| file.borrow().file_name().to_string())
@@ -171,51 +169,44 @@ impl Host {
     }
 
     pub fn event<'js>(ctx: &Ctx<'js>, type_: &str) -> Result<Value<'js>> {
-        match ctx.globals().get::<_, Constructor<'js>>("Event") {
-            Ok(ctor) => ctor.construct((type_,)),
-            Err(_) => {
-                let object = Object::new(ctx.clone())?;
-                object.set("type", type_)?;
-                Ok(object.into_value())
-            }
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("Event") {
+            ctor.construct((type_,))
+        } else {
+            let object = Object::new(ctx.clone())?;
+            object.set("type", type_)?;
+            Ok(object.into_value())
         }
     }
 
     pub fn message_event<'js>(
         ctx: &Ctx<'js>, type_: &str, data: Value<'js>, origin: &str, last_event_id: &str,
     ) -> Result<Value<'js>> {
-        match ctx.globals().get::<_, Constructor<'js>>("MessageEvent") {
-            Ok(ctor) => {
-                let opts = Object::new(ctx.clone())?;
-                opts.set("data", data)?;
-                opts.set("origin", origin)?;
-                opts.set("lastEventId", last_event_id)?;
-                ctor.construct((type_, opts))
-            }
-            Err(_) => {
-                let object = Object::new(ctx.clone())?;
-                object.set("type", type_)?;
-                object.set("data", data)?;
-                object.set("origin", origin)?;
-                object.set("lastEventId", last_event_id)?;
-                Ok(object.into_value())
-            }
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("MessageEvent") {
+            let opts = Object::new(ctx.clone())?;
+            opts.set("data", data)?;
+            opts.set("origin", origin)?;
+            opts.set("lastEventId", last_event_id)?;
+            ctor.construct((type_, opts))
+        } else {
+            let object = Object::new(ctx.clone())?;
+            object.set("type", type_)?;
+            object.set("data", data)?;
+            object.set("origin", origin)?;
+            object.set("lastEventId", last_event_id)?;
+            Ok(object.into_value())
         }
     }
 
     pub fn error_event<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
-        match ctx.globals().get::<_, Constructor<'js>>("ErrorEvent") {
-            Ok(ctor) => {
-                let opts = Object::new(ctx.clone())?;
-                opts.set("message", message)?;
-                ctor.construct(("error", opts))
-            }
-            Err(_) => {
-                let object = Object::new(ctx.clone())?;
-                object.set("type", "error")?;
-                object.set("message", message)?;
-                Ok(object.into_value())
-            }
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("ErrorEvent") {
+            let opts = Object::new(ctx.clone())?;
+            opts.set("message", message)?;
+            ctor.construct(("error", opts))
+        } else {
+            let object = Object::new(ctx.clone())?;
+            object.set("type", "error")?;
+            object.set("message", message)?;
+            Ok(object.into_value())
         }
     }
 
@@ -226,17 +217,16 @@ impl Host {
         opts.set("lengthComputable", length_computable)?;
         opts.set("loaded", loaded)?;
         opts.set("total", total)?;
-        match ctx.globals().get::<_, Constructor<'js>>("ProgressEvent") {
-            Ok(ctor) => ctor.construct((type_, opts)),
-            Err(_) => {
-                let event = Self::event(ctx, type_)?;
-                if let Some(object) = event.as_object() {
-                    object.set("lengthComputable", length_computable)?;
-                    object.set("loaded", loaded)?;
-                    object.set("total", total)?;
-                }
-                Ok(event)
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("ProgressEvent") {
+            ctor.construct((type_, opts))
+        } else {
+            let event = Self::event(ctx, type_)?;
+            if let Some(object) = event.as_object() {
+                object.set("lengthComputable", length_computable)?;
+                object.set("loaded", loaded)?;
+                object.set("total", total)?;
             }
+            Ok(event)
         }
     }
 
@@ -247,21 +237,20 @@ impl Host {
         opts.set("code", code)?;
         opts.set("reason", reason)?;
         opts.set("wasClean", was_clean)?;
-        match ctx.globals().get::<_, Constructor<'js>>("CloseEvent") {
-            Ok(ctor) => ctor.construct(("close", opts)),
-            Err(_) => {
-                let event = Self::event(ctx, "close")?;
-                if let Some(object) = event.as_object() {
-                    object.set("code", code)?;
-                    object.set("reason", reason)?;
-                    object.set("wasClean", was_clean)?;
-                }
-                Ok(event)
+        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("CloseEvent") {
+            ctor.construct(("close", opts))
+        } else {
+            let event = Self::event(ctx, "close")?;
+            if let Some(object) = event.as_object() {
+                object.set("code", code)?;
+                object.set("reason", reason)?;
+                object.set("wasClean", was_clean)?;
             }
+            Ok(event)
         }
     }
 
-    pub fn install_formdata_symbol<'js>(ctx: &Ctx<'js>) -> Result<()> {
+    pub fn install_formdata_symbol(ctx: &Ctx<'_>) -> Result<()> {
         let Some(proto) = Class::<FormData>::prototype(ctx)? else {
             return Ok(());
         };
@@ -269,13 +258,5 @@ impl Host {
         let method: Function = proto.get("toMultipartBlob")?;
         proto.set(key, method)?;
         Ok(())
-    }
-
-    pub async fn maybe_await<'js>(value: Value<'js>) -> Result<Value<'js>> {
-        if value.is_promise() {
-            value.into_promise().unwrap().into_future().await
-        } else {
-            Ok(value)
-        }
     }
 }

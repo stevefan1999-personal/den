@@ -1,9 +1,13 @@
 //! `ReadableStream`, its default reader and its default controller.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+};
 
 use rquickjs::{
-    Class, Coerced, Ctx, Exception, FromJs, Function, JsLifetime, Object, Promise, Result, Value,
+    Class, Coerced, Ctx, Exception, FromJs as _, Function, JsLifetime, Object, Promise, Result,
+    Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Opt, This},
@@ -14,7 +18,7 @@ use crate::streams::{
     type_error,
 };
 
-pub(crate) enum RsState<'js> {
+pub enum RsState<'js> {
     Readable,
     Closed,
     Errored(Value<'js>),
@@ -23,21 +27,30 @@ pub(crate) enum RsState<'js> {
 /// What a read request is handed. The native variant is the specification's
 /// read-request record: pipe, tee, `read_all_bytes` and the async iterator all
 /// use it, so those paths never mint a `{ value, done }` object.
-pub(crate) enum ReadOutcome<'js> {
+pub enum ReadOutcome<'js> {
     Chunk(Value<'js>),
     Close,
     Error(Value<'js>),
 }
 
-pub(crate) enum ReadRequest<'js> {
+type NativeReadRequest<'js> = Box<dyn FnOnce(&Ctx<'js>, ReadOutcome<'js>) + 'js>;
+
+pub enum ReadRequest<'js> {
     Js(Cap<'js>),
-    Native(Box<dyn FnOnce(&Ctx<'js>, ReadOutcome<'js>) + 'js>),
+    AsyncIterator {
+        cap:       Cap<'js>,
+        finished:  Rc<Cell<bool>>,
+        inner:     Weak<RefCell<ReadableInner<'js>>>,
+        reader_id: u64,
+    },
+    Native(NativeReadRequest<'js>),
 }
 
 impl<'js> Trace<'js> for ReadRequest<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
-        if let Self::Js(cap) = self {
-            cap.trace(tracer);
+        match self {
+            Self::Js(cap) | Self::AsyncIterator { cap, .. } => cap.trace(tracer),
+            Self::Native(_) => {}
         }
     }
 }
@@ -62,21 +75,58 @@ impl<'js> ReadRequest<'js> {
                     ReadOutcome::Error(reason) => cap.reject(reason),
                 }
             }
+            Self::AsyncIterator {
+                mut cap,
+                finished,
+                inner,
+                reader_id,
+            } => {
+                match outcome {
+                    ReadOutcome::Chunk(value) => {
+                        if let Ok(result) = iter_result(ctx, value, false) {
+                            cap.resolve(result);
+                        }
+                    }
+                    ReadOutcome::Close => {
+                        finished.set(true);
+                        if let Some(inner) = inner.upgrade() {
+                            ReadableStream::release_reader(ctx, &inner, reader_id);
+                        }
+                        if let Ok(result) =
+                            iter_result(ctx, Value::new_undefined(ctx.clone()), true)
+                        {
+                            cap.resolve(result);
+                        }
+                    }
+                    ReadOutcome::Error(reason) => {
+                        if finished.replace(true) {
+                            if let Ok(result) =
+                                iter_result(ctx, Value::new_undefined(ctx.clone()), true)
+                            {
+                                cap.resolve(result);
+                            }
+                        } else {
+                            if let Some(inner) = inner.upgrade() {
+                                ReadableStream::release_reader(ctx, &inner, reader_id);
+                            }
+                            cap.reject(reason);
+                        }
+                    }
+                }
+            }
             Self::Native(deliver) => deliver(ctx, outcome),
         }
     }
 }
 
-pub(crate) fn iter_result<'js>(
-    ctx: &Ctx<'js>, value: Value<'js>, done: bool,
-) -> Result<Value<'js>> {
+pub fn iter_result<'js>(ctx: &Ctx<'js>, value: Value<'js>, done: bool) -> Result<Value<'js>> {
     let object = Object::new(ctx.clone())?;
     object.set("value", value)?;
     object.set("done", done)?;
     Ok(object.into_value())
 }
 
-pub(crate) struct ReaderSlot<'js> {
+pub struct ReaderSlot<'js> {
     id:     u64,
     closed: Cap<'js>,
 }
@@ -85,7 +135,7 @@ impl<'js> Trace<'js> for ReaderSlot<'js> {
     fn trace<'a>(&self, tracer: Tracer<'a, 'js>) { self.closed.trace(tracer); }
 }
 
-pub(crate) struct ReadableInner<'js> {
+pub struct ReadableInner<'js> {
     pub(crate) state:           RsState<'js>,
     pub(crate) disturbed:       bool,
     pub(crate) reader:          Option<ReaderSlot<'js>>,
@@ -115,7 +165,9 @@ impl<'js> Trace<'js> for ReadableInner<'js> {
         if let RsState::Errored(reason) = &self.state {
             reason.trace(tracer);
         }
-        self.reader.as_ref().map(|slot| slot.trace(tracer));
+        if let Some(slot) = self.reader.as_ref() {
+            slot.trace(tracer);
+        }
         for request in &self.read_requests {
             request.trace(tracer);
         }
@@ -137,7 +189,7 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for ReadableInner<'js> {
     type Changed<'to> = ReadableInner<'to>;
 }
 
-pub(crate) type Inner<'js> = Rc<RefCell<ReadableInner<'js>>>;
+pub type Inner<'js> = Rc<RefCell<ReadableInner<'js>>>;
 
 #[derive(JsLifetime)]
 #[rquickjs::class]
@@ -157,7 +209,7 @@ impl<'js> Trace<'js> for ReadableStream<'js> {
 }
 
 /// Parse a `{ highWaterMark, size }` strategy in specification order.
-pub(crate) fn extract_strategy<'js>(
+pub fn extract_strategy<'js>(
     ctx: &Ctx<'js>, strategy: Option<Value<'js>>, default_hwm: f64,
 ) -> Result<(f64, Option<Function<'js>>)> {
     let Some(object) = strategy
@@ -254,6 +306,14 @@ impl<'js> ReadableStream<'js> {
         }
     }
 
+    pub(crate) fn is_closed(inner: &Inner<'js>) -> bool {
+        matches!(inner.borrow().state, RsState::Closed)
+    }
+
+    pub(crate) fn has_pending_reads(inner: &Inner<'js>) -> bool {
+        !inner.borrow().read_requests.is_empty()
+    }
+
     /// Take a reader slot without handing a reader object to script. Used by
     /// pipe, tee, the async iterator and `den:fetch`'s body consumption.
     pub(crate) fn acquire_reader(ctx: &Ctx<'js>, inner: &Inner<'js>) -> Result<u64> {
@@ -315,10 +375,10 @@ impl<'js> ReadableStream<'js> {
     }
 
     pub(crate) fn closed_promise(ctx: &Ctx<'js>, inner: &Inner<'js>) -> Result<Promise<'js>> {
-        match inner.borrow().reader.as_ref() {
-            Some(slot) => Ok(slot.closed.promise()),
-            None => Cap::rejected(ctx, type_error(ctx, "the reader was released")),
-        }
+        inner.borrow().reader.as_ref().map_or_else(
+            || Cap::rejected(ctx, type_error(ctx, "the reader was released")),
+            |slot| Ok(slot.closed.promise()),
+        )
     }
 
     // ---- controller algorithms ------------------------------------------
@@ -328,7 +388,7 @@ impl<'js> ReadableStream<'js> {
         match borrow.state {
             RsState::Errored(_) => None,
             RsState::Closed => Some(0.0),
-            RsState::Readable => Some(borrow.hwm - borrow.queue_total),
+            RsState::Readable => Some(std::ops::Sub::sub(borrow.hwm, borrow.queue_total)),
         }
     }
 
@@ -351,7 +411,7 @@ impl<'js> ReadableStream<'js> {
         if !borrow.read_requests.is_empty() {
             return true;
         }
-        borrow.hwm - borrow.queue_total > 0.0
+        std::ops::Sub::sub(borrow.hwm, borrow.queue_total) > 0.0
     }
 
     pub(crate) fn pull_if_needed(ctx: &Ctx<'js>, inner: &Inner<'js>) {
@@ -438,39 +498,42 @@ impl<'js> ReadableStream<'js> {
         }
         let waiting = !inner.borrow().read_requests.is_empty();
         if waiting {
+            let was_pulling = inner.borrow().pulling;
             Self::fulfill_read(ctx, inner, chunk);
-        } else {
-            let size_fn = inner.borrow().size_fn.clone();
-            let size = match size_fn {
-                Some(size_fn) => {
-                    match size_fn.call::<_, Coerced<f64>>((
-                        This(Value::new_undefined(ctx.clone())),
-                        chunk.clone(),
-                    )) {
-                        Ok(size) => {
-                            if !size.0.is_finite() || size.0 < 0.0 {
-                                let reason = range_error(
-                                    ctx,
-                                    "a chunk size must be a non-negative finite number",
-                                );
-                                Self::error(ctx, inner, reason.clone());
-                                return Err(ctx.throw(reason));
-                            }
-                            size.0
-                        }
-                        Err(error) => {
-                            let reason = thrown(ctx, error);
+            if !was_pulling && inner.borrow().pulling {
+                return Ok(());
+            }
+            Self::pull_if_needed(ctx, inner);
+            return Ok(());
+        }
+        let size_fn = inner.borrow().size_fn.clone();
+        let size = match size_fn {
+            Some(size_fn) => {
+                match size_fn.call::<_, Coerced<f64>>((chunk.clone(),)) {
+                    Ok(size) => {
+                        if !size.0.is_finite() || size.0 < 0.0 {
+                            let reason = range_error(
+                                ctx,
+                                "a chunk size must be a non-negative finite number",
+                            );
                             Self::error(ctx, inner, reason.clone());
                             return Err(ctx.throw(reason));
                         }
+                        size.0
+                    }
+                    Err(error) => {
+                        let reason = thrown(ctx, error);
+                        Self::error(ctx, inner, reason.clone());
+                        return Err(ctx.throw(reason));
                     }
                 }
-                None => 1.0,
-            };
-            let mut borrow = inner.borrow_mut();
-            borrow.queue.push((chunk, size));
-            borrow.queue_total += size;
-        }
+            }
+            None => 1.0,
+        };
+        let mut borrow = inner.borrow_mut();
+        borrow.queue.push((chunk, size));
+        borrow.queue_total = std::ops::Add::add(borrow.queue_total, size);
+        drop(borrow);
         Self::pull_if_needed(ctx, inner);
         Ok(())
     }
@@ -561,28 +624,25 @@ impl<'js> ReadableStream<'js> {
                 None
             } else {
                 let (chunk, size) = borrow.queue.remove(0);
-                borrow.queue_total = (borrow.queue_total - size).max(0.0);
+                borrow.queue_total = std::ops::Sub::sub(borrow.queue_total, size).max(0.0);
                 Some(chunk)
             }
         };
-        match chunk {
-            Some(chunk) => {
-                let drained = {
-                    let borrow = inner.borrow();
-                    borrow.close_requested && borrow.queue.is_empty()
-                };
-                if drained {
-                    Self::clear_algorithms(inner);
-                    Self::close(ctx, inner);
-                } else {
-                    Self::pull_if_needed(ctx, inner);
-                }
-                request.deliver(ctx, ReadOutcome::Chunk(chunk));
-            }
-            None => {
-                inner.borrow_mut().read_requests.push(request);
+        if let Some(chunk) = chunk {
+            let drained = {
+                let borrow = inner.borrow();
+                borrow.close_requested && borrow.queue.is_empty()
+            };
+            if drained {
+                Self::clear_algorithms(inner);
+                Self::close(ctx, inner);
+            } else {
                 Self::pull_if_needed(ctx, inner);
             }
+            request.deliver(ctx, ReadOutcome::Chunk(chunk));
+        } else {
+            inner.borrow_mut().read_requests.push(request);
+            Self::pull_if_needed(ctx, inner);
         }
     }
 
@@ -612,10 +672,10 @@ impl<'js> ReadableStream<'js> {
         if let Some(native) = native {
             native.borrow_mut().cancel(reason.clone());
         }
-        let outcome = match cancel_fn {
-            Some(cancel) => cancel.call::<_, Value>((This(source), reason)),
-            None => Ok(Value::new_undefined(ctx.clone())),
-        };
+        let outcome = cancel_fn.map_or_else(
+            || Ok(Value::new_undefined(ctx.clone())),
+            |cancel| cancel.call::<_, Value>((This(source), reason)),
+        );
         Self::clear_algorithms(inner);
         match outcome {
             Ok(value) => crate::streams::chain_undefined(ctx, value),
@@ -646,7 +706,14 @@ impl<'js> ReadableStream<'js> {
     }
 
     pub fn tee_pair(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<(Value<'js>, Value<'js>)> {
-        let (left, right) = pipe::tee(ctx, stream)?;
+        let (left, right) = pipe::tee(ctx, stream, false)?;
+        Ok((left.into_value(), right.into_value()))
+    }
+
+    pub fn tee_pair_for_clone(
+        stream: &Class<'js, Self>, ctx: &Ctx<'js>,
+    ) -> Result<(Value<'js>, Value<'js>)> {
+        let (left, right) = pipe::tee(ctx, stream, true)?;
         Ok((left.into_value(), right.into_value()))
     }
 
@@ -654,26 +721,33 @@ impl<'js> ReadableStream<'js> {
         let inner = stream.borrow().inner.clone();
         let mut out = Vec::new();
         loop {
-            let cap = Cap::new(&ctx)?;
-            let promise = cap.promise();
-            Self::read(&ctx, &inner, ReadRequest::Js(cap));
-            let result: Value = promise.into_future().await?;
-            let Some(object) = result.as_object() else {
-                break;
-            };
-            // `done` is ToBoolean, and a `read()` result whose shape is not
-            // readable at all is a host-side error, not "keep reading".
-            if object.get::<_, Coerced<bool>>("done")?.0 {
-                break;
+            let (send, receive) = tokio::sync::oneshot::channel();
+            Self::read(
+                &ctx,
+                &inner,
+                ReadRequest::Native(Box::new(move |_, outcome| {
+                    let _ = send.send(outcome);
+                })),
+            );
+            match receive.await {
+                Ok(ReadOutcome::Chunk(value)) => {
+                    let Some(bytes) = crate::host::Host::buffer_source_bytes(&ctx, value)? else {
+                        return Err(Exception::throw_type(
+                            &ctx,
+                            "ReadableStream chunk must be a Uint8Array",
+                        ));
+                    };
+                    out.extend(bytes);
+                }
+                Ok(ReadOutcome::Close) => break,
+                Ok(ReadOutcome::Error(reason)) => return Err(ctx.throw(reason)),
+                Err(_) => {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "ReadableStream read was abandoned",
+                    ));
+                }
             }
-            let value: Value = object.get("value")?;
-            let Some(bytes) = crate::host::Host::buffer_source_bytes(&ctx, value)? else {
-                return Err(Exception::throw_type(
-                    &ctx,
-                    "ReadableStream chunk must be a Uint8Array",
-                ));
-            };
-            out.extend(bytes);
         }
         Ok(out)
     }
@@ -773,6 +847,16 @@ impl<'js> ReadableStream<'js> {
     pub fn get_reader(
         this: This<Class<'js, Self>>, ctx: Ctx<'js>, options: Opt<Value<'js>>,
     ) -> Result<Class<'js, ReadableStreamDefaultReader<'js>>> {
+        if options
+            .0
+            .as_ref()
+            .is_some_and(|value| !value.is_undefined() && !value.is_null() && !value.is_object())
+        {
+            return Err(Exception::throw_type(
+                &ctx,
+                "reader options must be an object",
+            ));
+        }
         if let Some(object) = options.0.as_ref().and_then(Value::as_object) {
             let mode: Value = object.get("mode")?;
             if !mode.is_undefined() {
@@ -790,28 +874,53 @@ impl<'js> ReadableStream<'js> {
     }
 
     pub fn tee(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<rquickjs::Array<'js>> {
-        let (left, right) = pipe::tee(&ctx, &this.0)?;
+        let (left, right) = pipe::tee(&ctx, &this.0, false)?;
         let pair = rquickjs::Array::new(ctx)?;
         pair.set(0, left)?;
         pair.set(1, right)?;
         Ok(pair)
     }
 
-    pub fn pipe_to(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, dest: Opt<Value<'js>>,
-        options: Opt<Value<'js>>,
+    #[qjs(rename = "pipeTo")]
+    pub fn pipe_to_js(
+        this: This<Value<'js>>, ctx: Ctx<'js>, dest: Opt<Value<'js>>, options: Opt<Value<'js>>,
     ) -> Result<Promise<'js>> {
-        match pipe::pipe_to(&ctx, &this.0, dest.0, options.0) {
+        let source = this
+            .0
+            .as_object()
+            .and_then(Class::<Self>::from_object)
+            .ok_or_else(|| {
+                Exception::throw_type(&ctx, "pipeTo called on an incompatible receiver")
+            });
+        let source = match source {
+            Ok(source) => source,
+            Err(error) => return Cap::rejected(&ctx, thrown(&ctx, error)),
+        };
+        match pipe::PipeRecord::pipe_to(&ctx, &source, dest.0, options.0) {
             Ok(promise) => Ok(promise),
             Err(error) => Cap::rejected(&ctx, thrown(&ctx, error)),
         }
     }
 
-    pub fn pipe_through(
-        this: This<Class<'js, Self>>, ctx: Ctx<'js>, transform: Opt<Value<'js>>,
+    #[qjs(skip)]
+    pub fn pipe_to(
+        this: This<Class<'js, Self>>, ctx: Ctx<'js>, dest: Opt<Value<'js>>,
         options: Opt<Value<'js>>,
+    ) -> Result<Promise<'js>> {
+        pipe::PipeRecord::pipe_to(&ctx, &this.0, dest.0, options.0)
+    }
+
+    pub fn pipe_through(
+        this: This<Value<'js>>, ctx: Ctx<'js>, transform: Opt<Value<'js>>, options: Opt<Value<'js>>,
     ) -> Result<Value<'js>> {
-        pipe::pipe_through(&ctx, &this.0, transform.0, options.0)
+        let source = this
+            .0
+            .as_object()
+            .and_then(Class::<Self>::from_object)
+            .ok_or_else(|| {
+                Exception::throw_type(&ctx, "pipeThrough called on an incompatible receiver")
+            })?;
+        pipe::pipe_through(&ctx, &source, transform.0, options.0)
     }
 
     pub fn values(
@@ -828,7 +937,7 @@ impl<'js> ReadableStream<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "ReadableStream" }
+    pub const fn to_string_tag() -> &'static str { "ReadableStream" }
 }
 
 /// The controller owns the stream's record and is its single tracer.
@@ -861,7 +970,7 @@ impl<'js> Trace<'js> for ReadableStreamDefaultController<'js> {
 }
 
 impl<'js> ReadableStreamDefaultController<'js> {
-    fn stream(&self, _ctx: &Ctx<'js>) -> Result<Inner<'js>> { Ok(Rc::clone(&self.inner)) }
+    fn stream(&self, _ctx: &Ctx<'js>) -> Inner<'js> { Rc::clone(&self.inner) }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -880,7 +989,7 @@ impl<'js> ReadableStreamDefaultController<'js> {
     }
 
     pub fn enqueue(&self, ctx: Ctx<'js>, chunk: Opt<Value<'js>>) -> Result<()> {
-        let inner = self.stream(&ctx)?;
+        let inner = self.stream(&ctx);
         ReadableStream::enqueue(
             &ctx,
             &inner,
@@ -889,7 +998,7 @@ impl<'js> ReadableStreamDefaultController<'js> {
     }
 
     pub fn close(&self, ctx: Ctx<'js>) -> Result<()> {
-        let inner = self.stream(&ctx)?;
+        let inner = self.stream(&ctx);
         ReadableStream::close_requested(&ctx, &inner)
     }
 
@@ -904,7 +1013,7 @@ impl<'js> ReadableStreamDefaultController<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "ReadableStreamDefaultController" }
+    pub const fn to_string_tag() -> &'static str { "ReadableStreamDefaultController" }
 }
 
 #[derive(JsLifetime)]
@@ -1015,7 +1124,7 @@ impl<'js> ReadableStreamDefaultReader<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "ReadableStreamDefaultReader" }
+    pub const fn to_string_tag() -> &'static str { "ReadableStreamDefaultReader" }
 }
 
 pub use crate::streams::pipe::ReadableStreamAsyncIterator;

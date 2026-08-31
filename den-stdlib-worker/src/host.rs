@@ -2,11 +2,11 @@
 //!
 //! den-core owns engine construction (loaders, transpiler, the whole stdlib);
 //! this crate owns threads and messages. The seam between them is one trait
-//! with one method, stored in the context userdata so that a worker context —
+//! stored in the context userdata so that a worker context —
 //! which gets the very same slot — can spawn workers of its own.
 
 use core::fmt::{self, Display};
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use rquickjs::{AsyncContext, AsyncRuntime, JsLifetime};
 
@@ -36,9 +36,7 @@ pub struct WorkerEngine {
 pub struct WorkerHostError(pub String);
 
 impl Display for WorkerHostError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&self.0, formatter)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { Display::fmt(&self.0, f) }
 }
 
 impl std::error::Error for WorkerHostError {}
@@ -50,14 +48,21 @@ impl std::error::Error for WorkerHostError {}
 /// included, which is what makes nesting free.
 pub trait WorkerHost: Send + Sync + 'static {
     /// Build a complete engine: runtime, context, loaders and every stdlib
-    /// module including `den:worker`. Stopping it is not the host's business —
-    /// this crate installs the interrupt handler on the runtime it gets back.
+    /// module including `den:worker`. This crate stops JavaScript; the host's
+    /// [`Self::shutdown`] method only finishes resources it installed.
     ///
     /// Called **on the worker's own OS thread**, inside that thread's tokio
     /// runtime context, before any script runs. An implementor whose engine
     /// construction is `async` blocks on it there; nothing else is running on
     /// that thread yet.
     fn build_engine(&self, base: BaseUrl) -> Result<WorkerEngine, WorkerHostError>;
+
+    /// Finish host-owned realm resources before the worker context is dropped.
+    fn shutdown<'a>(
+        &'a self, _context: &'a AsyncContext,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
 }
 
 /// Userdata slot holding the host. `new Worker` reads it; contexts built

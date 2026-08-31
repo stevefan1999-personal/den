@@ -6,7 +6,7 @@
 
 use den_util::inherit;
 use rquickjs::{
-    Class, Ctx, Exception, Function, IntoJs, JsLifetime, Result, Value,
+    Class, Ctx, Exception, Function, IntoJs as _, JsLifetime, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{FuncArg, Opt, This},
@@ -25,11 +25,11 @@ fn timeout_reason<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     new_dom_exception(ctx, TIMEOUT_MESSAGE, "TimeoutError")
 }
 
-fn is_aborted(source: &Value<'_>) -> Result<bool> {
+fn is_aborted(source: &Value<'_>) -> bool {
     let Some(object) = source.as_object() else {
-        return Ok(false);
+        return false;
     };
-    Ok(object.get::<_, bool>("aborted").unwrap_or(false))
+    object.get::<_, bool>("aborted").unwrap_or(false)
 }
 
 fn source_reason<'js>(ctx: &Ctx<'js>, source: &Value<'js>) -> Result<Value<'js>> {
@@ -158,7 +158,7 @@ impl<'js> AbortSignal<'js> {
         let combined = Class::instance(ctx.clone(), Self::fresh(&ctx))?;
         let sources = collect_sources(&ctx, signals)?;
         for source in &sources {
-            if is_aborted(source)? {
+            if is_aborted(source) {
                 Self::abort_inner(&ctx, &combined, Some(source_reason(&ctx, source)?), false)?;
                 return Ok(combined);
             }
@@ -169,7 +169,7 @@ impl<'js> AbortSignal<'js> {
                 let combined: Class<'js, Self> = function.0.get("_combined")?;
                 let sources: Vec<Value<'js>> = function.0.get("_sources")?;
                 for source in &sources {
-                    if !is_aborted(source)? {
+                    if !is_aborted(source) {
                         continue;
                     }
                     if Self::abort_inner(&ctx, &combined, Some(source_reason(&ctx, source)?), true)?
@@ -192,7 +192,7 @@ impl<'js> AbortSignal<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "AbortSignal" }
+    pub const fn to_string_tag() -> &'static str { "AbortSignal" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -217,11 +217,11 @@ impl<'js> AbortController<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "AbortController" }
+    pub const fn to_string_tag() -> &'static str { "AbortController" }
 }
 
 /// Prototype chain and `onabort`.
-pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
+pub fn finish(ctx: &Ctx<'_>) -> Result<()> {
     inherit::<AbortSignal, EventTarget>(ctx)?;
     if let Some(proto) = Class::<AbortSignal>::prototype(ctx)? {
         define_event_handler(ctx.clone(), proto, "onabort".to_owned(), Opt(None))?;

@@ -11,6 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+den-util.workspace = true
 derive_more.workspace = true
 either.workspace = true
 futures.workspace = true
@@ -28,6 +29,10 @@ color-eyre.workspace = true
 den-core = { workspace = true, features = ["stdlib"] }
 rcgen.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+
+[features]
+default = ["ring"]
+ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring"]
 
 [lints]
 workspace = true

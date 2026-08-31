@@ -1,6 +1,6 @@
 use std::{thread, time::Duration};
 
-use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Module};
+use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt as _, FromJs, Module};
 use tokio::time;
 
 /// One async runtime with `BroadcastChannel` installed. Delivery happens in

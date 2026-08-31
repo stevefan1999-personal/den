@@ -26,7 +26,11 @@ pub struct AbsolutePathResolver {
 }
 
 impl AbsolutePathResolver {
-    pub fn new<P: Into<String>>(patterns: impl IntoIterator<Item = P>) -> Self {
+    pub fn new<P, I>(patterns: I) -> Self
+    where
+        P: Into<String>,
+        I: IntoIterator<Item = P>,
+    {
         Self {
             patterns: patterns.into_iter().map(Into::into).collect(),
         }
@@ -51,10 +55,11 @@ impl AbsolutePathResolver {
     /// have produced itself, and only for the specifiers the spec calls
     /// relative.
     fn sibling_of(base: &str, name: &str) -> Option<PathBuf> {
-        name.starts_with('.')
+        let base = name
+            .starts_with('.')
             .then(|| Self::denoted_path(base))
-            .flatten()
-            .and_then(|base| Some(base.parent()?.join(name)))
+            .flatten()?;
+        Some(base.parent()?.join(name))
     }
 
     /// The file a specifier ends up naming, extension patterns included.

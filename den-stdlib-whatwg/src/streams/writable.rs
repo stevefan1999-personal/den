@@ -18,19 +18,19 @@ use crate::streams::{
     readable::extract_strategy, thrown, type_error,
 };
 
-pub(crate) enum WsState<'js> {
+pub enum WsState<'js> {
     Writable,
     Closed,
     Erroring(Value<'js>),
     Errored(Value<'js>),
 }
 
-pub(crate) enum WriteRecord<'js> {
+pub enum WriteRecord<'js> {
     Chunk(Value<'js>),
     Close,
 }
 
-pub(crate) struct WriterSlot<'js> {
+pub struct WriterSlot<'js> {
     id:     u64,
     ready:  Cap<'js>,
     closed: Cap<'js>,
@@ -43,7 +43,7 @@ impl<'js> Trace<'js> for WriterSlot<'js> {
     }
 }
 
-pub(crate) struct PendingAbort<'js> {
+pub struct PendingAbort<'js> {
     cap:              Cap<'js>,
     reason:           Value<'js>,
     already_erroring: bool,
@@ -56,7 +56,7 @@ impl<'js> Trace<'js> for PendingAbort<'js> {
     }
 }
 
-pub(crate) struct WritableInner<'js> {
+pub struct WritableInner<'js> {
     pub(crate) state:            WsState<'js>,
     pub(crate) backpressure:     bool,
     pub(crate) writer:           Option<WriterSlot<'js>>,
@@ -88,7 +88,9 @@ impl<'js> Trace<'js> for WritableInner<'js> {
             WsState::Erroring(reason) | WsState::Errored(reason) => reason.trace(tracer),
             _ => {}
         }
-        self.writer.as_ref().map(|slot| slot.trace(tracer));
+        if let Some(slot) = self.writer.as_ref() {
+            slot.trace(tracer);
+        }
         self.controller.trace(tracer);
         for (record, _) in &self.queue {
             if let WriteRecord::Chunk(chunk) = record {
@@ -107,7 +109,9 @@ impl<'js> Trace<'js> for WritableInner<'js> {
         for request in &self.write_requests {
             request.trace(tracer);
         }
-        self.pending_abort.as_ref().map(|abort| abort.trace(tracer));
+        if let Some(abort) = self.pending_abort.as_ref() {
+            abort.trace(tracer);
+        }
         self.roots.trace(tracer);
     }
 }
@@ -117,7 +121,7 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for WritableInner<'js> {
     type Changed<'to> = WritableInner<'to>;
 }
 
-pub(crate) type Inner<'js> = Rc<RefCell<WritableInner<'js>>>;
+pub type Inner<'js> = Rc<RefCell<WritableInner<'js>>>;
 
 #[derive(JsLifetime)]
 #[rquickjs::class]
@@ -199,12 +203,24 @@ impl<'js> WritableStream<'js> {
         matches!(inner.borrow().state, WsState::Closed) || Self::close_queued_or_in_flight(inner)
     }
 
+    pub(crate) fn is_fully_closed(inner: &Inner<'js>) -> bool {
+        matches!(inner.borrow().state, WsState::Closed)
+    }
+
     pub(crate) fn writer_ready(inner: &Inner<'js>) -> Option<Promise<'js>> {
         inner
             .borrow()
             .writer
             .as_ref()
             .map(|slot| slot.ready.promise())
+    }
+
+    pub(crate) fn writer_closed(inner: &Inner<'js>) -> Option<Promise<'js>> {
+        inner
+            .borrow()
+            .writer
+            .as_ref()
+            .map(|slot| slot.closed.promise())
     }
 
     /// Set up a stream whose sink is built in Rust: the strategy is already in
@@ -237,8 +253,9 @@ impl<'js> WritableStream<'js> {
             .borrow()
             .writer
             .as_ref()
-            .map(|slot| (slot.ready.is_pending(), slot.closed.is_pending()))
-            .unwrap_or((false, false))
+            .map_or((false, false), |slot| {
+                (slot.ready.is_pending(), slot.closed.is_pending())
+            })
     }
 
     pub(crate) fn writer_is_current(inner: &Inner<'js>, id: u64) -> bool {
@@ -271,7 +288,7 @@ impl<'js> WritableStream<'js> {
         match borrow.state {
             WsState::Errored(_) | WsState::Erroring(_) => None,
             WsState::Closed => Some(0.0),
-            WsState::Writable => Some(borrow.hwm - borrow.queue_total),
+            WsState::Writable => Some(std::ops::Sub::sub(borrow.hwm, borrow.queue_total)),
         }
     }
 
@@ -327,14 +344,17 @@ impl<'js> WritableStream<'js> {
         Ok(id)
     }
 
-    pub(crate) fn release_writer(ctx: &Ctx<'js>, inner: &Inner<'js>, id: u64) {
+    pub(crate) fn release_writer(
+        ctx: &Ctx<'js>, inner: &Inner<'js>, id: u64,
+    ) -> Option<Value<'js>> {
         if !Self::writer_is_current(inner, id) {
-            return;
+            return None;
         }
         let reason = type_error(ctx, "the writer was released");
         Self::ensure_ready_rejected(ctx, inner, reason.clone());
-        Self::ensure_closed_rejected(ctx, inner, reason);
+        Self::ensure_closed_rejected(ctx, inner, reason.clone());
         inner.borrow_mut().writer = None;
+        Some(reason)
     }
 
     fn ensure_ready_rejected(ctx: &Ctx<'js>, inner: &Inner<'js>, reason: Value<'js>) {
@@ -343,10 +363,7 @@ impl<'js> WritableStream<'js> {
             if slot.ready.is_pending() {
                 slot.ready.reject_handled(ctx, reason);
             } else {
-                let mut cap = match Cap::new(ctx) {
-                    Ok(cap) => cap,
-                    Err(_) => return,
-                };
+                let Ok(mut cap) = Cap::new(ctx) else { return };
                 cap.reject_handled(ctx, reason);
                 slot.ready = cap;
             }
@@ -359,10 +376,7 @@ impl<'js> WritableStream<'js> {
             if slot.closed.is_pending() {
                 slot.closed.reject_handled(ctx, reason);
             } else {
-                let mut cap = match Cap::new(ctx) {
-                    Ok(cap) => cap,
-                    Err(_) => return,
-                };
+                let Ok(mut cap) = Cap::new(ctx) else { return };
                 cap.reject_handled(ctx, reason);
                 slot.closed = cap;
             }
@@ -446,31 +460,33 @@ impl<'js> WritableStream<'js> {
         Self::clear_algorithms(inner);
         match outcome {
             Ok(value) => {
-                let promise = abort.cap.promise();
                 let (resolve, reject) = abort.cap.into_parts();
                 // Pinning the controller is what keeps the record's JS values alive
                 // for the length of this operation: see the note on
                 // `ReadableStreamDefaultController`.
                 let pin = Pins::hold(ctx, Self::keeper(inner));
-                let settle = |handler: Option<Function<'js>>| {
+                let settle = |handler: Option<Function<'js>>, rejected: bool| {
                     let inner = Rc::clone(inner);
                     let reason = reason.clone();
                     move |ctx: Ctx<'js>, error: Opt<Value<'js>>| {
                         Pins::release(&ctx, pin);
                         if let Some(handler) = handler.as_ref() {
-                            let _ = handler.call::<_, ()>((error
-                                .0
-                                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),));
+                            if rejected {
+                                let _ = handler.call::<_, ()>((error
+                                    .0
+                                    .unwrap_or_else(|| Value::new_undefined(ctx.clone())),));
+                            } else {
+                                let _ = handler.call::<_, ()>(());
+                            }
                         }
                         WritableStream::reject_close_and_closed(&ctx, &inner, reason.clone());
                     }
                 };
-                let on_ok = Function::new(ctx.clone(), settle(resolve));
-                let on_err = Function::new(ctx.clone(), settle(reject));
+                let on_ok = Function::new(ctx.clone(), settle(resolve, false));
+                let on_err = Function::new(ctx.clone(), settle(reject, true));
                 if let (Ok(on_ok), Ok(on_err)) = (on_ok, on_err) {
                     let _ = react(ctx, value, Some(on_ok), Some(on_err));
                 }
-                let _ = promise;
             }
             Err(error) => {
                 let thrown = thrown(ctx, error);
@@ -508,7 +524,7 @@ impl<'js> WritableStream<'js> {
         {
             let mut borrow = inner.borrow_mut();
             borrow.queue.push((WriteRecord::Chunk(chunk), size));
-            borrow.queue_total += size;
+            borrow.queue_total = std::ops::Add::add(borrow.queue_total, size);
         }
         if matches!(inner.borrow().state, WsState::Writable)
             && !Self::close_queued_or_in_flight(inner)
@@ -523,7 +539,7 @@ impl<'js> WritableStream<'js> {
         Self::advance_queue(ctx, inner);
     }
 
-    fn advance_queue(ctx: &Ctx<'js>, inner: &Inner<'js>) {
+    pub(crate) fn advance_queue(ctx: &Ctx<'js>, inner: &Inner<'js>) {
         {
             let borrow = inner.borrow();
             if !borrow.started || borrow.in_flight_write.is_some() {
@@ -615,7 +631,7 @@ impl<'js> WritableStream<'js> {
             let mut borrow = inner.borrow_mut();
             if !borrow.queue.is_empty() {
                 let (_, size) = borrow.queue.remove(0);
-                borrow.queue_total = (borrow.queue_total - size).max(0.0);
+                borrow.queue_total = std::ops::Sub::sub(borrow.queue_total, size).max(0.0);
             }
         }
         if !erroring && !Self::close_queued_or_in_flight(inner) {
@@ -650,14 +666,15 @@ impl<'js> WritableStream<'js> {
                 borrow.native.clone(),
             )
         };
-        let outcome = if let Some(native) = native {
-            crate::streams::native::drive_close(ctx, inner, &native)
-        } else {
-            match close_fn {
-                Some(close) => close.call::<_, Value>((This(sink),)),
-                None => Ok(Value::new_undefined(ctx.clone())),
-            }
-        };
+        let outcome = native.map_or_else(
+            || {
+                close_fn.map_or_else(
+                    || Ok(Value::new_undefined(ctx.clone())),
+                    |close| close.call::<_, Value>((This(sink),)),
+                )
+            },
+            |native| crate::streams::native::drive_close(ctx, inner, &native),
+        );
         Self::clear_algorithms(inner);
         match outcome {
             Ok(value) => {
@@ -771,15 +788,12 @@ impl<'js> WritableStream<'js> {
     }
 
     pub(crate) fn writer_write(
-        ctx: &Ctx<'js>, inner: &Inner<'js>, chunk: Value<'js>,
+        ctx: &Ctx<'js>, inner: &Inner<'js>, writer_id: u64, chunk: Value<'js>,
     ) -> Result<Promise<'js>> {
         let size_fn = inner.borrow().size_fn.clone();
         let size = match size_fn {
             Some(size_fn) => {
-                match size_fn.call::<_, Coerced<f64>>((
-                    This(Value::new_undefined(ctx.clone())),
-                    chunk.clone(),
-                )) {
+                match size_fn.call::<_, Coerced<f64>>((chunk.clone(),)) {
                     Ok(size) if size.0.is_finite() && size.0 >= 0.0 => size.0,
                     Ok(_) => {
                         let reason =
@@ -796,6 +810,9 @@ impl<'js> WritableStream<'js> {
             }
             None => 1.0,
         };
+        if !Self::writer_is_current(inner, writer_id) {
+            return Cap::rejected(ctx, type_error(ctx, "the writer was released"));
+        }
         if let Some(reason) = Self::stored_error(inner)
             && matches!(inner.borrow().state, WsState::Errored(_))
         {
@@ -868,7 +885,6 @@ impl<'js> WritableStream<'js> {
             Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
                 Pins::release(&ctx, pin);
                 inner.borrow_mut().started = true;
-                WritableStream::clear_algorithms(&inner);
                 WritableStream::deal_with_rejection(&ctx, &inner, reason);
             })?
         };
@@ -929,7 +945,7 @@ impl<'js> WritableStream<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "WritableStream" }
+    pub const fn to_string_tag() -> &'static str { "WritableStream" }
 }
 
 /// Owner and single tracer of the record: see the note on
@@ -962,19 +978,19 @@ impl<'js> WritableStreamDefaultController<'js> {
 
     #[qjs(get)]
     pub fn signal(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        match self.inner.borrow().abort_controller.clone() {
-            Some(controller) => controller.get("signal"),
-            None => Ok(Value::new_undefined(ctx)),
-        }
+        self.inner.borrow().abort_controller.clone().map_or_else(
+            || Ok(Value::new_undefined(ctx)),
+            |controller| controller.get("signal"),
+        )
     }
 
     #[qjs(get)]
     pub fn abort_reason(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let signal: Value = self.signal(ctx.clone())?;
-        match signal.as_object() {
-            Some(object) => object.get("reason"),
-            None => Ok(Value::new_undefined(ctx)),
-        }
+        signal.as_object().map_or_else(
+            || Ok(Value::new_undefined(ctx)),
+            |object| object.get("reason"),
+        )
     }
 
     pub fn error(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) {
@@ -992,7 +1008,7 @@ impl<'js> WritableStreamDefaultController<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "WritableStreamDefaultController" }
+    pub const fn to_string_tag() -> &'static str { "WritableStreamDefaultController" }
 }
 
 #[derive(JsLifetime)]
@@ -1118,6 +1134,7 @@ impl<'js> WritableStreamDefaultWriter<'js> {
         WritableStream::writer_write(
             &ctx,
             &inner,
+            self.id,
             chunk.0.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
         )
     }
@@ -1155,8 +1172,9 @@ impl<'js> WritableStreamDefaultWriter<'js> {
         let (ready_pending, closed_pending) = WritableStream::writer_pending(&inner);
         let _ = self.ready(ctx.clone());
         let _ = self.closed(ctx.clone());
-        WritableStream::release_writer(&ctx, &inner, self.id);
-        let reason = type_error(&ctx, "the writer was released");
+        let Some(reason) = WritableStream::release_writer(&ctx, &inner, self.id) else {
+            return;
+        };
         if !ready_pending && let Ok(replacement) = Cap::rejected(&ctx, reason.clone()) {
             crate::streams::mark_handled(&ctx, &replacement);
             *self.ready.borrow_mut() = replacement;
@@ -1168,5 +1186,5 @@ impl<'js> WritableStreamDefaultWriter<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "WritableStreamDefaultWriter" }
+    pub const fn to_string_tag() -> &'static str { "WritableStreamDefaultWriter" }
 }

@@ -5,7 +5,7 @@ use rquickjs::{Ctx, JsLifetime, Result, TypedArray, class::Trace, convert::List}
 use tokio::net::UdpSocket;
 
 use crate::{
-    io::{JsByteBuf, js_bytes},
+    io::{JsByteBuf, JsByteBufExt as _},
     socket_addr::SocketAddrWrapper,
 };
 
@@ -43,7 +43,7 @@ impl UdpSocketWrapper {
     }
 
     pub async fn send(self, buf: JsByteBuf<'_>) -> Result<usize> {
-        Ok(self.socket.send(js_bytes(&buf)?).await?)
+        Ok(self.socket.send(buf.as_bytes()?).await?)
     }
 
     pub async fn recv(self, max: usize, ctx: Ctx<'_>) -> Result<TypedArray<'_, u8>> {
@@ -52,7 +52,7 @@ impl UdpSocketWrapper {
 
     #[qjs(rename = "sendTo")]
     pub async fn send_to(self, buf: JsByteBuf<'_>, addr: String) -> Result<usize> {
-        Ok(self.socket.send_to(js_bytes(&buf)?, addr).await?)
+        Ok(self.socket.send_to(buf.as_bytes()?, addr).await?)
     }
 
     #[qjs(rename = "recvFrom")]

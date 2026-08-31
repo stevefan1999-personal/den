@@ -1,6 +1,6 @@
 use den_transpiler_oxc::{
     EasyOxcTranspilerError, SourceType, get_best_transpiling, infer_transpile_syntax_by_extension,
-    transpile,
+    transpile, transpile_with_source_map,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -105,8 +105,64 @@ fn syntax_error_diagnostic() -> TestResult {
     let Err(error) = result else {
         return Err("malformed source transpiled successfully".into());
     };
-    assert!(matches!(&error, EasyOxcTranspilerError::Parse(_)));
+    if !matches!(&error, EasyOxcTranspilerError::Parse(_)) {
+        return Err(format!("expected parse error, got {error}").into());
+    }
     insta::assert_snapshot!(error);
+    Ok(())
+}
+
+#[cfg(feature = "typescript")]
+#[test]
+fn source_map_keeps_the_real_name_and_authored_position() -> TestResult {
+    let source = "interface Hidden { value: number }\n\nfunction boom(): never {\n  throw new \
+                  Error('x');\n}\n";
+    let output = transpile_with_source_map(
+        source,
+        source_type("ts")?.with_module(true),
+        "/app/fixture.ts",
+    )?;
+    let throw_offset = output
+        .code
+        .find("throw")
+        .ok_or("generated throw is missing")?;
+    let prefix = output
+        .code
+        .get(..throw_offset)
+        .ok_or("generated throw offset is invalid")?;
+    let line = prefix.matches('\n').count() as u32;
+    let column = prefix
+        .rsplit_once('\n')
+        .map_or(prefix, |(_, line)| line)
+        .encode_utf16()
+        .count() as u32;
+    let table = output.source_map.generate_lookup_table();
+    let token = output
+        .source_map
+        .lookup_source_view_token(&table, line, column)
+        .ok_or("generated throw has no source-map token")?;
+    if token.get_source() != Some("/app/fixture.ts")
+        || token.get_src_line() != 3
+        || token.get_src_col() != 2
+    {
+        return Err(format!("unexpected source-map token: {token:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn named_transpile_errors_report_the_real_source() -> TestResult {
+    let error = transpile_with_source_map(
+        "const = ;",
+        source_type("js")?.with_module(true),
+        "/app/broken.js",
+    )
+    .err()
+    .ok_or("malformed source transpiled successfully")?;
+    let rendered = error.to_string();
+    if !rendered.contains("/app/broken.js") || rendered.contains("<anonymous>") {
+        return Err(format!("diagnostic lost its source name:\n{rendered}").into());
+    }
     Ok(())
 }
 

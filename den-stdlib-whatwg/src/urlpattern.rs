@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Coerced, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value,
+    Array, Coerced, Ctx, Exception, FromJs as _, IntoJs as _, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom, class::Trace, function::Opt,
 };
 use urlpattern::{
@@ -87,7 +87,9 @@ impl URLPattern {
         ctx: &Ctx<'js>, component: &UrlPatternComponentResult,
     ) -> Result<Value<'js>> {
         let mut groups = IndexMap::new();
-        for (name, value) in &component.groups {
+        let mut entries: Vec<_> = component.groups.iter().collect();
+        entries.sort_unstable_by_key(|(name, _)| (*name).clone());
+        for (name, value) in entries {
             groups.insert(name.clone(), match value {
                 Some(value) => value.clone().into_js(ctx)?,
                 None => Value::new_undefined(ctx.clone()),
@@ -212,5 +214,5 @@ impl URLPattern {
     pub fn has_reg_exp_groups(&self) -> bool { self.inner.has_regexp_groups() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "URLPattern" }
+    pub const fn to_string_tag() -> &'static str { "URLPattern" }
 }

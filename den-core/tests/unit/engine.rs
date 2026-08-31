@@ -1,7 +1,7 @@
 use std::{env::temp_dir, fs, path::PathBuf, process};
 
 use color_eyre::eyre;
-use rquickjs::{CatchResultExt, embed, loader::Bundle};
+use rquickjs::{embed, loader::Bundle};
 
 use crate::engine::{Engine, EngineError, PendingRejections};
 
@@ -39,29 +39,12 @@ fn write_special_script(name: &str, source: &str) -> PathBuf {
     path
 }
 
-async fn run_embedded(engine: &Engine, specifier: &str) -> eyre::Result<()> {
-    match engine.run_module(specifier).await {
-        Ok(()) => Ok(()),
-        Err(EngineError::Rquickjs(error)) => {
-            let caught = engine
-                .context
-                .with(|ctx| {
-                    Err::<(), _>(error)
-                        .catch(&ctx)
-                        .map_err(|error| error.to_string())
-                })
-                .await;
-            caught.map_err(|error| eyre::eyre!(error))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn an_embedded_entry_imports_its_embedded_sibling() -> eyre::Result<()> {
     let engine = Engine::new_with_bundle(EMBEDDED_BUNDLE).await;
-    run_embedded(&engine, "den-embed:/main.js").await?;
-    assert_eq!(engine.eval::<usize>("globalThis.embeddedAnswer").await?, 42);
+    engine.run_module("den-embed:/main.js").await?;
+    let answer = engine.eval::<usize>("globalThis.embeddedAnswer").await?;
+    eyre::ensure!(answer == 42, "expected 42, got {answer}");
     Ok(())
 }
 
@@ -71,15 +54,13 @@ async fn embedded_modules_are_available_inside_module_workers() -> eyre::Result<
     let engine = Engine::new_with_bundle(EMBEDDED_BUNDLE).await;
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        run_embedded(&engine, "den-embed:/worker_parent.js"),
+        engine.run_module("den-embed:/worker_parent.js"),
     )
     .await??;
-    assert_eq!(
-        engine
-            .eval::<usize>("globalThis.embeddedWorkerAnswer")
-            .await?,
-        42
-    );
+    let answer = engine
+        .eval::<usize>("globalThis.embeddedWorkerAnswer")
+        .await?;
+    eyre::ensure!(answer == 42, "expected worker answer 42, got {answer}");
     engine.shutdown().await;
     Ok(())
 }
@@ -105,7 +86,8 @@ async fn reported_rejections(engine: &Engine) -> usize {
 async fn an_absolute_entry_point_resolves_its_relative_siblings() -> eyre::Result<()> {
     let engine = Engine::new().await;
     engine.run_file(fixture("sibling/main.js")).await?;
-    assert_eq!(engine.eval::<usize>("globalThis.siblingAnswer").await?, 42);
+    let answer = engine.eval::<usize>("globalThis.siblingAnswer").await?;
+    eyre::ensure!(answer == 42, "expected sibling answer 42, got {answer}");
     Ok(())
 }
 
@@ -113,7 +95,8 @@ async fn an_absolute_entry_point_resolves_its_relative_siblings() -> eyre::Resul
 async fn run_file_accepts_an_absolute_path() -> eyre::Result<()> {
     let engine = Engine::new().await;
     engine.run_file(fixture("absolute.js")).await?;
-    assert_eq!(engine.eval::<usize>("globalThis.absoluteRan").await?, 7);
+    let got = engine.eval::<usize>("globalThis.absoluteRan").await?;
+    eyre::ensure!(got == 7, "expected 7, got {got}");
     Ok(())
 }
 
@@ -126,12 +109,10 @@ async fn run_file_accepts_a_file_url_with_spaces_and_a_backtick() -> eyre::Resul
     let url = url::Url::from_file_path(&path).expect("an absolute file URL");
     let engine = Engine::new().await;
     engine.run_file(PathBuf::from(url.as_str())).await?;
-    assert_eq!(
-        engine
-            .eval::<usize>("globalThis.specialFilenameRan")
-            .await?,
-        9
-    );
+    let got = engine
+        .eval::<usize>("globalThis.specialFilenameRan")
+        .await?;
+    eyre::ensure!(got == 9, "expected special-name entry result 9, got {got}");
     // Only this file: the directory is shared with every other special-name
     // fixture in the binary, and tests run concurrently.
     fs::remove_file(&path)?;
@@ -158,7 +139,10 @@ async fn run_file_points_the_base_url_at_the_entry_points_directory() -> eyre::R
         .with(|ctx| ctx.userdata::<BaseUrl>().map(|base| base.0.clone()))
         .await;
 
-    assert_eq!(actual.as_deref(), Some(expected.as_str()));
+    eyre::ensure!(
+        actual.as_deref() == Some(expected.as_str()),
+        "expected base URL {expected}, got {actual:?}"
+    );
     Ok(())
 }
 
@@ -183,8 +167,46 @@ async fn a_top_level_throw_is_not_also_an_unhandled_rejection() -> eyre::Result<
     let engine = Engine::new().await;
     let outcome = engine.run_file(path.clone()).await;
 
-    assert!(matches!(outcome, Err(EngineError::Rquickjs(_))));
-    assert_eq!(reported_rejections(&engine).await, 0);
+    eyre::ensure!(
+        matches!(&outcome, Err(EngineError::JavaScript(_))),
+        "expected the top-level throw to fail, got {outcome:?}"
+    );
+    let reported = reported_rejections(&engine).await;
+    eyre::ensure!(
+        reported == 0,
+        "expected no duplicate rejection, got {reported}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eval_returns_an_owned_source_mapped_javascript_error() -> eyre::Result<()> {
+    let engine = Engine::new().await;
+    let outcome = engine
+        .eval::<()>(
+            "type Marker = {\n  value: number;\n};\nfunction fail(): never {\n  throw new \
+             TypeError('eval boom');\n}\nfail();",
+        )
+        .await;
+    let Err(EngineError::JavaScript(error)) = outcome else {
+        return Err(eyre::eyre!(
+            "expected an owned JavaScript error, got {outcome:?}"
+        ));
+    };
+    eyre::ensure!(error.name() == Some("TypeError"), "wrong subtype: {error}");
+    let location = error
+        .location()
+        .ok_or_else(|| eyre::eyre!("missing location: {error}"))?;
+    eyre::ensure!(
+        location.filename == "<eval:1>" && location.line == 5,
+        "{error}"
+    );
+    let rendered = error.to_string();
+    let _: i32 = engine.eval("1").await?;
+    eyre::ensure!(
+        error.to_string() == rendered,
+        "owned error changed after re-entering the realm"
+    );
     Ok(())
 }
 
@@ -197,7 +219,8 @@ async fn a_rejection_the_entry_point_leaves_behind_is_still_reported() -> eyre::
     let engine = Engine::new().await;
     engine.run_file(path.clone()).await?;
 
-    assert_eq!(reported_rejections(&engine).await, 1);
+    let reported = reported_rejections(&engine).await;
+    eyre::ensure!(reported == 1, "expected one rejection, got {reported}");
     Ok(())
 }
 
@@ -214,10 +237,15 @@ async fn a_realm_that_cancels_unhandledrejection_stops_the_report() -> eyre::Res
         ))
         .await?;
 
-    assert_eq!(reported_rejections(&engine).await, 0);
-    assert_eq!(
-        engine.eval::<String>("globalThis.seen.join(',')").await?,
-        "unhandledrejection:claimed by the realm"
+    let reported = reported_rejections(&engine).await;
+    eyre::ensure!(
+        reported == 0,
+        "expected no rejection report, got {reported}"
+    );
+    let seen = engine.eval::<String>("globalThis.seen.join(',')").await?;
+    eyre::ensure!(
+        seen == "unhandledrejection:claimed by the realm",
+        "unexpected event sequence: {seen:?}"
     );
     Ok(())
 }
@@ -236,16 +264,18 @@ async fn a_handler_attached_after_the_report_fires_rejectionhandled() -> eyre::R
              undefined;"
         ))
         .await?;
-    assert_eq!(reported_rejections(&engine).await, 1);
+    let reported = reported_rejections(&engine).await;
+    eyre::ensure!(reported == 1, "expected one rejection, got {reported}");
 
     engine
         .eval::<()>("globalThis.late.catch(() => {});\nundefined;")
         .await?;
     engine.runtime.idle().await;
 
-    assert_eq!(
-        engine.eval::<String>("globalThis.seen.join(',')").await?,
-        "unhandledrejection:late,rejectionhandled:late"
+    let seen = engine.eval::<String>("globalThis.seen.join(',')").await?;
+    eyre::ensure!(
+        seen == "unhandledrejection:late,rejectionhandled:late",
+        "unexpected event sequence: {seen:?}"
     );
     Ok(())
 }
@@ -264,11 +294,12 @@ async fn a_throwing_timer_in_a_worker_reaches_the_parents_onerror() -> eyre::Res
     // spawned, so draining the realm is what delivers it. Bounded, because
     // a chain that stays broken would otherwise hang the suite.
     let drained = tokio::time::timeout(WORKER_FAULT_TIMEOUT, engine.runtime.idle()).await;
-    assert!(drained.is_ok(), "the worker never finished");
+    eyre::ensure!(drained.is_ok(), "the worker never finished");
 
-    assert_eq!(
-        engine.eval::<String>("globalThis.seen").await?,
-        "from the timer"
+    let seen = engine.eval::<String>("globalThis.seen").await?;
+    eyre::ensure!(
+        seen == "from the timer",
+        "unexpected worker error: {seen:?}"
     );
     engine.shutdown().await;
     Ok(())
@@ -288,7 +319,7 @@ async fn dropping_an_engine_with_a_pending_timer_returns_promptly() -> eyre::Res
     let started = std::time::Instant::now();
     drop(engine);
     let elapsed = started.elapsed();
-    assert!(
+    eyre::ensure!(
         elapsed < std::time::Duration::from_secs(1),
         "dropping the engine waited {elapsed:?} for the timer"
     );
@@ -320,11 +351,11 @@ async fn hosts_token_shuts_down_an_engine_parked_on_a_top_level_await() -> eyre:
     drop(engine);
     let elapsed = started.elapsed();
 
-    assert!(
+    eyre::ensure!(
         stopped_the_program,
         "the entry module returned instead of staying parked"
     );
-    assert!(
+    eyre::ensure!(
         elapsed < std::time::Duration::from_secs(1),
         "stopping a parked engine took {elapsed:?}"
     );
@@ -338,7 +369,10 @@ async fn set_timeout_returns_a_number_and_clear_timeout_is_a_function() -> eyre:
     let report: String = engine
         .eval(include_str!("../fixtures/engine/timer_handles.js"))
         .await?;
-    assert_eq!(report, "function,number");
+    eyre::ensure!(
+        report == "function,number",
+        "unexpected timer handles: {report:?}"
+    );
     Ok(())
 }
 
@@ -353,8 +387,10 @@ async fn a_zero_delay_timer_is_clamped_instead_of_panicking() -> eyre::Result<()
         .await?;
     engine.runtime.idle().await;
 
-    assert_eq!(engine.eval::<usize>("globalThis.ticks").await?, 2);
-    assert!(engine.eval::<bool>("globalThis.timedOut === true").await?);
+    let ticks = engine.eval::<usize>("globalThis.ticks").await?;
+    eyre::ensure!(ticks == 2, "expected two ticks, got {ticks}");
+    let timed_out = engine.eval::<bool>("globalThis.timedOut === true").await?;
+    eyre::ensure!(timed_out, "the timer did not finish");
     Ok(())
 }
 
@@ -364,7 +400,8 @@ async fn an_unhandled_rejection_is_reported_after_the_turn_ends() -> eyre::Resul
     engine
         .eval::<()>("Promise.reject(new Error('nobody claims this'));\nundefined;")
         .await?;
-    assert_eq!(reported_rejections(&engine).await, 1);
+    let reported = reported_rejections(&engine).await;
+    eyre::ensure!(reported == 1, "expected one rejection, got {reported}");
     Ok(())
 }
 
@@ -379,15 +416,18 @@ async fn a_rejection_handled_later_in_the_turn_is_not_reported() -> eyre::Result
             "const p = Promise.reject(new Error('claimed')); p.catch(() => {});\nundefined;",
         )
         .await?;
-    assert_eq!(reported_rejections(&engine).await, 0);
+    let reported = reported_rejections(&engine).await;
+    eyre::ensure!(reported == 0, "expected no rejection, got {reported}");
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn eval_runs_script_and_converts_result_to_rust_type() -> eyre::Result<()> {
     let engine = Engine::new().await;
-    assert_eq!(engine.eval::<String>(r#"null ?? "123""#).await?, "123");
-    assert_eq!(engine.eval::<usize>(r#"null ?? 123"#).await?, 123);
+    let text = engine.eval::<String>(r#"null ?? "123""#).await?;
+    eyre::ensure!(text == "123", "expected \"123\", got {text:?}");
+    let number = engine.eval::<usize>("null ?? 123").await?;
+    eyre::ensure!(number == 123, "expected 123, got {number}");
     Ok(())
 }
 
@@ -399,6 +439,9 @@ async fn eval_runs_script_and_converts_result_to_rust_type() -> eyre::Result<()>
 async fn eval_rejects_module_syntax_as_a_recoverable_error() -> eyre::Result<()> {
     let engine = Engine::new().await;
     let outcome = engine.eval::<()>("export const hello = 'world'").await;
-    assert!(matches!(outcome, Err(EngineError::Rquickjs(_))));
+    eyre::ensure!(
+        matches!(&outcome, Err(EngineError::JavaScript(_))),
+        "expected a script syntax error, got {outcome:?}"
+    );
     Ok(())
 }

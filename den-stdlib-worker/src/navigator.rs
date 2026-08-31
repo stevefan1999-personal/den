@@ -22,7 +22,7 @@ pub struct HostInfo {
     kernel_release:       String,
 }
 
-unsafe impl<'js> JsLifetime<'js> for HostInfo {
+unsafe impl JsLifetime<'_> for HostInfo {
     type Changed<'to> = HostInfo;
 }
 
@@ -43,19 +43,17 @@ impl HostInfo {
         }
     }
 
-    fn os() -> &'static str { std::env::consts::OS }
+    const fn os() -> &'static str { std::env::consts::OS }
 
-    fn arch() -> &'static str { std::env::consts::ARCH }
+    const fn arch() -> &'static str { std::env::consts::ARCH }
 
-    fn version() -> &'static str { env!("CARGO_PKG_VERSION") }
+    const fn version() -> &'static str { env!("CARGO_PKG_VERSION") }
 
     fn hardware_concurrency() -> u32 {
-        std::thread::available_parallelism()
-            .map(NonZero::get)
-            .unwrap_or(1) as u32
+        std::thread::available_parallelism().map_or(1, NonZero::get) as u32
     }
 
-    fn bitness() -> &'static str {
+    const fn bitness() -> &'static str {
         match std::mem::size_of::<usize>() {
             8 => "64",
             4 => "32",
@@ -84,7 +82,7 @@ impl HostInfo {
         // fills it on success; a failed call leaves the zeroed buffers, which
         // we then discard in favour of the `std::env` fallback.
         let mut name = unsafe { std::mem::zeroed::<libc::utsname>() };
-        if unsafe { libc::uname(&mut name) } != 0 {
+        if unsafe { libc::uname(&raw mut name) } != 0 {
             return (Self::arch().to_owned(), "0.0.0".to_owned());
         }
         (Self::c_chars(&name.machine), Self::c_chars(&name.release))
@@ -210,16 +208,15 @@ impl<'js> NavigatorUAData<'js> {
         &self, ctx: Ctx<'js>, hints: Value<'js>,
     ) -> Result<rquickjs::Promise<'js>> {
         let (promise, resolve, reject) = ctx.promise()?;
-        if hints.as_array().is_none() {
+        let Some(hints) = hints.as_array() else {
             let _ = Exception::throw_type(&ctx, "hints must be an array");
             let _ = reject.call::<_, ()>((ctx.catch(),));
             return Ok(promise);
-        }
+        };
         let result = Object::new(ctx.clone())?;
         result.set("brands", self.brands.clone())?;
         result.set("mobile", self.mobile)?;
         result.set("platform", self.platform.clone())?;
-        let hints = hints.as_array().expect("checked");
         for index in 0..hints.len() {
             let hint: String = match hints.get(index) {
                 Ok(hint) => hint,
@@ -270,7 +267,7 @@ impl<'js> NavigatorUAData<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "NavigatorUAData" }
+    pub const fn to_string_tag() -> &'static str { "NavigatorUAData" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -303,18 +300,18 @@ impl<'js> Navigator<'js> {
     pub fn user_agent(&self) -> String { format!("den/{}", self.host.version) }
 
     #[qjs(get)]
-    pub fn hardware_concurrency(&self) -> u32 { self.host.hardware_concurrency }
+    pub const fn hardware_concurrency(&self) -> u32 { self.host.hardware_concurrency }
 
     #[qjs(get)]
     pub fn platform(&self) -> String { self.host.navigator_platform() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Navigator" }
+    pub const fn to_string_tag() -> &'static str { "Navigator" }
 }
 
 /// Install `NavigatorUAData` is the module's job; this places the `navigator`
 /// instance on `target` as a non-writable, non-configurable data property.
-pub fn install_navigator<'js>(ctx: &Ctx<'js>, target: &Object<'js>) -> Result<()> {
+pub(crate) fn install<'js>(ctx: &Ctx<'js>, target: &Object<'js>) -> Result<()> {
     let navigator = Navigator::instance(ctx)?;
     target.prop("navigator", Property::from(navigator).enumerable())
 }

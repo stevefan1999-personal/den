@@ -1,7 +1,8 @@
 use std::{fs, path::Path, process, sync::Arc, time::Duration};
 
 use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, Ctx, Exception, FromJs, Module, Object, Promise,
+    AsyncContext, AsyncRuntime, CatchResultExt as _, Ctx, Exception, FromJs, Module, Object,
+    Promise,
     context::EvalOptions,
     loader::{Resolver, ScriptLoader},
 };
@@ -50,7 +51,7 @@ impl Resolver for FileUrlResolver {
             .and_then(|url| url.to_file_path().ok())
             .map(|path| path.to_string_lossy().replace('\\', "/"))
             .ok_or_else(|| {
-                Exception::throw_message(ctx, &format!("cannot resolve module {name:?}"))
+                den_util::stack::throw_error(ctx, &format!("cannot resolve module {name:?}"))
             })
     }
 }
@@ -298,7 +299,7 @@ async fn no_threads_named(name: &str) {
 
 const ECHO: (&str, &str) = (
     "echo.js",
-    r#"self.onmessage = (event) => postMessage(`echo:${event.data}`);"#,
+    "self.onmessage = (event) => postMessage(`echo:${event.data}`);",
 );
 /// Posts once, then never yields the interpreter again: only the interrupt
 /// handler can end this one.
@@ -391,8 +392,7 @@ async fn an_uncaught_error_becomes_an_error_event_on_the_worker_object() {
              an_uncaught_error_becomes_an_error_event_on_the_worker_object.js"
         ))
         .await;
-    // `error` is undefined across threads: an Error does not serialise.
-    assert_eq!(reported, "boom|true|3|");
+    assert_eq!(reported, "boom|true|3|true|true");
     fixture.shutdown().await;
 }
 
@@ -415,7 +415,7 @@ async fn a_worker_onerror_returning_true_suppresses_the_parent_error_event() {
              a_worker_onerror_returning_true_suppresses_the_parent_error_event_2.js"
         ))
         .await;
-    assert_eq!(seen, "caught:hidden:5:undefined|pong:ping|0");
+    assert_eq!(seen, "caught:hidden:5:true|pong:ping|0");
     fixture.shutdown().await;
 }
 
@@ -472,7 +472,7 @@ async fn a_worker_can_spawn_a_worker() {
     let fixture = Fixture::new("nested", &[
         (
             "inner.js",
-            r#"self.onmessage = (event) => postMessage(`inner:${event.data}`);"#,
+            "self.onmessage = (event) => postMessage(`inner:${event.data}`);",
         ),
         (
             "outer.js",
@@ -497,7 +497,7 @@ async fn a_worker_can_spawn_a_worker() {
 /// did not.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_worker_that_listens_to_nothing_lets_its_realm_go_idle() {
-    let fixture = Fixture::new("silent", &[("silent.js", r#"globalThis.ran = true;"#)]).await;
+    let fixture = Fixture::new("silent", &[("silent.js", "globalThis.ran = true;")]).await;
     fixture
         .eval::<()>(r#"globalThis.worker = new Worker("./silent.js");"#)
         .await;

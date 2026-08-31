@@ -61,7 +61,7 @@ impl App {
         ctx: rquickjs::Ctx<'_>, engine: Engine, mut repl_rx: mpsc::UnboundedReceiver<String>,
     ) {
         while let Some(source) = repl_rx.recv().await {
-            let src = match engine.prepare_eval_source(&source) {
+            let src = match engine.prepare_eval_source(&ctx, &source) {
                 Ok(src) => src,
                 Err(error) => {
                     eprintln!("{error}");
@@ -70,20 +70,13 @@ impl App {
             };
             match Engine::eval_prepared::<Coerced<String>>(ctx.clone(), &src).await {
                 Ok(Coerced(res)) => println!("{res}"),
-                Err(rquickjs::Error::Exception) => print_js_error(&ctx),
+                Err(rquickjs::Error::Exception) => Self::print_js_error(&ctx),
                 Err(error) => eprintln!("{error}"),
             }
         }
     }
-}
 
-pub fn print_js_error(ctx: &rquickjs::Ctx<'_>) {
-    let e = ctx.catch();
-    if let Some(e) = e.as_exception() {
-        eprintln!("{e}")
-    } else if let Ok(Coerced(e)) = e.get::<Coerced<String>>() {
-        eprintln!("{e}")
-    } else {
-        eprintln!("unknown error")
+    pub(crate) fn print_js_error(ctx: &rquickjs::Ctx<'_>) {
+        eprintln!("{}", Engine::take_exception(ctx));
     }
 }

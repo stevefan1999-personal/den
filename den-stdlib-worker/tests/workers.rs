@@ -180,7 +180,7 @@ async fn a_classic_worker_echoes_a_message_through_the_engines_loaders() -> eyre
     let echoed: String = fixture
         .result(include_str!("fixtures/workers/classic-echo/main.js"))
         .await?;
-    assert_eq!(echoed, "ping");
+    eyre::ensure!(echoed == "ping", "expected echo \"ping\", got {echoed:?}");
     Ok(())
 }
 
@@ -198,7 +198,7 @@ async fn a_module_worker_resolves_a_static_import_of_a_sibling() -> eyre::Result
     let doubled: i32 = fixture
         .result(include_str!("fixtures/workers/module-import/main.js"))
         .await?;
-    assert_eq!(doubled, 42);
+    eyre::ensure!(doubled == 42, "expected 42, got {doubled}");
     Ok(())
 }
 
@@ -218,7 +218,10 @@ async fn a_typescript_worker_is_transpiled_on_both_paths() -> eyre::Result<()> {
     let both: String = fixture
         .result(include_str!("fixtures/workers/typescript/main.js"))
         .await?;
-    assert_eq!(both, "classic:1,module:2");
+    eyre::ensure!(
+        both == "classic:1,module:2",
+        "unexpected transpiler result: {both:?}"
+    );
     Ok(())
 }
 
@@ -245,7 +248,10 @@ async fn a_transferred_array_buffer_is_detached_here_and_intact_there() -> eyre:
     let report: String = fixture
         .result(include_str!("fixtures/workers/transfer-buffer/main.js"))
         .await?;
-    assert_eq!(report, "true:0 -> 3:7-8-9");
+    eyre::ensure!(
+        report == "true:0 -> 3:7-8-9",
+        "unexpected transfer report: {report:?}"
+    );
     Ok(())
 }
 
@@ -264,9 +270,9 @@ async fn a_webassembly_memory_buffer_refuses_to_be_transferred() -> eyre::Result
     let report: String = fixture
         .result(include_str!("fixtures/workers/wasm-detach-key/main.js"))
         .await?;
-    assert_eq!(
-        report,
-        "DataCloneError|DataCloneError|detached:false|bytes:65536|readback:42"
+    eyre::ensure!(
+        report == "DataCloneError|DataCloneError|detached:false|bytes:65536|readback:42",
+        "unexpected wasm transfer report: {report:?}"
     );
     Ok(())
 }
@@ -284,7 +290,10 @@ async fn a_transferred_message_port_carries_traffic_both_ways() -> eyre::Result<
     let report: String = fixture
         .result(include_str!("fixtures/workers/transfer-port/main.js"))
         .await?;
-    assert_eq!(report, "hello from the worker | ping/pong:true");
+    eyre::ensure!(
+        report == "hello from the worker | ping/pong:true",
+        "unexpected port report: {report:?}"
+    );
     Ok(())
 }
 
@@ -296,7 +305,10 @@ async fn a_broadcast_reaches_both_workers_and_not_the_sender() -> eyre::Result<(
     let report: String = fixture
         .result(include_str!("fixtures/workers/broadcast/main.js"))
         .await?;
-    assert_eq!(report, "first:hello,second:hello self:false");
+    eyre::ensure!(
+        report == "first:hello,second:hello self:false",
+        "unexpected broadcast report: {report:?}"
+    );
     Ok(())
 }
 
@@ -312,12 +324,13 @@ async fn terminate_stops_a_worker_that_never_yields() -> eyre::Result<()> {
     let engine = fixture
         .start(include_str!("fixtures/workers/terminate/main.js"))
         .await?;
-    assert_eq!(
-        engine.eval::<String>("globalThis.result").await?,
-        "spinning"
+    let result = engine.eval::<String>("globalThis.result").await?;
+    eyre::ensure!(
+        result == "spinning",
+        "expected a spinning worker, got {result:?}"
     );
     #[cfg(target_os = "linux")]
-    assert!(
+    eyre::ensure!(
         live_worker_threads("spin-terminate") > 0,
         "the spinning worker should be running before it is terminated"
     );
@@ -339,7 +352,11 @@ async fn close_from_inside_delivers_the_last_message_and_ends_the_thread() -> ey
     let engine = fixture
         .start(include_str!("fixtures/workers/close-inside/main.js"))
         .await?;
-    assert_eq!(engine.eval::<String>("globalThis.result").await?, "bye");
+    let result = engine.eval::<String>("globalThis.result").await?;
+    eyre::ensure!(
+        result == "bye",
+        "expected final message \"bye\", got {result:?}"
+    );
     // Nobody called `terminate()`: the worker ended itself, so the realm can
     // reach idle on its own — which is what lets `den main.js` exit, and the
     // thread is gone before `shutdown` has anything to join.
@@ -360,7 +377,31 @@ async fn an_uncaught_worker_error_reaches_the_parent_with_its_location() -> eyre
     let report: String = fixture
         .result(include_str!("fixtures/workers/error-event/main.js"))
         .await?;
-    assert_eq!(report, "true,error,boom,true,3,undefined");
+    eyre::ensure!(
+        report == "true,error,boom,true,3,true,true",
+        "unexpected error report: {report:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typescript_worker_error_uses_the_authored_stack() -> eyre::Result<()> {
+    const THROWS: &str = "type Marker = {\n  value: \
+                          number;\n};\npostMessage('ready');\nself.onmessage = () => {\n  const \
+                          marker: Marker = { value: 1 };\n  throw new TypeError(`mapped \
+                          ${marker.value}`);\n};\n";
+    const MAIN: &str = "const worker = new Worker('./worker.ts');\nawait \
+                        firstMessage(worker);\nglobalThis.result = await new Promise((resolve) => \
+                        {\n  worker.onerror = (event) => {\n    event.preventDefault();\n    \
+                        resolve(`${event.lineno}|${event.error instanceof \
+                        TypeError}|${event.error.stack.includes('worker.ts:7:')}`);\n  };\n  \
+                        worker.postMessage('go');\n});\nworker.terminate();\n";
+    let fixture = Fixture::new("mapped-worker-error", &[("worker.ts", THROWS)])?;
+    let report: String = fixture.result(MAIN).await?;
+    eyre::ensure!(
+        report == "7|true|true",
+        "unexpected mapped worker stack: {report:?}"
+    );
     Ok(())
 }
 
@@ -377,9 +418,9 @@ async fn an_unhandled_rejection_in_a_worker_fires_at_its_global() -> eyre::Resul
     let report: String = fixture
         .result(include_str!("fixtures/workers/worker-rejection/main.js"))
         .await?;
-    assert_eq!(
-        report,
-        "true,unhandledrejection,nobody in here either,true,true,object"
+    eyre::ensure!(
+        report == "true,unhandledrejection,nobody in here either,true,true,object",
+        "unexpected rejection report: {report:?}"
     );
     Ok(())
 }
@@ -395,9 +436,9 @@ async fn a_worker_onerror_returning_true_keeps_the_error_at_home() -> eyre::Resu
     let report: String = fixture
         .result(include_str!("fixtures/workers/onerror-suppresses/main.js"))
         .await?;
-    assert_eq!(
-        report,
-        "caught:mine:true:true caught:mine:true:true escaped:false"
+    eyre::ensure!(
+        report == "caught:mine:true:true caught:mine:true:true escaped:false",
+        "unexpected onerror report: {report:?}"
     );
     Ok(())
 }
@@ -413,7 +454,10 @@ async fn a_payload_the_worker_cannot_rebuild_becomes_messageerror() -> eyre::Res
     let report: String = fixture
         .result(include_str!("fixtures/workers/messageerror/main.js"))
         .await?;
-    assert_eq!(report, "messageerror:null");
+    eyre::ensure!(
+        report == "messageerror:null",
+        "unexpected messageerror report: {report:?}"
+    );
     Ok(())
 }
 
@@ -435,7 +479,10 @@ async fn a_worker_can_spawn_a_worker_relative_to_itself() -> eyre::Result<()> {
     let relayed: String = fixture
         .result(include_str!("fixtures/workers/nested/main.js"))
         .await?;
-    assert_eq!(relayed, "outer saw: from the inner worker");
+    eyre::ensure!(
+        relayed == "outer saw: from the inner worker",
+        "unexpected nested worker report: {relayed:?}"
+    );
     Ok(())
 }
 
@@ -448,16 +495,17 @@ async fn a_live_worker_keeps_idle_pending_and_terminate_releases_it() -> eyre::R
     let engine = fixture
         .start(include_str!("fixtures/workers/idle-lifetime/main.js"))
         .await?;
-    assert_eq!(engine.eval::<String>("globalThis.result").await?, "ping");
+    let result = engine.eval::<String>("globalThis.result").await?;
+    eyre::ensure!(result == "ping", "expected echo \"ping\", got {result:?}");
     #[cfg(target_os = "linux")]
-    assert!(
+    eyre::ensure!(
         live_worker_threads("idle-lifetime") > 0,
         "the worker whose lifetime is under test should be running"
     );
 
     // `idle()` holds the runtime lock while it is pending, so the timeout has
     // to drop it before anything else touches the realm (docs/research/09 §3).
-    assert!(
+    eyre::ensure!(
         timeout(STILL_BUSY, engine.runtime.idle()).await.is_err(),
         "a live worker must keep the runtime busy"
     );
@@ -482,9 +530,10 @@ async fn an_echo_arrives_while_three_workers_spin() -> eyre::Result<()> {
     let engine = fixture
         .start(include_str!("fixtures/workers/parallel/main.js"))
         .await?;
-    assert_eq!(
-        engine.eval::<String>("globalThis.result").await?,
-        "still responsive"
+    let result = engine.eval::<String>("globalThis.result").await?;
+    eyre::ensure!(
+        result == "still responsive",
+        "expected the echo worker to stay responsive, got {result:?}"
     );
 
     // Nobody terminated the spinners: only `shutdown` can reach them, and when
@@ -503,12 +552,16 @@ async fn shutdown_terminates_and_joins_every_worker() -> eyre::Result<()> {
     let engine = fixture
         .start(include_str!("fixtures/workers/shutdown/main.js"))
         .await?;
-    assert_eq!(
-        engine.eval::<String>("globalThis.result").await?,
-        "spinning"
+    let result = engine.eval::<String>("globalThis.result").await?;
+    eyre::ensure!(
+        result == "spinning",
+        "expected a spinning worker, got {result:?}"
     );
     #[cfg(target_os = "linux")]
-    assert!(live_worker_threads("shutdown-join") > 0, "the workers ran");
+    eyre::ensure!(
+        live_worker_threads("shutdown-join") > 0,
+        "the workers did not run"
+    );
 
     timeout(DEADLINE, engine.shutdown()).await?;
     no_worker_threads("shutdown-join").await;
@@ -544,7 +597,7 @@ mod stderr {
             .env(CHILD, "1")
             .output()?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        assert!(output.status.success(), "the child test failed: {stderr}");
+        eyre::ensure!(output.status.success(), "the child test failed: {stderr}");
         Ok(stderr)
     }
 
@@ -555,7 +608,7 @@ mod stderr {
     -> eyre::Result<()> {
         if !is_child() {
             let reported = stderr_of(UNCLAIMED)?;
-            assert!(
+            eyre::ensure!(
                 reported.contains("unclaimed worker failure"),
                 "the worker's error never reached stderr: {reported}"
             );
@@ -572,7 +625,10 @@ mod stderr {
         let alive: String = fixture
             .result(include_str!("fixtures/workers/unclaimed-error/main.js"))
             .await?;
-        assert_eq!(alive, "alive");
+        eyre::ensure!(
+            alive == "alive",
+            "expected parent to stay alive, got {alive:?}"
+        );
         Ok(())
     }
 
@@ -583,7 +639,7 @@ mod stderr {
     async fn an_unhandled_rejection_in_the_main_script_is_reported() -> eyre::Result<()> {
         if !is_child() {
             let reported = stderr_of(REJECTION)?;
-            assert!(
+            eyre::ensure!(
                 reported.contains("Uncaught (in promise)")
                     && reported.contains("nobody awaited this"),
                 "the rejection never reached stderr: {reported}"

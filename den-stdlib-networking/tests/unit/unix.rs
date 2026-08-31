@@ -5,7 +5,7 @@ use super::{UnixListenerWrapper, UnixStreamWrapper};
 async fn listen_connect_write_read_round_trips() {
     use den_core::engine::Engine;
     use either::Either;
-    use rquickjs::{CatchResultExt, convert::List};
+    use rquickjs::{CatchResultExt as _, convert::List};
 
     let engine = Engine::new().await;
     let outcome: String = engine

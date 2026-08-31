@@ -16,7 +16,7 @@ async fn eval_strips_typescript_type_annotations() -> eyre::Result<()> {
     let greeting: String = engine
         .eval(include_str!("fixtures/transpile/typescript.ts"))
         .await?;
-    assert_eq!(greeting, "hello den");
+    eyre::ensure!(greeting == "hello den", "unexpected greeting: {greeting:?}");
     Ok(())
 }
 
@@ -31,7 +31,7 @@ async fn eval_lowers_a_typescript_enum_to_a_runtime_object() -> eyre::Result<()>
     let mapped: String = engine
         .eval(include_str!("fixtures/transpile/enum.ts"))
         .await?;
-    assert_eq!(mapped, "2|Warn");
+    eyre::ensure!(mapped == "2|Warn", "unexpected enum lowering: {mapped:?}");
     Ok(())
 }
 
@@ -45,7 +45,10 @@ async fn eval_compiles_jsx_to_classic_create_element_calls() -> eyre::Result<()>
     let rendered: String = engine
         .eval(include_str!("fixtures/transpile/jsx.tsx"))
         .await?;
-    assert_eq!(rendered, r#"<ul id="list"><li>den</li></ul>"#);
+    eyre::ensure!(
+        rendered == r#"<ul id="list"><li>den</li></ul>"#,
+        "unexpected JSX output: {rendered:?}"
+    );
     Ok(())
 }
 
@@ -55,9 +58,9 @@ async fn eval_compiles_jsx_to_classic_create_element_calls() -> eyre::Result<()>
 async fn eval_reports_a_syntax_error_as_a_transpiler_error() -> eyre::Result<()> {
     let engine = Engine::new().await;
     let outcome = engine.eval::<()>("const = ;").await;
-    assert!(
+    eyre::ensure!(
         matches!(
-            outcome,
+            &outcome,
             Err(den_core::engine::EngineError::EasyOxcTranspiler(_))
         ),
         "expected a transpiler error, got {outcome:?}"

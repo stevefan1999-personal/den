@@ -23,11 +23,12 @@ use std::{
 
 use den_stdlib_core::exceptions::print_exception;
 #[cfg(feature = "transpile")]
-use den_transpiler_oxc::{infer_transpile_syntax_by_extension, transpile};
+use den_transpiler_oxc::{infer_transpile_syntax_by_extension, transpile_with_source_map};
 use den_util::{coerce_string, inherit};
+use oxc_sourcemap::OwnedSourceMap;
 use rquickjs::{
-    AsyncContext, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime,
-    Module, Object, Persistent, Result, Value,
+    AsyncContext, Class, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Module,
+    Object, Persistent, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     context::EvalOptions,
@@ -71,6 +72,19 @@ const RUNTIME_SHUTDOWN_TIMEOUT: Duration = JOIN_TIMEOUT;
 enum ScriptKind {
     Classic,
     Module,
+}
+
+struct LoadedScript {
+    code:        String,
+    source_maps: Vec<OwnedSourceMap>,
+}
+
+impl LoadedScript {
+    fn register(self, ctx: &Ctx<'_>, filename: &str) -> Result<String> {
+        let maps = self.source_maps.into_iter().map(OwnedSourceMap::into_inner);
+        den_util::stack::register_source(ctx, filename, self.code.clone(), maps)?;
+        Ok(self.code)
+    }
 }
 
 impl ScriptKind {
@@ -124,13 +138,13 @@ impl ScriptKind {
 
 /// What a worker tells its parent about an error nobody in the worker claimed.
 ///
-/// Plain `Send` data: `error` is missing on purpose, because an `Error` does
-/// not survive serialisation (docs/research/10 §4.5), and the location is
-/// parsed out of the exception's stack because quickjs-ng keeps it nowhere
-/// else (docs/research/08 §1.4).
-#[derive(Debug, Default)]
+/// Plain `Send` data. The parent reconstructs an Error of the same built-in
+/// subtype with this mapped stack.
+#[derive(Clone, Debug, Default)]
 struct WorkerFault {
+    name:     String,
     message:  String,
+    stack:    String,
     filename: String,
     lineno:   u32,
     colno:    u32,
@@ -141,6 +155,8 @@ impl WorkerFault {
     /// thread did.
     fn from_message(message: String) -> Self {
         Self {
+            name: "Error".to_owned(),
+            stack: message.clone(),
             message,
             ..Self::default()
         }
@@ -150,70 +166,53 @@ impl WorkerFault {
     /// (`src/main.rs`): the exception's own message when it is one, its string
     /// coercion when it is not.
     fn from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Self {
-        let exception = value.as_exception();
-        let message = exception
-            .and_then(Exception::message)
-            .or_else(|| {
-                Coerced::<String>::from_js(ctx, value.clone())
-                    .ok()
-                    .map(|Coerced(text)| text)
-            })
-            .unwrap_or_else(|| "uncaught error".to_owned());
-        let (filename, lineno, colno) = exception
-            .and_then(Exception::stack)
-            .as_deref()
-            .map(Self::locate)
-            .unwrap_or_default();
+        let report = den_util::stack::JsError::from_value(ctx, value);
+        let location = report.location().cloned().unwrap_or_default();
         Self {
-            message,
-            filename,
-            lineno,
-            colno,
+            name:     report.name().unwrap_or("Error").to_owned(),
+            message:  report.message().to_owned(),
+            stack:    report.to_string(),
+            filename: location.filename,
+            lineno:   location.line,
+            colno:    location.column,
         }
     }
 
     /// Turn a failed call into a fault, taking the pending exception with it so
     /// that it cannot resurface at the next unrelated entry into the context.
-    fn take<'js>(ctx: &Ctx<'js>, error: Error) -> Self {
+    fn take(ctx: &Ctx<'_>, error: Error) -> Self {
         match error {
             Error::Exception => Self::from_value(ctx, &ctx.catch()),
             other => Self::from_message(other.to_string()),
         }
     }
-
-    /// The first frame of a quickjs-ng stack, which is one of
-    /// `    at name (file:line:col)` or `    at file:line:col`. Anything else
-    /// leaves the spec's defaults of `""` and `0` in place.
-    fn locate(stack: &str) -> (String, u32, u32) {
-        stack
-            .lines()
-            .find_map(|line| {
-                let frame = line.trim().strip_prefix("at ")?;
-                let location = frame
-                    .rsplit_once('(')
-                    .map_or(frame, |(_, inside)| inside.trim_end_matches(')'));
-                let (head, colno) = location.rsplit_once(':')?;
-                let (filename, lineno) = head.rsplit_once(':')?;
-                Some((
-                    filename.to_owned(),
-                    lineno.parse().ok()?,
-                    colno.parse().ok()?,
-                ))
-            })
-            .unwrap_or_default()
-    }
 }
 
-/// A fault crosses into JS as the four members of an `ErrorEvent` that survive
-/// a thread — which is what the prelude's half of the report chain passes on.
+/// A fault crosses into JS as owned scalars.
 impl<'js> IntoJs<'js> for WorkerFault {
     fn into_js(self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
         let located = Object::new(ctx.clone())?;
+        located.set("name", self.name)?;
         located.set("message", self.message)?;
+        located.set("stack", self.stack)?;
         located.set("filename", self.filename)?;
         located.set("lineno", self.lineno)?;
         located.set("colno", self.colno)?;
         Ok(located.into_value())
+    }
+}
+
+impl<'js> FromJs<'js> for WorkerFault {
+    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
+        let object = Object::from_js(ctx, value)?;
+        Ok(Self {
+            name:     object.get("name")?,
+            message:  object.get("message")?,
+            stack:    object.get("stack")?,
+            filename: object.get("filename")?,
+            lineno:   object.get("lineno")?,
+            colno:    object.get("colno")?,
+        })
     }
 }
 
@@ -243,9 +242,10 @@ impl ScriptError {
         if value.is_uncatchable_error() {
             return Self::Terminated;
         }
-        match Self::is_load_failure(&value) {
-            true => Self::Load(WorkerFault::from_value(ctx, &value)),
-            false => Self::Uncaught(WorkerFault::from_value(ctx, &value)),
+        if Self::is_load_failure(&value) {
+            Self::Load(WorkerFault::from_value(ctx, &value))
+        } else {
+            Self::Uncaught(WorkerFault::from_value(ctx, &value))
         }
     }
 
@@ -277,7 +277,7 @@ impl ScriptError {
 struct NativesBag(Persistent<Object<'static>>);
 
 // SAFETY: `Persistent` owns its value and is tied to the runtime, not a scope.
-unsafe impl<'js> JsLifetime<'js> for NativesBag {
+unsafe impl JsLifetime<'_> for NativesBag {
     type Changed<'to> = NativesBag;
 }
 
@@ -287,7 +287,7 @@ fn natives<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
         .0
         .clone()
         .restore(ctx)
-        .map_err(|_| Exception::throw_internal(ctx, "den:worker natives vanished"))
+        .map_err(|_restore_error| Exception::throw_internal(ctx, "den:worker natives vanished"))
 }
 
 fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
@@ -305,14 +305,16 @@ fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
 
 /// HTML §8.1.4.6 step 3: fire a cancelable `error` at `target`. `true` means
 /// something called `preventDefault()` — the error was claimed.
-fn report_error_at<'js>(
-    ctx: &Ctx<'js>, target: Value<'js>, message: String, filename: String, lineno: u32, colno: u32,
-) -> Result<bool> {
+fn report_error_at<'js>(ctx: &Ctx<'js>, target: Value<'js>, fault: &WorkerFault) -> Result<bool> {
     let init = Object::new(ctx.clone())?;
-    init.set("message", message)?;
-    init.set("filename", filename)?;
-    init.set("lineno", lineno)?;
-    init.set("colno", colno)?;
+    init.set("message", fault.message.clone())?;
+    init.set("filename", fault.filename.clone())?;
+    init.set("lineno", fault.lineno)?;
+    init.set("colno", fault.colno)?;
+    init.set(
+        "error",
+        den_util::stack::error_from_parts(ctx, Some(&fault.name), &fault.message, &fault.stack)?,
+    )?;
     init.set("cancelable", true)?;
     let event = Class::instance(
         ctx.clone(),
@@ -325,12 +327,16 @@ fn report_error_at<'js>(
     Ok(!dispatch_trusted(ctx.clone(), target, event.into_value())?)
 }
 
-fn escalate(ctx: &Ctx<'_>, message: String, filename: String, lineno: u32, colno: u32) {
+fn escalate(ctx: &Ctx<'_>, fault: WorkerFault) {
     if let Some(hook) = sink_hook(ctx, "escalate") {
-        report_uncaught(ctx, hook.call::<_, ()>((message, filename, lineno, colno)));
+        report_uncaught(ctx, hook.call::<_, ()>((fault,)));
         return;
     }
-    let text = format!("{message}\n    at {filename}:{lineno}:{colno}");
+    let text = if fault.stack.is_empty() {
+        format!("{}: {}", fault.name, fault.message)
+    } else {
+        fault.stack
+    };
     if let Ok(value) = text.into_js(ctx) {
         print_exception(ctx, &value);
     }
@@ -391,10 +397,9 @@ impl Drop for WorkerRegistry {
     /// It lives here rather than on [`WorkerHandle`] because [`shutdown`]
     /// moves the join handles out of one, which `Drop` would forbid.
     fn drop(&mut self) {
-        self.threads
-            .get_mut()
-            .iter()
-            .for_each(|thread| thread.stop.cancel());
+        for thread in self.threads.get_mut() {
+            thread.stop.cancel();
+        }
     }
 }
 
@@ -410,10 +415,9 @@ impl WorkerRegistry {
         let registry = ctx
             .userdata::<Self>()
             .ok_or_else(|| Exception::throw_internal(ctx, "the worker registry vanished"))?;
-        let mut threads = registry
-            .threads
-            .try_borrow_mut()
-            .map_err(|_| Exception::throw_internal(ctx, "the worker registry is busy"))?;
+        let mut threads = registry.threads.try_borrow_mut().map_err(|_borrow_error| {
+            Exception::throw_internal(ctx, "the worker registry is busy")
+        })?;
         threads.retain(|thread| !thread.join.is_finished());
         threads.push(handle);
         Ok(())
@@ -450,9 +454,9 @@ pub async fn shutdown(context: &AsyncContext) {
     // error event.
     let pending = threads.len();
     let joined = tokio::task::spawn_blocking(move || {
-        threads
-            .into_iter()
-            .for_each(|thread| drop(thread.join.join()));
+        for thread in threads {
+            drop(thread.join.join());
+        }
     });
     // Bounded, because a worker inside a blocking load never observes its
     // cancellation at all and one stuck fetch must not become a stuck process.
@@ -486,8 +490,7 @@ impl NativeWorker {
         on_fault: Function<'js>,
     ) {
         while let Some(Some(fault)) = stop.run_until_cancelled(inbox.recv()).await {
-            let dispatched =
-                on_fault.call::<_, ()>((fault.message, fault.filename, fault.lineno, fault.colno));
+            let dispatched = on_fault.call::<_, ()>((fault,));
             // The handler for "nobody handled an error" throwing is the end of
             // the line; report it rather than lose it.
             report_uncaught(&ctx, dispatched);
@@ -679,6 +682,7 @@ impl WorkerThread {
         closing.run_until_cancelled(engine.runtime.idle()).await;
         // Bottom-up: this worker's own children go before it does.
         shutdown(&engine.context).await;
+        self.host.shutdown(&engine.context).await;
         let WorkerEngine { runtime, context } = engine;
         // Order matters: every JS value dies with the context, and the runtime
         // frees the spawner — and the pump's captured callbacks with it — only
@@ -691,8 +695,8 @@ impl WorkerThread {
 
     /// Install the global scope, run the script, open the message queue.
     /// Returns whatever the parent still needs to hear about.
-    async fn boot<'js>(
-        ctx: &Ctx<'js>, channel: PortHandle, name: &str, kind: ScriptKind, script: &Url,
+    async fn boot(
+        ctx: &Ctx<'_>, channel: PortHandle, name: &str, kind: ScriptKind, script: &Url,
         closing: &CancellationToken, faults: UnboundedSender<WorkerFault>,
     ) -> Option<WorkerFault> {
         match Self::install_scope(ctx, channel, name, kind, script, closing, faults) {
@@ -735,16 +739,9 @@ impl WorkerThread {
         )?;
         hooks.set(
             "fault",
-            Func::from(
-                move |message: String, filename: String, lineno: u32, colno: u32| {
-                    let _ = faults.send(WorkerFault {
-                        message,
-                        filename,
-                        lineno,
-                        colno,
-                    });
-                },
-            ),
+            Func::from(move |fault: WorkerFault| {
+                let _ = faults.send(fault);
+            }),
         )?;
         install_worker_scope(ctx, ctx.globals(), port, name, hooks)
     }
@@ -783,14 +780,7 @@ impl WorkerThread {
     fn report<'js>(ctx: &Ctx<'js>, scope: &Object<'js>, fault: WorkerFault) -> Option<WorkerFault> {
         let cancelled = scope
             .get::<_, Function<'js>>("reportError")
-            .and_then(|report| {
-                report.call::<_, bool>((
-                    fault.message.clone(),
-                    fault.filename.clone(),
-                    fault.lineno,
-                    fault.colno,
-                ))
-            });
+            .and_then(|report| report.call::<_, bool>((fault.clone(),)));
         match cancelled {
             Ok(true) => None,
             Ok(false) => Some(fault),
@@ -801,6 +791,9 @@ impl WorkerThread {
     fn run_classic(ctx: &Ctx<'_>, script: &Url) -> std::result::Result<(), ScriptError> {
         let source = Self::load(script)
             .map_err(|error| ScriptError::Load(WorkerFault::from_message(error)))?;
+        let source = source
+            .register(ctx, script.as_str())
+            .map_err(|error| ScriptError::from_eval(ctx, error))?;
         ctx.eval_with_options::<(), _>(source, Self::classic_options(script))
             .map_err(|error| ScriptError::from_eval(ctx, error))
     }
@@ -838,7 +831,7 @@ impl WorkerThread {
     fn import_scripts(
         ctx: &Ctx<'_>, base: &Url, kind: ScriptKind, urls: Vec<String>,
     ) -> Result<()> {
-        if let ScriptKind::Module = kind {
+        if kind == ScriptKind::Module {
             return Err(Exception::throw_type(
                 ctx,
                 "importScripts is not available in a module worker",
@@ -858,7 +851,8 @@ impl WorkerThread {
             .collect::<Result<Vec<_>>>()?;
         for script in scripts {
             let source =
-                Self::load(&script).map_err(|error| Exception::throw_message(ctx, &error))?;
+                Self::load(&script).map_err(|error| den_util::stack::throw_error(ctx, &error))?;
+            let source = source.register(ctx, script.as_str())?;
             ctx.eval_with_options::<(), _>(source, Self::classic_options(&script))?;
         }
         Ok(())
@@ -867,7 +861,7 @@ impl WorkerThread {
     /// Read one classic script and transpile it. Classic workers are file-only
     /// ([`ScriptKind::resolve`] refuses everything else), so this is a plain
     /// blocking read on the worker's own thread with nothing else to starve.
-    fn load(script: &Url) -> std::result::Result<String, String> {
+    fn load(script: &Url) -> std::result::Result<LoadedScript, String> {
         let path = script
             .to_file_path()
             .map_err(|()| format!("{script} is not a file"))?;
@@ -877,20 +871,55 @@ impl WorkerThread {
             .extension()
             .and_then(|extension| extension.to_str())
             .unwrap_or("js");
-        Self::transpile(source, extension)
+        Self::transpile(source, extension, script.as_str())
     }
 
     /// The top level is a script, where `import` is a syntax error and `this`
     /// is the global — both of which a classic worker script relies on.
     #[cfg(feature = "transpile")]
-    fn transpile(source: String, extension: &str) -> std::result::Result<String, String> {
+    fn transpile(
+        source: String, extension: &str, filename: &str,
+    ) -> std::result::Result<LoadedScript, String> {
         let syntax = infer_transpile_syntax_by_extension(extension).unwrap_or_default();
-        transpile(&source, syntax.with_script(true)).map_err(|error| error.to_string())
+        let authored_map = Self::load_source_map(filename, &source);
+        transpile_with_source_map(&source, syntax.with_script(true), filename)
+            .map(|output| {
+                let mut source_maps = vec![output.source_map];
+                source_maps.extend(authored_map);
+                LoadedScript {
+                    code: output.code,
+                    source_maps,
+                }
+            })
+            .map_err(|error| error.to_string())
     }
 
     #[cfg(not(feature = "transpile"))]
-    fn transpile(source: String, _extension: &str) -> std::result::Result<String, String> {
-        Ok(source)
+    fn transpile(
+        source: String, _extension: &str, filename: &str,
+    ) -> std::result::Result<LoadedScript, String> {
+        let source_maps = Self::load_source_map(filename, &source)
+            .into_iter()
+            .collect();
+        Ok(LoadedScript {
+            code: source,
+            source_maps,
+        })
+    }
+
+    fn load_source_map(filename: &str, source: &str) -> Option<OwnedSourceMap> {
+        let mapping = den_util::stack::source_mapping_url(source)?;
+        let source_url = Url::parse(filename).ok()?;
+        if mapping.starts_with("data:") {
+            return den_util::stack::inline_source_map(mapping, &source_url)
+                .map(OwnedSourceMap::new);
+        }
+        let map_url = source_url.join(mapping).ok()?;
+        if map_url.scheme() != "file" {
+            return None;
+        }
+        let json = std::fs::read_to_string(map_url.to_file_path().ok()?).ok()?;
+        den_util::stack::parse_source_map(&json, &map_url).map(OwnedSourceMap::new)
     }
 }
 
@@ -909,7 +938,7 @@ impl WorkerGlobalScope {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "WorkerGlobalScope" }
+    pub const fn to_string_tag() -> &'static str { "WorkerGlobalScope" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -924,7 +953,7 @@ impl DedicatedWorkerGlobalScope {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "DedicatedWorkerGlobalScope" }
+    pub const fn to_string_tag() -> &'static str { "DedicatedWorkerGlobalScope" }
 }
 
 /// HTML §10.2.6 `Worker`.
@@ -950,27 +979,20 @@ impl<'js> Worker<'js> {
         let url = coerce_string(&ctx, script_url)?;
         let (kind, name) = worker_options(&ctx, options.0)?;
         let ports = pair(ctx.clone())?;
-        let outside = ports[0].clone();
-        let inside = ports[1].clone();
+        let [outside, inside] = ports.as_slice() else {
+            return Err(Exception::throw_internal(
+                &ctx,
+                "worker port pair is incomplete",
+            ));
+        };
+        let outside = outside.clone();
+        let inside = inside.clone();
         let on_fault = Function::new(
             ctx.clone(),
-            |ctx: Ctx<'js>,
-             function: FuncArg<Function<'js>>,
-             message: String,
-             filename: String,
-             lineno: u32,
-             colno: u32|
-             -> Result<()> {
+            |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, fault: WorkerFault| -> Result<()> {
                 let worker: Value<'js> = function.0.get("_worker")?;
-                if !report_error_at(
-                    &ctx,
-                    worker,
-                    message.clone(),
-                    filename.clone(),
-                    lineno,
-                    colno,
-                )? {
-                    escalate(&ctx, message, filename, lineno, colno);
+                if !report_error_at(&ctx, worker, &fault)? {
+                    escalate(&ctx, fault);
                 }
                 Ok(())
             },
@@ -999,7 +1021,7 @@ impl<'js> Worker<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Worker" }
+    pub const fn to_string_tag() -> &'static str { "Worker" }
 }
 
 /// Called from the worker thread after the engine exists and before its
@@ -1100,24 +1122,11 @@ fn install_worker_scope<'js>(
     let natives = natives(ctx)?;
     let escalate_fn = Function::new(
         ctx.clone(),
-        |ctx: Ctx<'js>,
-         function: FuncArg<Function<'js>>,
-         message: String,
-         filename: String,
-         lineno: u32,
-         colno: u32|
-         -> Result<()> {
+        |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, fault: WorkerFault| -> Result<()> {
             let target: Value<'js> = function.0.get("_scope")?;
-            if !report_error_at(
-                &ctx,
-                target,
-                message.clone(),
-                filename.clone(),
-                lineno,
-                colno,
-            )? {
-                let fault: Function<'js> = function.0.get("_fault")?;
-                fault.call::<_, ()>((message, filename, lineno, colno))?;
+            if !report_error_at(&ctx, target, &fault)? {
+                let send_fault: Function<'js> = function.0.get("_fault")?;
+                send_fault.call::<_, ()>((fault,))?;
             }
             Ok(())
         },
@@ -1140,13 +1149,8 @@ fn install_worker_scope<'js>(
             let locate: Function<'js> = function.0.get("_locate")?;
             let escalate: Function<'js> = function.0.get("_escalate")?;
             let outcome = (|| {
-                let located: Object<'js> = locate.call((value,))?;
-                escalate.call::<_, ()>((
-                    located.get::<_, String>("message")?,
-                    located.get::<_, String>("filename")?,
-                    located.get::<_, u32>("lineno")?,
-                    located.get::<_, u32>("colno")?,
-                ))
+                let fault: WorkerFault = locate.call((value,))?;
+                escalate.call::<_, ()>((fault,))
             })();
             function.0.set("_reporting", false)?;
             outcome
@@ -1175,15 +1179,9 @@ fn install_worker_scope<'js>(
 
     let report = Function::new(
         ctx.clone(),
-        |ctx: Ctx<'js>,
-         function: FuncArg<Function<'js>>,
-         message: String,
-         filename: String,
-         lineno: u32,
-         colno: u32|
-         -> Result<bool> {
+        |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, fault: WorkerFault| -> Result<bool> {
             let target: Value<'js> = function.0.get("_scope")?;
-            report_error_at(&ctx, target, message, filename, lineno, colno)
+            report_error_at(&ctx, target, &fault)
         },
     )?;
     report.set("_scope", scope.clone())?;
@@ -1197,24 +1195,27 @@ fn install_worker_scope<'js>(
 /// Park the natives bag and the default (print) escalate hook.
 pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
     ctx.store_userdata(NativesBag(Persistent::save(ctx, natives.clone())))
-        .map_err(|_| Exception::throw_internal(ctx, "den:worker is already installed"))?;
+        .map_err(|_store_error| {
+            Exception::throw_internal(ctx, "den:worker is already installed")
+        })?;
     natives.set(
         "escalate",
-        Function::new(
-            ctx.clone(),
-            |ctx: Ctx<'js>, message: String, filename: String, lineno: u32, colno: u32| {
-                let text = format!("{message}\n    at {filename}:{lineno}:{colno}");
-                if let Ok(value) = text.into_js(&ctx) {
-                    print_exception(&ctx, &value);
-                }
-            },
-        )?,
+        Function::new(ctx.clone(), |ctx: Ctx<'js>, fault: WorkerFault| {
+            let text = if fault.stack.is_empty() {
+                format!("{}: {}", fault.name, fault.message)
+            } else {
+                fault.stack
+            };
+            if let Ok(value) = text.into_js(&ctx) {
+                print_exception(&ctx, &value);
+            }
+        })?,
     )?;
     Ok(())
 }
 
 /// Prototype chain, `onX` slots, constructor `length`.
-pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
+pub fn finish(ctx: &Ctx<'_>) -> Result<()> {
     let hidden = Object::new(ctx.clone())?;
     Class::<WorkerGlobalScope>::define(&hidden)?;
     Class::<DedicatedWorkerGlobalScope>::define(&hidden)?;

@@ -1,4 +1,7 @@
-import { assert, assertEquals } from "den:assert";
+import { assert, assertEquals, assertThrows } from "den:assert";
+assertEquals(Blob.length, 0);
+assertEquals(Blob.prototype.constructor, Blob);
+assertThrows(() => Blob(), TypeError);
 const blob = new Blob(["hello ", "world"], { type: "text/plain" });
 assertEquals(blob.size, 11);
 assertEquals(blob.type, "text/plain");
