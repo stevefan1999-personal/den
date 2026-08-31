@@ -692,6 +692,7 @@ zero_sized_map_values = "deny"
 
 [package]
 name = "den"
+autotests = false
 description = "One word less than Deno!"
 version.workspace = true
 edition.workspace = true
@@ -720,6 +721,16 @@ tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"
 libc.workspace = true
 oxc_sourcemap.workspace = true
 tempfile.workspace = true
+
+[[test]]
+name = "ctrlc"
+path = "tests/ctrlc.rs"
+required-features = ["stdlib-console", "stdlib-process", "stdlib-timer"]
+
+[[test]]
+name = "stack_traces"
+path = "tests/stack_traces.rs"
+required-features = ["stdlib-console", "stdlib-timer", "typescript"]
 
 [features]
 default = ["stdlib", "typescript", "react", "wasm", "jit", "mimalloc", "ring"]
