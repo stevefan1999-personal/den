@@ -189,14 +189,28 @@ mod tests {
     #[cfg(feature = "transpile")]
     use rquickjs::Module;
     use rquickjs::{
-        Context, Ctx, Error, Runtime,
-        loader::{ImportAttributes, Resolver},
+        Context, Ctx, Error, Runtime, embed,
+        loader::{Bundle, ImportAttributes, Resolver},
     };
 
     #[cfg(feature = "transpile")]
     use super::PackageLoader;
     use super::PackageResolver;
-    use crate::resolver::import_map::{ImportMap, ImportMapResolver};
+    use crate::{
+        EngineBuilder,
+        resolver::import_map::{ImportMap, ImportMapResolver},
+    };
+
+    const PACKAGE_MAIN: &str =
+        "den-pkg://module/jsr/https:%2F%2Fjsr.example%2F/@scope%2Fapp/1.0.0/src/main.ts";
+    static SHADOW_BUNDLE: Bundle = {
+        const _: &[u8] = include_bytes!("../tests/fixtures/engine/embedded/answer.js");
+        embed! {
+            "@scope/app": "tests/fixtures/engine/embedded/answer.js",
+            "den-pkg://module/jsr/https:%2F%2Fjsr.example%2F/@scope%2Fapp/1.0.0/src/main.ts":
+                "tests/fixtures/engine/embedded/answer.js",
+        }
+    };
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -222,6 +236,23 @@ mod tests {
             )?
             .finish()
         })?;
+        Ok(())
+    }
+
+    #[cfg(feature = "transpile")]
+    #[tokio::test]
+    async fn package_modules_precede_embedded_bundle_entries() -> TestResult {
+        let snapshot = Arc::new(fixture().await?);
+        assert_eq!(snapshot.resolve("entry", "@scope/app")?, PACKAGE_MAIN);
+        let engine = EngineBuilder::new()
+            .bundle(SHADOW_BUNDLE)
+            .package_modules(snapshot)
+            .build()
+            .await;
+        let value = engine
+            .eval::<String>("(await import('@scope/app')).default")
+            .await?;
+        assert_eq!(value, "42:tsx:json:text:3");
         Ok(())
     }
 
