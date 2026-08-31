@@ -54,6 +54,50 @@ fn formatter_handles_substitutions_cycles_and_error_stacks() -> eyre::Result<()>
         let text = inspector.format_values(errors)?;
         eyre::ensure!(text.contains("TypeError: boom\n    at "), "{text}");
         eyre::ensure!(text.contains("AbortError: stopped\n    at "), "{text}");
+
+        let numbers: Array =
+            ctx.eval(r#"["%d %i %f %c leftover %z %%", 3.7, "4", 1.25, "css", "x"]"#)?;
+        let numbers = numbers
+            .iter::<Value>()
+            .collect::<rquickjs::Result<Vec<_>>>()?;
+        let text = inspector.format_values(numbers)?;
+        eyre::ensure!(text.contains('3'), "{text}");
+        eyre::ensure!(text.contains("%z"), "{text}");
+        eyre::ensure!(text.contains('%'), "{text}");
+
+        let empty = inspector.format_values(Vec::<Value>::new())?;
+        eyre::ensure!(empty.is_empty(), "{empty}");
+
+        let values: Array = ctx.eval(
+            r#"[
+              [1, { nested: true }],
+              function named() {},
+              Symbol("tag"),
+              null,
+              undefined,
+              true
+            ]"#,
+        )?;
+        let values = values
+            .iter::<Value>()
+            .collect::<rquickjs::Result<Vec<_>>>()?;
+        let text = inspector.format_values(values)?;
+        eyre::ensure!(
+            text.contains("[ 1, [Object] ]") || text.contains("nested"),
+            "{text}"
+        );
+        eyre::ensure!(text.contains("[Function: named]"), "{text}");
+        eyre::ensure!(text.contains("Symbol(tag)"), "{text}");
+        eyre::ensure!(text.contains("null"), "{text}");
+        eyre::ensure!(text.contains("undefined"), "{text}");
+        eyre::ensure!(text.contains("true"), "{text}");
+
+        let inf: Array = ctx.eval(r#"["%d %d %d", Infinity, -Infinity, Number.NaN]"#)?;
+        let inf = inf.iter::<Value>().collect::<rquickjs::Result<Vec<_>>>()?;
+        let text = inspector.format_values(inf)?;
+        eyre::ensure!(text.contains("Infinity"), "{text}");
+        eyre::ensure!(text.contains("-Infinity"), "{text}");
+        eyre::ensure!(text.contains("NaN"), "{text}");
         Ok(())
     })
 }
