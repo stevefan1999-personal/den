@@ -309,7 +309,7 @@ declare module "den:ffi" {
    * This realm's grant, or `null` when it was given none.
    *
    * **The grant is scoped to the realm, not to the module that was handed
-   * one.** den has no per-module seam yet (`EngineBuilder` does not exist), so
+   * one.** `EngineBuilder` currently has no per-module grant seam, so
    * anything running in a granted realm — including a dependency you did not
    * write — can call this and then `open()` any path the roots cover. Passing
    * the value to `open()` is what makes the capability explicit and greppable;

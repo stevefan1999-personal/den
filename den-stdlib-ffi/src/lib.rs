@@ -83,8 +83,8 @@ pub mod ffi {
     ///
     /// §5.3 wants the grant handed to *one module*, and this is not that: it
     /// is realm-scoped, so any module in a granted realm can ask for it. The
-    /// per-module version needs an `EngineBuilder` seam to hand the value to a
-    /// single module, which does not exist yet (§0 fact 0). Until it does, the
+    /// per-module version needs a module-specific grant seam; `EngineBuilder`
+    /// currently installs realm-wide settings only. Until that exists, the
     /// grant's roots are the whole boundary — said plainly here and in
     /// `types/den-ffi.d.ts` rather than left to read as a stronger property.
     #[rquickjs::function]

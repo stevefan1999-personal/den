@@ -11,6 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+den-capabilities = { workspace = true, features = ["rquickjs"] }
 derive_more.workspace = true
 dunce.workspace = true
 import_map.workspace = true

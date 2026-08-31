@@ -11,7 +11,8 @@ use either::Either;
 pub use process_signal as signal;
 pub use process_spawn as spawn;
 use rquickjs::{
-    Ctx, Exception, Function, Object, Result, Value, class::Class, function::Opt, object::Accessor,
+    Ctx, Exception, Function, JsLifetime, Object, Result, Value, class::Class, function::Opt,
+    object::Accessor,
 };
 
 use crate::{
@@ -24,7 +25,24 @@ pub fn pid() -> u32 { std::process::id() }
 
 pub fn ppid() -> u32 { parent_id() }
 
-pub fn argv() -> Vec<String> { std::env::args().collect() }
+#[derive(Clone, Debug)]
+pub struct ProcessArgs(pub Vec<String>);
+
+// SAFETY: process arguments own their strings and borrow no JavaScript value.
+unsafe impl JsLifetime<'_> for ProcessArgs {
+    type Changed<'to> = ProcessArgs;
+}
+
+pub fn argv(ctx: Ctx<'_>) -> Vec<String> {
+    ctx.userdata::<ProcessArgs>().map_or_else(
+        || {
+            std::env::args_os()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        },
+        |args| args.0.clone(),
+    )
+}
 
 fn parent_id() -> u32 {
     #[cfg(unix)]
@@ -149,7 +167,7 @@ fn install<'js>(ctx: &Ctx<'js>, exports: &rquickjs::module::Exports<'js>) -> Res
     process.set("lookup", js_lookup)?;
 
     exports.export("env", process.get::<_, Value>("env")?)?;
-    exports.export("argv", argv())?;
+    exports.export("argv", argv(ctx.clone()))?;
     exports.export("pid", pid())?;
     exports.export("ppid", ppid())?;
     exports.export("cwd", js_cwd)?;

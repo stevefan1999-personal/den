@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use den_capabilities::Policy;
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{
     EasyOxcTranspilerError, get_best_transpiling, infer_transpile_syntax_by_extension,
@@ -29,6 +30,7 @@ use {
 };
 
 use crate::{
+    builder::{EngineBuilder, EngineSettings},
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
     resolver::{
         file::AbsolutePathResolver,
@@ -103,7 +105,8 @@ unsafe impl JsLifetime<'_> for PendingRejections {
 /// handler on the runtime this hands back.
 #[cfg(feature = "stdlib-worker")]
 struct DenWorkerHost {
-    bundle: Bundle,
+    bundle:   Bundle,
+    settings: EngineSettings,
 }
 
 #[cfg(feature = "stdlib-worker")]
@@ -114,9 +117,10 @@ impl WorkerHost for DenWorkerHost {
         // synchronous trait method reach an async constructor, and it is the
         // same pair den's module loaders already use one layer down.
         let bundle = self.bundle;
+        let settings = self.settings.clone();
         let engine = block_in_place(|| {
             Handle::current().block_on(async move {
-                let engine = Engine::build(bundle).await;
+                let engine = Engine::build(bundle, settings).await;
                 // Signals belong to the process, and only the realm running the
                 // root event loop can deliver them: a worker's loop is `idle()`
                 // and never drains an inbox.
@@ -228,7 +232,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    const EMPTY_BUNDLE: Bundle = rquickjs::loader::bundle::Bundle(&rquickjs::phf::Map::new());
     /// How many reported rejections stay remembered, so that a handler attached
     /// to one afterwards still fires `rejectionhandled`.
     ///
@@ -253,7 +256,10 @@ impl Engine {
         "{}.tsx",
     ];
 
-    pub async fn new() -> Engine { Self::build(Self::EMPTY_BUNDLE).await }
+    pub async fn new() -> Engine { EngineBuilder::new().build().await }
+
+    #[must_use]
+    pub fn builder() -> EngineBuilder { EngineBuilder::new() }
 
     /// Build an engine that resolves application-owned modules from bytecode
     /// produced by [`rquickjs::embed!`].
@@ -262,12 +268,22 @@ impl Engine {
     /// static dependencies must precede their importers. Cross-compiled
     /// bytecode requires the target to use the same QuickJS version and
     /// endianness as the host.
-    pub async fn new_with_bundle(bundle: Bundle) -> Engine { Self::build(bundle).await }
+    pub async fn new_with_bundle(bundle: Bundle) -> Engine {
+        EngineBuilder::new().bundle(bundle).build().await
+    }
 
-    async fn build(bundle: Bundle) -> Engine {
-        let runtime = AsyncRuntime::new()
+    pub(crate) async fn build(bundle: Bundle, settings: EngineSettings) -> Engine {
+        let runtime = settings
+            .runtime()
             .unwrap_or_else(|error| panic!("could not create QuickJS runtime: {error}"));
-        runtime.set_max_stack_size(0).await;
+        runtime.set_max_stack_size(settings.max_stack_size).await;
+        runtime.set_gc_threshold(settings.gc_threshold).await;
+
+        #[cfg(feature = "stdlib-worker")]
+        let worker_settings = settings.clone();
+        #[cfg(feature = "stdlib-process")]
+        let argv = settings.argv.clone();
+        let policy = settings.policy;
 
         {
             let mut builtin_resolver = BuiltinResolver::default();
@@ -364,6 +380,9 @@ impl Engine {
             .with(|ctx| {
                 den_util::stack::install(&ctx)?;
                 Self::store_userdata(&ctx, EvalSequence::default())?;
+                Self::store_userdata(&ctx, policy)?;
+                #[cfg(feature = "stdlib-process")]
+                Self::store_userdata(&ctx, den_stdlib_process::ProcessArgs(argv))?;
 
                 #[cfg(any(
                     feature = "stdlib-console",
@@ -412,7 +431,10 @@ impl Engine {
                     // makes a worker able to spawn workers of its own.
                     Self::store_userdata(
                         &ctx,
-                        den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost { bundle })),
+                        den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost {
+                            bundle,
+                            settings: worker_settings,
+                        })),
                     )?;
                     Self::store_userdata(&ctx, Self::working_directory_url())?;
                 }
@@ -642,6 +664,17 @@ impl Engine {
                 Ok::<(), rquickjs::Error>(())
             })
             .await;
+    }
+
+    /// The authority installed by the builder. A missing value fails closed,
+    /// though initialized engines always contain one.
+    pub async fn policy(&self) -> Policy {
+        self.context
+            .with(|ctx| {
+                ctx.userdata::<Policy>()
+                    .map_or_else(Policy::default, |policy| Policy::clone(&policy))
+            })
+            .await
     }
 
     /// Install an [import map](https://wicg.github.io/import-maps/) on this
