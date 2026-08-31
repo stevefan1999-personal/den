@@ -132,10 +132,12 @@ jobs:
           root=$(cd "$(dirname "$(command -v clang)")/.." && pwd -W)
           resource=$(clang --print-resource-dir | sed 's#\\#/#g')
           target_key=$(printf %s '${{ matrix.target }}' | tr '-' '_')
-          printf 'CONFIG_SHELL=C:/PROGRA~1/Git/usr/bin/sh.exe\nSHELL=C:/PROGRA~1/Git/usr/bin/sh.exe\nMSYS2_ENV_CONV_EXCL=CONFIG_SHELL;SHELL\n' >> "$GITHUB_ENV"
-          printf 'CC_%s=%s\n' "$target_key" '${{ matrix.cc }}' >> "$GITHUB_ENV"
-          printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s --sysroot="%s" -isystem "%s/include" -isystem "%s/include"\n' \
-            '${{ matrix.bindgen_target }}' "$root" "$resource" "$root" >> "$GITHUB_ENV"
+          {
+            printf 'CONFIG_SHELL=C:/PROGRA~1/Git/usr/bin/sh.exe\nSHELL=C:/PROGRA~1/Git/usr/bin/sh.exe\nMSYS2_ENV_CONV_EXCL=CONFIG_SHELL;SHELL\n'
+            printf 'CC_%s=%s\n' "$target_key" '${{ matrix.cc }}'
+            printf 'BINDGEN_EXTRA_CLANG_ARGS=--target=%s --sysroot="%s" -isystem "%s/include" -isystem "%s/include"\n' \
+              '${{ matrix.bindgen_target }}' "$root" "$resource" "$root"
+          } >> "$GITHUB_ENV"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
@@ -144,7 +146,7 @@ jobs:
         run: >-
           cargo nextest run --locked --profile compat --no-fail-fast --workspace
           --target ${{ matrix.target }} --no-default-features
-          --features ${{ matrix.features }}
+          --features ${{ matrix.features }},ring
 
   cross-linux:
     name: ${{ matrix.target }}
@@ -250,7 +252,7 @@ jobs:
       RUST_TEST_THREADS: "1"
       SCCACHE_GHA_ENABLED: "true"
       TARGET: ${{ matrix.target }}
-      TARGET_FEATURES: ${{ matrix.features }}
+      TARGET_FEATURES: ${{ matrix.features }},ring
       TARGET_WASM: ${{ matrix.wasm }}
     steps:
       - uses: actions/checkout@v4
@@ -289,6 +291,7 @@ jobs:
           mkdir -p target
           cp "$SCCACHE_PATH" target/sccache
           rm -f "$status_file"
+          # shellcheck disable=SC2016 # Expanded inside the cross container.
           cross-util run --target "$TARGET" -- '
             set -eu
             export RUSTC_WRAPPER=/target/sccache
@@ -385,7 +388,7 @@ jobs:
           cargo nextest run --locked --profile compat --no-fail-fast --workspace
           --exclude den-stdlib-wasm --target ${{ matrix.target }}
           --no-default-features
-          --features stdlib,typescript,react,mimalloc,rquickjs/bindgen
+          --features stdlib,typescript,react,mimalloc,ring,rquickjs/bindgen
           --test-threads 1
 
   musl-release:
@@ -494,7 +497,7 @@ jobs:
             export LIBCLANG_PATH=/usr/local/llvm19/lib
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --target ${{ matrix.target }} --no-default-features \
-              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,rquickjs/bindgen
+              --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,ring,rquickjs/bindgen
 
   illumos:
     name: x86_64-unknown-illumos
@@ -542,7 +545,7 @@ jobs:
             export LIBCLANG_PATH=/opt/ooce/llvm-19/lib
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --target x86_64-unknown-illumos --no-default-features \
-              --features stdlib,typescript,react,wasm,wasi,jit,rquickjs/bindgen \
+              --features stdlib,typescript,react,wasm,wasi,jit,ring,rquickjs/bindgen \
               --test-threads 1
 
   netbsd:
@@ -588,7 +591,7 @@ jobs:
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
               --no-default-features \
-              --features stdlib,typescript,react,rquickjs/bindgen \
+              --features stdlib,typescript,react,ring,rquickjs/bindgen \
               --test-threads 1
 
   solaris:
@@ -629,9 +632,9 @@ jobs:
             export PATH="$HOME/.cargo/bin:/usr/llvm/19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
             export LIBCLANG_PATH=/usr/llvm/19/lib/amd64
             export CC_x86_64_pc_solaris=clang
-            export CFLAGS_x86_64_pc_solaris=-D_STRICT_SYMBOLS
+            export CFLAGS_x86_64_pc_solaris='-U_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_STRICT_SYMBOLS'
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-pc-solaris \
               --no-default-features \
-              --features stdlib,typescript,react,rquickjs/bindgen \
+              --features stdlib,typescript,react,ring,rquickjs/bindgen \
               --test-threads 1
