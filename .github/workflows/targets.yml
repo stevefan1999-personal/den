@@ -302,7 +302,8 @@ jobs:
             set -eu
             export RUSTC_WRAPPER=/target/sccache
             archive=/tmp/cargo-nextest.tar.gz
-            curl --proto "=https" --tlsv1.2 -fsSLo "$archive" \
+            curl --proto "=https" --tlsv1.2 --retry 5 --retry-all-errors \
+              --retry-delay 2 --connect-timeout 30 -fsSLo "$archive" \
               https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-linux-gnu.tar.gz
             printf "%s  %s\n" \
               66786b9abe23920d022a182d1416b1bbc8130dd4872a9553d76985a1708dcd1e \

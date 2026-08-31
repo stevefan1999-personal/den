@@ -5,7 +5,8 @@ ARG CARGO_NEXTEST_SHA256=6d891c18105ec2d33f6e441a4f92b7ccab47ba263e22055c8bb6688
 
 RUN apk add --no-cache curl=8.14.1-r3 \
     && archive="cargo-nextest-${CARGO_NEXTEST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-    && curl --proto '=https' --tlsv1.2 -fsSLo "/tmp/${archive}" \
+    && curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors \
+        --retry-delay 2 --connect-timeout 30 -fsSLo "/tmp/${archive}" \
         "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${CARGO_NEXTEST_VERSION}/${archive}" \
     && printf '%s  %s\n' "${CARGO_NEXTEST_SHA256}" "/tmp/${archive}" \
         > /tmp/cargo-nextest.sha256 \
