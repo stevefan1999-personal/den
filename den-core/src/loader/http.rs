@@ -19,6 +19,7 @@ impl Loader for HttpLoader {
         &mut self, ctx: &Ctx<'js>, name: &str, attributes: Option<ImportAttributes<'js>>,
     ) -> Result<Module<'js, Declared>> {
         let kind = import_kind(name, attributes.as_ref())?;
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let task = async move {
             let response = reqwest::get(name)
                 .await

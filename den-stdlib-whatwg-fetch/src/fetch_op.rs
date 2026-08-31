@@ -146,6 +146,7 @@ struct CacheEntry {
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()

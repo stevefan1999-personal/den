@@ -13,8 +13,7 @@ keywords.workspace = true
 [dependencies]
 derive_more.workspace = true
 dunce.workspace = true
-# `default-tls` is rustls, and `charset`/`http2`/`system-proxy` come with the defaults too; only
-# the body codecs and the streaming body are extra.
+# The workspace selects reqwest's provider-neutral rustls backend; client sites install ring.
 reqwest = { workspace = true, features = [
     "stream",
     "deflate",
@@ -22,6 +21,7 @@ reqwest = { workspace = true, features = [
     "brotli",
 ] }
 rquickjs.workspace = true
+rustls.workspace = true
 serde_json.workspace = true
 # `block_in_place` + `Handle::current` in the loaders need these; without them den-core only
 # builds when something else in the graph turns them on.

@@ -25,6 +25,7 @@ reqwest = { workspace = true, features = [
     "cookies",
     "brotli",
 ] }
+rustls.workspace = true
 den-stdlib-whatwg.workspace = true
 typed-builder.workspace = true
 
