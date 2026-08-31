@@ -765,6 +765,7 @@ ring = ["den-core/ring"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
+package-store = ["den-core/package-store"]
 
 tokio-console = ["dep:console-subscriber"]
 

@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 den-capabilities = { workspace = true, features = ["rquickjs"] }
+den-package-store = { workspace = true, optional = true }
 derive_more.workspace = true
 dunce.workspace = true
 import_map.workspace = true
@@ -61,6 +62,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time
 
 [features]
 default = ["stdlib", "typescript", "react", "wasm", "jit", "ring"]
+package-store = ["dep:den-package-store"]
 ring = [
     "rustls/ring",
     "den-stdlib-http?/ring",

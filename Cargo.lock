@@ -1486,6 +1486,7 @@ version = "0.4.0"
 dependencies = [
  "color-eyre",
  "den-capabilities",
+ "den-package-store",
  "den-stdlib-assert",
  "den-stdlib-console",
  "den-stdlib-core",
