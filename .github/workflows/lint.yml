@@ -72,4 +72,4 @@ jobs:
           tool: cargo-nextest@0.9.143
       # compat excludes official vendor binaries (spec_core / wpt / test262).
       # Those report official pass/fail in their own workflows.
-      - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,package-store,ring,${{ matrix.extra }}
+      - run: cargo nextest run --profile compat --workspace --build-jobs 2 --no-default-features --features stdlib,typescript,react,package-store,ring,${{ matrix.extra }}
