@@ -812,5 +812,6 @@ lto = "fat"
 workspace = true
 
 [patch.crates-io]
-# QuickJS may pass four-byte-aligned JSValue arrays on i686 MSVC; read them unaligned.
-rquickjs-core = { path = "vendor/rquickjs-core" }
+# QuickJS may pass four-byte-aligned JSValue arrays on i686 MSVC; use the
+# maintained branch with unaligned argument reads.
+rquickjs-core = { git = "https://github.com/stevefan1999-personal/rquickjs", branch = "patch-i686-msvc-unaligned-bug" }
