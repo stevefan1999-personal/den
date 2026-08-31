@@ -183,3 +183,7 @@ pub fn release(release: &NewRelease) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/validation.rs"]
+mod tests;

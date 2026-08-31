@@ -249,3 +249,7 @@ pub struct SolveResult {
     pub roots:        Vec<ResolvedRootEdge>,
     pub dependencies: Vec<ResolvedDependencyEdge>,
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/model.rs"]
+mod tests;
