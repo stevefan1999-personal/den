@@ -20,10 +20,11 @@ use den_core::engine::Engine;
 use libtest_mimic::{Arguments, Failed, Trial};
 
 fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("crate lives in the workspace")
-        .to_path_buf()
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(root) = manifest.parent() else {
+        panic!("crate lives in the workspace");
+    };
+    root.to_path_buf()
 }
 
 fn test262_root() -> PathBuf { workspace_root().join("vendor/test262") }
@@ -40,11 +41,15 @@ fn parse_frontmatter(source: &str) -> Frontmatter {
     let Some(start) = source.find("/*---") else {
         return Frontmatter::default();
     };
-    let rest = &source[start + 5..];
+    let Some(rest) = source.get(start + 5..) else {
+        return Frontmatter::default();
+    };
     let Some(end) = rest.find("---*/") else {
         return Frontmatter::default();
     };
-    let block = &rest[..end];
+    let Some(block) = rest.get(..end) else {
+        return Frontmatter::default();
+    };
     Frontmatter {
         features: yaml_list(block, "features"),
         includes: yaml_list(block, "includes"),
@@ -58,10 +63,15 @@ fn yaml_list(block: &str, key: &str) -> Vec<String> {
     let Some(line_start) = block.find(&header) else {
         return Vec::new();
     };
-    let after = block[line_start + header.len()..].trim_start();
+    let after = block
+        .get(line_start + header.len()..)
+        .unwrap_or_default()
+        .trim_start();
     if let Some(rest) = after.strip_prefix('[') {
         let end = rest.find(']').unwrap_or(rest.len());
-        return rest[..end]
+        return rest
+            .get(..end)
+            .unwrap_or_default()
             .split(',')
             .map(|item| item.trim().trim_matches(',').to_string())
             .filter(|item| !item.is_empty())
@@ -122,7 +132,7 @@ fn collect_js_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return files;
     };
-    let mut entries: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
+    let mut entries: Vec<_> = entries.filter_map(std::result::Result::ok).collect();
     entries.sort_by_key(fs::DirEntry::path);
     for entry in entries {
         let path = entry.path();
@@ -143,7 +153,7 @@ fn relative_to(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn host_prelude() -> &'static str {
+const fn host_prelude() -> &'static str {
     r#"
       globalThis.print = function print() {};
       globalThis.$262 = {
@@ -168,7 +178,7 @@ fn load_harness(root: &Path) -> Result<(String, Vec<(String, String)>), Failed> 
     }
     let extras = fs::read_dir(&harness)
         .map_err(|error| format!("test262 harness: {error}"))?
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("js") {
@@ -214,7 +224,7 @@ fn run_one(
     Ok(())
 }
 
-fn harness_classify() -> Result<(), Failed> {
+fn assert_harness_classification() -> Frontmatter {
     assert!(
         test262_root().ends_with("vendor/test262"),
         "test262 root is the vendored submodule"
@@ -247,12 +257,21 @@ fn harness_classify() -> Result<(), Failed> {
         collect_js_files(Path::new("/den-test262-no-such-dir")).is_empty(),
         "missing tree walks to empty"
     );
+    ok
+}
+
+fn assert_empty_harness(core: &str, extras: &[(String, String)], ok: &Frontmatter) {
+    assert!(
+        run_one(core, extras, Path::new("harness::empty"), "", ok).is_ok(),
+        "empty official body still installs den:temporal"
+    );
+}
+
+fn harness_classify() -> Result<(), Failed> {
+    let ok = assert_harness_classification();
     if test262_root().join("harness").is_dir() {
         let (core, extras) = load_harness(&test262_root())?;
-        assert!(
-            run_one(&core, &extras, Path::new("harness::empty"), "", &ok).is_ok(),
-            "empty official body still installs den:temporal"
-        );
+        assert_empty_harness(&core, &extras, &ok);
     }
     Ok(())
 }

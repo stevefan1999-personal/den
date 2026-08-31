@@ -3,11 +3,11 @@
 //! Slot-bearing Temporal objects are probed without leaving a `TypeError`
 //! pending when the value is simply the wrong class.
 
-use std::{cmp::Ordering, str::FromStr};
+use std::{cmp::Ordering, str::FromStr as _};
 
 use den_util::Probe as _;
 use rquickjs::{
-    BigInt, Class, Coerced, Ctx, Exception, FromJs, Function, Object, Result, Value,
+    BigInt, Class, Coerced, Ctx, Exception, FromJs as _, Function, Object, Result, Value,
     atom::PredefinedAtom, class::JsClass, function::This, prelude::Opt,
 };
 use temporal_rs::{
@@ -24,7 +24,7 @@ use crate::{
     zoned_date_time::ZonedDateTime,
 };
 
-pub fn throw_temporal<'js>(ctx: &Ctx<'js>, error: temporal_rs::TemporalError) -> rquickjs::Error {
+pub fn throw_temporal(ctx: &Ctx<'_>, error: temporal_rs::TemporalError) -> rquickjs::Error {
     let message = error.to_string();
     match error.kind() {
         temporal_rs::error::ErrorKind::Type => Exception::throw_type(ctx, &message),
@@ -34,17 +34,15 @@ pub fn throw_temporal<'js>(ctx: &Ctx<'js>, error: temporal_rs::TemporalError) ->
     }
 }
 
-pub fn unwrap_temporal<'js, T>(
-    ctx: &Ctx<'js>, result: temporal_rs::TemporalResult<T>,
-) -> Result<T> {
+pub fn unwrap_temporal<T>(ctx: &Ctx<'_>, result: temporal_rs::TemporalResult<T>) -> Result<T> {
     result.map_err(|error| throw_temporal(ctx, error))
 }
 
-pub fn throw_value_of<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Error {
+pub fn throw_value_of(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
     Exception::throw_type(ctx, &format!("cannot convert {name} to a primitive value"))
 }
 
-pub fn ordering_i32(ordering: Ordering) -> i32 {
+pub const fn ordering_i32(ordering: Ordering) -> i32 {
     match ordering {
         Ordering::Less => -1,
         Ordering::Equal => 0,
@@ -111,7 +109,7 @@ pub fn reject_calendar_or_time_zone<'js>(
 
 /// ISO month codes are `M` + two digits + optional `L`. Syntax is checked
 /// when the field is read; calendar suitability happens later in `from`.
-pub fn reject_illformed_month_code<'js>(ctx: &Ctx<'js>, code: &str) -> Result<()> {
+pub fn reject_illformed_month_code(ctx: &Ctx<'_>, code: &str) -> Result<()> {
     let bytes = code.as_bytes();
     let well_formed = matches!(
         bytes,
@@ -151,14 +149,14 @@ pub fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
     if let Some(string) = value.as_string() {
         return string.to_string();
     }
-    if let Some(object) = value.as_object() {
-        if let Ok(func) = object.get::<_, Function>("toString") {
-            let result: Value = func.call((This(object.clone()),))?;
-            if let Some(string) = result.as_string() {
-                return string.to_string();
-            }
-            return js_to_string(ctx, &result);
+    if let Some(object) = value.as_object()
+        && let Ok(func) = object.get::<_, Function>("toString")
+    {
+        let result: Value = func.call((This(object.clone()),))?;
+        if let Some(string) = result.as_string() {
+            return string.to_string();
         }
+        return js_to_string(ctx, &result);
     }
     js_to_string(ctx, value)
 }
@@ -179,7 +177,7 @@ pub fn to_integer_if_integral<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
     if !number.is_finite() {
         return Err(Exception::throw_range(ctx, "integer is not finite"));
     }
-    if number.trunc() != number {
+    if number.trunc().to_bits() != number.to_bits() {
         return Err(Exception::throw_range(ctx, "expected an integer"));
     }
     Ok(number as i128)
@@ -187,7 +185,7 @@ pub fn to_integer_if_integral<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result
 
 pub fn to_integer_if_integral_i64<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i64> {
     let integer = to_integer_if_integral(ctx, value)?;
-    i64::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+    i64::try_from(integer).map_err(|_error| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 /// `ToIntegerWithTruncation`: finite, then truncate toward zero.
@@ -219,17 +217,17 @@ pub fn ctor_integer_if_integral_i128<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>
 /// `"integer is out of range"` for every out-of-range input.
 pub fn truncated_i32<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<i32> {
     let integer = to_integer_with_truncation(ctx, value)?;
-    i32::try_from(integer).map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+    i32::try_from(integer).map_err(|_error| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 pub fn truncated_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
     u8::try_from(truncated_i32(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+        .map_err(|_error| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 pub fn truncated_u16<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u16> {
     u16::try_from(truncated_i32(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "integer is out of range"))
+        .map_err(|_error| Exception::throw_range(ctx, "integer is out of range"))
 }
 
 /// Constructor arguments: an absent argument is `undefined`, which truncation
@@ -265,56 +263,44 @@ pub fn truncated_u16_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Res
 pub fn optional_integral_i64<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i64>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral_i64(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| {
+        to_integer_if_integral_i64(ctx, &value).map(Some)
+    })
 }
 
 pub fn optional_integral_i128<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i128>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_if_integral(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| {
+        to_integer_if_integral(ctx, &value).map(Some)
+    })
 }
 
 /// `ToIntegerWithTruncation` on a defined property; absent stays `None`.
 pub fn optional_truncated_i32<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i32>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => truncated_i32(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| truncated_i32(ctx, &value).map(Some))
 }
 
 pub fn optional_truncated_i128<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<i128>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => to_integer_with_truncation(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| {
+        to_integer_with_truncation(ctx, &value).map(Some)
+    })
 }
 
 pub fn optional_truncated_u8<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<u8>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => truncated_u8(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| truncated_u8(ctx, &value).map(Some))
 }
 
 pub fn optional_truncated_u16<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
 ) -> Result<Option<u16>> {
-    match get_defined(object, key)? {
-        None => Ok(None),
-        Some(value) => truncated_u16(ctx, &value).map(Some),
-    }
+    get_defined(object, key)?.map_or(Ok(None), |value| truncated_u16(ctx, &value).map(Some))
 }
 
 /// `ToBigInt`, then an `i128`. Instant epoch nanoseconds sit well outside
@@ -342,17 +328,17 @@ pub fn bigint_to_i128<'js>(ctx: &Ctx<'js>, big_int: BigInt<'js>) -> Result<i128>
     let digits: String = Coerced::<String>::from_js(ctx, big_int.into_value())?.0;
     digits
         .parse::<i128>()
-        .map_err(|_| Exception::throw_range(ctx, "BigInt is out of range"))
+        .map_err(|_error| Exception::throw_range(ctx, "BigInt is out of range"))
 }
 
-pub fn i128_to_bigint<'js>(ctx: Ctx<'js>, value: i128) -> Result<BigInt<'js>> {
+pub fn i128_to_bigint(ctx: Ctx<'_>, value: i128) -> Result<BigInt<'_>> {
     let ctor: Function = ctx.globals().get("BigInt")?;
     ctor.call((value.to_string(),))
 }
 
 pub fn to_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
     let name = js_to_string(ctx, value)?;
-    Unit::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid Temporal unit"))
+    Unit::from_str(&name).map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 /// `GetStringOrNumberOption` for `fractionalSecondDigits`: a Number is
@@ -422,12 +408,12 @@ pub fn to_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> 
     if let Some(calendar) = calendar_slot(ctx, value) {
         return Ok(calendar);
     }
-    if let Some(object) = value.as_object() {
-        if let Ok(identifier) = object.get::<_, Value>("calendarId") {
-            if !identifier.is_undefined() && !identifier.is_null() {
-                return to_calendar(ctx, &identifier);
-            }
-        }
+    if let Some(object) = value.as_object()
+        && let Ok(identifier) = object.get::<_, Value>("calendarId")
+        && !identifier.is_undefined()
+        && !identifier.is_null()
+    {
+        return to_calendar(ctx, &identifier);
     }
     Err(Exception::throw_type(
         ctx,
@@ -443,12 +429,11 @@ pub fn to_time_zone<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZone>
     if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
         return Ok(*zoned.inner.time_zone());
     }
-    if let Some(object) = value.as_object() {
-        if let Ok(identifier) = object.get::<_, Value>("timeZoneId") {
-            if identifier.is_string() {
-                return to_time_zone(ctx, &identifier);
-            }
-        }
+    if let Some(object) = value.as_object()
+        && let Ok(identifier) = object.get::<_, Value>("timeZoneId")
+        && identifier.is_string()
+    {
+        return to_time_zone(ctx, &identifier);
     }
     Err(Exception::throw_type(
         ctx,
@@ -548,10 +533,7 @@ fn partial_time_from_object<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result
 }
 
 fn object_calendar<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calendar> {
-    match get_defined(object, "calendar")? {
-        None => Ok(Calendar::ISO),
-        Some(value) => to_calendar(ctx, &value),
-    }
+    get_defined(object, "calendar")?.map_or(Ok(Calendar::ISO), |value| to_calendar(ctx, &value))
 }
 
 fn object_utc_offset<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<UtcOffset>> {

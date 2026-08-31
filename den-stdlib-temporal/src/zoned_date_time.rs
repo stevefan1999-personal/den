@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use rquickjs::{
     Class, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
@@ -41,7 +41,7 @@ pub struct ZonedDateTime {
 }
 
 impl ZonedDateTime {
-    pub(crate) fn wrap(inner: temporal_rs::ZonedDateTime) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::ZonedDateTime) -> Self { Self { inner } }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -323,7 +323,7 @@ impl ZonedDateTime {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.ZonedDateTime" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.ZonedDateTime" }
 }
 
 fn time_zone_identifier<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZone> {
@@ -349,10 +349,7 @@ fn calendar_identifier<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
-    match calendar_slot(ctx, value) {
-        Some(calendar) => Ok(calendar),
-        None => to_calendar(ctx, value),
-    }
+    calendar_slot(ctx, value).map_or_else(|| to_calendar(ctx, value), Ok)
 }
 
 fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -379,24 +376,24 @@ fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
 
 fn overflow_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
     Overflow::from_str(&to_option_string(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "invalid overflow option"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
 fn unit_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
     temporal_rs::options::Unit::from_str(&to_option_string(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "invalid Temporal unit"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn rounding_mode_from_value<'js>(
     ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::options::RoundingMode> {
     temporal_rs::options::RoundingMode::from_str(&to_option_string(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "invalid roundingMode"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
 
 fn display_calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<DisplayCalendar> {
     DisplayCalendar::from_str(&to_option_string(ctx, value)?)
-        .map_err(|_| Exception::throw_range(ctx, "invalid calendarName option"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid calendarName option"))
 }
 
 fn require_string_field<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -493,8 +490,8 @@ fn zoned_fields_from_object<'js>(
     Ok((fields, month_code))
 }
 
-fn apply_zoned_month_code<'js>(
-    ctx: &Ctx<'js>, mut fields: ZonedDateTimeFields, month_code: Option<String>,
+fn apply_zoned_month_code(
+    ctx: &Ctx<'_>, mut fields: ZonedDateTimeFields, month_code: Option<String>,
 ) -> Result<ZonedDateTimeFields> {
     if let Some(code) = month_code {
         let month_code = unwrap_temporal(ctx, MonthCode::try_from_utf8(code.as_bytes()))?;
@@ -528,7 +525,7 @@ fn zoned_options<'js>(
             let name = to_option_string(ctx, &value)?;
             Some(
                 Disambiguation::from_str(&name)
-                    .map_err(|_| Exception::throw_range(ctx, "invalid disambiguation"))?,
+                    .map_err(|_error| Exception::throw_range(ctx, "invalid disambiguation"))?,
             )
         }
     };
@@ -538,7 +535,7 @@ fn zoned_options<'js>(
             let name = to_option_string(ctx, &value)?;
             Some(
                 OffsetDisambiguation::from_str(&name)
-                    .map_err(|_| Exception::throw_range(ctx, "invalid offset option"))?,
+                    .map_err(|_error| Exception::throw_range(ctx, "invalid offset option"))?,
             )
         }
     };
@@ -614,10 +611,8 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    match get_defined(&object, "overflow")? {
-        None => Ok(None),
-        Some(value) => overflow_from_value(ctx, &value).map(Some),
-    }
+    get_defined(&object, "overflow")?
+        .map_or(Ok(None), |value| overflow_from_value(ctx, &value).map(Some))
 }
 
 fn difference_settings<'js>(
@@ -684,7 +679,7 @@ fn direction_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Transitio
         }
     };
     TransitionDirection::from_str(&direction)
-        .map_err(|_| Exception::throw_range(ctx, "invalid direction"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid direction"))
 }
 
 fn plain_time_from_value<'js>(
@@ -762,7 +757,7 @@ fn to_string_options<'js>(
         Some(value) => {
             let name = to_option_string(ctx, &value)?;
             DisplayOffset::from_str(&name)
-                .map_err(|_| Exception::throw_range(ctx, "invalid offset option"))?
+                .map_err(|_error| Exception::throw_range(ctx, "invalid offset option"))?
         }
     };
     let rounding_mode = match get_defined(&object, "roundingMode")? {
@@ -778,7 +773,7 @@ fn to_string_options<'js>(
         Some(value) => {
             let name = to_option_string(ctx, &value)?;
             DisplayTimeZone::from_str(&name)
-                .map_err(|_| Exception::throw_range(ctx, "invalid timeZoneName option"))?
+                .map_err(|_error| Exception::throw_range(ctx, "invalid timeZoneName option"))?
         }
     };
     Ok((

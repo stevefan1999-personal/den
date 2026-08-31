@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use rquickjs::{
     Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
@@ -33,7 +33,7 @@ pub struct PlainTime {
 }
 
 impl PlainTime {
-    pub(crate) fn wrap(inner: temporal_rs::PlainTime) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::PlainTime) -> Self { Self { inner } }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -83,22 +83,22 @@ impl PlainTime {
     }
 
     #[qjs(get)]
-    pub fn hour(&self) -> u8 { self.inner.hour() }
+    pub const fn hour(&self) -> u8 { self.inner.hour() }
 
     #[qjs(get)]
-    pub fn minute(&self) -> u8 { self.inner.minute() }
+    pub const fn minute(&self) -> u8 { self.inner.minute() }
 
     #[qjs(get)]
-    pub fn second(&self) -> u8 { self.inner.second() }
+    pub const fn second(&self) -> u8 { self.inner.second() }
 
     #[qjs(get)]
-    pub fn millisecond(&self) -> u16 { self.inner.millisecond() }
+    pub const fn millisecond(&self) -> u16 { self.inner.millisecond() }
 
     #[qjs(get)]
-    pub fn microsecond(&self) -> u16 { self.inner.microsecond() }
+    pub const fn microsecond(&self) -> u16 { self.inner.microsecond() }
 
     #[qjs(get)]
-    pub fn nanosecond(&self) -> u16 { self.inner.nanosecond() }
+    pub const fn nanosecond(&self) -> u16 { self.inner.nanosecond() }
 
     pub fn add<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
         let duration = to_duration(&ctx, &duration_like)?;
@@ -183,7 +183,7 @@ impl PlainTime {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.PlainTime" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.PlainTime" }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -238,10 +238,9 @@ fn overflow_from_object<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> R
     let Some(options) = options else {
         return Ok(Overflow::Constrain);
     };
-    match get_defined(options, "overflow")? {
-        None => Ok(Overflow::Constrain),
-        Some(value) => option_overflow(ctx, &value),
-    }
+    get_defined(options, "overflow")?.map_or(Ok(Overflow::Constrain), |value| {
+        option_overflow(ctx, &value)
+    })
 }
 
 /// `ToTemporalTimeRecord`: Get time units in alphabetical order.
@@ -300,7 +299,8 @@ fn regulate_field(ctx: &Ctx<'_>, value: i128, max: i128, overflow: Overflow) -> 
             return Err(Exception::throw_range(ctx, "time value out of range"));
         }
     };
-    u16::try_from(regulated).map_err(|_| Exception::throw_range(ctx, "time value out of range"))
+    u16::try_from(regulated)
+        .map_err(|_error| Exception::throw_range(ctx, "time value out of range"))
 }
 
 fn partial_from_record(
@@ -426,17 +426,19 @@ fn string_rounding_options<'js>(
 
 fn option_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
     let name = to_option_string(ctx, value)?;
-    Unit::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid Temporal unit"))
+    Unit::from_str(&name).map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn option_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
     let name = to_option_string(ctx, value)?;
-    RoundingMode::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid roundingMode"))
+    RoundingMode::from_str(&name)
+        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
 
 fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
     let name = to_option_string(ctx, value)?;
-    Overflow::from_str(&name).map_err(|_| Exception::throw_range(ctx, "invalid overflow option"))
+    Overflow::from_str(&name)
+        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
 fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -449,10 +451,10 @@ fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
     if let Some(string) = value.as_string() {
         return string.to_string();
     }
-    if let Some(object) = value.as_object() {
-        if let Some(primitive) = ordinary_to_primitive_string(object)? {
-            return primitive_to_string(ctx, &primitive);
-        }
+    if let Some(object) = value.as_object()
+        && let Some(primitive) = ordinary_to_primitive_string(object)?
+    {
+        return primitive_to_string(ctx, &primitive);
     }
     js_to_string(ctx, value)
 }

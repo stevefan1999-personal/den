@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs, Function, JsLifetime, Object, Result, Value,
+    Coerced, Ctx, Exception, FromJs as _, Function, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     prelude::{Opt, This},
@@ -38,7 +38,7 @@ pub struct PlainDate {
 }
 
 impl PlainDate {
-    pub(crate) fn wrap(inner: temporal_rs::PlainDate) -> Self { Self { inner } }
+    pub(crate) const fn wrap(inner: temporal_rs::PlainDate) -> Self { Self { inner } }
 }
 
 fn option_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
@@ -81,17 +81,16 @@ fn option_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
 
 fn option_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, what: &str) -> Result<T> {
     let name = option_to_string(ctx, value)?;
-    T::from_str(&name).map_err(|_| Exception::throw_range(ctx, &format!("invalid {what}")))
+    T::from_str(&name).map_err(|_error| Exception::throw_range(ctx, &format!("invalid {what}")))
 }
 
 fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
     let Some(object) = options_object(ctx, options)? else {
         return Ok(None);
     };
-    match get_defined(&object, "overflow")? {
-        None => Ok(None),
-        Some(value) => option_enum(ctx, &value, "overflow option").map(Some),
-    }
+    get_defined(&object, "overflow")?.map_or(Ok(None), |value| {
+        option_enum(ctx, &value, "overflow option").map(Some)
+    })
 }
 
 fn difference_settings<'js>(
@@ -132,14 +131,13 @@ fn calendar_annotation(identifier: &str) -> Option<&str> {
     let start = lower.find("[u-ca=")?;
     let rest = identifier.get(start + 6..)?;
     let end = rest.find(']')?;
-    Some(&rest[..end])
+    rest.get(..end)
 }
 
 fn looks_like_iso_temporal(identifier: &str) -> bool {
     let head = identifier
         .split_once('[')
-        .map(|(head, _)| head)
-        .unwrap_or(identifier);
+        .map_or(identifier, |(head, _)| head);
     if head.is_empty() || !head.bytes().any(|byte| byte.is_ascii_digit()) {
         return false;
     }
@@ -152,16 +150,16 @@ fn looks_like_iso_temporal(identifier: &str) -> bool {
     })
 }
 
-fn parse_calendar_identifier_only<'js>(ctx: &Ctx<'js>, identifier: &str) -> Result<Calendar> {
+fn parse_calendar_identifier_only(ctx: &Ctx<'_>, identifier: &str) -> Result<Calendar> {
     if identifier.is_empty() || identifier.contains('[') || looks_like_iso_temporal(identifier) {
         return Err(Exception::throw_range(ctx, "invalid calendar identifier"));
     }
     Calendar::from_str(&identifier.to_ascii_lowercase())
         .or_else(|_| Calendar::from_str(identifier))
-        .map_err(|_| Exception::throw_range(ctx, "invalid calendar identifier"))
+        .map_err(|_error| Exception::throw_range(ctx, "invalid calendar identifier"))
 }
 
-fn parse_calendar_id<'js>(ctx: &Ctx<'js>, identifier: &str) -> Result<Calendar> {
+fn parse_calendar_id(ctx: &Ctx<'_>, identifier: &str) -> Result<Calendar> {
     if identifier.is_empty() {
         return Err(Exception::throw_range(ctx, "invalid calendar identifier"));
     }
@@ -258,28 +256,26 @@ fn month_code_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> 
 }
 
 fn optional_month_code<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<String>> {
-    match get_defined(object, "monthCode")? {
-        None => Ok(None),
-        Some(value) => month_code_string(ctx, &value).map(Some),
-    }
+    get_defined(object, "monthCode")?
+        .map_or(Ok(None), |value| month_code_string(ctx, &value).map(Some))
 }
 
-fn u8_date_unit<'js>(ctx: &Ctx<'js>, value: i128, overflow: Overflow) -> Result<u8> {
+fn u8_date_unit(ctx: &Ctx<'_>, value: i128, overflow: Overflow) -> Result<u8> {
     if value < 1 {
         return Err(Exception::throw_range(
             ctx,
             "month and day must be positive",
         ));
     }
-    match u8::try_from(value) {
-        Ok(value) => Ok(value),
-        Err(_) => {
+    u8::try_from(value).map_or_else(
+        |_error| {
             match overflow {
                 Overflow::Constrain => Ok(u8::MAX),
                 Overflow::Reject => Err(Exception::throw_range(ctx, "date unit is out of range")),
             }
-        }
-    }
+        },
+        Ok,
+    )
 }
 
 struct DateBag {
@@ -291,14 +287,14 @@ struct DateBag {
 }
 
 impl DateBag {
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.year.is_none()
             && self.month.is_none()
             && self.month_code.is_none()
             && self.day.is_none()
     }
 
-    fn calendar_fields<'js>(&self, ctx: &Ctx<'js>, overflow: Overflow) -> Result<CalendarFields> {
+    fn calendar_fields(&self, ctx: &Ctx<'_>, overflow: Overflow) -> Result<CalendarFields> {
         let mut fields = CalendarFields::new();
         if let Some(year) = self.year {
             fields = fields.with_year(year);
@@ -356,8 +352,8 @@ fn is_temporal_date_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
     calendar_slot(ctx, value).is_some() || probe_class::<PlainTime>(ctx, value).is_some()
 }
 
-fn date_from_partial<'js>(
-    ctx: &Ctx<'js>, bag: DateBag, overflow: Overflow,
+fn date_from_partial(
+    ctx: &Ctx<'_>, bag: DateBag, overflow: Overflow,
 ) -> Result<temporal_rs::PlainDate> {
     let partial = PartialDate {
         calendar_fields: bag.calendar_fields(ctx, overflow)?,
@@ -683,5 +679,5 @@ impl PlainDate {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Temporal.PlainDate" }
+    pub const fn to_string_tag() -> &'static str { "Temporal.PlainDate" }
 }
