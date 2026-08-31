@@ -2,13 +2,14 @@
 
 use indexmap::indexmap;
 use rquickjs::{
-    Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
+    Coerced, Ctx, Exception, FromJs, IntoJs as _, JsLifetime, Object, Result, Value, class::Trace,
+    prelude::Opt,
 };
 use wasmtime::{Ref, Table as WasmTable, TableType, ValType};
 
 use crate::{
     backend,
-    memory::{DescriptorObject, ValueTypeName},
+    memory::{DescriptorObject as _, ValueTypeName},
     store::Store,
     utils::{EnforceRange, WasmValue},
 };
@@ -16,6 +17,10 @@ use crate::{
 /// A `TableDescriptor`. `element` is kept as written so that the `TypeError`
 /// for an unknown element type is raised where the spec raises it — when the
 /// table is created.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "WebAssembly names this dictionary TableDescriptor"
+)]
 #[derive(Clone, Debug)]
 pub struct TableDescriptor {
     initial: u32,
@@ -26,12 +31,15 @@ pub struct TableDescriptor {
 impl<'js> FromJs<'js> for TableDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the table descriptor")?;
+        let element = object.required::<Coerced<String>>(ctx, "element")?.0;
+        let initial = object.initial_or_minimum(ctx)?;
+        let maximum = object
+            .get::<_, Option<EnforceRange>>("maximum")?
+            .map(|maximum| maximum.0);
         Ok(Self {
-            initial: object.initial_or_minimum(ctx)?,
-            maximum: object
-                .get::<_, Option<EnforceRange>>("maximum")?
-                .map(|maximum| maximum.0),
-            element: object.required(ctx, "element")?,
+            initial,
+            maximum,
+            element,
         })
     }
 }
@@ -40,6 +48,16 @@ impl TableDescriptor {
     /// `ToValueType(descriptor["element"])`.
     fn element_type(&self, ctx: &Ctx<'_>) -> Result<ValType> {
         ValueTypeName::table(ctx, &self.element)
+    }
+
+    fn validate(&self, ctx: &Ctx<'_>) -> Result<()> {
+        if self.maximum.is_some_and(|maximum| self.initial > maximum) {
+            return Err(Exception::throw_range(
+                ctx,
+                "table minimum exceeds its maximum",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -80,6 +98,7 @@ impl Table {
         descriptor: TableDescriptor, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let element = descriptor.element_type(&ctx)?;
+        descriptor.validate(&ctx)?;
         let initial = Self::element(&ctx, value.0.as_ref(), &element)?;
         let ValType::Ref(element) = element else {
             return Err(Exception::throw_type(
@@ -116,16 +135,9 @@ impl Table {
         })?;
         // The dictionary is built outside the borrow: a `set` walks the prototype
         // chain, so a setter planted on `Object.prototype` would run JS here.
-        // js-types `TableKind` is `"funcref"` / `"externref"`. `"anyfunc"` is
-        // only a constructor alias and must not come back out of `type()`.
-        let element = match &element {
-            ValType::Ref(reference) if reference.matches(&wasmtime::RefType::FUNCREF) => "funcref",
-            _ => {
-                ValueTypeName::get(&element).ok_or_else(|| {
-                    Exception::throw_type(&ctx, "this table's element type has no JS name")
-                })?
-            }
-        };
+        let element = ValueTypeName::get(&element).ok_or_else(|| {
+            Exception::throw_type(&ctx, "this table's element type has no JS name")
+        })?;
         let mut ty = indexmap! {
             "element" => element.into_js(&ctx)?,
             "minimum" => minimum.into_js(&ctx)?,
@@ -157,11 +169,18 @@ impl Table {
         // *before* the write bounds-checks (step 7), so a bad value is a `TypeError`
         // even when the index is out of range.
         let ty = store.with_mut(&ctx, |store| Ok(self.element_type(store)))?;
-        let element = Self::element(&ctx, value.0.as_ref(), &ty)?;
+        let value = match value.0 {
+            Some(value) => Some(value),
+            None if matches!(&ty, ValType::Ref(reference) if reference.matches(&wasmtime::RefType::EXTERNREF)) => {
+                Some(Value::new_undefined(ctx.clone()))
+            }
+            None => None,
+        };
+        let element = Self::element(&ctx, value.as_ref(), &ty)?;
         store.with_mut(&ctx, |store| {
             self.inner
                 .set(&mut *store, index.size(), element)
-                .map_err(|_| {
+                .map_err(|_error| {
                     Exception::throw_range(
                         &ctx,
                         &format!("table index {} is out of range", index.0),

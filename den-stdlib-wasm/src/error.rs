@@ -77,16 +77,18 @@ impl WebAssemblyErrorKind {
 
     /// Throw this error with `message` as its message, always returning the
     /// `Err` payload the caller should propagate.
-    pub fn throw(self, ctx: &Ctx<'_>, message: impl Display) -> rquickjs::Error {
+    pub fn throw<M: Display>(self, ctx: &Ctx<'_>, message: M) -> rquickjs::Error {
         let message = message.to_string();
-        match WebAssemblyErrors::constructor(ctx, self)
+        WebAssemblyErrors::constructor(ctx, self)
             .and_then(|constructor| constructor.construct::<_, Value>((message.as_str(),)))
-        {
-            Ok(error) => ctx.throw(error),
-            // The classes are installed by `js_wasm`'s evaluate hook, so this is only reachable if
-            // JS deleted them again; a plain `Error` is a better outcome than a panic.
-            Err(_) => Exception::throw_message(ctx, &format!("{}: {message}", self.name())),
-        }
+            .map_or_else(
+                |_error| {
+                    // The classes are installed by `js_wasm`'s evaluate hook, so this is only
+                    // reachable if JS deleted them again; a plain `Error` beats a panic.
+                    den_util::stack::throw_error(ctx, &format!("{}: {message}", self.name()))
+                },
+                |error| ctx.throw(error),
+            )
     }
 }
 
@@ -133,17 +135,17 @@ impl<'js> WebAssemblyErrors<'js> {
 }
 
 /// Throw `WebAssembly.CompileError(message)`.
-pub fn throw_compile_error(ctx: &Ctx<'_>, message: impl Display) -> rquickjs::Error {
+pub fn throw_compile<M: Display>(ctx: &Ctx<'_>, message: M) -> rquickjs::Error {
     WebAssemblyErrorKind::Compile.throw(ctx, message)
 }
 
 /// Throw `WebAssembly.LinkError(message)`.
-pub fn throw_link_error(ctx: &Ctx<'_>, message: impl Display) -> rquickjs::Error {
+pub fn throw_link<M: Display>(ctx: &Ctx<'_>, message: M) -> rquickjs::Error {
     WebAssemblyErrorKind::Link.throw(ctx, message)
 }
 
 /// Throw `WebAssembly.RuntimeError(message)`.
-pub fn throw_runtime_error(ctx: &Ctx<'_>, message: impl Display) -> rquickjs::Error {
+pub fn throw_runtime<M: Display>(ctx: &Ctx<'_>, message: M) -> rquickjs::Error {
     WebAssemblyErrorKind::Runtime.throw(ctx, message)
 }
 

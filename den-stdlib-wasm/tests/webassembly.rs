@@ -97,9 +97,7 @@ async fn wasi_imports_is_absent_without_the_feature() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn module_and_instance_are_real_constructors() -> eyre::Result<()> {
-    run("constructors.js").await
-}
+async fn interfaces_are_real_constructors() -> eyre::Result<()> { run("constructors.js").await }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compile_rejects_garbage_with_a_compile_error() -> eyre::Result<()> {

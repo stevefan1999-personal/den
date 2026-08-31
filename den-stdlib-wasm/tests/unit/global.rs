@@ -60,13 +60,13 @@ fn an_i64_global_reads_and_writes_as_a_bigint() {
         assert_eq!(rendered(ctx, &global), "bigint:9223372036854775807");
 
         global
-            .set_value(js(ctx, "-1n"), ctx.clone())
+            .set_value(Opt(Some(js(ctx, "-1n"))), ctx.clone())
             .expect("mutable");
         assert_eq!(rendered(ctx, &global), "bigint:-1");
 
         // A Number is not a BigInt, and `ToWebAssemblyValue` says so.
         let _ = global
-            .set_value(js(ctx, "1"), ctx.clone())
+            .set_value(Opt(Some(js(ctx, "1"))), ctx.clone())
             .expect_err("Number is not an i64");
         assert_eq!(pending_error_name(ctx), "TypeError");
     })
@@ -77,7 +77,7 @@ fn writing_an_immutable_global_is_a_type_error() {
     with_wasm_context(|ctx| {
         let global = global(ctx, "({ value: 'i32' })", Some("7")).expect("immutable global");
         let _ = global
-            .set_value(js(ctx, "8"), ctx.clone())
+            .set_value(Opt(Some(js(ctx, "8"))), ctx.clone())
             .expect_err("immutable");
         assert_eq!(pending_error_name(ctx), "TypeError");
         assert_eq!(rendered(ctx, &global), "number:7");
@@ -143,7 +143,10 @@ fn an_externref_global_hands_back_the_very_js_value_it_was_given() {
         );
 
         global
-            .set_value(js(ctx, "globalThis.second = ['second']"), ctx.clone())
+            .set_value(
+                Opt(Some(js(ctx, "globalThis.second = ['second']"))),
+                ctx.clone(),
+            )
             .expect("mutable");
         ctx.globals()
             .set("read", global.get_value(ctx.clone()).expect("readable"))

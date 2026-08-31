@@ -2,15 +2,15 @@
 
 use std::{cell::RefCell, ptr::NonNull, rc::Rc};
 
-#[cfg(feature = "wasi")] use den_util::Probe;
+#[cfg(feature = "wasi")] use den_util::Probe as _;
 #[cfg(feature = "wasi")]
 use rquickjs::{Class, Object, Value, class::Trace};
 use rquickjs::{Ctx, Exception, JsLifetime, Result};
-use wasmtime::{AsContext, AsContextMut, Func, StoreContext, Val};
+use wasmtime::{AsContext as _, AsContextMut as _, Func, StoreContext, Val};
 
 #[cfg(feature = "wasi")]
-use crate::error::throw_link_error;
-use crate::{backend, error::throw_runtime_error};
+use crate::error::throw_link;
+use crate::{backend, error::throw_runtime};
 
 /// Handle to the one wasmtime [`backend::Store`] a JS context owns.
 ///
@@ -57,17 +57,18 @@ impl Store {
     /// ponytail: creating a Memory / Table / Global / Tag still needs
     /// [`Self::with_mut`] and is refused from a host callback. Calling another
     /// export goes through [`Self::invoke`], which uses the parked `Caller`.
-    pub fn with_mut<R>(
-        &self, ctx: &Ctx<'_>, f: impl FnOnce(&mut backend::Store) -> Result<R>,
-    ) -> Result<R> {
-        match self.inner.try_borrow_mut() {
-            Ok(mut store) => f(&mut store),
-            Err(_) => Err(Self::refuse_reentry(ctx)),
-        }
+    pub fn with_mut<R, F>(&self, ctx: &Ctx<'_>, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut backend::Store) -> Result<R>,
+    {
+        self.inner.try_borrow_mut().map_or_else(
+            |_error| Err(Self::refuse_reentry(ctx)),
+            |mut store| f(&mut store),
+        )
     }
 
     pub(crate) fn refuse_reentry(ctx: &Ctx<'_>) -> rquickjs::Error {
-        throw_runtime_error(ctx, Self::REENTRY_REFUSED)
+        throw_runtime(ctx, Self::REENTRY_REFUSED)
     }
 
     /// A store context, including from inside a host callback.
@@ -78,9 +79,10 @@ impl Store {
     /// parks it so wrappers that only need [`AsContext`] — `Memory.buffer`
     /// being the one JS WASI shims actually hit — can still see linear
     /// memory.
-    pub fn with_context<R>(
-        &self, ctx: &Ctx<'_>, f: impl FnOnce(StoreContext<'_, backend::StoreData>) -> Result<R>,
-    ) -> Result<R> {
+    pub fn with_context<R, F>(&self, ctx: &Ctx<'_>, f: F) -> Result<R>
+    where
+        F: FnOnce(StoreContext<'_, backend::StoreData>) -> Result<R>,
+    {
         match self.inner.try_borrow() {
             Ok(store) => f(store.as_context()),
             Err(_) => {
@@ -101,12 +103,10 @@ impl Store {
         match self.inner.try_borrow_mut() {
             Ok(mut store) => func.call(&mut *store, params, results),
             Err(_) => {
-                match ActiveHostCall::with_caller_mut(ctx, |caller| {
+                ActiveHostCall::with_caller_mut(ctx, |caller| {
                     func.call(caller.as_context_mut(), params, results)
-                }) {
-                    Some(result) => result,
-                    None => Err(wasmtime::Error::msg(Self::REENTRY_REFUSED)),
-                }
+                })
+                .unwrap_or_else(|| Err(wasmtime::Error::msg(Self::REENTRY_REFUSED)))
             }
         }
     }
@@ -124,7 +124,7 @@ pub struct ActiveHostCall {
 
 // SAFETY: the stack holds pointers into `HostFunction::run` frames, not JS
 // values; the `'js` lifetime on the impl is only what userdata requires.
-unsafe impl<'js> JsLifetime<'js> for ActiveHostCall {
+unsafe impl JsLifetime<'_> for ActiveHostCall {
     type Changed<'to> = ActiveHostCall;
 }
 
@@ -140,7 +140,7 @@ impl ActiveHostCall {
             return Ok(());
         }
         ctx.store_userdata(Self::default())
-            .map_err(|_| {
+            .map_err(|_error| {
                 Exception::throw_internal(ctx, "the WebAssembly host-call stack is already in use")
             })
             .map(|_| ())
@@ -160,7 +160,7 @@ impl ActiveHostCall {
         let ptr = NonNull::from(caller).cast::<backend::Caller<'static>>();
         slot.stack
             .try_borrow_mut()
-            .map_err(|_| {
+            .map_err(|_error| {
                 Exception::throw_internal(ctx, "the WebAssembly host-call stack is already in use")
             })?
             .push(ptr);
@@ -250,7 +250,7 @@ impl WasiImports {
     /// it under the namespace it actually implements.
     pub fn link(ctx: &Ctx<'_>, linker: &mut backend::Linker, namespace: &str) -> Result<()> {
         if namespace != backend::WASI_NAMESPACE {
-            return Err(throw_link_error(
+            return Err(throw_link(
                 ctx,
                 format_args!(
                     "wasiImports() implements the \"{}\" namespace, not \"{namespace}\"",
@@ -258,7 +258,7 @@ impl WasiImports {
                 ),
             ));
         }
-        backend::link_wasi(linker).map_err(|err| throw_link_error(ctx, err))
+        backend::link_wasi(linker).map_err(|err| throw_link(ctx, err))
     }
 }
 

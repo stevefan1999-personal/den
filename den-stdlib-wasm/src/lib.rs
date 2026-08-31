@@ -23,7 +23,7 @@ use rquickjs::{
 
 #[cfg(test)]
 pub(crate) fn install_test_wat2wasm(ctx: Ctx<'_>) -> Result<()> {
-    fn assemble<'js>(source: String, ctx: Ctx<'js>) -> Result<rquickjs::TypedArray<'js, u8>> {
+    fn assemble(source: String, ctx: Ctx<'_>) -> Result<rquickjs::TypedArray<'_, u8>> {
         let bytes = wat::parse_str(&source)
             .map_err(|error| Exception::throw_type(&ctx, &format!("wat2wasm error: {error}")))?;
         rquickjs::TypedArray::new_copy(ctx, bytes)
@@ -291,7 +291,7 @@ fn shape_namespace<'js>(
 }
 
 /// Await a duck-typed `Response` (ok, headers.get, arrayBuffer, status) and
-/// yield its body. Independent of den-stdlib-whatwg-fetch.
+/// yield its body. Independent of Fetch globals.
 async fn wasm_bytes<'js>(ctx: Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
     let response = MaybePromise::from_value(source)
         .into_future::<Value<'js>>()
@@ -393,10 +393,10 @@ fn install_streaming<'js>(ctx: &Ctx<'js>, namespace: &Object<'js>) -> Result<()>
 
 #[rquickjs::module]
 pub mod wasm {
-    use den_util::{BufferSource, Probe};
+    use den_util::{BufferSource, ConstructorInstaller as _, Probe as _};
     #[cfg(feature = "wasi")] use rquickjs::Function;
     use rquickjs::{
-        Class, Ctx, Exception, IntoJs, Object, Promise, Result, Value,
+        Class, Ctx, Exception, IntoJs as _, Object, Promise, Result, Value,
         module::{Declarations, Exports},
         prelude::Opt,
         promise::Promised,
@@ -413,7 +413,7 @@ pub mod wasm {
         store::{ActiveHostCall, Store},
     };
     pub use crate::{
-        exception::Exception as WasmException, global::Global, instance::Instance, memory::Memory,
+        exception::Exception as ExceptionClass, global::Global, instance::Instance, memory::Memory,
         module::Module, table::Table, tag::Tag,
     };
 
@@ -434,14 +434,14 @@ pub mod wasm {
         let Some(bytes) = bytes.0 else {
             return reject_type(&ctx, "expected a BufferSource");
         };
-        match <BufferSource as rquickjs::FromJs>::from_js(&ctx, bytes) {
-            Ok(source) => {
+        <BufferSource as rquickjs::FromJs>::from_js(&ctx, bytes).map_or_else(
+            |_error| reject_pending(&ctx),
+            |source| {
                 let bytes = source.into_bytes();
                 let compile_ctx = ctx.clone();
                 Promised(async move { Module::compile(&compile_ctx, bytes) }).into_js(&ctx)
-            }
-            Err(_) => reject_pending(&ctx),
-        }
+            },
+        )
     }
 
     /// Both overloads: a `Module` instantiates *now* and the promise resolves
@@ -460,9 +460,8 @@ pub mod wasm {
         if let Some(module) =
             ctx.probe(|| source.as_object().and_then(Class::<Module>::from_object))
         {
-            let module = match module.try_borrow().map(|module| Module::clone(&module)) {
-                Ok(module) => module,
-                Err(_) => return reject_type(&ctx, "the WebAssembly.Module is already in use"),
+            let Ok(module) = module.try_borrow().map(|module| Module::clone(&module)) else {
+                return reject_type(&ctx, "the WebAssembly.Module is already in use");
             };
             return match Instance::instantiate(&ctx, &module, import_object.0) {
                 Ok(instance) => {
@@ -565,40 +564,39 @@ pub mod wasm {
         let in_use = |what: &'static str| {
             Exception::throw_internal(ctx, &format!("the WebAssembly {what} is already in use"))
         };
-        ctx.store_userdata(engine).map_err(|_| in_use("engine"))?;
+        ctx.store_userdata(engine)
+            .map_err(|_error| in_use("engine"))?;
         let store = Store::new(&Engine::from_ctx(ctx)?, ctx);
-        ctx.store_userdata(store).map_err(|_| in_use("store"))?;
+        ctx.store_userdata(store)
+            .map_err(|_error| in_use("store"))?;
         ctx.store_userdata(ActiveHostCall::default())
-            .map_err(|_| in_use("host-call stack"))?;
+            .map_err(|_error| in_use("host-call stack"))?;
         ctx.store_userdata(ImportedFunctions::default())
-            .map_err(|_| in_use("import registry"))?;
+            .map_err(|_error| in_use("import registry"))?;
         ctx.store_userdata(MemoryBuffers::default())
-            .map_err(|_| in_use("memory buffer registry"))?;
+            .map_err(|_error| in_use("memory buffer registry"))?;
 
         let namespace = Object::new(ctx.clone())?;
         namespace.set("validate", js_validate)?;
         namespace.set("compile", js_compile)?;
         namespace.set("instantiate", js_instantiate)?;
 
-        let interfaces = [
-            ("Module", Class::<Module>::create_constructor(ctx)?),
-            ("Instance", Class::<Instance>::create_constructor(ctx)?),
-            ("Memory", Class::<Memory>::create_constructor(ctx)?),
-            ("Table", Class::<Table>::create_constructor(ctx)?),
-            ("Global", Class::<Global>::create_constructor(ctx)?),
-            ("Tag", Class::<Tag>::create_constructor(ctx)?),
-            (
-                "Exception",
-                Class::<WasmException>::create_constructor(ctx)?,
-            ),
+        namespace.install_constructor::<Module>(1)?;
+        namespace.install_constructor::<Instance>(1)?;
+        namespace.install_constructor::<Memory>(1)?;
+        namespace.install_constructor::<Table>(1)?;
+        namespace.install_constructor::<Global>(1)?;
+        namespace.install_constructor::<Tag>(1)?;
+        namespace.install_constructor::<ExceptionClass>(2)?;
+        let interface_names = vec![
+            "Module",
+            "Instance",
+            "Memory",
+            "Table",
+            "Global",
+            "Tag",
+            "Exception",
         ];
-        let interface_names = Vec::from_iter(interfaces.iter().map(|(name, _)| *name));
-        for (name, constructor) in interfaces {
-            let constructor = constructor.ok_or_else(|| {
-                Exception::throw_internal(ctx, &format!("WebAssembly.{name} has no constructor"))
-            })?;
-            namespace.set(name, constructor)?;
-        }
 
         WebAssemblyErrors::install(ctx, &namespace)?;
         crate::install_streaming(ctx, &namespace)?;

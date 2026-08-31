@@ -2,13 +2,17 @@
 
 use indexmap::indexmap;
 use rquickjs::{
-    Array, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace,
+    Array, Ctx, Exception, FromJs, IntoJs as _, JsLifetime, Object, Result, Value, class::Trace,
 };
 use wasmtime::ValType;
 
-use crate::memory::{DescriptorObject, ValueTypeName};
+use crate::memory::{DescriptorObject as _, ValueTypeName};
 
 /// A `TagType`: the parameter types an exception thrown with this tag carries.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "WebAssembly names this descriptor TagType"
+)]
 #[derive(Clone, Debug)]
 pub struct TagType {
     parameters: Vec<ValType>,

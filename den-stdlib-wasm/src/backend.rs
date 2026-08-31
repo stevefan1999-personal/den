@@ -109,12 +109,20 @@ impl StoreData {
 
     /// The store's WASI context, built on first use by `init`.
     #[cfg(feature = "wasi")]
-    pub fn wasi_or_init(&mut self, init: impl FnOnce() -> WasiP1Ctx) -> &mut WasiP1Ctx {
+    pub fn wasi_or_init<F>(&mut self, init: F) -> &mut WasiP1Ctx
+    where
+        F: FnOnce() -> WasiP1Ctx,
+    {
         self.wasi.get_or_insert_with(init)
     }
 
     /// Run `f` with the JS context that owns this store.
-    pub fn with_ctx<R>(&self, f: impl FnOnce(&Ctx<'_>) -> R) -> R { self.ctx.with(f) }
+    pub fn with_ctx<R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&Ctx<'_>) -> R,
+    {
+        self.ctx.with(f)
+    }
 }
 
 /// Every proposal den depends on, spelled out — see the module docs for the

@@ -16,6 +16,10 @@ use std::path::PathBuf;
 use color_eyre::eyre;
 use den_core::engine::Engine;
 
+#[expect(
+    clippy::duplicate_mod,
+    reason = "integration targets share the same test-only engine helper"
+)]
 mod common;
 
 /// Enough repetitions that a per-engine leak is visible in RSS and a teardown
@@ -35,8 +39,10 @@ fn case(name: &str) -> PathBuf {
 async fn engines_that_never_touch_webassembly_survive_repeated_teardown() -> eyre::Result<()> {
     for round in 0..ENGINE_CHURN {
         let engine = Engine::new().await;
-        assert_eq!(
-            engine.eval::<usize>(&format!("{round} + 1")).await?,
+        let actual = engine.eval::<usize>(&format!("{round} + 1")).await?;
+        eyre::ensure!(
+            actual == round + 1,
+            "round {round}: expected {}, got {actual}",
             round + 1
         );
         drop(engine);

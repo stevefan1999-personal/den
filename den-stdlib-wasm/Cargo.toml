@@ -26,7 +26,6 @@ den-core = { workspace = true, features = [
 ] }
 insta.workspace = true
 libtest-mimic.workspace = true
-rquickjs = { workspace = true, features = ["macro", "futures", "array-buffer"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 wast.workspace = true
 wat.workspace = true

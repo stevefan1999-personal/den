@@ -71,7 +71,7 @@ fn collect_wast_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return files;
     };
-    let mut entries: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
     entries.sort_by_key(fs::DirEntry::path);
     for entry in entries {
         let path = entry.path();
@@ -124,7 +124,7 @@ fn run_wast_file(wast_path: &Path, relative: &str) -> Result<(), Failed> {
     Ok(())
 }
 
-fn harness_classify() -> Result<(), Failed> {
+fn harness_classify() {
     assert!(
         spec_root().ends_with("vendor/spec"),
         "spec root is the vendored submodule"
@@ -160,11 +160,13 @@ fn harness_classify() -> Result<(), Failed> {
     );
     let missing = run_wast_file(Path::new("/den-spec-core-no-such.wast"), "missing.wast");
     assert!(missing.is_err(), "missing official file is a fail");
-    Ok(())
 }
 
 fn main() {
-    let mut tests = vec![Trial::test("harness::classify", harness_classify)];
+    let mut tests = vec![Trial::test("harness::classify", || {
+        harness_classify();
+        Ok(())
+    })];
     let core = spec_root().join("test/core");
     if !core.is_dir() {
         tests.push(Trial::test("vendor/spec", || {

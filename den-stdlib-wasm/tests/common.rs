@@ -1,7 +1,7 @@
 use den_core::engine::Engine;
 use rquickjs::{Ctx, Exception, Function, Result, TypedArray};
 
-fn assemble<'js>(source: String, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
+fn assemble(source: String, ctx: Ctx<'_>) -> Result<TypedArray<'_, u8>> {
     let bytes = wat::parse_str(&source)
         .map_err(|error| Exception::throw_type(&ctx, &format!("wat2wasm error: {error}")))?;
     TypedArray::new_copy(ctx, bytes)
@@ -18,6 +18,6 @@ pub async fn engine() -> Engine {
             )
         })
         .await
-        .expect("install the test-only WAT assembler");
+        .unwrap_or_else(|error| panic!("install the test-only WAT assembler: {error}"));
     engine
 }

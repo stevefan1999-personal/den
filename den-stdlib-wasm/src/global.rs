@@ -2,18 +2,22 @@
 
 use indexmap::indexmap;
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs, IntoJs, JsLifetime, Object, Result, Value, class::Trace,
+    Coerced, Ctx, Exception, FromJs, IntoJs as _, JsLifetime, Object, Result, Value, class::Trace,
     prelude::Opt,
 };
 use wasmtime::{Global as WasmGlobal, GlobalType, Mutability, ValType};
 
 use crate::{
-    memory::{DescriptorObject, ValueTypeName},
+    memory::{DescriptorObject as _, ValueTypeName},
     store::Store,
     utils::WasmValue,
 };
 
 /// A `GlobalDescriptor`.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "WebAssembly names this dictionary GlobalDescriptor"
+)]
 #[derive(Clone, Debug)]
 pub struct GlobalDescriptor {
     value:   String,
@@ -23,12 +27,11 @@ pub struct GlobalDescriptor {
 impl<'js> FromJs<'js> for GlobalDescriptor {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let object = Object::descriptor(ctx, value, "the global descriptor")?;
-        Ok(Self {
-            value:   object.required(ctx, "value")?,
-            mutable: object
-                .get::<_, Option<Coerced<bool>>>("mutable")?
-                .is_some_and(|mutable| mutable.0),
-        })
+        let mutable = object
+            .get::<_, Option<Coerced<bool>>>("mutable")?
+            .is_some_and(|mutable| mutable.0);
+        let value = object.required::<Coerced<String>>(ctx, "value")?.0;
+        Ok(Self { value, mutable })
     }
 }
 
@@ -53,7 +56,7 @@ impl Global {
         descriptor: GlobalDescriptor, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let ty = descriptor.value_type(&ctx)?;
-        let initial = match value.0 {
+        let initial = match value.0.filter(|value| !value.is_undefined()) {
             Some(value) => WasmValue::from_js(&ctx, &value, &ty)?,
             None => {
                 WasmValue::default_for(&ty).map_err(|error| Exception::throw_type(&ctx, error))?
@@ -87,7 +90,7 @@ impl Global {
     /// writing a constant global is indistinguishable from a type mismatch,
     /// and the spec wants a `TypeError` raised *before* the write is attempted.
     #[qjs(set, enumerable, configurable, rename = "value")]
-    pub fn set_value<'js>(&self, value: Value<'js>, ctx: Ctx<'js>) -> Result<()> {
+    pub fn set_value<'js>(&self, value: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<()> {
         let store = Store::from_ctx(&ctx)?;
         // The type is read under its own short borrow: `ToWebAssemblyValue` below
         // runs arbitrary JS and allocates externrefs in the store, neither of which
@@ -99,6 +102,7 @@ impl Global {
                 "cannot set the value of an immutable WebAssembly.Global",
             ));
         }
+        let value = value.0.unwrap_or_else(|| Value::new_undefined(ctx.clone()));
         let value = WasmValue::from_js(&ctx, &value, ty.content())?;
         store.with_mut(&ctx, |store| {
             self.inner
