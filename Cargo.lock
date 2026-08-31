@@ -1082,6 +1082,7 @@ name = "den-core"
 version = "0.4.0"
 dependencies = [
  "color-eyre",
+ "den-capabilities",
  "den-stdlib-assert",
  "den-stdlib-console",
  "den-stdlib-core",

@@ -3,6 +3,9 @@
 #[cfg(feature = "stdlib-ffi")]
 pub use den_stdlib_ffi::FfiGrant;
 
+pub mod builder;
 pub mod engine;
 pub mod loader;
 pub mod resolver;
+
+pub use builder::EngineBuilder;
