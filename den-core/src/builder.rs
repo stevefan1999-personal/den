@@ -4,12 +4,9 @@ use std::sync::Arc;
 use den_capabilities::Policy;
 #[cfg(feature = "package-store")]
 use den_package_store::PackageModuleSnapshot;
-use rquickjs::{AsyncRuntime, loader::Bundle};
+use rquickjs::loader::Bundle;
 
-use self::allocator::BoundedAllocator;
 use crate::engine::Engine;
-
-mod allocator;
 
 /// QuickJS' native defaults, made explicit so worker engines cannot silently
 /// reset them while cloning the rest of the host configuration.
@@ -113,12 +110,6 @@ impl Default for EngineBuilder {
             bundle:   EMPTY_BUNDLE,
             settings: EngineSettings::default(),
         }
-    }
-}
-
-impl EngineSettings {
-    pub(crate) fn runtime(&self) -> rquickjs::Result<AsyncRuntime> {
-        AsyncRuntime::new_with_alloc(BoundedAllocator::new(self.heap_limit))
     }
 }
 
