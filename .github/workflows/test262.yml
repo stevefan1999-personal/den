@@ -12,14 +12,23 @@ on:
       - ".gitmodules"
       - Cargo.lock
       - .github/workflows/test262.yml
+      - .github/workflows/runner-route.yml
 
 jobs:
+  route:
+    uses: ./.github/workflows/runner-route.yml
+
   temporal:
-    runs-on: [self-hosted]
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: false
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: cargo-nextest@0.9.143
       - run: git submodule update --init vendor/test262
       - run: cargo nextest run --profile official -p den-stdlib-temporal --test test262

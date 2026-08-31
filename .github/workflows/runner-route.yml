@@ -1,0 +1,51 @@
+name: runner route
+
+permissions: {}
+
+on:
+  workflow_call:
+    outputs:
+      available:
+        value: ${{ jobs.route.outputs.available }}
+      shell:
+        value: ${{ jobs.route.outputs.shell }}
+      dind:
+        value: ${{ jobs.route.outputs.dind }}
+      kubernetes:
+        value: ${{ jobs.route.outputs.kubernetes }}
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.pick.outputs.available }}
+      shell: ${{ steps.pick.outputs.shell }}
+      dind: ${{ steps.pick.outputs.dind }}
+      kubernetes: ${{ steps.pick.outputs.kubernetes }}
+    steps:
+      - id: pick
+        env:
+          HEARTBEAT: ${{ vars.ARC_HEARTBEAT_EPOCH }}
+          TRUSTED: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        shell: bash
+        run: |
+          now=$(date +%s)
+          available=false
+          shell=ubuntu-latest
+          dind=ubuntu-latest
+          kubernetes=ubuntu-latest
+
+          if [[ "$TRUSTED" == true && "$HEARTBEAT" =~ ^[0-9]+$ ]] \
+            && (( HEARTBEAT <= now + 30 && now - HEARTBEAT < 180 )); then
+            available=true
+            shell=k0s-arc-runners
+            dind=k0s-arc-dind
+            kubernetes=k0s-arc-kubernetes
+          fi
+
+          {
+            echo "available=$available"
+            echo "shell=$shell"
+            echo "dind=$dind"
+            echo "kubernetes=$kubernetes"
+          } >> "$GITHUB_OUTPUT"

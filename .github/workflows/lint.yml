@@ -10,10 +10,15 @@ on:
       - "**/Cargo.toml"
       - Cargo.lock
       - .github/workflows/lint.yml
+      - .github/workflows/runner-route.yml
 
 jobs:
+  route:
+    uses: ./.github/workflows/runner-route.yml
+
   clippy:
-    runs-on: [self-hosted]
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup install nightly --profile complete
@@ -26,7 +31,8 @@ jobs:
       - run: cargo +nightly clippy --no-deps
 
   fmt:
-    runs-on: [self-hosted]
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +40,8 @@ jobs:
       - run: cargo +nightly fmt --check
 
   docs:
-    runs-on: [self-hosted]
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +49,8 @@ jobs:
       - run: cargo +nightly doc --no-deps
 
   test:
-    runs-on: [self-hosted]
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: "0"
@@ -55,6 +63,10 @@ jobs:
         extra: ["wasm,wasi,jit", "wasm,wasi"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
+        with:
+          tool: cargo-nextest@0.9.143
       # compat excludes official vendor binaries (spec_core / wpt / test262).
       # Those report official pass/fail in their own workflows.
       - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,package-store,ring,${{ matrix.extra }}
