@@ -59,7 +59,7 @@ function html(node: unknown): HttpReply {
     status: 200,
     reason: "OK",
     type: "text/html; charset=utf-8",
-    body: `<!DOCTYPE html>${renderToStaticMarkup(node)}`,
+    body: `<!DOCTYPE html>${renderToStaticMarkup(node as Parameters<typeof renderToStaticMarkup>[0])}`,
   };
 }
 

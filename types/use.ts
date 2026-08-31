@@ -15,6 +15,33 @@ import {
   ptr,
   suffix,
 } from "den:ffi";
+import { Kv } from "den:kv";
+import { serve } from "den:http";
+
+async function useKv(path: string, key: Uint8Array<ArrayBuffer>): Promise<void> {
+  const kv = await Kv.open(path);
+  await kv.set(key, key);
+  const value: Uint8Array<ArrayBuffer> | null = await kv.get(key);
+  const transaction = await kv.transaction();
+  await transaction.getForUpdate(key);
+  const committed: boolean = await transaction.commit();
+  await kv.close();
+  void [value, committed];
+}
+
+async function useHttp(): Promise<void> {
+  const server = serve({
+    listen: { port: 0 },
+    fetch(request, connection) {
+      return new Response(`${request.method} ${connection.remote.port}`);
+    },
+  });
+  const url: string = server.url;
+  const pending: number = server.pending.requests;
+  await server.close({ drainMs: 0 });
+  await server.finished;
+  void [url, pending];
+}
 
 declare const capability: FfiGrant;
 
@@ -122,4 +149,4 @@ ptr.view(address!);
 ptr.value(0n);
 
 declare const wrongSignature: Callback<readonly ["f64", "f64"], "f64">;
-void [notAwaited, notANumber, grant];
+void [notAwaited, notANumber, grant, useKv, useHttp];

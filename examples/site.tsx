@@ -45,7 +45,7 @@ export function Page(props: { notes: Note[] }): unknown {
   return (
     <html lang="en">
       <head>
-        <meta charset="utf-8" />
+        <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>den notes</title>
         <style>{CSS}</style>
@@ -57,7 +57,7 @@ export function Page(props: { notes: Note[] }): unknown {
             TSX rendered on the server, rows stored in SQLite. Ctrl+C stops den.
           </p>
           <form method="post" action="/notes">
-            <textarea name="body" rows="4" required placeholder="Write a note"></textarea>
+            <textarea name="body" rows={4} required placeholder="Write a note"></textarea>
             <button type="submit">Save</button>
           </form>
           {notes.length === 0 ? (

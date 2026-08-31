@@ -4,8 +4,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre;
-use den_core::engine::{Engine, EngineError};
-use rquickjs::CatchResultExt;
+use den_core::engine::Engine;
 
 fn case(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -15,38 +14,22 @@ fn case(name: &str) -> PathBuf {
 
 async fn run(name: &str) -> eyre::Result<()> {
     let engine = Engine::new().await;
-    run_file(&engine, case(name)).await?;
+    engine.run_file(case(name)).await?;
     engine.shutdown().await;
     Ok(())
 }
 
-async fn run_file(engine: &Engine, path: PathBuf) -> eyre::Result<()> {
-    match engine.run_file(path).await {
-        Ok(()) => Ok(()),
-        Err(EngineError::Rquickjs(error)) => {
-            let caught = engine
-                .context
-                .with(|ctx| {
-                    Err::<(), _>(error)
-                        .catch(&ctx)
-                        .map_err(|error| error.to_string())
-                })
-                .await;
-            caught.map_err(|error| eyre::eyre!(error))
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
+#[cfg(feature = "typescript")]
 fn example(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../examples")
         .join(name)
 }
 
+#[cfg(feature = "typescript")]
 async fn run_example(name: &str) -> eyre::Result<()> {
     let engine = Engine::new().await;
-    run_file(&engine, example(name)).await?;
+    engine.run_file(example(name)).await?;
     engine.shutdown().await;
     Ok(())
 }
@@ -118,10 +101,23 @@ async fn tcp_listen_and_connect_echo_over_an_async_iterator() -> eyre::Result<()
     run_example("tcp-echo.ts").await
 }
 
-#[cfg(feature = "typescript")]
+#[cfg(all(feature = "typescript", feature = "ring"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn tls_listen_and_connect_echo_over_an_async_iterator() -> eyre::Result<()> {
-    run_example("tls-echo.ts").await
+    let certified = rcgen::generate_simple_self_signed(["localhost".to_string()])?;
+    let cert = certified.cert.pem();
+    let key = certified.signing_key.serialize_pem();
+    let engine = Engine::new().await;
+    engine
+        .context
+        .with(|ctx| {
+            ctx.globals().set("__denTlsCert", cert)?;
+            ctx.globals().set("__denTlsKey", key)
+        })
+        .await?;
+    engine.run_file(example("tls-echo.ts")).await?;
+    engine.shutdown().await;
+    Ok(())
 }
 
 #[cfg(feature = "typescript")]
@@ -142,7 +138,7 @@ async fn a_module_worker_renders_notes_from_sqlite() -> eyre::Result<()> {
     run("tsx_worker_notes.tsx").await
 }
 
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", feature = "wasi"))]
 mod quickjs_wasi {
     use color_eyre::eyre;
 
