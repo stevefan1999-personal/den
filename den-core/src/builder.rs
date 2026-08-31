@@ -43,7 +43,9 @@ impl Default for EngineSettings {
 }
 
 /// Configuration for one den realm. Dedicated workers receive a clone of the
-/// same settings, including deny-by-default authority and resource limits.
+/// same policy metadata and resource limits. Builtin operations do not enforce
+/// the policy yet; hosts can retrieve it from
+/// [`Engine`](crate::engine::Engine).
 #[derive(Clone, Debug)]
 #[expect(
     clippy::module_name_repetitions,
@@ -83,6 +85,7 @@ impl EngineBuilder {
     }
 
     #[must_use]
+    /// Store host policy metadata in the realm and its workers.
     pub fn policy(mut self, policy: Policy) -> Self {
         self.settings.policy = policy;
         self

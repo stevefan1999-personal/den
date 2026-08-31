@@ -8,7 +8,7 @@ and tests so they cannot drift into a second specification.
 ```text
 den                              CLI, REPL, signals and tracing
 └── den-core                     embeddable QuickJS runtime, loaders, resolvers
-    ├── den-capabilities         deny-by-default policy values and attenuation
+    ├── den-capabilities         host policy values and attenuation
     ├── den-transpiler-oxc       optional TypeScript and JSX lowering
     ├── den-stdlib-assert        den:assert
     ├── den-stdlib-console       console
@@ -40,13 +40,15 @@ surface and must not depend on `den-core`; `den-core` composes them.
 
 The CLI uses clap derive and advertises only implemented commands. Downloaded
 package bytes and metadata belong to `den-package-store`; its schema is created
-through versioned SeaORM migrations and package content is addressed by SHA-256.
+through versioned SeaORM migrations, validated against the same SeaQuery table
+definitions when opened, and package content is addressed by SHA-256.
 Resolvo operates on a validated in-memory snapshot, never from inside QuickJS's
 synchronous loader. A host solves and hydrates a `PackageModuleSnapshot`, then
 passes it to `EngineBuilder::package_modules`; workers inherit that immutable
-snapshot. The current solver is intentionally flat (one version per
-registry/package key); optional, peer and nested multi-version graphs are
-excluded until scoped instance identities exist.
+snapshot. Hydration is finite and solver-produced root/dependency edges define
+which bare imports each module can see. The current solver is intentionally
+flat (one version per registry/package key); optional, peer and nested
+multi-version graphs are excluded until scoped instance identities exist.
 
 ## Runtime invariants
 
@@ -56,7 +58,8 @@ excluded until scoped instance identities exist.
 - [`EngineBuilder`](den-core/src/builder.rs) owns stack, GC and optional heap
   limits together with the realm's capability policy and process arguments.
   Workers inherit the same settings; a child policy may only attenuate its
-  parent.
+  parent. Builtin operations do not enforce this policy yet; hosts must call
+  `Policy::check` at their own boundaries.
 - `AsyncRuntime::idle()` is the event loop. Do not run a second driver beside
   it; two schedulers would compete for the same runtime lock.
 - A host stops work by cancelling its program future, calling
@@ -89,19 +92,24 @@ extend worker-owned event classes.
 
 The loader chain is:
 
-1. native builtins and the optional embedded bytecode bundle;
-2. HTTP modules through [`loader/http.rs`](den-core/src/loader/http.rs);
-3. filesystem modules through
+1. native builtins;
+2. the optional package snapshot, then the embedded bytecode bundle;
+3. HTTP modules through [`loader/http.rs`](den-core/src/loader/http.rs);
+4. filesystem modules through
    [`loader/mmap_script.rs`](den-core/src/loader/mmap_script.rs).
 
 The resolver chain is:
 
 1. import maps in
    [`resolver/import_map.rs`](den-core/src/resolver/import_map.rs);
-2. native builtins and the embedded bundle;
-3. HTTP URLs in [`resolver/http.rs`](den-core/src/resolver/http.rs);
-4. absolute and relative files in
+2. native builtins;
+3. the package snapshot, then the embedded bundle;
+4. HTTP URLs in [`resolver/http.rs`](den-core/src/resolver/http.rs);
+5. absolute and relative files in
    [`resolver/file.rs`](den-core/src/resolver/file.rs).
+
+Application import maps yield for `den-pkg:` parents, so package dependency
+edges cannot be rewritten around the solved snapshot.
 
 Import attributes are handled once by
 [`loader/typed.rs`](den-core/src/loader/typed.rs): `json`, `text`, and `bytes`
