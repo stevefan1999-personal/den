@@ -127,7 +127,6 @@ rustls = { version = "0.23.43", default-features = false, features = [
     "std",
     "tls12",
 ] }
-rustls-pemfile = "2.2.0"
 rustls-platform-verifier = { version = "0.7.0", default-features = false }
 rustyline = { version = "18.0.1", default-features = false }
 serde_json = "1.0.151"
