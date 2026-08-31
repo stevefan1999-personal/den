@@ -34,6 +34,29 @@ assertEquals(url.search, "?x=2&z=%E2%9C%93");
 
 const standalone = new URLSearchParams({ b: 2, a: "x y" });
 standalone.append("a", "last");
+
+let iteratorCalls = 0;
+let nextReads = 0;
+let done = false;
+const custom = new URLSearchParams({
+  [Symbol.iterator]() {
+    iteratorCalls++;
+    return {
+      get next() {
+        nextReads++;
+        return () => {
+          if (done) return { done: true };
+          done = true;
+          return { done: false, value: ["once", "yes"] };
+        };
+      },
+    };
+  },
+});
+assertEquals(iteratorCalls, 1);
+assertEquals(nextReads, 1);
+assertEquals(custom.get("once"), "yes");
+
 assert(URL.canParse("/ok", "https://example.com"));
 assertEquals(URL.parse("not a url"), null);
 
