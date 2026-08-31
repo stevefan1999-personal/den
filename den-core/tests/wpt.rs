@@ -42,6 +42,7 @@ const WPT_TREES: &[&str] = &[
     "FileAPI",
     "url",
     "fetch",
+    "xhr",
     "wasm/jsapi",
     "streams",
 ];
@@ -100,6 +101,29 @@ fn skip_reason(relative: &str) -> Option<&'static str> {
     }
     if relative.contains("streams/readable-streams/owning-type") {
         return Some("needs-owning-streams");
+    }
+    if relative.starts_with("xhr/") {
+        const XHR_ONLY: &[(&str, &str)] = &[
+            ("access-control", "needs-cors"),
+            ("cors-", "needs-cors"),
+            ("authorization", "needs-credentials"),
+            ("upload", "needs-xhr-upload"),
+            ("sync-", "needs-sync-xhr"),
+            ("-sync-", "needs-sync-xhr"),
+            ("longtask", "needs-longtask"),
+            ("sharedarraybuffer", "needs-shared-array-buffer"),
+            ("over-1-meg", "needs-large-payload"),
+            ("blob-range", "needs-blob-url"),
+            ("send-file", "needs-form-post"),
+            (".h2.", "needs-http2"),
+            ("anonymous-window", "needs-document"),
+            ("data-uri", "needs-document"),
+        ];
+        for (needle, reason) in XHR_ONLY {
+            if relative.contains(needle) {
+                return Some(*reason);
+            }
+        }
     }
     if relative.starts_with("fetch/") {
         const FETCH_ONLY: &[(&str, &str)] = &[
