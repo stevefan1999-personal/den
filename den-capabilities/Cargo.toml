@@ -1,0 +1,24 @@
+[package]
+name = "den-capabilities"
+description = "Deny-by-default capability policies for den"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+ipnet = { workspace = true, features = ["serde"] }
+rquickjs = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+url = { workspace = true, features = ["serde"] }
+
+[features]
+rquickjs = ["dep:rquickjs"]
+
+[lints]
+workspace = true
