@@ -521,8 +521,6 @@ jobs:
         with:
           release: "10.1"
           arch: x86_64
-          # Avoid intermittent EBADF while nextest lists test binaries concurrently.
-          cpu: 1
           mem: 10240
           copyback: false
           envs: >-
@@ -541,8 +539,16 @@ jobs:
           run: |
             export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
             export LIBCLANG_PATH=/usr/pkg/lib
-            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
-              --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
-              --no-default-features \
-              --features stdlib,typescript,react,ring,rquickjs/bindgen \
-              --test-threads 1
+            run_nextest() {
+              cargo nextest run --locked --profile compat --no-fail-fast --workspace \
+                --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
+                --no-default-features \
+                --features stdlib,typescript,react,ring,rquickjs/bindgen \
+                --test-threads 1 --retries 2
+            }
+            run_nextest || {
+              status=$?
+              # 104 is nextest's test-list failure; do not rerun other failures.
+              [ "$status" -eq 104 ] || exit "$status"
+              run_nextest
+            }
