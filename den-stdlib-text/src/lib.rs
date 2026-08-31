@@ -43,8 +43,9 @@ impl TextDecoder {
     pub fn encoding(&self) -> String { self.encoding.name().to_ascii_lowercase() }
 
     pub fn decode(&self, buffer: Option<BufferSource>, ctx: Ctx<'_>) -> Result<String> {
-        match buffer {
-            Some(buffer) => {
+        buffer.map_or_else(
+            || Ok(String::new()),
+            |buffer| {
                 let mut decoder = if self.ignore_bom {
                     self.encoding.new_decoder_without_bom_handling()
                 } else {
@@ -75,9 +76,8 @@ impl TextDecoder {
                     let _ = decoder.decode_to_string(buffer, &mut output, true);
                     Ok(output)
                 }
-            }
-            None => Ok(String::new()),
-        }
+            },
+        )
     }
 }
 
