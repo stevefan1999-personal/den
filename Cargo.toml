@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+    "den-capabilities",
     "den-core",
     "den-e2e",
     "den-stdlib-assert",
@@ -39,6 +40,7 @@ keywords = ["javascript", "quickjs", "tokio", "typescript", "oxc"]
 
 [workspace.dependencies]
 # Workspace members (call sites keep optional / default-features / extra features).
+den-capabilities = { version = "0.4.0", path = "den-capabilities" }
 den-core = { version = "0.4.0", path = "den-core", default-features = false }
 den-stdlib-assert = { version = "0.4.0", path = "den-stdlib-assert" }
 den-stdlib-console = { version = "0.4.0", path = "den-stdlib-console" }
@@ -92,6 +94,7 @@ hyper-util = "0.1.20"
 import_map = "0.25.0"
 indexmap = "2.14.0"
 insta = { version = "=1.48.0", default-features = false }
+ipnet = "2.12.1"
 libc = "0.2"
 libffi = "5.2.0"
 libtest-mimic = "0.8.2"
@@ -129,6 +132,7 @@ rustls = { version = "0.23.43", default-features = false, features = [
 ] }
 rustls-platform-verifier = { version = "0.7.0", default-features = false }
 rustyline = { version = "18.0.1", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha1 = "0.11"
 sha2 = "0.11"
