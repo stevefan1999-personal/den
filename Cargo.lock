@@ -554,6 +554,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be2ad0423bdbbb0e25bc89add796f3559706d4a95e1bc98e4d9662a957b6a19"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1050,6 +1059,8 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 name = "den"
 version = "0.4.0"
 dependencies = [
+ "clap",
+ "clap_complete",
  "color-eyre",
  "console-subscriber",
  "den-core",
@@ -1064,6 +1075,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

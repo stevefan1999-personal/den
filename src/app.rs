@@ -10,9 +10,9 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new() -> Self {
+    pub const fn with_engine(engine: Engine) -> Self {
         Self {
-            engine:  Engine::new().await,
+            engine,
             repl_rx: None,
         }
     }
