@@ -88,6 +88,7 @@ http-body-util = "0.1.2"
 httpdate = "1.0.3"
 hyper = "1.11.0"
 hyper-util = "0.1.20"
+import_map = "0.25.0"
 indexmap = "2.14.0"
 insta = { version = "=1.48.0", default-features = false }
 libc = "0.2"
