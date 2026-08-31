@@ -5,6 +5,7 @@ members = [
     "den-config",
     "den-core",
     "den-e2e",
+    "den-package-store",
     "den-stdlib-assert",
     "den-stdlib-console",
     "den-stdlib-core",
@@ -44,6 +45,7 @@ keywords = ["javascript", "quickjs", "tokio", "typescript", "oxc"]
 den-capabilities = { version = "0.4.0", path = "den-capabilities" }
 den-config = { version = "0.4.0", path = "den-config" }
 den-core = { version = "0.4.0", path = "den-core", default-features = false }
+den-package-store = { version = "0.4.0", path = "den-package-store" }
 den-stdlib-assert = { version = "0.4.0", path = "den-stdlib-assert" }
 den-stdlib-console = { version = "0.4.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "0.4.0", path = "den-stdlib-core" }
@@ -105,6 +107,7 @@ libffi = "5.2.0"
 libtest-mimic = "0.8.2"
 log = { version = "0.4.33", features = ["release_max_level_info"] }
 mimalloc = "0.1.52"
+node-semver = "=2.2.0"
 oxc_allocator = "0.146.0"
 oxc_codegen = { version = "0.146.0", default-features = false }
 oxc_diagnostics = "0.146.0"
@@ -122,6 +125,7 @@ reqwest = { version = "0.13.4", default-features = false, features = [
     "rustls-no-provider",
     "system-proxy",
 ] }
+resolvo = { version = "=0.12.1", default-features = false }
 rquickjs = { version = "0.12.2", features = [
     "full-async",
     "rust-alloc",
@@ -137,6 +141,15 @@ rustls = { version = "0.23.43", default-features = false, features = [
 ] }
 rustls-platform-verifier = { version = "0.7.0", default-features = false }
 rustyline = { version = "18.0.1", default-features = false }
+sea-orm = { version = "=2.0.2", default-features = false, features = [
+    "macros",
+    "runtime-tokio",
+    "sqlx-sqlite",
+] }
+sea-orm-migration = { version = "=2.0.2", default-features = false, features = [
+    "runtime-tokio",
+    "sqlx-sqlite",
+] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha1 = "0.11"
