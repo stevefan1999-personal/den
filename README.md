@@ -7,6 +7,8 @@ Made during the Easter holiday of 2023.
 ## Features
 
 - QuickJS (via [rquickjs](https://github.com/DelSkayn/rquickjs)) on a Tokio multi-thread runtime
+- A clap-derived CLI with default/explicit `run`, `eval`, `repl`, shell completions,
+  script-argument forwarding, and feature-gated FFI grants
 - TypeScript and JSX transpiled by [oxc](https://github.com/oxc-project/oxc) — parse → semantic →
   transform → codegen, wired into the file and HTTP module loaders
 - A standard library exposed both as `den:*` modules and as globals: `console`, `atob`/`btoa`/`gc`,
@@ -42,6 +44,11 @@ Made during the Easter holiday of 2023.
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
   thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
 - Everything above is a cargo feature, so you can compile most of it away
+- Host-side foundations for deny-by-default capability policies and bounded
+  engines, plus a SeaORM-managed SQLite content-addressed package store using
+  Resolvo for deterministic flat dependency solving. Hosts can hydrate an
+  immutable package-module snapshot into `EngineBuilder`; registry fetching,
+  lockfiles, and package commands are not wired into the CLI yet.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together. Closed
 research remains available in Git history.
