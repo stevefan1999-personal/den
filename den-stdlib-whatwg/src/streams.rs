@@ -318,14 +318,16 @@ pub(crate) fn optional_object<'js>(
 pub(crate) fn method<'js>(
     ctx: &Ctx<'js>, object: &Object<'js>, name: &str,
 ) -> Result<Option<Function<'js>>> {
-    object
-        .get::<_, Option<Function<'js>>>(name)
-        .map_err(|_error| {
-            Exception::throw_type(
-                ctx,
-                &format!("underlying stream member `{name}` is not callable"),
-            )
-        })
+    let value: Value = object.get(name)?;
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
+    }
+    value.into_function().map(Some).ok_or_else(|| {
+        Exception::throw_type(
+            ctx,
+            &format!("underlying stream member `{name}` is not callable"),
+        )
+    })
 }
 
 use rquickjs::Exception;
