@@ -74,3 +74,8 @@ fn rejects_non_object_json() {
     assert!(ImportMap::parse("[]", Path::new(BASE)).is_err());
     assert!(ImportMap::parse("not json", Path::new(BASE)).is_err());
 }
+
+#[test]
+fn rejects_non_string_targets() {
+    assert!(ImportMap::parse(r#"{"imports":{"x":42}}"#, Path::new(BASE)).is_err());
+}
