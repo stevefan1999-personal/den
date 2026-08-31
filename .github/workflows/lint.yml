@@ -57,4 +57,4 @@ jobs:
       - uses: actions/checkout@v4
       # compat excludes official vendor binaries (spec_core / wpt / test262).
       # Those report official pass/fail in their own workflows.
-      - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,ring,${{ matrix.extra }}
+      - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,package-store,ring,${{ matrix.extra }}
