@@ -21,14 +21,22 @@ pub type ResolutionResult<T> = std::result::Result<T, PackageResolutionError>;
 /// `max_bytes` includes module bodies and manifests verified during hydration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HydrationLimits {
-    pub max_files: u64,
-    pub max_bytes: u64,
+    pub max_packages:         u64,
+    pub max_root_edges:       u64,
+    pub max_dependency_edges: u64,
+    pub max_exports:          u64,
+    pub max_files:            u64,
+    pub max_bytes:            u64,
 }
 
 impl HydrationLimits {
     #[must_use]
     pub const fn new(max_files: u64, max_bytes: u64) -> Self {
         Self {
+            max_packages: 10_000,
+            max_root_edges: 10_000,
+            max_dependency_edges: 100_000,
+            max_exports: 100_000,
             max_files,
             max_bytes,
         }
@@ -70,6 +78,22 @@ pub enum PackageHydrationError {
     DuplicateModuleUrl(String),
     #[error("invalid solved package edge: {0}")]
     InvalidSolutionEdge(String),
+    #[error("hydrating {attempted} packages exceeds the configured limit of {limit}")]
+    PackageLimitExceeded { limit: u64, attempted: u64 },
+    #[error("hydrated package count overflowed")]
+    PackageCountOverflow,
+    #[error("hydrating {attempted} root edges exceeds the configured limit of {limit}")]
+    RootEdgeLimitExceeded { limit: u64, attempted: u64 },
+    #[error("hydrated root-edge count overflowed")]
+    RootEdgeCountOverflow,
+    #[error("hydrating {attempted} dependency edges exceeds the configured limit of {limit}")]
+    DependencyLimitExceeded { limit: u64, attempted: u64 },
+    #[error("hydrated dependency-edge count overflowed")]
+    DependencyCountOverflow,
+    #[error("hydrating {attempted} exports exceeds the configured limit of {limit}")]
+    ExportLimitExceeded { limit: u64, attempted: u64 },
+    #[error("hydrated export count overflowed")]
+    ExportCountOverflow,
     #[error("hydrating {attempted} files exceeds the configured limit of {limit}")]
     FileLimitExceeded { limit: u64, attempted: u64 },
     #[error("hydrated file count overflowed")]
@@ -128,18 +152,88 @@ struct SnapshotPackage {
 
 #[derive(Debug)]
 struct HydrationBudget {
-    limits: HydrationLimits,
-    files:  u64,
-    bytes:  u64,
+    limits:       HydrationLimits,
+    dependencies: u64,
+    exports:      u64,
+    files:        u64,
+    bytes:        u64,
 }
 
 impl HydrationBudget {
     const fn new(limits: HydrationLimits) -> Self {
         Self {
             limits,
+            dependencies: 0,
+            exports: 0,
             files: 0,
             bytes: 0,
         }
+    }
+
+    fn check_packages(&self, count: usize) -> HydrationResult<()> {
+        let attempted =
+            u64::try_from(count).map_err(|_error| PackageHydrationError::PackageCountOverflow)?;
+        if attempted > self.limits.max_packages {
+            return Err(PackageHydrationError::PackageLimitExceeded {
+                limit: self.limits.max_packages,
+                attempted,
+            });
+        }
+        Ok(())
+    }
+
+    fn check_root_edges(&self, count: usize) -> HydrationResult<()> {
+        let attempted =
+            u64::try_from(count).map_err(|_error| PackageHydrationError::RootEdgeCountOverflow)?;
+        if attempted > self.limits.max_root_edges {
+            return Err(PackageHydrationError::RootEdgeLimitExceeded {
+                limit: self.limits.max_root_edges,
+                attempted,
+            });
+        }
+        Ok(())
+    }
+
+    fn check_solved_dependencies(&self, count: usize) -> HydrationResult<()> {
+        let attempted = u64::try_from(count)
+            .map_err(|_error| PackageHydrationError::DependencyCountOverflow)?;
+        if attempted > self.limits.max_dependency_edges {
+            return Err(PackageHydrationError::DependencyLimitExceeded {
+                limit: self.limits.max_dependency_edges,
+                attempted,
+            });
+        }
+        Ok(())
+    }
+
+    fn add_dependencies(&mut self, count: u64) -> HydrationResult<()> {
+        let attempted = self
+            .dependencies
+            .checked_add(count)
+            .ok_or(PackageHydrationError::DependencyCountOverflow)?;
+        if attempted > self.limits.max_dependency_edges {
+            return Err(PackageHydrationError::DependencyLimitExceeded {
+                limit: self.limits.max_dependency_edges,
+                attempted,
+            });
+        }
+        self.dependencies = attempted;
+        Ok(())
+    }
+
+    fn add_exports(&mut self, count: u64) -> HydrationResult<()> {
+        let attempted = self
+            .exports
+            .checked_add(count)
+            .ok_or(PackageHydrationError::ExportCountOverflow)?;
+        if attempted > self.limits.max_exports {
+            return Err(PackageHydrationError::ExportLimitExceeded {
+                limit: self.limits.max_exports,
+                attempted,
+            });
+        }
+        self.exports = attempted;
+        Ok(())
     }
 
     fn add_files(&mut self, count: u64) -> HydrationResult<()> {
@@ -240,7 +334,11 @@ impl PackageModuleSnapshot {
                 .then(|| self.resolve_relative(base, specifier));
         }
         if specifier.starts_with('/') || Url::parse(specifier).is_ok() {
-            return None;
+            return base.starts_with("den-pkg:").then(|| {
+                Err(PackageResolutionError::UnsupportedSpecifier {
+                    specifier: specifier.to_owned(),
+                })
+            });
         }
 
         let (package_name, export_name) = match split_bare_specifier(specifier) {
@@ -390,10 +488,13 @@ impl PackageStore {
     pub async fn hydrate_modules_with_limits(
         &self, solved: &SolveResult, limits: HydrationLimits,
     ) -> HydrationResult<PackageModuleSnapshot> {
+        let mut budget = HydrationBudget::new(limits);
+        budget.check_packages(solved.packages.len())?;
+        budget.check_root_edges(solved.roots.len())?;
+        budget.check_solved_dependencies(solved.dependencies.len())?;
         let selected = selected_packages(solved)?;
         let transaction = self.database().begin().await?;
         let mut snapshot = PackageModuleSnapshot::default();
-        let mut budget = HydrationBudget::new(limits);
 
         let mut expected_dependency_edges = Vec::new();
         for (key, selected_package) in &selected {
@@ -449,6 +550,11 @@ impl PackageStore {
                     selected_package.registry_id,
                 ))?;
 
+            let dependency_count = dependency::Entity::find()
+                .filter(dependency::Column::VersionId.eq(version_model.id))
+                .count(&transaction)
+                .await?;
+            budget.add_dependencies(dependency_count)?;
             let dependency_models = dependency::Entity::find()
                 .filter(dependency::Column::VersionId.eq(version_model.id))
                 .order_by_asc(dependency::Column::Ordinal)
@@ -523,6 +629,11 @@ impl PackageStore {
                 files.insert(file.path, url);
             }
 
+            let export_count = package_export::Entity::find()
+                .filter(package_export::Column::VersionId.eq(version_model.id))
+                .count(&transaction)
+                .await?;
+            budget.add_exports(export_count)?;
             let export_models = package_export::Entity::find()
                 .filter(package_export::Column::VersionId.eq(version_model.id))
                 .order_by_asc(package_export::Column::Name)
@@ -863,7 +974,11 @@ mod tests {
             .checked_add(u64::try_from(CHILD_SOURCE.len())?)
             .ok_or("fixture byte count overflowed")?;
 
-        let exact = HydrationLimits::new(2, total_bytes);
+        let mut exact = HydrationLimits::new(2, total_bytes);
+        exact.max_packages = 1;
+        exact.max_root_edges = 1;
+        exact.max_dependency_edges = 0;
+        exact.max_exports = 1;
         assert_eq!(
             store
                 .hydrate_modules_with_limits(&selected, exact)
@@ -891,7 +1006,45 @@ mod tests {
                 if limit == total_bytes - 1 && attempted == total_bytes
         ));
 
+        let mut package_limited = exact;
+        package_limited.max_packages = 0;
+        assert!(matches!(
+            store
+                .hydrate_modules_with_limits(&selected, package_limited)
+                .await,
+            Err(PackageHydrationError::PackageLimitExceeded {
+                limit:     0,
+                attempted: 1,
+            })
+        ));
+        let mut root_limited = exact;
+        root_limited.max_root_edges = 0;
+        assert!(matches!(
+            store
+                .hydrate_modules_with_limits(&selected, root_limited)
+                .await,
+            Err(PackageHydrationError::RootEdgeLimitExceeded {
+                limit:     0,
+                attempted: 1,
+            })
+        ));
+        let mut export_limited = exact;
+        export_limited.max_exports = 0;
+        assert!(matches!(
+            store
+                .hydrate_modules_with_limits(&selected, export_limited)
+                .await,
+            Err(PackageHydrationError::ExportLimitExceeded {
+                limit:     0,
+                attempted: 1,
+            })
+        ));
+
         let defaults = HydrationLimits::default();
+        assert!(defaults.max_packages > 0 && defaults.max_packages < u64::MAX);
+        assert!(defaults.max_root_edges > 0 && defaults.max_root_edges < u64::MAX);
+        assert!(defaults.max_dependency_edges > 0 && defaults.max_dependency_edges < u64::MAX);
+        assert!(defaults.max_exports > 0 && defaults.max_exports < u64::MAX);
         assert!(defaults.max_files > 0 && defaults.max_files < u64::MAX);
         assert!(defaults.max_bytes > 0 && defaults.max_bytes < u64::MAX);
         Ok(())
@@ -912,6 +1065,55 @@ mod tests {
             bytes.add_bytes(1),
             Err(PackageHydrationError::ByteCountOverflow)
         ));
+
+        let mut dependencies = HydrationBudget::new(HydrationLimits::default());
+        dependencies.dependencies = u64::MAX;
+        assert!(matches!(
+            dependencies.add_dependencies(1),
+            Err(PackageHydrationError::DependencyCountOverflow)
+        ));
+
+        let mut exports = HydrationBudget::new(HydrationLimits::default());
+        exports.exports = u64::MAX;
+        assert!(matches!(
+            exports.add_exports(1),
+            Err(PackageHydrationError::ExportCountOverflow)
+        ));
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertion verifies dependency rows are counted before loading"
+    )]
+    async fn hydration_counts_dependency_rows_before_loading_them() -> TestResult {
+        let (store, selected) = fixture().await?;
+        let package = selected
+            .packages
+            .first()
+            .ok_or("fixture has no selected package")?;
+        store
+            .database()
+            .execute_raw(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "INSERT INTO dependency(version_id, ordinal, kind, target_registry_id, \
+                 package_name, requirement, alias) VALUES (?, 0, 'normal', ?, '@scope/app', '*', \
+                 NULL)",
+                [package.version_id.0.into(), package.registry_id.0.into()],
+            ))
+            .await?;
+        let limits = HydrationLimits {
+            max_dependency_edges: 0,
+            ..HydrationLimits::default()
+        };
+        assert!(matches!(
+            store.hydrate_modules_with_limits(&selected, limits).await,
+            Err(PackageHydrationError::DependencyLimitExceeded {
+                limit:     0,
+                attempted: 1,
+            })
+        ));
+        Ok(())
     }
 
     #[tokio::test]
@@ -1069,6 +1271,12 @@ mod tests {
             snapshot.resolve_if_claimed(&app, "@invalid"),
             Some(Err(PackageResolutionError::InvalidBareSpecifier { .. }))
         ));
+        for specifier in ["https://example.invalid/escape.js", "/tmp/escape.js"] {
+            assert!(matches!(
+                snapshot.resolve_if_claimed(&app, specifier),
+                Some(Err(PackageResolutionError::UnsupportedSpecifier { .. }))
+            ));
+        }
         assert!(matches!(
             snapshot.resolve_if_claimed("entry", &secret),
             Some(Err(PackageResolutionError::DirectCanonicalImport { .. }))
