@@ -1,47 +1,8 @@
 use color_eyre::eyre;
 use den_capabilities::{Capability, Decision, Policy};
-use rquickjs::allocator::Allocator as _;
 
-use super::{
-    DEFAULT_GC_THRESHOLD, DEFAULT_MAX_STACK_SIZE, EngineBuilder, allocator::BoundedAllocator,
-};
+use super::{DEFAULT_GC_THRESHOLD, DEFAULT_MAX_STACK_SIZE, EngineBuilder};
 use crate::engine::EngineError;
-
-#[test]
-fn allocator_accounts_for_alloc_realloc_and_dealloc() {
-    let mut allocator = BoundedAllocator::new(Some(32));
-    let allocation = allocator.alloc(8);
-    assert!(!allocation.is_null(), "the first allocation should fit");
-    assert_eq!(allocator.used(), 8, "allocation must be accounted");
-
-    // SAFETY: `allocation` is live and came from this allocator.
-    let allocation = unsafe { allocator.realloc(allocation, 24) };
-    assert!(!allocation.is_null(), "the realloc should fit");
-    assert_eq!(allocator.used(), 24, "growth must be accounted");
-
-    // SAFETY: `allocation` remains live when a realloc fails.
-    let rejected = unsafe { allocator.realloc(allocation, 40) };
-    assert!(rejected.is_null(), "growth past the limit must fail");
-    assert_eq!(allocator.used(), 24, "failed growth must roll back");
-
-    // SAFETY: the failed realloc left `allocation` live.
-    unsafe { allocator.dealloc(allocation) };
-    assert_eq!(allocator.used(), 0, "deallocation must release usage");
-}
-
-#[test]
-fn allocator_rejects_overflow_without_changing_usage() {
-    let mut allocator = BoundedAllocator::new(None);
-    assert!(
-        allocator.calloc(usize::MAX, 2).is_null(),
-        "overflowing calloc must fail"
-    );
-    assert!(
-        allocator.alloc(usize::MAX).is_null(),
-        "overflowing allocation must fail"
-    );
-    assert_eq!(allocator.used(), 0, "rejected requests must not count");
-}
 
 #[test]
 fn builder_defaults_are_bounded_and_deny_by_default() {

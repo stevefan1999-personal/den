@@ -3,12 +3,18 @@
 //! A helper lives here only once at least two crates would otherwise copy it;
 //! crate-specific logic stays in the crate.
 
-use std::ffi::CString;
+use std::{ffi::CString, mem::MaybeUninit};
 
 use rquickjs::{
-    ArrayBuffer, Class, Coerced, Constructor, Ctx, Error, Exception, FromJs, Function, Object,
-    Proxy, Result, Value, atom::PredefinedAtom, class::JsClass, function::IntoArgs, object::Filter,
-    proxy::ProxyHandler, qjs,
+    ArrayBuffer, Class, Coerced, Constructor, Ctx, Error, Exception, FromJs, Function, JsLifetime,
+    Object, Proxy, Result, Value,
+    atom::PredefinedAtom,
+    class::JsClass,
+    function::{IntoArgs, This},
+    object::Filter,
+    proxy::ProxyHandler,
+    qjs,
+    runtime::UserDataError,
 };
 
 pub mod stack;
@@ -18,36 +24,118 @@ pub mod stack;
 /// the caller saw.
 pub struct BufferSource(Vec<u8>);
 
+#[derive(JsLifetime)]
+struct BufferSourceIntrinsics<'js> {
+    data_view_buffer: Function<'js>,
+    data_view_offset: Function<'js>,
+    data_view_length: Function<'js>,
+}
+
+/// Capture DataView's native accessors before user code can replace globals or
+/// shadow properties on individual views.
+pub fn install_buffer_source_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
+    let data_view: Object = ctx.globals().get("DataView")?;
+    let prototype: Object = data_view.get("prototype")?;
+    let object: Object = ctx.globals().get("Object")?;
+    let descriptor: Function = object.get(PredefinedAtom::GetOwnPropertyDescriptor)?;
+    let getter = |name| -> Result<Function> {
+        descriptor
+            .call::<_, Object>((prototype.clone(), name))?
+            .get("get")
+    };
+    ctx.store_userdata(BufferSourceIntrinsics {
+        data_view_buffer: getter("buffer")?,
+        data_view_offset: getter("byteOffset")?,
+        data_view_length: getter("byteLength")?,
+    })
+    .map(|_| ())
+    .map_err(|_error| Error::UserData(UserDataError(())))
+}
+
 impl BufferSource {
     pub fn bytes(&self) -> &[u8] { &self.0 }
 
     pub fn into_bytes(self) -> Vec<u8> { self.0 }
 
-    /// `ArrayBuffer.isView` — the one brand check that covers every typed
-    /// array and `DataView` without enumerating them, and that no ordinary
-    /// object can forge.
-    pub fn is_array_buffer_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {
-        ctx.globals()
-            .get::<_, Object<'js>>("ArrayBuffer")?
-            .get::<_, Function<'js>>("isView")?
-            .call((value.clone(),))
+    /// Intrinsic brand check for every typed array and `DataView`.
+    pub fn is_array_buffer_view(_ctx: &Ctx<'_>, value: &Value<'_>) -> Result<bool> {
+        let raw = value.as_raw();
+        // SAFETY: both functions only inspect the tag/class of a live JSValue.
+        Ok(unsafe { qjs::JS_GetTypedArrayType(raw) >= 0 || qjs::JS_IsDataView(raw) })
     }
 
-    /// Copy the bytes held by an `ArrayBufferView` through its
-    /// `buffer`/`byteOffset`/`byteLength` window.
+    /// Copy an `ArrayBufferView` through QuickJS's native window metadata.
     pub fn view_bytes<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
-        let type_error = || Exception::throw_type(ctx, "expected a BufferSource");
-        let view = value.as_object().ok_or_else(type_error)?;
-        let buffer: ArrayBuffer<'js> = view.get("buffer").map_err(|_error| type_error())?;
-        let offset: usize = view.get("byteOffset").map_err(|_error| type_error())?;
-        let length: usize = view.get("byteLength").map_err(|_error| type_error())?;
+        if unsafe { qjs::JS_GetTypedArrayType(value.as_raw()) >= 0 } {
+            return Self::typed_array_bytes(ctx, value);
+        }
+        if !unsafe { qjs::JS_IsDataView(value.as_raw()) } {
+            return Err(Exception::throw_type(ctx, "expected a BufferSource"));
+        }
+        let (buffer_getter, offset_getter, length_getter) = Self::data_view_intrinsics(ctx)?;
+        let buffer: ArrayBuffer = buffer_getter.call((This(value.clone()),))?;
+        let offset: usize = offset_getter.call((This(value.clone()),))?;
+        let length: usize = length_getter.call((This(value.clone()),))?;
+        Self::copy_window(ctx, &buffer, offset, length)
+    }
+
+    fn typed_array_bytes<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
+        let mut offset = MaybeUninit::<qjs::size_t>::uninit();
+        let mut length = MaybeUninit::<qjs::size_t>::uninit();
+        // SAFETY: the native brand was checked above; QuickJS owns the returned
+        // buffer value and initializes both window outputs on success.
+        let raw = unsafe {
+            qjs::JS_GetTypedArrayBuffer(
+                ctx.as_raw().as_ptr(),
+                value.as_raw(),
+                offset.as_mut_ptr(),
+                length.as_mut_ptr(),
+                core::ptr::null_mut(),
+            )
+        };
+        if unsafe { qjs::JS_IsException(raw) } {
+            return Err(Error::Exception);
+        }
+        // SAFETY: JS_GetTypedArrayBuffer transfers one owned value reference.
+        let buffer = unsafe { Value::from_raw(ctx.clone(), raw) };
+        let buffer = ArrayBuffer::from_value(buffer)
+            .ok_or_else(|| Exception::throw_type(ctx, "expected a BufferSource"))?;
+        let offset = usize::try_from(unsafe { offset.assume_init() })
+            .map_err(|_error| Exception::throw_type(ctx, "the view offset is too large"))?;
+        let length = usize::try_from(unsafe { length.assume_init() })
+            .map_err(|_error| Exception::throw_type(ctx, "the view length is too large"))?;
+        Self::copy_window(ctx, &buffer, offset, length)
+    }
+
+    fn copy_window(
+        ctx: &Ctx<'_>, buffer: &ArrayBuffer<'_>, offset: usize, length: usize,
+    ) -> Result<Vec<u8>> {
         let bytes = buffer
             .as_bytes()
             .ok_or_else(|| Exception::throw_type(ctx, "the buffer is detached"))?;
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| Exception::throw_type(ctx, "the view is out of bounds of its buffer"))?;
         bytes
-            .get(offset..offset.saturating_add(length))
+            .get(offset..end)
             .map(<[u8]>::to_vec)
             .ok_or_else(|| Exception::throw_type(ctx, "the view is out of bounds of its buffer"))
+    }
+
+    fn data_view_intrinsics<'js>(
+        ctx: &Ctx<'js>,
+    ) -> Result<(Function<'js>, Function<'js>, Function<'js>)> {
+        if ctx.userdata::<BufferSourceIntrinsics<'js>>().is_none() {
+            install_buffer_source_intrinsics(ctx)?;
+        }
+        let intrinsics = ctx
+            .userdata::<BufferSourceIntrinsics<'js>>()
+            .ok_or_else(|| Exception::throw_type(ctx, "BufferSource intrinsics are unavailable"))?;
+        Ok((
+            intrinsics.data_view_buffer.clone(),
+            intrinsics.data_view_offset.clone(),
+            intrinsics.data_view_length.clone(),
+        ))
     }
 }
 

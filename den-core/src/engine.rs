@@ -275,11 +275,13 @@ impl Engine {
     }
 
     pub(crate) async fn build(bundle: Bundle, settings: EngineSettings) -> Engine {
-        let runtime = settings
-            .runtime()
+        let runtime = AsyncRuntime::new()
             .unwrap_or_else(|error| panic!("could not create QuickJS runtime: {error}"));
         runtime.set_max_stack_size(settings.max_stack_size).await;
         runtime.set_gc_threshold(settings.gc_threshold).await;
+        if let Some(limit) = settings.heap_limit {
+            runtime.set_memory_limit(limit).await;
+        }
 
         #[cfg(feature = "stdlib-worker")]
         let worker_settings = settings.clone();
@@ -387,6 +389,7 @@ impl Engine {
         context
             .with(|ctx| {
                 den_util::stack::install(&ctx)?;
+                den_util::install_buffer_source_intrinsics(&ctx)?;
                 Self::store_userdata(&ctx, EvalSequence::default())?;
                 Self::store_userdata(&ctx, policy)?;
                 #[cfg(feature = "stdlib-process")]

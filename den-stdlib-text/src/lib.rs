@@ -1,8 +1,6 @@
-use either::Either;
+use den_util::BufferSource;
 use encoding_rs::{DecoderResult, Encoding};
-use rquickjs::{
-    ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
-};
+use rquickjs::{Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*};
 
 pub use crate::js_text_module as js_text;
 
@@ -44,50 +42,37 @@ impl TextDecoder {
     #[qjs(get, enumerable)]
     pub fn encoding(&self) -> String { self.encoding.name().to_ascii_lowercase() }
 
-    pub fn decode<'js>(
-        &self, buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<String> {
-        buffer.map_or_else(
-            || Ok(String::new()),
-            |buffer| {
-                let mut decoder = if self.ignore_bom {
-                    self.encoding.new_decoder_without_bom_handling()
-                } else {
-                    self.encoding.new_decoder()
-                };
+    pub fn decode(&self, buffer: Option<BufferSource>, ctx: Ctx<'_>) -> Result<String> {
+        let Some(buffer) = buffer else {
+            return Ok(String::new());
+        };
+        let mut decoder = if self.ignore_bom {
+            self.encoding.new_decoder_without_bom_handling()
+        } else {
+            self.encoding.new_decoder()
+        };
+        let buffer = buffer.bytes();
+        let len = if self.fatal {
+            decoder.max_utf8_buffer_length_without_replacement(buffer.len())
+        } else {
+            decoder.max_utf8_buffer_length(buffer.len())
+        };
 
-                // Native rquickjs conversions are immune to replaced globals and
-                // shadowing properties on the view.
-                let buffer = match &buffer {
-                    Either::Left(buffer) => buffer.as_bytes(),
-                    Either::Right(buffer) => buffer.as_bytes(),
-                }
-                .ok_or_else(|| Exception::throw_type(&ctx, "buffer is detached"))?;
-
-                let len = if self.fatal {
-                    decoder.max_utf8_buffer_length_without_replacement(buffer.len())
-                } else {
-                    decoder.max_utf8_buffer_length(buffer.len())
-                };
-
-                let mut output = len.map_or_else(String::new, String::with_capacity);
-                if self.fatal {
-                    let (res, _) =
-                        decoder.decode_to_string_without_replacement(buffer, &mut output, true);
-                    if let DecoderResult::Malformed(_, _) = res {
-                        Err(Exception::throw_type(
-                            &ctx,
-                            "invalid decoding encountered and no replacements allowed",
-                        ))
-                    } else {
-                        Ok(output)
-                    }
-                } else {
-                    let _ = decoder.decode_to_string(buffer, &mut output, true);
-                    Ok(output)
-                }
-            },
-        )
+        let mut output = len.map_or_else(String::new, String::with_capacity);
+        if self.fatal {
+            let (res, _) = decoder.decode_to_string_without_replacement(buffer, &mut output, true);
+            if let DecoderResult::Malformed(_, _) = res {
+                Err(Exception::throw_type(
+                    &ctx,
+                    "invalid decoding encountered and no replacements allowed",
+                ))
+            } else {
+                Ok(output)
+            }
+        } else {
+            let _ = decoder.decode_to_string(buffer, &mut output, true);
+            Ok(output)
+        }
     }
 }
 
