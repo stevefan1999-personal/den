@@ -14,6 +14,7 @@ keywords.workspace = true
 test = false
 
 [dependencies]
+den-stdlib-core.workspace = true
 either.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = [

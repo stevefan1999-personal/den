@@ -161,7 +161,7 @@ impl Default for SignalHub {
 
 // SAFETY: the hub stores `Persistent` handles tied to the runtime, not to a
 // `'js` borrow, so the type is the same for every lifetime.
-unsafe impl<'js> JsLifetime<'js> for SignalHub {
+unsafe impl JsLifetime<'_> for SignalHub {
     type Changed<'to> = SignalHub;
 }
 
@@ -169,7 +169,7 @@ impl SignalHub {
     pub fn install(ctx: &Ctx<'_>) -> Result<()> {
         ctx.store_userdata(Self::default())
             .map(|_| ())
-            .map_err(|_| rquickjs::Error::UserData(UserDataError(())))
+            .map_err(|_error| rquickjs::Error::UserData(UserDataError(())))
     }
 
     /// Mark this realm as one with no root event loop, so that it says so
@@ -243,8 +243,7 @@ impl SignalHub {
                     saved
                         .clone()
                         .restore(ctx)
-                        .map(|func| func != listener)
-                        .unwrap_or(true)
+                        .map_or(true, |func| func != listener)
                 });
                 list.is_empty()
             }) && listeners.remove(&sig).is_some()
@@ -326,17 +325,7 @@ impl SignalHub {
             let Ok(func) = saved.restore(ctx) else {
                 continue;
             };
-            match func.call::<_, ()>(()) {
-                Ok(()) => {}
-                Err(rquickjs::Error::Exception) => {
-                    let caught = ctx.catch();
-                    match caught.as_exception() {
-                        Some(exception) => eprintln!("{exception}"),
-                        None => eprintln!("{caught:?}"),
-                    }
-                }
-                Err(error) => eprintln!("{error}"),
-            }
+            den_stdlib_core::exceptions::report_uncaught(ctx, func.call::<_, ()>(()));
         }
     }
 
@@ -404,7 +393,7 @@ impl SignalHub {
 
     /// `SIG_DFL`, no flags, empty mask.
     #[cfg(unix)]
-    fn default_disposition() -> libc::sigaction {
+    const fn default_disposition() -> libc::sigaction {
         // SAFETY: `sigaction` is a plain C struct with no invalid bit patterns.
         let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
         action.sa_sigaction = libc::SIG_DFL;
@@ -437,7 +426,10 @@ impl SignalHub {
     /// `async_with` gives the runtime lock up at every `Pending`, so a listener
     /// can run while the entry is parked. The entry is polled through `&mut`
     /// and never dropped.
-    pub async fn deliver_while<T>(context: &AsyncContext, entry: impl Future<Output = T>) -> T {
+    pub async fn deliver_while<T, F>(context: &AsyncContext, entry: F) -> T
+    where
+        F: Future<Output = T>,
+    {
         let mut inbox = context.with(|ctx| Self::take_inbox(&ctx)).await;
         let mut entry = pin!(entry);
         let out = loop {
@@ -469,8 +461,8 @@ impl SignalHub {
     }
 
     fn take_inbox(ctx: &Ctx<'_>) -> Option<UnboundedReceiver<String>> {
-        ctx.userdata::<Self>()
-            .and_then(|hub| hub.inbox.borrow_mut().take())
+        let hub = ctx.userdata::<Self>()?;
+        hub.inbox.borrow_mut().take()
     }
 
     fn put_inbox(ctx: &Ctx<'_>, inbox: Option<UnboundedReceiver<String>>) {
