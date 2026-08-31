@@ -35,6 +35,9 @@ Made during the Easter holiday of 2023.
   WPT expects the official `vendor/wpt` server on ports 8000–8002; the CI workflow contains the
   matching startup and cleanup command.
 - Import maps and import attributes (`json` / `text` / `bytes`)
+- Headless WebGPU compute as `den:webgpu` and `navigator.gpu` (wgpu 30; adapter,
+  device, WGSL compute, buffers, mapping, error scopes). No canvas or surface
+  API. `DENO_WEBGPU_BACKEND=noop` is the hermetic test backend.
 - The WebAssembly JS API on wasmtime 48, with a `jit` feature (native Cranelift)
   and Pulley for no-JIT / unsupported hosts (App Store, hardened runtime, iOS)
 - Optional WASI preview1 imports as `den:wasm`'s `wasiImports` (`--features wasi`)

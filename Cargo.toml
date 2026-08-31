@@ -22,6 +22,7 @@ members = [
     "den-stdlib-text",
     "den-stdlib-timer",
     "den-stdlib-wasm",
+    "den-stdlib-webgpu",
     "den-stdlib-whatwg",
     "den-stdlib-worker",
     "den-transpiler-oxc",
@@ -62,6 +63,7 @@ den-stdlib-temporal = { version = "0.4.0", path = "den-stdlib-temporal" }
 den-stdlib-text = { version = "0.4.0", path = "den-stdlib-text" }
 den-stdlib-timer = { version = "0.4.0", path = "den-stdlib-timer" }
 den-stdlib-wasm = { version = "0.4.0", path = "den-stdlib-wasm", default-features = false }
+den-stdlib-webgpu = { version = "0.4.0", path = "den-stdlib-webgpu" }
 den-stdlib-whatwg = { version = "0.4.0", path = "den-stdlib-whatwg", default-features = false }
 den-stdlib-worker = { version = "0.4.0", path = "den-stdlib-worker", default-features = false }
 den-transpiler-oxc = { version = "0.4.0", path = "den-transpiler-oxc", default-features = false }
@@ -181,6 +183,15 @@ wasmtime = { version = "48.0.0", default-features = false, features = [
 wasmtime-wasi = { version = "48.0.0", default-features = false, features = ["p1"] }
 wast = "257.0.1"
 wat = "1.257.1"
+wgpu = { version = "30.0.1", default-features = false, features = [
+    "dx12",
+    "gles",
+    "metal",
+    "noop",
+    "std",
+    "vulkan",
+    "wgsl",
+] }
 windows-sys = "0.61"
 
 [workspace.lints.rust]
@@ -781,6 +792,7 @@ stdlib-sqlite = ["den-core/stdlib-sqlite"]
 stdlib-temporal = ["den-core/stdlib-temporal"]
 stdlib-text = ["den-core/stdlib-text"]
 stdlib-timer = ["den-core/stdlib-timer"]
+stdlib-webgpu = ["den-core/stdlib-webgpu"]
 stdlib-whatwg = ["den-core/stdlib-whatwg"]
 stdlib-whatwg-fetch = ["den-core/stdlib-whatwg-fetch"]
 stdlib-worker = ["den-core/stdlib-worker"]

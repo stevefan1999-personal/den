@@ -16,6 +16,8 @@ assert(new Blob(["x"]) instanceof Blob);
 assertEquals(new Headers({ a: "b" }).get("a"), "b");
 assertEquals(typeof fetch, "function");
 assertEquals(typeof Worker, "function");
+assertEquals(typeof GPU, "function");
+assertEquals(typeof navigator.gpu.requestAdapter, "function");
 if (typeof WebAssembly === "object" && WebAssembly) {
   assertEquals(typeof WebAssembly.validate, "function");
 }

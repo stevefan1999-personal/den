@@ -50,6 +50,7 @@ den-stdlib-temporal = { workspace = true, optional = true }
 den-stdlib-text = { workspace = true, optional = true }
 den-stdlib-timer = { workspace = true, optional = true }
 den-stdlib-wasm = { workspace = true, optional = true, default-features = false }
+den-stdlib-webgpu = { workspace = true, optional = true }
 den-stdlib-whatwg = { workspace = true, optional = true }
 den-stdlib-worker = { workspace = true, optional = true, default-features = false }
 den-transpiler-oxc = { workspace = true, default-features = false, optional = true }
@@ -95,6 +96,7 @@ stdlib = [
     "stdlib-temporal",
     "stdlib-text",
     "stdlib-timer",
+    "stdlib-webgpu",
     "stdlib-whatwg-fetch",
     "stdlib-whatwg",
     "stdlib-worker",
@@ -117,6 +119,7 @@ stdlib-sqlite = ["dep:den-stdlib-sqlite"]
 stdlib-temporal = ["dep:den-stdlib-temporal"]
 stdlib-text = ["dep:den-stdlib-text"]
 stdlib-timer = ["dep:den-stdlib-timer"]
+stdlib-webgpu = ["dep:den-stdlib-webgpu"]
 stdlib-whatwg = ["dep:den-stdlib-whatwg"]
 # Compatibility feature: Fetch now lives in den-stdlib-whatwg, while its
 # `den:whatwg-fetch` module remains independently selectable.

@@ -27,6 +27,7 @@ den                              CLI, REPL, signals and tracing
     ├── den-stdlib-timer         timers
     ├── den-stdlib-whatwg        Fetch and WHATWG APIs
     ├── den-stdlib-wasm          WebAssembly through wasmtime
+    ├── den-stdlib-webgpu        headless WebGPU compute (`den:webgpu`)
     └── den-stdlib-worker        workers, events and structured clone
 
 den-config                       JSONC discovery and capability-policy conversion
@@ -90,8 +91,17 @@ must also be evaluated during context construction.
 Import-only modules include `den:assert`, `den:ffi`, `den:fs`, `den:http`,
 `den:kv`, `den:networking`, `den:path` and `den:sqlite`. Global-producing
 modules include console, core, crypto, process, Temporal, text, timers, WHATWG,
-workers and WebAssembly. WHATWG is evaluated after workers because its APIs
-extend worker-owned event classes.
+workers, WebAssembly and WebGPU. WHATWG is evaluated after workers because its
+APIs extend worker-owned event classes. WebGPU is evaluated after workers so
+`navigator.gpu` attaches to the existing `Navigator` instance.
+
+`den:webgpu` is a native rquickjs slice of the WebGPU compute path (adapter,
+device, buffers, WGSL compute pipelines, bind groups, command encoding, mapping
+and error scopes). Canvas, surfaces and Deno's BYOW window-handle bridge are
+out of scope: den has no host-owned surface. The public `wgpu` crate owns
+validation; mapped buffers are copy-in/copy-out `ArrayBuffer`s detached on
+`unmap`. `DENO_WEBGPU_BACKEND` selects backends (`noop` is the hermetic test
+backend).
 
 The loader chain is:
 
@@ -132,6 +142,9 @@ produce synthetic modules; other types fail loading.
   module surface, not a separate crate.
 - [`den:wasm`](den-stdlib-wasm/src/lib.rs) uses Cranelift under `jit` and Pulley
   otherwise. WASI is independently gated by the `wasi` feature.
+- [`den:webgpu`](den-stdlib-webgpu/src/lib.rs) is a headless compute slice of
+  WebGPU. It installs `navigator.gpu` and the GPU constructors as globals.
+  Canvas, surfaces and Deno's BYOW bridge are excluded.
 - `den:ffi` is denied at runtime unless the host grants the requested library
   path, even when the crate is compiled in.
 

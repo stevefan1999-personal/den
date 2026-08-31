@@ -338,6 +338,8 @@ impl Engine {
             "den:temporal" => den_stdlib_temporal::js_temporal,
             #[cfg(feature = "wasm")]
             "den:wasm" => den_stdlib_wasm::js_wasm,
+            #[cfg(feature = "stdlib-webgpu")]
+            "den:webgpu" => den_stdlib_webgpu::js_webgpu,
             #[cfg(feature = "stdlib-worker")]
             "den:worker" => den_stdlib_worker::js_worker,
             #[cfg(feature = "stdlib-whatwg")]
@@ -409,6 +411,7 @@ impl Engine {
                     feature = "stdlib-process",
                     feature = "stdlib-temporal",
                     feature = "wasm",
+                    feature = "stdlib-webgpu",
                     feature = "stdlib-worker",
                     feature = "stdlib-whatwg",
                 ))]
@@ -453,6 +456,11 @@ impl Engine {
                     )?;
                     Self::store_userdata(&ctx, Self::working_directory_url())?;
                 }
+
+                // After `den:worker` so `navigator.gpu` attaches to the existing
+                // Navigator instance instead of replacing it.
+                #[cfg(feature = "stdlib-webgpu")]
+                evaluate_stdlib_module!(den_stdlib_webgpu::js_webgpu, "den:webgpu");
 
                 // After `den:worker` so FileReader / XHR / EventSource / WebSocket
                 // can extend EventTarget. Fetch is already wired above.
