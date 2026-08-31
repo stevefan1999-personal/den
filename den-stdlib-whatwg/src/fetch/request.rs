@@ -16,8 +16,8 @@ pub struct ServerRequest<'js> {
 
 use super::{
     body::{
-        apply_body_types, is_readable_stream, is_valid_method, stream_is_locked, tee_stream,
-        value_as_body_stream, value_to_bytes,
+        apply_body_types, is_readable_stream, is_valid_method, stream_is_disturbed,
+        stream_is_locked, tee_stream, value_as_body_stream, value_to_bytes,
     },
     headers::{Guard, Headers, is_forbidden_method},
 };
@@ -140,11 +140,7 @@ impl<'js> Request<'js> {
     }
 
     fn is_body_used(&self) -> bool {
-        self.body_used
-            || self
-                .body_stream
-                .as_ref()
-                .is_some_and(super::body::stream_is_disturbed)
+        self.body_used || self.body_stream.as_ref().is_some_and(stream_is_disturbed)
     }
 
     pub(crate) fn take_body(&mut self, ctx: &Ctx<'_>) -> Result<Option<Value<'js>>> {
@@ -498,7 +494,7 @@ impl<'js> Request<'js> {
         let mut body_stream = None;
         if let Some(value) = body.take() {
             if is_readable_stream(&ctx, &value) {
-                if stream_is_locked(&value) || super::body::stream_is_disturbed(&value) {
+                if stream_is_locked(&value) || stream_is_disturbed(&value) {
                     return Err(Exception::throw_type(
                         &ctx,
                         "ReadableStream is locked or disturbed",
@@ -537,7 +533,7 @@ impl<'js> Request<'js> {
                     (existing.body.clone(), existing.body_stream.clone())
                 };
                 if let Some(stream) = source_stream {
-                    if stream_is_locked(&stream) || super::body::stream_is_disturbed(&stream) {
+                    if stream_is_locked(&stream) || stream_is_disturbed(&stream) {
                         return Err(Exception::throw_type(
                             &ctx,
                             "ReadableStream is locked or disturbed",
@@ -641,7 +637,7 @@ impl<'js> Request<'js> {
                 )?
             }
         };
-        if stream_is_locked(&stream) || super::body::stream_is_disturbed(&stream) {
+        if stream_is_locked(&stream) || stream_is_disturbed(&stream) {
             return Err(Exception::throw_type(&ctx, "Already read"));
         }
         if let Some(object) = stream.as_object()

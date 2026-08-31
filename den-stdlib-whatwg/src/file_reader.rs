@@ -265,16 +265,15 @@ impl<'js> FileReader<'js> {
         FileReader::later(&ctx, move |ctx| {
             let ctx_run = ctx.clone();
             ctx_run.spawn(async move {
-                FileReader::finish_load(this, ctx, bytes, kind, encoding, mime, aborted).await;
+                FileReader::finish_load(this, ctx, bytes, kind, encoding, mime, aborted);
             });
         });
     }
 
-    async fn finish_load(
+    fn finish_load(
         this: Class<'js, Self>, ctx: Ctx<'js>, bytes: Vec<u8>, kind: ReadKind,
         encoding: Option<String>, mime: String, aborted: Rc<Cell<bool>>,
     ) {
-        std::future::ready(()).await;
         if !FileReader::is_loading(&this, &aborted) {
             return;
         }

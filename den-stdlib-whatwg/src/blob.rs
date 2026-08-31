@@ -119,7 +119,7 @@ impl Blob {
 impl Blob {
     #[qjs(constructor)]
     pub fn new<'js>(
-        ctx: Ctx<'js>, blob_parts: Opt<Value<'js>>, options: Opt<Value<'js>>,
+        ctx: Ctx<'js>, blob_parts: Opt<Value<'js>>, options: Opt<Option<Object<'js>>>,
     ) -> Result<Self> {
         let parts = match blob_parts.0 {
             None => empty_sequence(&ctx)?,
@@ -127,7 +127,7 @@ impl Blob {
             Some(value) => value,
         };
         let collected = collect_parts(&ctx, parts)?;
-        let bag = parse_blob_bag(&ctx, options.0)?;
+        let bag = parse_blob_bag(&ctx, options.0.flatten())?;
         Ok(Self {
             inner: Inner::from_collected(collected, bag.type_, bag.native),
         })
@@ -139,17 +139,18 @@ impl Blob {
     #[qjs(get, enumerable, rename = "type")]
     pub fn mime_type_js(&self) -> String { self.inner.mime_type().to_string() }
 
-    pub async fn text(&self) -> String {
-        std::future::ready(String::from_utf8_lossy(self.inner.bytes()).into_owned()).await
-    }
+    #[expect(clippy::unused_async, reason = "Blob.text returns a Promise")]
+    pub async fn text(&self) -> String { String::from_utf8_lossy(self.inner.bytes()).into_owned() }
 
+    #[expect(clippy::unused_async, reason = "Blob.arrayBuffer returns a Promise")]
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        std::future::ready(ArrayBuffer::new_copy(ctx, self.inner.bytes())).await
+        ArrayBuffer::new_copy(ctx, self.inner.bytes())
     }
 
     #[qjs(rename = "bytes")]
+    #[expect(clippy::unused_async, reason = "Blob.bytes returns a Promise")]
     pub async fn bytes_js<'js>(&self, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        std::future::ready(TypedArray::<u8>::new_copy(ctx, self.inner.bytes())).await
+        TypedArray::<u8>::new_copy(ctx, self.inner.bytes())
     }
 
     pub fn stream<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, ReadableStream<'js>>> {
@@ -202,7 +203,7 @@ impl File {
     #[qjs(constructor)]
     pub fn new<'js>(
         ctx: Ctx<'js>, file_bits: Opt<Value<'js>>, file_name: Opt<Value<'js>>,
-        options: Opt<Value<'js>>,
+        options: Opt<Option<Object<'js>>>,
     ) -> Result<Self> {
         let Some(file_bits) = file_bits.0 else {
             return Err(Host::throw_type(
@@ -218,7 +219,7 @@ impl File {
         };
         let collected = collect_parts(&ctx, file_bits)?;
         let name = coerce_string(&ctx, file_name)?;
-        let (bag, last_modified) = parse_file_bag(&ctx, options.0)?;
+        let (bag, last_modified) = parse_file_bag(&ctx, options.0.flatten())?;
         Ok(Self {
             inner: Inner::from_collected(collected, bag.type_, bag.native),
             name,
@@ -239,17 +240,18 @@ impl File {
     #[qjs(get, enumerable, rename = "type")]
     pub fn mime_type_js(&self) -> String { self.inner.mime_type().to_string() }
 
-    pub async fn text(&self) -> String {
-        std::future::ready(String::from_utf8_lossy(self.inner.bytes()).into_owned()).await
-    }
+    #[expect(clippy::unused_async, reason = "File.text returns a Promise")]
+    pub async fn text(&self) -> String { String::from_utf8_lossy(self.inner.bytes()).into_owned() }
 
+    #[expect(clippy::unused_async, reason = "File.arrayBuffer returns a Promise")]
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        std::future::ready(ArrayBuffer::new_copy(ctx, self.inner.bytes())).await
+        ArrayBuffer::new_copy(ctx, self.inner.bytes())
     }
 
     #[qjs(rename = "bytes")]
+    #[expect(clippy::unused_async, reason = "File.bytes returns a Promise")]
     pub async fn bytes_js<'js>(&self, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        std::future::ready(TypedArray::<u8>::new_copy(ctx, self.inner.bytes())).await
+        TypedArray::<u8>::new_copy(ctx, self.inner.bytes())
     }
 
     pub fn stream<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, ReadableStream<'js>>> {
@@ -309,8 +311,7 @@ fn collect_parts<'js>(ctx: &Ctx<'js>, parts: Value<'js>) -> Result<Vec<Part>> {
     Ok(chunks)
 }
 
-fn parse_blob_bag<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<BlobBag> {
-    let object = dictionary_object(ctx, options)?;
+fn parse_blob_bag<'js>(ctx: &Ctx<'js>, object: Option<Object<'js>>) -> Result<BlobBag> {
     let Some(object) = object else {
         return Ok(BlobBag {
             type_:  String::new(),
@@ -323,9 +324,8 @@ fn parse_blob_bag<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<Bl
 }
 
 fn parse_file_bag<'js>(
-    ctx: &Ctx<'js>, options: Option<Value<'js>>,
+    ctx: &Ctx<'js>, object: Option<Object<'js>>,
 ) -> Result<(BlobBag, Option<f64>)> {
-    let object = dictionary_object(ctx, options)?;
     let Some(object) = object else {
         return Ok((
             BlobBag {
@@ -339,24 +339,6 @@ fn parse_file_bag<'js>(
     let last_modified = read_last_modified(ctx, &object)?;
     let type_ = read_type(ctx, &object)?;
     Ok((BlobBag { type_, native }, last_modified))
-}
-
-fn dictionary_object<'js>(
-    ctx: &Ctx<'js>, options: Option<Value<'js>>,
-) -> Result<Option<Object<'js>>> {
-    let Some(value) = options else {
-        return Ok(None);
-    };
-    if value.is_undefined() || value.is_null() {
-        return Ok(None);
-    }
-    if value.is_object() || value.as_function().is_some() {
-        return Ok(value.as_object().cloned());
-    }
-    Err(Host::throw_type(
-        ctx,
-        "Failed to construct 'Blob': parameter 2 cannot convert to dictionary.",
-    ))
 }
 
 fn read_endings<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool> {

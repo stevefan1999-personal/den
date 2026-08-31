@@ -220,7 +220,7 @@ impl<'js> Response<'js> {
         if let Some(value) = stream
             && body::is_readable_stream(ctx, &value)
         {
-            if body::stream_is_locked(&value) || Self::stream_disturbed(&value) {
+            if body::stream_is_locked(&value) || body::stream_is_disturbed(&value) {
                 return Err(Exception::throw_type(ctx, "ReadableStream is locked"));
             }
             if let Some(object) = value.as_object()
@@ -270,15 +270,6 @@ impl<'js> Response<'js> {
             }
         });
         Ok(promise)
-    }
-
-    fn stream_disturbed(value: &JsValue<'js>) -> bool {
-        value.as_object().is_some_and(|object| {
-            Class::<ReadableStream>::from_object(object)
-                .and_then(|stream| stream.try_borrow().ok().map(|stream| stream.is_disturbed()))
-                .or_else(|| object.get("_denDisturbed").ok())
-                .unwrap_or(false)
-        })
     }
 
     async fn next_chunk(&self, ctx: &Ctx<'js>) -> Result<Option<Vec<u8>>> {
@@ -586,7 +577,9 @@ impl<'js> Response<'js> {
                         )
                     } else if den_util::BufferSource::is_array_buffer_view(&ctx, &extracted)? {
                         (
-                            ResponseBody::Bytes(body::copy_view(&ctx, &extracted)?),
+                            ResponseBody::Bytes(den_util::BufferSource::view_bytes(
+                                &ctx, &extracted,
+                            )?),
                             None,
                         )
                     } else {
@@ -832,7 +825,7 @@ impl<'js> Response<'js> {
             && (self.consume_started.get()
                 || self.body_stream.as_ref().map_or_else(
                     || matches!(*self.inner.borrow(), ResponseBody::Taken),
-                    Self::stream_disturbed,
+                    body::stream_is_disturbed,
                 ))
     }
 
