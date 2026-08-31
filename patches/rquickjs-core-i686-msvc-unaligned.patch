@@ -1,0 +1,81 @@
+diff --git a/core/src/value/function/ffi.rs b/core/src/value/function/ffi.rs
+--- a/core/src/value/function/ffi.rs
++++ b/core/src/value/function/ffi.rs
+@@ -14,8 +14,8 @@ pub unsafe extern "C" fn defer_call_job(
+     argc: qjs::c_int,
+     argv: *mut qjs::JSValue,
+ ) -> qjs::JSValue {
+-    let func = *argv.offset((argc - 1) as _);
+-    let this = *argv.offset((argc - 2) as _);
++    let func = argv.offset((argc - 1) as _).read_unaligned();
++    let this = argv.offset((argc - 2) as _).read_unaligned();
+     let argc = argc - 2;
+     qjs::JS_Call(ctx, func, this, argc, argv)
+ }
+diff --git a/core/src/value/function/params.rs b/core/src/value/function/params.rs
+--- a/core/src/value/function/params.rs
++++ b/core/src/value/function/params.rs
+@@ -1,8 +1,8 @@
+ use crate::{
+     function::{Exhaustive, Flat, FuncArg, Opt, Rest, This},
+     qjs, Ctx, FromJs, Result, Value,
+ };
+-use alloc::vec::Vec;
+-use core::slice;
++use alloc::{borrow::Cow, vec::Vec};
++use core::{mem::size_of, slice};
+-
++
+ /// A struct which contains the values a callback is called with.
+@@ -11,9 +11,9 @@ pub struct Params<'a, 'js> {
+ pub struct Params<'a, 'js> {
+     ctx: Ctx<'js>,
+     function: qjs::JSValue,
+     this: qjs::JSValue,
+-    args: &'a [qjs::JSValue],
++    args: Cow<'a, [qjs::JSValue]>,
+     is_constructor: bool,
+ }
+-
++
+ impl<'a, 'js> Params<'a, 'js> {
+@@ -21,20 +21,35 @@ impl<'a, 'js> Params<'a, 'js> {
+     pub(crate) unsafe fn from_ffi_class(
+         ctx: *mut qjs::JSContext,
+         function: qjs::JSValue,
+         this: qjs::JSValue,
+         argc: qjs::c_int,
+         argv: *mut qjs::JSValue,
+         _flags: qjs::c_int,
+     ) -> Self {
+-        let args = if argv.is_null() {
++        let args: Cow<'a, [qjs::JSValue]> = if argv.is_null() {
+             assert_eq!(
+                 argc, 0,
+                 "got a null pointer from quickjs for a non-zero number of args"
+             );
+-            [].as_slice()
++            Cow::Borrowed(&[])
+         } else {
+             let argc = usize::try_from(argc).expect("invalid argument number");
+-            slice::from_raw_parts(argv, argc)
++            if argv.is_aligned() {
++                Cow::Borrowed(slice::from_raw_parts(argv, argc))
++            } else {
++                // QuickJS only guarantees four-byte alignment here on 32-bit MSVC.
++                let bytes = argv.cast::<u8>();
++                Cow::Owned(
++                    (0..argc)
++                        .map(|index| {
++                            bytes
++                                .add(index * size_of::<qjs::JSValue>())
++                                .cast::<qjs::JSValue>()
++                                .read_unaligned()
++                        })
++                        .collect(),
++                )
++            }
+         };
+-
++
+         Self {
