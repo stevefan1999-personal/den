@@ -9,7 +9,6 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 description = "SQLite-backed content-addressed package metadata and dependency resolution for Den"
-publish = false
 
 [dependencies]
 node-semver.workspace = true
