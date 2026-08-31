@@ -2,7 +2,7 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use den_util::{BufferSource, Probe as _};
+use den_util::{BufferSource, Probe as _, instance_of_global};
 use rquickjs::{
     Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs as _, Object, Result,
     TypedArray, Value,
@@ -24,10 +24,7 @@ pub fn optional_object<'js>(
 }
 
 pub fn is_readable_stream<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    is_instance_of_global(ctx, object, "ReadableStream")
+    instance_of_global(ctx, value, "ReadableStream").unwrap_or(false)
 }
 
 pub fn stream_is_locked(value: &Value<'_>) -> bool {
@@ -49,13 +46,6 @@ pub fn stream_is_disturbed(value: &Value<'_>) -> bool {
     })
 }
 
-pub fn is_instance_of_global<'js>(ctx: &Ctx<'js>, object: &Object<'js>, name: &str) -> bool {
-    let Ok(ctor) = ctx.globals().get::<_, Value>(name) else {
-        return false;
-    };
-    ctor.is_function() && object.is_instance_of(&ctor)
-}
-
 pub fn set_content_type_if_missing(headers: &Class<'_, Headers>, value: &str) {
     let mut headers = headers.borrow_mut();
     if !headers.map.contains_key("content-type") {
@@ -69,15 +59,11 @@ pub fn copy_buffer(ctx: &Ctx<'_>, bytes: Option<&[u8]>) -> Result<Vec<u8>> {
         .ok_or_else(|| Exception::throw_type(ctx, "buffer is detached"))
 }
 
-pub fn copy_view<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Vec<u8>> {
-    BufferSource::view_bytes(ctx, value)
-}
-
 pub fn apply_body_types<'js>(
     ctx: &Ctx<'js>, headers: &Class<'js, Headers>, mut body: Value<'js>,
 ) -> Result<Value<'js>> {
     if let Some(object) = body.as_object()
-        && is_instance_of_global(ctx, object, "URLSearchParams")
+        && instance_of_global(ctx, &body, "URLSearchParams")?
     {
         // ToString(URLSearchParams) is the urlencoded serialization.
         let text = den_util::coerce_string(ctx, object.clone().into_value())?;
@@ -85,7 +71,7 @@ pub fn apply_body_types<'js>(
         set_content_type_if_missing(headers, "application/x-www-form-urlencoded;charset=UTF-8");
     }
     if let Some(object) = body.as_object()
-        && is_instance_of_global(ctx, object, "FormData")
+        && instance_of_global(ctx, &body, "FormData")?
     {
         let empty = form_data_keys_empty(ctx, object)?;
         if empty {
@@ -114,7 +100,7 @@ pub fn apply_body_types<'js>(
         return Ok(body);
     }
     if let Some(object) = body.as_object()
-        && is_instance_of_global(ctx, object, "Blob")
+        && instance_of_global(ctx, &body, "Blob")?
     {
         let mime: Value = object.get("type")?;
         if let Some(mime) = mime.as_string() {
@@ -148,7 +134,7 @@ pub async fn value_to_bytes<'js>(ctx: &Ctx<'js>, body: Option<Value<'js>>) -> Re
         return copy_buffer(ctx, buffer.as_bytes());
     }
     if BufferSource::is_array_buffer_view(ctx, &body)? {
-        return copy_view(ctx, &body);
+        return BufferSource::view_bytes(ctx, &body);
     }
     if let Some(object) = body.as_object() {
         let method: Value = object.get("arrayBuffer")?;
@@ -217,7 +203,7 @@ pub async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<
             continue;
         }
         if BufferSource::is_array_buffer_view(ctx, &value)? {
-            out.extend(copy_view(ctx, &value)?);
+            out.extend(BufferSource::view_bytes(ctx, &value)?);
             continue;
         }
         return Err(Exception::throw_type(
@@ -434,7 +420,7 @@ pub fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Va
         return bytes_to_stream(ctx, &copy_buffer(ctx, buffer.as_bytes())?);
     }
     if BufferSource::is_array_buffer_view(ctx, &value)? {
-        return bytes_to_stream(ctx, &copy_view(ctx, &value)?);
+        return bytes_to_stream(ctx, &BufferSource::view_bytes(ctx, &value)?);
     }
     if let Some(object) = value.as_object() {
         let method: Value = object.get("arrayBuffer")?;
@@ -445,7 +431,7 @@ pub fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Va
             .get::<_, Value>("buffer")
             .is_ok_and(|buffer| !buffer.is_undefined() && !buffer.is_null())
         {
-            return bytes_to_stream(ctx, &copy_view(ctx, &value)?);
+            return bytes_to_stream(ctx, &BufferSource::view_bytes(ctx, &value)?);
         }
     }
     ReadableStream::from_queue(ctx, Vec::new()).map(rquickjs::Class::into_value)
@@ -654,7 +640,7 @@ async fn pull_text_chunk<'js>(
         let bytes = if let Ok(buffer) = ArrayBuffer::from_js(ctx, chunk.clone()) {
             copy_buffer(ctx, buffer.as_bytes())?
         } else if BufferSource::is_array_buffer_view(ctx, &chunk)? {
-            copy_view(ctx, &chunk)?
+            BufferSource::view_bytes(ctx, &chunk)?
         } else {
             Vec::new()
         };
@@ -687,7 +673,7 @@ fn array_buffer_method_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<
                         let bytes = if let Ok(buffer) = ArrayBuffer::from_js(&ctx, buf.clone()) {
                             copy_buffer(&ctx, buffer.as_bytes())?
                         } else if BufferSource::is_array_buffer_view(&ctx, &buf)? {
-                            copy_view(&ctx, &buf)?
+                            BufferSource::view_bytes(&ctx, &buf)?
                         } else {
                             Vec::new()
                         };
