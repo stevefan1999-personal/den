@@ -1,0 +1,61 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: openebs-zfspv-arc
+provisioner: zfs.csi.openebs.io
+parameters:
+  compression: zstd
+  fstype: zfs
+  poolname: pool-970-evo-4223x/k0s/openebs
+  shared: "yes"
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: kubernetes.io/hostname
+        values: [serv]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: arc-runners-isolation
+  namespace: arc-runners
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: "::/0" }
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: arc-kubernetes-apiserver
+  namespace: arc-runners
+spec:
+  podSelector:
+    matchLabels:
+      actions.github.com/scale-set-name: k0s-arc-kubernetes
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: { cidr: 10.96.0.1/32 }
+        - ipBlock: { cidr: "fd01::1/128" }
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock: { cidr: 192.168.2.10/32 }
+        - ipBlock: { cidr: "fd02::10/128" }
+      ports:
+        - { protocol: TCP, port: 6443 }

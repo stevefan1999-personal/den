@@ -1,0 +1,22 @@
+replicaCount: 1
+serviceAccount:
+  create: true
+  name: arc-controller
+flags:
+  healthProbeBindAddress: :8081
+  logFormat: json
+  logLevel: info
+  updateStrategy: eventual
+  watchSingleNamespace: arc-runners
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits: { cpu: 500m, memory: 512Mi }
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile: { type: RuntimeDefault }
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities: { drop: [ALL] }
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000

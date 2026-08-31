@@ -1,0 +1,50 @@
+githubConfigUrl: https://github.com/stevefan1999-personal/den
+githubConfigSecret: arc-github-auth
+runnerScaleSetName: k0s-arc-runners
+minRunners: 0
+maxRunners: 2
+controllerServiceAccount:
+  name: arc-controller
+  namespace: arc-systems
+listenerTemplate:
+  spec:
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile: { type: RuntimeDefault }
+    containers:
+      - name: listener
+        resources:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { cpu: 250m, memory: 256Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsNonRoot: true
+template:
+  spec:
+    automountServiceAccountToken: false
+    securityContext:
+      fsGroup: 1001
+      runAsGroup: 1001
+      runAsNonRoot: true
+      runAsUser: 1001
+      seccompProfile: { type: RuntimeDefault }
+    containers:
+      - name: runner
+        image: localhost/den-arc-runner:2.337.0-r1
+        imagePullPolicy: Never
+        command: [/home/runner/run.sh]
+        resources:
+          requests: { cpu: 250m, memory: 512Mi }
+          limits: { cpu: "2", memory: 4Gi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsGroup: 1001
+          runAsNonRoot: true
+          runAsUser: 1001
+        volumeMounts:
+          - { name: work, mountPath: /home/runner/_work }
+    volumes:
+      - name: work
+        emptyDir: { sizeLimit: 5Gi }
