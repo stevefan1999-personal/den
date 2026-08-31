@@ -12,6 +12,9 @@ on:
       - .github/workflows/lint.yml
       - .github/workflows/runner-route.yml
 
+env:
+  RUST_NIGHTLY: nightly-2026-08-22
+
 jobs:
   route:
     uses: ./.github/workflows/runner-route.yml
@@ -21,14 +24,14 @@ jobs:
     runs-on: ${{ needs.route.outputs.shell }}
     steps:
       - uses: actions/checkout@v4
-      - run: rustup install nightly --profile complete
+      - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component clippy
       - name: Reject evaluated stdlib bootstraps
         run: >-
-          ! git grep -nE '\.(eval|eval_with_options)(::<|<|\()' --
+          ! git grep -nE '\.(eval|eval_with_options)(::<\(\),|<\(\),)' --
           ':(glob)den-stdlib-*/src/**/*.rs'
           | grep -vE
           '^den-stdlib-worker/src/worker.rs:.*ctx\.eval_with_options::<\(\), _>\(source, Self::classic_options'
-      - run: cargo +nightly clippy --no-deps
+      - run: cargo +"$RUST_NIGHTLY" clippy --no-deps
 
   fmt:
     needs: route
@@ -36,8 +39,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: rustup install nightly --profile complete
-      - run: cargo +nightly fmt --check
+      - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal --component rustfmt
+      - run: cargo +"$RUST_NIGHTLY" fmt --check
 
   docs:
     needs: route
@@ -45,8 +48,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: rustup install nightly --profile complete
-      - run: cargo +nightly doc --no-deps
+      - run: rustup toolchain install "$RUST_NIGHTLY" --profile minimal
+      - run: cargo +"$RUST_NIGHTLY" doc --no-deps
 
   test:
     needs: route

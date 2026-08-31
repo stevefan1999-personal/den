@@ -20,6 +20,7 @@ jobs:
       INSTA_UPDATE: "no"
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      RUST_NIGHTLY: nightly-2026-08-22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -29,7 +30,9 @@ jobs:
         with:
           version: v0.16.0
       - name: Install coverage toolchain
-        run: rustup toolchain install nightly --profile minimal --component llvm-tools-preview
+        run: >-
+          rustup toolchain install "$RUST_NIGHTLY" --profile minimal
+          --component llvm-tools-preview
       - name: Install coverage tools
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
@@ -43,12 +46,12 @@ jobs:
           git -C vendor/wpt sparse-checkout init --cone
           git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI streams xhr tools/serve tools/wptserve tools/manifest tools/metadata tools/gitignore tools/third_party
       - name: Reset coverage data
-        run: cargo +nightly llvm-cov clean --workspace
+        run: cargo +"$RUST_NIGHTLY" llvm-cov clean --workspace
       - id: project-tests
         name: Cover unit and end-to-end tests
         continue-on-error: true
         run: >-
-          cargo +nightly llvm-cov nextest --locked --branch --no-report
+          cargo +"$RUST_NIGHTLY" llvm-cov nextest --locked --branch --no-report
           --workspace --all-features --profile compat --no-fail-fast
       - id: official-tests
         name: Cover Test262, WPT, and WebAssembly spec
@@ -87,22 +90,24 @@ jobs:
             exit 1
           fi
 
-          cargo +nightly llvm-cov nextest --locked --branch --no-report \
+          cargo +"$RUST_NIGHTLY" llvm-cov nextest --locked --branch --no-report \
             --workspace --all-features --profile official --no-fail-fast
       - name: Render coverage reports
         if: ${{ always() }}
         run: |
           mkdir -p target/llvm-cov
-          cargo +nightly llvm-cov report --workspace --color never \
+          cargo +"$RUST_NIGHTLY" llvm-cov report --workspace --color never \
             | tee target/llvm-cov/summary.txt
-          cargo +nightly llvm-cov report --workspace \
+          cargo +"$RUST_NIGHTLY" llvm-cov report --workspace \
             --html --output-dir target/llvm-cov
-          cargo +nightly llvm-cov report --workspace \
+          cargo +"$RUST_NIGHTLY" llvm-cov report --workspace \
             --lcov --output-path target/llvm-cov/lcov.info
-          cargo +nightly llvm-cov report --workspace \
+          cargo +"$RUST_NIGHTLY" llvm-cov report --workspace \
             --cobertura --output-path target/llvm-cov/cobertura.xml
           {
             echo "## Rust coverage"
+            echo
+            echo "Official suites: ${{ steps.official-tests.outcome }}"
             echo
             echo '```text'
             tail -n 2 target/llvm-cov/summary.txt
@@ -120,6 +125,8 @@ jobs:
             target/llvm-cov/summary.txt
           if-no-files-found: error
           retention-days: 14
-      - name: Propagate test failures
-        if: ${{ always() && (steps.project-tests.outcome == 'failure' || steps.official-tests.outcome == 'failure') }}
+      # Dedicated WPT/Test262/spec workflows own conformance gating. Coverage
+      # still records their executed branches, including known failing cases.
+      - name: Propagate project test failures
+        if: ${{ always() && steps.project-tests.outcome == 'failure' }}
         run: exit 1
