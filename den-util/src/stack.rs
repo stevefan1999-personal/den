@@ -25,16 +25,16 @@ const MAPPED_FRAMES: &str = "\0den:mapped-frames";
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Location {
     pub filename: String,
-    pub line: u32,
-    pub column: u32,
+    pub line:     u32,
+    pub column:   u32,
 }
 
 /// An owned JavaScript failure that remains useful after leaving the realm.
 #[derive(Clone, Debug)]
 pub struct JsError {
-    name: Option<String>,
-    message: String,
-    stack: Option<String>,
+    name:     Option<String>,
+    message:  String,
+    stack:    Option<String>,
     rendered: String,
     location: Option<Location>,
 }
@@ -80,27 +80,17 @@ impl JsError {
         }
     }
 
-    pub fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+    pub fn name(&self) -> Option<&str> { self.name.as_deref() }
 
-    pub fn message(&self) -> &str {
-        &self.message
-    }
+    pub fn message(&self) -> &str { &self.message }
 
-    pub fn stack(&self) -> Option<&str> {
-        self.stack.as_deref()
-    }
+    pub fn stack(&self) -> Option<&str> { self.stack.as_deref() }
 
-    pub const fn location(&self) -> Option<&Location> {
-        self.location.as_ref()
-    }
+    pub const fn location(&self) -> Option<&Location> { self.location.as_ref() }
 }
 
 impl fmt::Display for JsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.rendered)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.rendered) }
 }
 
 impl std::error::Error for JsError {}
@@ -113,7 +103,7 @@ struct SourceMaps(RefCell<Registry>);
 #[derive(Default)]
 struct Registry {
     scripts: HashMap<String, Script>,
-    evals: VecDeque<String>,
+    evals:   VecDeque<String>,
 }
 
 // SAFETY: the registry contains owned Rust strings and integers only.
@@ -123,7 +113,7 @@ unsafe impl JsLifetime<'_> for SourceMaps {
 
 struct Script {
     generated_source: String,
-    layers: Vec<SourceMap<'static>>,
+    layers:           Vec<SourceMap<'static>>,
 }
 
 /// Install den's structured stack formatter on this realm.
@@ -169,13 +159,10 @@ where
         return Ok(());
     }
     let is_new_eval = filename.starts_with("<eval:") && !registry.scripts.contains_key(filename);
-    registry.scripts.insert(
-        filename.to_owned(),
-        Script {
-            generated_source,
-            layers,
-        },
-    );
+    registry.scripts.insert(filename.to_owned(), Script {
+        generated_source,
+        layers,
+    });
     if is_new_eval {
         registry.evals.push_back(filename.to_owned());
         // ponytail: keep recent REPL maps bounded; switch to weak script keys if
@@ -304,8 +291,8 @@ pub fn first_location(stack: &str) -> Option<Location> {
         let (filename, line) = head.rsplit_once(':')?;
         Some(Location {
             filename: filename.to_owned(),
-            line: line.parse().ok()?,
-            column: column.parse().ok()?,
+            line:     line.parse().ok()?,
+            column:   column.parse().ok()?,
         })
     })
 }
@@ -320,9 +307,9 @@ fn prepare_stack_trace<'js>(ctx: Ctx<'js>, error: Object<'js>, sites: Array<'js>
         let mut frame = StackFrame {
             function: call::<Option<String>>(&ctx, &site, "getFunctionName").flatten(),
             filename: call::<Option<String>>(&ctx, &site, "getFileName").flatten(),
-            line: call::<i32>(&ctx, &site, "getLineNumber").unwrap_or(-1),
-            column: call::<i32>(&ctx, &site, "getColumnNumber").unwrap_or(-1),
-            native: call::<bool>(&ctx, &site, "isNative").unwrap_or(false),
+            line:     call::<i32>(&ctx, &site, "getLineNumber").unwrap_or(-1),
+            column:   call::<i32>(&ctx, &site, "getColumnNumber").unwrap_or(-1),
+            native:   call::<bool>(&ctx, &site, "isNative").unwrap_or(false),
         };
         remap(&ctx, &mut frame);
         let _ = write_frame(&mut frames, &frame);
@@ -344,9 +331,9 @@ fn prepare_stack_trace<'js>(ctx: Ctx<'js>, error: Object<'js>, sites: Array<'js>
 struct StackFrame {
     function: Option<String>,
     filename: Option<String>,
-    line: i32,
-    column: i32,
-    native: bool,
+    line:     i32,
+    column:   i32,
+    native:   bool,
 }
 
 fn remap(ctx: &Ctx<'_>, frame: &mut StackFrame) {
