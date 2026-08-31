@@ -4,8 +4,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Class, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsIterator, JsLifetime, Object,
-    Result, Symbol, Value,
+    Array, Class, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsLifetime, Object, Result,
+    Symbol, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
@@ -670,7 +670,7 @@ fn optional_usv<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<Option<St
     Host::coerce_usv_string(ctx, value.clone()).map(Some)
 }
 
-fn js_iterator<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<JsIterator<'js>>> {
+fn iterator_method<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<Function<'js>>> {
     let Some(object) = value.as_object() else {
         return Ok(None);
     };
@@ -678,18 +678,39 @@ fn js_iterator<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<JsItera
     if method.is_null() || method.is_undefined() {
         return Ok(None);
     }
-    let iterator: Value = Function::from_js(ctx, method)?.call((This(object.clone()),))?;
-    JsIterator::from_js(ctx, iterator).map(Some)
+    Function::from_js(ctx, method).map(Some)
+}
+
+fn collect_iter<'js>(
+    ctx: &Ctx<'js>, value: Value<'js>, iterator_fn: Function<'js>,
+) -> Result<Vec<Value<'js>>> {
+    let Some(object) = value.as_object() else {
+        return Err(Host::throw_type(ctx, "Value is not iterable"));
+    };
+    let iterator_val: Value = iterator_fn.call((This(object.clone()),))?;
+    let Some(iterator) = iterator_val.as_object() else {
+        return Err(Host::throw_type(ctx, "Value is not iterable"));
+    };
+    let next: Function = iterator.get("next")?;
+    let mut items = Vec::new();
+    loop {
+        let result: Object = next.call((This(iterator.clone()),))?;
+        if result.get::<_, bool>("done").unwrap_or(false) {
+            break;
+        }
+        items.push(result.get("value")?);
+    }
+    Ok(items)
 }
 
 fn pair_from_value<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Pair> {
-    let Some(iterator) = js_iterator(ctx, &value)? else {
+    let Some(iterator) = iterator_method(ctx, &value)? else {
         return Err(Host::throw_type(
             ctx,
             "Expected name/value pair to be iterable",
         ));
     };
-    let items = iterator.collect::<Result<Vec<_>>>()?;
+    let items = collect_iter(ctx, value, iterator)?;
     if items.len() != 2 {
         return Err(Host::throw_type(
             ctx,
@@ -729,8 +750,12 @@ fn pairs_from_init<'js>(ctx: &Ctx<'js>, init: Option<Value<'js>>) -> Result<Vec<
     if value.as_string().is_some() || !value.is_object() {
         return Ok(parse_urlencoded(&Host::coerce_usv_string(ctx, value)?));
     }
-    if let Some(iterator) = js_iterator(ctx, &value)? {
-        return iterator.map(|item| pair_from_value(ctx, item?)).collect();
+    if let Some(iterator) = iterator_method(ctx, &value)? {
+        let mut pairs = Vec::new();
+        for item in collect_iter(ctx, value, iterator)? {
+            pairs.push(pair_from_value(ctx, item)?);
+        }
+        return Ok(pairs);
     }
     let Some(object) = value.as_object() else {
         return Ok(parse_urlencoded(&Host::coerce_usv_string(ctx, value)?));
