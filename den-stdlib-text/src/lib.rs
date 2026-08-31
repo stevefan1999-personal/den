@@ -1,8 +1,6 @@
-use either::Either;
+use den_util::BufferSource;
 use encoding_rs::{DecoderResult, Encoding};
-use rquickjs::{
-    ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
-};
+use rquickjs::{Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*};
 
 pub use crate::js_text_module as js_text;
 
@@ -44,9 +42,7 @@ impl TextDecoder {
     #[qjs(get, enumerable)]
     pub fn encoding(&self) -> String { self.encoding.name().to_ascii_lowercase() }
 
-    pub fn decode<'js>(
-        &self, buffer: Option<Either<TypedArray<'js, u8>, ArrayBuffer<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<String> {
+    pub fn decode(&self, buffer: Option<BufferSource>, ctx: Ctx<'_>) -> Result<String> {
         match buffer {
             Some(buffer) => {
                 let mut decoder = if self.ignore_bom {
@@ -55,13 +51,7 @@ impl TextDecoder {
                     self.encoding.new_decoder()
                 };
 
-                // `as_bytes` yields `None` once the buffer is detached, which JS can do at
-                // any point before the call lands here.
-                let buffer = match &buffer {
-                    Either::Left(buf) => buf.as_bytes(),
-                    Either::Right(buf) => buf.as_bytes(),
-                }
-                .ok_or_else(|| Exception::throw_type(&ctx, "buffer is detached"))?;
+                let buffer = buffer.bytes();
 
                 let len = if self.fatal {
                     decoder.max_utf8_buffer_length_without_replacement(buffer.len())
