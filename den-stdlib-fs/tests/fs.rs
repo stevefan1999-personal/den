@@ -12,22 +12,22 @@ struct Tree {
 }
 
 impl Tree {
-    fn new() -> Self {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn new() -> eyre::Result<Self> {
+        let dir = tempfile::tempdir()?;
         let file = dir.path().join("hello.txt");
         let sub = dir.path().join("sub");
         let link = dir.path().join("hello.link");
-        std::fs::write(&file, b"hello").expect("write file");
-        std::fs::create_dir(&sub).expect("create subdir");
+        std::fs::write(&file, b"hello")?;
+        std::fs::create_dir_all(&sub)?;
         #[cfg(unix)]
-        std::os::unix::fs::symlink("hello.txt", &link).expect("symlink");
-        Self {
+        std::os::unix::fs::symlink("hello.txt", &link)?;
+        Ok(Self {
             file: file.to_string_lossy().into_owned(),
             sub:  sub.to_string_lossy().into_owned(),
             link: link.to_string_lossy().into_owned(),
             dir:  dir.path().to_string_lossy().into_owned(),
             _dir: dir,
-        }
+        })
     }
 }
 
@@ -49,7 +49,7 @@ fn export_tree(tree: &Tree) {
 }
 
 async fn run_with_tree(name: &str) -> eyre::Result<()> {
-    let tree = Tree::new();
+    let tree = Tree::new()?;
     export_tree(&tree);
     Engine::new().await.run_file(case(name)).await?;
     Ok(())

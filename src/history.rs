@@ -332,34 +332,34 @@ fn invalid_message(message: &str) -> ReadlineError {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error, io};
-
+    use color_eyre::eyre;
     use rustyline::history::{History as _, SearchDirection};
 
     use super::Surreal;
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn entries_survive_reopen_and_stay_bounded() -> std::result::Result<(), Box<dyn Error>> {
+    async fn entries_survive_reopen_and_stay_bounded() -> eyre::Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history");
         let config = rustyline::Config::builder().max_history_size(2)?.build();
 
         let mut history = Surreal::open(&config, path.clone())?;
-        assert!(history.add("one")?);
-        assert!(history.add("two")?);
-        assert!(history.add("three")?);
+        eyre::ensure!(history.add("one")?, "first entry was not added");
+        eyre::ensure!(history.add("two")?, "second entry was not added");
+        eyre::ensure!(history.add("three")?, "third entry was not added");
         history.close().await?;
 
         let mut reopened = Surreal::open(&config, path)?;
-        assert_eq!(reopened.len(), 2);
+        eyre::ensure!(reopened.len() == 2, "history was not pruned to two entries");
         let first = reopened
             .get(0, SearchDirection::Forward)?
-            .ok_or_else(|| io::Error::other("first history entry is missing"))?;
-        assert_eq!(first.entry, "two");
-        assert!(
+            .ok_or_else(|| eyre::eyre!("first history entry is missing"))?;
+        eyre::ensure!(first.entry == "two", "oldest retained entry was not `two`");
+        eyre::ensure!(
             reopened
                 .starts_with("thr", 1, SearchDirection::Reverse)?
-                .is_some()
+                .is_some(),
+            "reverse prefix search did not find `three`"
         );
         reopened.clear()?;
         reopened.close().await?;

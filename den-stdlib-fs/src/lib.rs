@@ -16,25 +16,19 @@ pub struct Stat {
 
 impl Stat {
     fn from_metadata(metadata: &std::fs::Metadata) -> Self {
-        Self {
-            len:        metadata.len(),
-            is_file:    metadata.is_file(),
-            is_dir:     metadata.is_dir(),
-            is_symlink: metadata.is_symlink(),
-            mode:       Self::unix_mode(metadata),
-        }
-    }
-
-    fn unix_mode(metadata: &std::fs::Metadata) -> Option<u32> {
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
+        let mode = {
+            use std::os::unix::fs::PermissionsExt as _;
             Some(metadata.permissions().mode())
-        }
+        };
         #[cfg(not(unix))]
-        {
-            let _ = metadata;
-            None
+        let mode = None;
+        Self {
+            len: metadata.len(),
+            is_file: metadata.is_file(),
+            is_dir: metadata.is_dir(),
+            is_symlink: metadata.is_symlink(),
+            mode,
         }
     }
 }
@@ -166,7 +160,7 @@ pub mod fs {
         Ok(tokio::fs::canonicalize(path)
             .await?
             .to_str()
-            .map(|x| x.to_string()))
+            .map(std::string::ToString::to_string))
     }
     #[rquickjs::function(rename = "copy")]
     pub async fn copy(from: String, to: String) -> Result<()> {
@@ -248,7 +242,7 @@ pub mod fs {
     pub async fn set_permissions(path: String, mode: u32) -> Result<()> {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::PermissionsExt as _;
             tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
         }
         #[cfg(windows)]

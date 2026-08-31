@@ -29,6 +29,10 @@ struct Den {
 }
 
 impl Den {
+    #[expect(
+        clippy::expect_used,
+        reason = "a failed process-test setup cannot produce a meaningful Den harness"
+    )]
     fn start(flags: &[&str], script: &str) -> Self {
         let scratch = tempfile::tempdir().expect("scratch dir");
         let path = scratch.path().join("case.js");
@@ -36,13 +40,15 @@ impl Den {
         let mut command = std::env::var("DEN_TEST_RUNNER")
             .ok()
             .filter(|runner| !runner.is_empty())
-            .map(|runner| {
-                let mut parts = runner.split_whitespace();
-                let mut command = Command::new(parts.next().expect("non-empty test runner"));
-                command.args(parts).arg(env!("CARGO_BIN_EXE_den"));
-                command
-            })
-            .unwrap_or_else(|| Command::new(env!("CARGO_BIN_EXE_den")));
+            .map_or_else(
+                || Command::new(env!("CARGO_BIN_EXE_den")),
+                |runner| {
+                    let mut parts = runner.split_whitespace();
+                    let mut command = Command::new(parts.next().expect("non-empty test runner"));
+                    command.args(parts).arg(env!("CARGO_BIN_EXE_den"));
+                    command
+                },
+            );
         let mut child = command
             .args(flags)
             .arg(&path)
@@ -70,7 +76,7 @@ impl Den {
         while let Some(remaining) = DEADLINE.checked_sub(start.elapsed()) {
             match self.lines.recv_timeout(remaining) {
                 Ok(line) if line.contains(needle) => return,
-                Ok(_) => continue,
+                Ok(_) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     panic!("den exited before printing {needle:?}")
                 }
@@ -87,9 +93,17 @@ impl Den {
 
     fn signal(&self, signal: i32) {
         // SAFETY: `kill` on a pid this process owns and has not yet reaped.
-        assert_eq!(unsafe { libc::kill(self.child.id() as i32, signal) }, 0);
+        assert_eq!(
+            unsafe { libc::kill(self.child.id() as i32, signal) },
+            0,
+            "failed to deliver signal {signal} to den"
+        );
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "failure to query the owned child is a test harness failure"
+    )]
     fn wait(&mut self) -> ExitStatus {
         let start = Instant::now();
         while start.elapsed() < DEADLINE {

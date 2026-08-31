@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use den_util::BufferSource;
 use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray, Value};
 use sha1::Sha1;
-use sha2::{Digest, Sha256, Sha384, Sha512};
+use sha2::{Digest as _, Sha256, Sha384, Sha512};
 use uuid::Uuid;
 
 pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
@@ -14,7 +14,7 @@ pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Objec
         let Some((ptr, len)) = integer_typed_view(&array) else {
             return Err(Exception::throw_type(&ctx, "not a typed array"));
         };
-        if len > 65_536 {
+        if len > 0x0001_0000 {
             return Err(den_util::throw_dom_exception(
                 &ctx,
                 "QuotaExceededError",
@@ -66,7 +66,7 @@ enum DigestAlgorithm {
 }
 
 impl DigestAlgorithm {
-    fn parse(name: &str) -> Option<Self> {
+    const fn parse(name: &str) -> Option<Self> {
         if name.eq_ignore_ascii_case("SHA-1") {
             Some(Self::Sha1)
         } else if name.eq_ignore_ascii_case("SHA-256") {
@@ -88,16 +88,16 @@ impl DigestAlgorithm {
     fn from_algorithm(ctx: &Ctx<'_>, algorithm: Value<'_>) -> Result<Self> {
         let raw_name = Self::raw_name(algorithm)?;
         let name = raw_name.as_deref().unwrap_or("undefined");
-        match raw_name.as_deref().and_then(Self::parse) {
-            Some(algorithm) => Ok(algorithm),
-            None => {
+        raw_name.as_deref().and_then(Self::parse).map_or_else(
+            || {
                 Err(den_util::throw_dom_exception(
                     ctx,
                     "NotSupportedError",
                     &format!("Unrecognized algorithm name: {name}"),
                 ))
-            }
-        }
+            },
+            Ok,
+        )
     }
 
     fn raw_name(algorithm: Value<'_>) -> Result<Option<String>> {
@@ -130,6 +130,10 @@ impl DigestAlgorithm {
 /// `SubtleCrypto.digest` — async so the JS return is a `Promise<ArrayBuffer>`,
 /// even though the hash itself is computed inline.
 #[rquickjs::function]
+#[expect(
+    clippy::unused_async,
+    reason = "Web Crypto digest is specified as an asynchronous operation"
+)]
 pub async fn digest<'js>(
     algorithm: Value<'js>, data: BufferSource, ctx: Ctx<'js>,
 ) -> Result<ArrayBuffer<'js>> {
