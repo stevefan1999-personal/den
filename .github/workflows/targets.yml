@@ -532,23 +532,15 @@ jobs:
             /usr/pkg/bin/pkgin -y install bash clang cmake curl git gmake llvm \
               mozilla-rootcerts-openssl nasm perl pkgconf
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain stable
+              | sh -s -- -y --profile minimal --default-toolchain 1.97.1
             . "$HOME/.cargo/env"
             # Newer releases pull a pager stack that does not compile on NetBSD.
-            cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
+            cargo +1.97.1 install cargo-nextest --version 0.9.114 --locked --no-default-features
           run: |
             export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
             export LIBCLANG_PATH=/usr/pkg/lib
-            run_nextest() {
-              cargo nextest run --locked --profile compat --no-fail-fast --workspace \
-                --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
-                --no-default-features \
-                --features stdlib,typescript,react,ring,rquickjs/bindgen \
-                --test-threads 1 --retries 2
-            }
-            run_nextest || {
-              status=$?
-              # 104 is nextest's test-list failure; do not rerun other failures.
-              [ "$status" -eq 104 ] || exit "$status"
-              run_nextest
-            }
+            cargo +1.97.1 nextest run --locked --profile compat --no-fail-fast --workspace \
+              --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
+              --no-default-features \
+              --features stdlib,typescript,react,ring,rquickjs/bindgen \
+              --test-threads 1
