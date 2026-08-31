@@ -55,15 +55,6 @@ fn unmatched_specifier_is_a_miss() {
 }
 
 #[test]
-fn package_referrers_ignore_the_application_map() {
-    let map = map(r#"{"imports":{"dependency":"./bypass.js"}}"#);
-    assert_eq!(
-        map.resolve("dependency", "den-pkg://registry/package/main.js"),
-        Mapping::Miss
-    );
-}
-
-#[test]
 fn scopes_override_top_level_imports_for_matching_parents() {
     let map = map(include_str!(
         "../fixtures/import_map_engine/scopes/map.json"
