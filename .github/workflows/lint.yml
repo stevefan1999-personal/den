@@ -52,9 +52,9 @@ jobs:
       # Cranelift (`jit`) vs Pulley: they share the JS-API layer but not the
       # compiler target, so a green jit run says nothing about no-JIT hosts.
       matrix:
-        extra: ["wasm,jit", "wasm"]
+        extra: ["wasm,wasi,jit", "wasm,wasi"]
     steps:
       - uses: actions/checkout@v4
       # compat excludes official vendor binaries (spec_core / wpt / test262).
       # Those report official pass/fail in their own workflows.
-      - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,${{ matrix.extra }}
+      - run: cargo nextest run --profile compat --workspace --build-jobs 8 --no-default-features --features stdlib,typescript,react,ring,${{ matrix.extra }}
