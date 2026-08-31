@@ -1,779 +1,137 @@
-# den — architecture
+# den architecture
 
-A description of the tree as it stands, not of where it is going. Every claim
-here is checkable against a file in this repository; where a mechanism is
-subtle the owning file is named.
+This is the map and the invariants. Implementation details belong in rustdoc
+and tests so they cannot drift into a second specification.
 
-Background research (written during the big dependency upgrade, versioned
-snapshots rather than living docs) lives in [`docs/research/`](docs/research/).
+## Crate graph
 
-## 1. Crate graph
+```text
+den                              CLI, REPL, signals and tracing
+└── den-core                     embeddable QuickJS runtime, loaders, resolvers
+    ├── den-transpiler-oxc       optional TypeScript and JSX lowering
+    ├── den-stdlib-assert        den:assert
+    ├── den-stdlib-console       console
+    ├── den-stdlib-core          atob, btoa and gc
+    ├── den-stdlib-crypto        Web Crypto
+    ├── den-stdlib-ffi           den:ffi, capability-gated
+    ├── den-stdlib-fs            den:fs
+    ├── den-stdlib-http          den:http, cleartext HTTP/1 and HTTP/2
+    ├── den-stdlib-kv            den:kv over SurrealKV
+    ├── den-stdlib-networking    TCP, UDP, Unix, TLS and WebSocket transport
+    ├── den-stdlib-path          lexical paths
+    ├── den-stdlib-process       process, signals and child processes
+    ├── den-stdlib-sqlite        bundled SQLite
+    ├── den-stdlib-temporal      Temporal
+    ├── den-stdlib-text          TextEncoder and TextDecoder
+    ├── den-stdlib-timer         timers
+    ├── den-stdlib-whatwg        Fetch and WHATWG APIs
+    ├── den-stdlib-wasm          WebAssembly through wasmtime
+    └── den-stdlib-worker        workers, events and structured clone
 
-```
-den (src/)                      binary: CLI, REPL, ctrl-c, tracing subscriber
- └── den-core                   the embeddable runtime: Engine, loaders, resolvers
-      ├── den-transpiler-oxc    TS/JSX → JS  (optional, `transpile`)
-      ├── den-stdlib-assert     den:assert (`@std/assert`); import-only
-      ├── den-stdlib-console    globalThis.console → tracing
-      ├── den-stdlib-core       atob/btoa/gc
-      ├── den-stdlib-crypto     crypto.getRandomValues / randomUUID
-      ├── den-stdlib-ffi        den:ffi (optional, off by default; dlopen2 + libffi)
-      ├── den-stdlib-fs         den:fs
-      ├── den-stdlib-networking den:networking (TCP, UDP, Unix, TLS sockets)
-      ├── den-stdlib-path       den:path (portable/POSIX/Windows lexical paths)
-      ├── den-stdlib-process    den:process (env, argv, cwd, spawn, signals, DNS)
-      ├── den-stdlib-sqlite     den:sqlite (optional; rusqlite, bundled)
-      ├── den-stdlib-temporal   Temporal API (temporal_rs); globalThis.Temporal
-      ├── den-stdlib-text       TextEncoder / TextDecoder
-      ├── den-stdlib-timer      setTimeout / setInterval
-      ├── den-stdlib-whatwg-fetch  fetch() + Response (reqwest); Headers, Request
-      ├── den-stdlib-whatwg     Blob/File/FileReader/FormData, XMLHttpRequest,
-                                EventSource, URLPattern, CompressionStream,
-                                WebSocket (evaluated after den:worker)
-      ├── den-stdlib-wasm       the WebAssembly JS API (optional, wasmtime; `jit` vs Pulley)
-      └── den-stdlib-worker     Web Workers: Worker, MessageChannel/MessagePort,
-                                BroadcastChannel, EventTarget, AbortController,
-                                performance, navigator, structuredClone
-
-den-e2e                         file-based Engine tests that span fetch + wasm + HTTPS
+den-e2e                          file-based cross-crate runtime tests
 ```
 
-`den-core` owns everything about *how* JavaScript gets in: the `Engine`
-(runtime + context), module resolution, module loading and the transpile
-hook. Each `den-stdlib-*` crate owns one JS-visible API and knows nothing
-about the loader chain. The binary owns only process concerns. Timers store
-numeric ids in userdata and `clearTimeout(id)` looks them up.
-
-## 2. CLI event loop and Ctrl-C
-
-The event loop is **`AsyncRuntime::idle()` only** (`src/app.rs`,
-`den-core/src/engine.rs`). `idle()` holds the runtime mutex and runs JS jobs
-plus every `ctx.spawn` future until the scheduler is empty. `drive()` polls
-the same scheduler but releases the lock between polls; spawning it *and*
-calling `idle()` makes two loopers fight, so den does not spawn `drive()`.
-
-den installs no SIGINT handler of its own, so by default Ctrl-C is kernel
-death at the signal's default disposition, exactly as in Node, Deno and Bun:
-no Rust unwinds, no destructor runs, the shell sees `signal == SIGINT` and
-pending work is abandoned where it stands. An `Engine` carries no realm-wide
-cancellation of any kind — stopping one is dropping it, which drops every
-`ctx.spawn`ed future before the QuickJS runtime is freed.
-
-A script opts out of that by installing a listener with
-`addSignalListener("SIGINT", …)` (`den:process`). The signal then stops being
-death and becomes a *message*: tokio's handler forwards it into the realm's
-inbox, and `Engine::run_event_loop` — a `select!` over that inbox and `idle()`
-— leaves `idle()`, calls the listeners on the JS thread, and re-enters. The
-listener owns termination from that moment on, as it does on all three
-reference runtimes: den kills nothing for it, the pending `accept()`/`fetch`
-futures are untouched, and a listener that never calls `exit()` never ends the
-process. In exchange the listener may be async, and den stays alive while its
-promises are pending — strictly more than a Node `exit` hook can do, none of
-which can complete I/O on any of the three.
-
-`removeSignalListener` restores the default disposition, and that is the
-second-Ctrl-C escape: a listener that removes itself *first*, before any
-`await`, dies of SIGINT #2 through the kernel even if it is wedged in a loop.
-A listener that does not remove itself simply runs again on the second Ctrl-C.
-den has no grace timer and no force-exit of its own; a deadline is
-`setTimeout(() => exit(130), GRACE_MS)` inside the listener.
-
-Neither path has anything to flush. den holds no user-space file buffer —
-`den:fs` has no open-file handle and no `append`, and once `write(2)` has
-returned the bytes are the kernel's and survive process death. What abrupt
-death can still do is tear a file *mid-write*, which is a property of the write
-call, not of shutdown:
-
-| Write path | Torn by abrupt death | Why / remedy |
-|---|---|---|
-| `den:fs write` | **yes** — 0 bytes or a prefix | `File::create` truncates, then `write_all`; opt into `write(path, bytes, { atomic: true })`, which writes a sibling temp file and `rename(2)`s it over the target |
-| `den:fs copy` | **yes** — destination truncated then filled | `std::fs::copy` is `copy_file_range(2)`, not read-then-write, so it cannot use that helper; do not call it while stopping |
-| `den:assert assertSnapshot` | **yes** — same tear as `write` | test-only, deliberately unfixed |
-| `den:sqlite` | no | DELETE journal and `synchronous=FULL` are the compiled-in defaults; an interrupted transaction rolls back on the next open |
-| REPL history | no | every accepted entry commits with `Durability::Immediate` (fsync), and SurrealKV replays its WAL on open |
-| `console.*` → stdout | no | one `write_all` per event through a `LineWriter`: events are whole or absent, never spliced |
-
-Graceful stop therefore buys no durability in den; it buys protocol-level
-goodbyes — a `shutdown()` on a socket, a reply to a peer, a final log line.
-The full inventory, with the probes behind each row, is
-[docs/research/17](docs/research/17-graceful-shutdown-and-external-stop.md) §3.
-
-The REPL cannot call `engine.eval` (an `async_with`) while `idle()` holds the
-lock. `start_repl_session` only owns the rustyline task; `run_until_end`
-`ctx.spawn`s a pump that `recv`s lines and evaluates them on the same `Ctx`.
-Closing the REPL ends the process outright, once `run_repl` has closed the
-history. Ctrl-C there is a key and not a signal: rustyline holds the terminal
-in raw mode, so the first press clears the line and the second exits.
-
-Rustyline navigation is memory-resident, while accepted entries are committed
-to the `history.surrealkv` directory through SurrealKV. Rustyline's `History`
-trait is synchronous but SurrealKV commits are async, so the adapter bridges
-each immediate-durability commit with Tokio's `block_in_place` and the current
-multi-thread runtime handle. The tree is closed asynchronously when the REPL
-ends. SurrealKV holds an exclusive directory lock; failure to acquire it falls
-back to the same in-memory navigation without taking down the REPL.
-
-A worker owns its own token, with no link to the realm that started it: the
-realm holds the handle, so `Engine::shutdown` cancels and joins the threads,
-and simply dropping the realm cancels them too.
-
-### 2.1 Embedding: stopping an Engine
-
-A host that wants to stop a realm from outside composes three things it
-already has, and den adds no API for it: its own flag in
-`runtime.set_interrupt_handler` (installed *before* any JS runs, because
-installing takes the lock the event loop holds), one `select!` over
-`run_file` + `run_event_loop` against whatever awaitable the flag flips, and
-`drop(engine)`. That is the shape `axum::serve(..).with_graceful_shutdown`
-uses — take a future, own no token. The compiled recipe, with the five rules
-the type cannot enforce (an interrupted script reports `Err`, so the host's
-flag decides whether that was a failure; the flag must be flipped from a
-thread the JS loop does not block; the runtime is single-use once it is set;
-`Engine` is `Clone`, so `drop` cancels only the last clone and a clone must
-never be moved into a `ctx.spawn`ed future), is the rustdoc on
-`den_core::engine::Engine`.
-
-## 3. How one Rust module becomes both `den:x` and a global
-
-`den-core/src/engine.rs` wires the same `#[rquickjs::module]` type into three
-places, and each place buys a different thing:
-
-1. **`BuiltinResolver::with_module("den:x")`** (`Engine::new`) — makes the
-   specifier `den:x` resolvable, so `import … from "den:x"` is not a
-   resolution error.
-2. **`ModuleLoader::with_module("den:x", den_stdlib_x::js_x)`** (`Engine::new`)
-   — supplies the module's definition when that specifier is actually
-   imported.
-3. **`Module::evaluate_def::<den_stdlib_x::js_x, _>(ctx, "den:x")`**
-   (`Engine::new`, in the `context.with` block) — evaluates the module *once
-   at context creation*, which is what runs its `#[qjs(evaluate)]` hook
-   eagerly.
-
-The globals come out of step 3, not out of some separate registration: a
-module's `evaluate` hook receives the `Ctx` and writes to `ctx.globals()`
-directly. `den-stdlib-console` sets `console`; `den-stdlib-core` exports
-`atob`/`btoa`/`gc` *and* sets the same three as globals; `den-stdlib-wasm`
-builds the whole `WebAssembly` namespace object and installs it;
-`den-stdlib-process` installs `process`. So
-"importable module" and
-"ambient global" are the same code with two entry points, and the cfg blocks in
-all three lists must stay in lockstep — a module registered in one list and not
-the others is the failure mode to watch for.
-
-`den:fs`, `den:networking`, `den:sqlite`, `den:ffi` and `den:assert` are import-only: they
-appear in the resolver and loader lists but are not `evaluate_def`'d, so they
-contribute no globals. The ones that are — `den:console`, `den:core`, `den:text`,
-`den:timer`, `den:whatwg-fetch`, `den:crypto`, `den:process`, `den:temporal`,
-`den:wasm`, `den:worker`, `den:whatwg` — are exactly the ones whose APIs a
-script expects to find without importing anything. `den:whatwg` is
-`evaluate_def`'d **after** `den:worker` so FileReader, XMLHttpRequest,
-EventSource and WebSocket can extend `EventTarget`. `den:temporal` installs
-`globalThis.Temporal` from `temporal_rs` (Instant, Duration, PlainDate,
-PlainTime, PlainDateTime, PlainYearMonth, PlainMonthDay, ZonedDateTime, Now).
-`den:sqlite` is registered only when the separate `stdlib-sqlite` feature is
-enabled; the aggregate `stdlib` feature deliberately omits bundled SQLite.
-
-## 4. Resolver and loader chain
-
-rquickjs takes one resolver tuple and one loader tuple; each is tried in order.
-
-**Resolvers** (`den-core/src/engine.rs`, `den-core/src/resolver/`):
-
-1. `ImportMapResolver` (`resolver/import_map.rs`) — if the context has an
-   `ImportMap` (installed by `Engine::set_import_map`), remaps the specifier:
-   `scopes` whose key prefixes the parent URL (longest first), then top-level
-   `imports`; exact key, else longest prefix key ending in `/`. A mapping to
-   `null` is a blocked import. Relative `./` / `../` targets join against the
-   map's base directory. No match — or no map — is a resolving error so the
-   rest of the chain still runs.
-2. `BuiltinResolver` — the `den:*` specifiers.
-3. The application `rquickjs::loader::Bundle` supplied to
-   `Engine::new_with_bundle`; `Engine::new` installs an empty bundle.
-4. `HttpResolver` — joins the specifier against the importing module's URL,
-   then applies an optional allowlist and an optional denylist (both
-   `matchit::Router`s), then accepts only `http` / `https`. Allow is checked
-   before deny. Both are `pub(crate)` and `Engine::new` uses
-   `HttpResolver::default()`, so as wired today neither list is populated and
-   every `http`/`https` specifier resolves; the mechanism exists, the policy
-   does not.
-5. `AbsolutePathResolver` (`resolver/file.rs`) — absolute paths, `file:` URLs,
-   and specifiers relative to either (so `den /abs/app.js` and `import "./lib"`
-   from it resolve, including non-script extensions a `type` attribute will
-   load).
-6. `FileResolver` — `./` plus one pattern per enabled extension: `.js`/`.mjs`
-   always, `.jsx`/`.mjsx` under `react`, `.ts` under `typescript`, `.tsx` under
-   both.
-
-**Loaders** (`den-core/src/loader/`):
-
-1. `BuiltinLoader`.
-2. `ModuleLoader` — the `den:*` native modules.
-3. The same application bytecode `Bundle`.
-4. `HttpLoader` (`loader/http.rs`) — downloads with `reqwest::get`; ordinary
-   responses are treated as JavaScript modules and typed imports take their
-   interpretation from the import attribute.
-5. `MmapScriptLoader` (`loader/mmap_script.rs`, historical name) — checks the
-   extension against its registered list, then reads the file with
-   `std::fs::read`.
-
-`DenWorkerHost` copies the bundle into each worker engine, so module-worker
-entries and their imports resolve from the same embedded bytecode as the main
-realm.
-
-When an import carries a `type` attribute (`with { type: "json" }`), both
-`HttpLoader` and `MmapScriptLoader` skip the ordinary script/extension path
-and `Module::declare` a synthetic module whose default export is the body
-interpreted as that type (`loader/typed.rs`):
-
-- `json` — UTF-8, must already be valid JSON; source is `export default
-  <json>;` so evaluating it is `JSON.parse` of the same text.
-- `text` — UTF-8; source is `export default ${JSON.stringify(text)};`.
-- `bytes` — raw bytes; source is `export default Uint8Array.from([..])`.
-- any other `type` — a loading error.
-- missing `type` — the JS/TS path above.
-
-Both file loaders are synchronous `Loader` impls wrapping async work, so both
-end in `tokio::task::block_in_place(|| Handle::current().block_on(task))` —
-which is why `den-core` pulls in tokio's `rt-multi-thread`.
-
-The loaders call the stateless `transpile` function immediately before
-`Module::declare`: file imports infer `SourceType` from their extension and HTTP
-imports select TypeScript only for a `typescript` content subtype, defaulting to
-JavaScript module mode. Classic workers use script mode. The final
-site is `Engine::eval`, which uses oxc's unambiguous mode because a REPL line may
-be either a script or a module. Without the `transpile` feature these paths hand
-the source directly to QuickJS.
-
-## 5. The transpiler (`den-transpiler-oxc`)
-
-oxc 0.146 (`oxc_parser`, `oxc_semantic`, `oxc_transformer`, `oxc_codegen`). The
-crate exposes a stateless `transpile(source, SourceType)` function; oxc keeps no
-interner, comment store or thread-local globals between calls.
-
-`transpile()` is a four-stage pipeline:
-
-- **parse** — `Parser::new(&allocator, source, source_type).parse()`.
-  `SourceType` selects module, script, or oxc's *unambiguous* mode, which lets a
-  REPL line containing top-level `await` be upgraded to ESM. A `panicked` parse
-  is checked explicitly: it
-  yields an empty AST that would otherwise codegen into a silently empty
-  module.
-- **semantic** — `SemanticBuilder::new_compiler().with_enum_eval(true)`. The
-  `with_enum_eval` is not optional: the TS enum lowering reads pre-computed
-  member values out of `Scoping` and emits wrong reverse mappings without them.
-  `into_scoping()` releases the shared borrow of the program so the transformer
-  can take it `&mut`.
-- **transform** — only compiled in under `typescript` or `react`. Types are
-  stripped, class fields stay native, nothing is downlevelled, and JSX uses the
-  **classic** runtime (`React.createElement`) because den's resolver has no
-  `react` module and the automatic runtime's `import … from "react/jsx-runtime"`
-  would fail to load.
-- **codegen** — emits the transformed program as a `String`.
-
-**Arena discipline.** A fresh `Allocator` is created per call and dropped at the
-end of it. Program, scoping and diagnostics all borrow from it, so nothing
-borrowed may escape into the return value. Diagnostics are rendered to a
-`String` eagerly (`EasyOxcTranspilerError::render`)
-because an `OxcDiagnostic` carries spans only and is worthless once the source
-text is gone.
-
-Every buffer is transpiled as `<anonymous>`: den transpiles in-memory sources
-whose real path is not known at this layer.
-
-## 6. `den-stdlib-wasm`
-
-Implements the WebAssembly JS API (`WebAssembly.{validate, compile, instantiate,
-compileStreaming, instantiateStreaming, Module, Instance, Memory, Table, Global,
-Tag, Exception, CompileError, LinkError, RuntimeError}`). WAT assembly is a
-test-only helper and is not part of `den:wasm` or `WebAssembly`.
-`compileStreaming`/`instantiateStreaming` are written in JS (`DEFINE_STREAMING`
-in `lib.rs`) and duck-type the `Response`, so the crate does not depend on den's
-fetch.
-
-### 6.1 wasmtime and `jit` / Pulley
-
-The engine is wasmtime 48. `src/backend.rs` owns the den-specific pieces: the
-store payload (`OwnedCtx`, `StoreData`), `new_engine`, and optional WASI linking.
-`Store` / `Linker` / `Caller` are aliases only because they are parameterized
-on `StoreData`. Value conversion matches native `wasmtime::Val` / `ValType` /
-`RefType` directly; there is no backend-neutral intermediate representation.
-
-`jit` is a den cfg that chooses the *target triple*, not whether Cranelift is
-linked. The wasmtime crate always has the `cranelift` and `pulley` cargo
-features so modules can be compiled at runtime. `new_engine` then:
-
-- with `jit`, and when the host ISA is a Cranelift target (`x86_64`,
-  `aarch64`, `s390x`, `riscv64`), leaves the target alone so Cranelift emits
-  native code;
-- otherwise calls `Config::target("pulley64")` or `"pulley32"` (there is no
-  `Strategy::Pulley` variant). Cranelift still compiles wasm, but to portable
-  Pulley bytecode — no host RWX/JIT pages. That is the App Store / hardened
-  runtime / iOS case.
-
-aarch64-apple-darwin *has* Cranelift. Users who want no-JIT on Apple build
-with `--no-default-features --features stdlib,typescript,react,wasm` (no
-`jit`). `USES_PULLEY` and `Engine::is_pulley()` report which path was taken.
-
-wasmtime does not keep the original module bytes. `WebAssembly.Module` stores
-`[[Bytes]]` and walks them with `wasmtime::wasmparser` (`reexport-wasmparser`)
-for `customSections` and for the function index an Exported Function is named
-after. Import/export *declaration order* comes from wasmtime's own iterators.
-
-`new_engine` spells the fixed Wasmtime proposal set out with literal config
-values. The backend capability program snapshots what the resulting engine and
-JS API actually do; there are no fixed `SUPPORTS_*` flags that can drift from
-that behavior.
-
-With the `wasi` feature, `WasiCtx` is `wasmtime_wasi::p1::WasiP1Ctx` and
-`link_wasi` is the only thing that fills the store slot.
-
-### 6.2 `OwnedCtx` and the `'static` store payload
-
-wasmtime 48 bounds `T: 'static` on `Linker<T>` / `Instance` / `Func`, so the
-store payload cannot borrow `'js`. `OwnedCtx` (`backend.rs`) parks a
-`Ctx<'static>` obtained via `Ctx::from_raw`, which performs `JS_DupContext` and
-therefore owns a reference. Access is only ever through
-`OwnedCtx::with(|ctx| …)`, which mints a fresh callback-scoped `'js` — a
-`fn ctx(&self) -> Ctx<'_>` would hand out a lifetime the caller could outlive,
-and `Ctx` is invariant in `'js` so it cannot simply be reborrowed.
-
-`OwnedCtx` is deliberately *not* `Sync`: the store payload is only ever reached
-through `&mut Store`, and asserting `Sync` would make `wasmtime::Store<StoreData>`
-look shareable between threads, which a `JSContext` is not. The `unsafe` is
-`Ctx::from_raw`. Its invariant: every path that can reach an `OwnedCtx` runs
-under the rquickjs runtime lock (the value lives in the `Store` payload, the
-`Store` lives in the userdata of the very context the handle points at, and a
-wasm host callback is only entered from a JS call that already holds the lock
-for the whole closure), and the pointee cannot dangle because the duplicated
-reference lives as long as the handle and the runtime drops its userdata before
-`JS_FreeRuntime`.
-
-This is what makes the JS↔wasm bridge possible: `HostFunction::run`
-(`instance.rs`) reaches JS from inside an engine callback via
-`caller.data().with_ctx(…)`.
-
-### 6.3 Store and engine as context userdata
-
-The engine (`engine.rs`) and the store (`store.rs`) are separate pieces of
-userdata on purpose: compiling and validating need an engine but no store, so
-`WebAssembly.compile` is not refused merely because wasm is currently running.
-One store per JS context is what makes every `Memory`, `Table`, `Global` and
-`Instance` of that context interchangeable as imports.
-
-### 6.4 `Memory.buffer` and why it is not an ordinary `ArrayBuffer`
-
-`memory.buffer` *aliases* the wasm linear memory: `MemoryBuffers::alias`
-(`memory.rs`) calls `JS_NewArrayBuffer` on the memory's base pointer with **no**
-free function, so JS reads and writes hit the wasm pages directly and QuickJS
-never claims ownership of them. (`ArrayBuffer::from_source` is unusable here —
-it registers a free function that QuickJS runs twice on detach, in
-`JS_DetachArrayBuffer` and again in the finalizer, which double-frees rquickjs'
-boxed closure.)
-
-An alias is only sound while the pages it names are still there, so a
-context-wide registry (`MemoryBuffers`, one `RefCell<Vec<LiveBuffer>>` in the
-context userdata) owns every live buffer:
-
-- `buffer()` sweeps first and then reuses the entry whose base matches, which is
-  what makes `memory.buffer === memory.buffer` and what makes two wrappers over
-  the same linear memory hand out the same object.
-- `refresh()` is the spec's "refresh the memory buffer" applied to every live
-  buffer at once: any whose base or length has changed is detached, so the next
-  `.buffer` read builds a fresh view. It runs on entry to a host callback
-  (`refresh_in`, `instance.rs`) and after every export call (`utils.rs`), which
-  is what catches a `memory.grow` executed *inside* wasm — an internal grow
-  moves the linear memory and every previously built `Uint8Array` would
-  otherwise alias the old pages.
-- `detach_at()` is the unconditional version `Memory.prototype.grow` needs,
-  because the spec replaces `[[BufferObject]]` even for a zero delta, which
-  moves and resizes nothing and so is invisible to `refresh`.
-
-The other half is `seal_against_transfer`. The spec tags the buffer with
-`[[ArrayBufferDetachKey]] = "WebAssembly.Memory"` so that only the engine may
-detach it; quickjs-ng has no key concept at all — `JS_DetachArrayBuffer` takes
-no key, and `js_array_buffer_transfer` checks only `shared`/`immutable`/
-`detached`. So the four detaching methods — `transfer`,
-`transferToFixedLength`, `transferToImmutable`, `resize` — are shadowed on each
-buffer by *own* properties that throw a `TypeError`, defined non-writable,
-non-configurable and non-enumerable so script can neither overwrite nor
-`delete` them to reach the originals on `ArrayBuffer.prototype`.
-
-That is a memory-safety measure, not a conformance detail: `transfer` reaches
-`js_realloc(ctx, abuf->data, new_len)`, and `abuf->data` is the wasm linear
-memory base, which QuickJS never allocated. Without the shadow,
-`new WebAssembly.Memory({initial:1}).buffer.transfer(1)` hands a foreign
-pointer to QuickJS' allocator and corrupts the heap.
-
-### 6.5 WASI is an explicit opt-in, and nothing else
-
-The `wasi` Cargo feature is off by default. Without it, `wasmtime-wasi` is not
-linked and `den:wasm` does not export `wasiImports`. Enable it with
-`--features wasi`.
-
-den links no host API implicitly. A module that imports
-`wasi_snapshot_preview1` and is given nothing for it fails like any other
-unsatisfied import, with a `TypeError` out of `Instance::read_imports`.
-
-Asking for WASI means passing `wasiImports()`, which is an export of the
-`den:wasm` *module* and deliberately not a member of `WebAssembly`:
-
-```js
-import { wasiImports } from "den:wasm";
-await WebAssembly.instantiate(bytes, { wasi_snapshot_preview1: wasiImports() });
-```
-
-What it returns is an opaque marker class (`WasiImports`, `store.rs`), not a
-bag of functions, and that is forced by the problem rather than chosen: preview1
-is implemented by the *engine*, and every call reads and writes the *calling*
-instance's linear memory, which no JS function can stand in for. So
-`read_imports` recognises the marker where it resolves a namespace object and
-calls `WasiImports::link` instead of reading names out of it. Three properties
-of that path are load-bearing:
-
-- `WasiImports::namespace` always yields the marker when the `wasi` feature is
-  enabled.
-- `WasiImports::link` refuses any namespace but `wasi_snapshot_preview1` with a
-  `LinkError` naming both, so `{ env: wasiImports() }` cannot quietly swallow a
-  module's real `env` imports.
-- It is idempotent (`allow_shadowing` around `add_to_linker_sync`, restored
-  afterwards), because the hook is reached once per WASI import and
-  `add_to_linker_sync` defines the whole namespace each time.
-
-`backend::link_wasi` is the only place a `WasiCtx` is ever built, lazily via
-`StoreData::wasi_or_init`, and building one inherits the host's stdio and
-environment — which is exactly why it may only run once a caller has spelled
-out `wasiImports()`. Holding the marker grants nothing on its own; it builds
-nothing.
-
-## 7. `den-stdlib-worker`
-
-Web Workers, `MessageChannel`/`MessagePort`, `BroadcastChannel`, the
-`EventTarget` family, `AbortController`/`AbortSignal`, `performance`,
-`navigator`, `structuredClone` and `reportError`. The design notes are
-[`docs/research/08`-`11`](docs/research/); this is the shape they settled into.
-
-### 7.1 Why half of it is JavaScript
-
-Every interface here `extends EventTarget`, and an `#[rquickjs::class]` can
-neither extend a JS class nor be extended by one. So the split is not a
-stylistic one:
-
-- **Rust owns** transport (channels, threads), (de)serialisation, and the two
-  or three things JS cannot do — reading a thrown value's location out of its
-  stack, reaching another thread, cancelling a runtime.
-- **JS owns** the API surface: `src/prelude/*.js`, eight files evaluated in
-  dependency order (`events`, `abort`, `performance`, `navigator`, `clone`,
-  `port`, `worker`, `broadcast`). The `performance` clock is a native
-  `Instant` captured when natives install; `navigator` is installed as a
-  non-writable global. The preludes are the objects a script sees.
-
-Each prelude file is one `(function (natives, api) { …; return { …api, X } })`.
-They are chained — each receives the previous one's return value — and the last
-`api` becomes both the module's exports and a set of globals, driven by the
-`API` list in `lib.rs`. `natives` is a shared, mutable bag: a later prelude may
-publish a hook on it for an *earlier* one to call back into. That is how the
-clone pre-pass gets a way to build a `MessagePort` (`natives.wrapPort`, set by
-`port.js` and read by `clone.js`), and how the preludes reach `dispatchTrusted`
-without it ever appearing on `globalThis` — a script that could call it could
-forge a trusted event.
-
-The same bag is this realm's exception sink (`den-stdlib-core/src/report.rs`),
-which is what puts a throwing `setTimeout` body in a worker onto the worker's
-error chain instead of straight onto stderr: every reporter in the process —
-`den-stdlib-timer`, a port pump, a listener that throws — resolves
-`natives.reportException` at report time, and `worker.js` replaces that one
-entry. `den-core` reaches the same bag for `dispatchTrusted` when it fires
-`unhandledrejection`.
-
-### 7.2 The `WorkerHost` seam
-
-`den-stdlib-worker` knows nothing about loaders, the transpiler or the stdlib;
-`den-core` knows nothing about threads. Between them is one trait with one
-method (`host.rs`):
-
-```rust
-fn build_engine(&self, base: BaseUrl) -> Result<WorkerEngine, WorkerHostError>;
-```
-
-Lifetime: **singleton** — one `Arc<dyn WorkerHost>` per process, cloned into the
-userdata of every context that may run `new Worker`, worker contexts included,
-which is what makes nesting free. It is called on the worker's own OS thread,
-inside that thread's tokio runtime, before any script runs. One more userdata
-slot completes the picture: `BaseUrl`, what a relative worker URL resolves
-against, following the entry point rather than the working directory.
-
-Stopping is not part of the seam. Each worker makes its own `CancellationToken`
-and `den-stdlib-worker` installs the interrupt handler that polls it on the
-runtime the host hands back, so an embedder cannot forget to. The parent holds
-the other end in its `WorkerRegistry` userdata, which cancels every handle it
-still has when it is dropped — a realm that ends without `shutdown()` therefore
-still stops its workers, one level down at a time.
-
-### 7.3 One OS thread, one tokio worker thread
-
-`new Worker` spawns a `std::thread` named `den-worker:<name>`, and that thread
-builds a **`new_multi_thread().worker_threads(1)`** tokio runtime of its own. A
-current-thread scheduler would be the obvious choice; den's loaders call
-`block_in_place`, which panics on it (`docs/research/09` §6.1) — the
-`ponytail:` comment on `WorkerThread::serve` names that as the reason and the
-upgrade path.
-
-The runtime's own worker and blocking threads inherit the `den-worker:` name,
-so joining only the outer `std::thread` would let `Engine::shutdown()` return
-with threads still alive. The thread body therefore ends with a bounded
-`tokio.shutdown_timeout(...)`, which is what makes "joined" mean "every thread
-this worker had is gone". `den-core/tests/workers.rs` asserts exactly that by
-counting `/proc/self/task` entries by name.
-
-A panic on a worker thread is caught (`panic::catch_unwind`) and sent to the
-parent as an `ErrorEvent`: every other thread is holding a live QuickJS
-runtime, so letting it unwind out would take the process down.
-
-### 7.4 Structured clone: quickjs-ng's serialiser plus a JS pre/post pass
-
-The bytes are quickjs-ng's own `JS_WriteObject2`/`JS_ReadObject`. Around them
-sit two JS functions in `prelude/clone.js`, registered with Rust through
-`natives.registerClone`: `prepare` runs on the sender before the write,
-`restore` on the receiver after the read. Four kinds of work happen there:
-
-1. **Things the serialiser gets wrong.** `RegExp` and `Map`/`Set` are taken
-   apart and rebuilt from their parts, never handed to the writer:
-   `JS_ReadRegExp` forgets to `BC_add_object_ref` the object it builds while the
-   writer adds every object, so one `RegExp` shifts every later back-reference
-   by one; `js_map_write` emits zombie records `js_map_read` does not expect.
-   Both desynchronise the stream — `docs/research/10` §4.4 has the line numbers.
-2. **Things the spec requires and the serialiser refuses**, chiefly invoking
-   getters and dropping symbol keys. The walk rebuilds plain objects and arrays
-   with `CreateDataProperty` semantics (`Object.defineProperty`, never `[[Set]]`)
-   so that an own `__proto__` *data* property survives and no inherited setter
-   intercepts a value.
-3. **Things the spec rejects that quickjs would accept, or reject badly.**
-   `Promise`, `WeakMap`/`WeakSet`/`WeakRef`, `FinalizationRegistry`,
-   `SharedArrayBuffer`, a `Proxy` (recognised by class id, before any trap can
-   run), a `MessagePort` that is not in the transfer list, and an
-   `ArrayBufferView` left out of bounds by a shrunk resizable buffer — for which
-   quickjs writes a stale offset and only its *reader* complains, on the far
-   side of a thread, long after the sender returned.
-4. **Transfer.** `MessagePort` is `[Transferable]` but not `[Serializable]`, so
-   the walk replaces a port with its index in the transfer list and `restore`
-   rebuilds it. Transfer is all-or-nothing: `message.rs` validates the whole
-   list — duplicates, detached buffers, immutable buffers, buffers carrying an
-   own `transfer` (den's spelling of `[[ArrayBufferDetachKey]]`, which is how
-   `WebAssembly.Memory#buffer` refuses), started ports — *before* it detaches
-   anything, and re-validates after the walk, because a getter is free to close
-   a port mid-walk.
-
-Anything the walk hands through unchanged that the reader then refuses becomes a
-`DataCloneError` rather than the reader's own `RangeError` (same realm) or a
-far-side `messageerror` (across a worker).
-
-### 7.5 The process-lifetime rule
-
-`AsyncRuntime::idle()` resolves only when no `ctx.spawn`-ed future is left
-(`docs/research/09` §2.2), so "what keeps den alive" is exactly "what is
-spawned". Five rules, and they are the whole of it:
-
-1. **A queue the script opened stays open until the script closes it.**
-   `port.start()`, assigning `onmessage` on a `MessagePort` (§9.4.4 says that
-   enables the queue "as if `start()` had been called"), and
-   `new BroadcastChannel` all say *keep listening*; `close()` is how that is
-   taken back.
-2. **A queue the platform opened is reffed by its listeners.** A `Worker`'s two
-   ends were opened on the script's behalf and nobody asked for them, so they
-   keep the loop alive only while at least one `message` or `messageerror`
-   listener exists on that target. Without this rule
-   `new Worker("noop.js")` hangs den for ever, because the worker's own end is
-   listening to a script that stopped caring. Unreffing stops *delivery*, never
-   receipt: envelopes stay queued in the channel and the next pump resumes at
-   the first one.
-3. **A live worker keeps its parent alive** — through the fault pump
-   `new Worker` spawns in the parent realm, not through the parent's port. So a
-   parent that installed no listener still waits for a worker that is doing
-   work, and stops waiting the moment the worker's context is dropped.
-4. **A worker realm ends** when its own `idle()` resolves (no timers, no started
-   ports, no in-flight fetch), or at `close()`, or at `terminate()`, or when the
-   parent hangs up and its pump sees the channel close.
-5. **A signal listener does not keep den alive.** `addSignalListener` spawns
-   nothing into the realm: the OS signal is forwarded by a `tokio::spawn`ed task
-   into an inbox that the root `select!` drains, so a script whose only
-   remaining business is listening still reaches `idle()` and exits 0. Whatever
-   the listener then *starts* is ordinary spawned work and does keep den alive
-   until it finishes, which is what makes an async cleanup handler possible.
-
-The practical consequence, and the one to remember: `new Worker("./w.js")` where
-`w.js` only prints exits 0 like Node, while a worker that registers `onmessage`
-keeps the process alive until `close()` or `terminate()`.
-
-## 8. Known limitations
-
-- **No re-entrancy while an export is running.** The store is one
-  `Rc<RefCell<backend::Store>>`, and `Store::with_mut` (`store.rs`) answers a
-  failed `try_borrow_mut` with a `WebAssembly.RuntimeError` — *"a WebAssembly
-  export is still running and has called back into JS: this build cannot
-  re-enter its wasm store, so calling another export — or creating a Memory,
-  Table, Global or Tag — is unsupported until that call returns"*. That is the
-  full extent of it: a wasm → JS → wasm call throws rather than panicking, and
-  so does constructing a new store-backed object from inside a host callback.
-  `store.rs`'s `a_host_callback_cannot_reach_another_export_of_the_same_store`
-  pins the ceiling end to end. Lifting it needs the borrow scoped per call
-  frame rather than per outermost call.
-- **`v128` and `anyref` values never cross the JS boundary.** Modules
-  *containing* `v128` do validate — it is what LLVM emits for ordinary Rust and
-  C — but `utils.rs` refuses a
-  `v128` in both directions with a `TypeError`, and `anyref` accepts only null,
-  since it is not in the spec's `ValueType` enum and den has no
-  `i31`/`struct`/`array` conversions. `funcref` and `externref` are fully
-  supported: a `funcref` round-trips as the same Exported Function object,
-  through the identity cache in `utils.rs`.
-- **Shared memory is refused, by choice.**
-  The JS-API spec's §5.6 requires the `[[BufferObject]]` to be a
-  `SharedArrayBuffer`, and den has no way to build one that aliases linear
-  memory — QuickJS silently refuses to detach a shared buffer
-  (`JS_DetachArrayBuffer`), which would turn §5.4's growth protocol into a
-  use-after-free. So `new WebAssembly.Memory({ shared: true })` is a
-  `TypeError`, and Wasmtime's `threads` Cargo feature is absent so no module can
-  smuggle a shared memory past the JS API either. `memory.rs`'s
-  `shared_memory_is_refused_whatever_this_build_cannot_alias` pins both halves.
-- **WASI grants the host's stdio and environment when it is asked for.** There
-  is no sandboxing knob: `wasiImports()` is all-or-nothing, and a caller passing
-  it hands the module the real `WasiCtx` (§6.5). Nothing is linked without it.
-- Several `den:fs` entry points (`metadata`, `readDir`, `readLink`,
-  `setPermissions`, `symlinkMetadata`) are declared but unimplemented.
-- **The binary swallows failures.** `src/main.rs` prints a load or run error and
-  still returns `Ok(())`, so `den missing.js` exits 0. (Absolute entry points do
-  resolve now: `den-core/src/resolver/file.rs`'s `AbsolutePathResolver` covers
-  absolute paths, `file:` URLs and specifiers relative to either.)
-- **Web Workers: the v1 divergences.** Each is pinned by a test.
-  - *Structured clone.* Array holes arrive as `undefined` and non-index array
-    properties are dropped. `RegExp` and `Map`/`Set` are rebuilt from their
-    parts rather than handed to `JS_WriteObject2`, working around two
-    quickjs-ng reference-table bugs (§7.4).
-  - *No shared memory between realms.* quickjs-ng does register
-    `SharedArrayBuffer` and `Atomics` — including `Atomics.wait` — but a
-    `SharedArrayBuffer` cannot leave its realm: the clone walk refuses it with a
-    `DataCloneError`, so nothing a worker can reach is ever shared and
-    cross-thread atomics are effectively unavailable. Each worker gets a whole
-    QuickJS runtime of its own and messages are copied.
-  - *Classic workers are `file:`-only.* An `http(s)` classic worker is a
-    `TypeError` pointing at `{ type: "module" }`; module workers go through
-    den's full resolver/loader/transpiler chain and may be remote.
-  - *A module worker's message queue opens only after its top-level `await`
-    settles.* HTML §10.2.4 step 2.13 is implemented literally — the queue is
-    enabled once the script "has run", and for a module with top-level `await`
-    that means once the evaluation promise resolves. Nothing is lost (envelopes
-    queue in the channel), but timers scheduled before the `await` fire while
-    `message` events still wait, which a browser would interleave differently.
-  - *`ErrorEvent.error` is `undefined` across a thread*, because an `Error` does
-    not serialise; message/filename/lineno/colno are carried. A worker script
-    that fails to *load* reports an `ErrorEvent` carrying the reason where HTML
-    fires a bare `Event` — strictly more useful, and one code path fewer.
-  - *A started `MessagePort` refuses to be transferred* with a
-    `DataCloneError`. The spec ships a started port together with its
-    undelivered messages; here that queue lives in the receiving realm's runtime
-    and cannot be packed up for another one (`NativePort::is_started` states the
-    reason).
-  - *`MessagePort`'s `close` event needs a started port.* HTML queues the event
-    until the queue is enabled; den fires it from the pump, and a port that was
-    never started has no pump.
-  - *The main global is an `EventTarget`.* `den:worker`'s evaluate binds
-    `addEventListener` / `removeEventListener` / `dispatchEvent` onto
-    `globalThis` and defines `onunhandledrejection` / `onrejectionhandled`, so
-    a script can cancel an unhandled rejection the same way a worker can.
-    `reportError()` still prints on the main realm (it does not fire a
-    cancelable `error` event); inside a worker `onerror` is fully spec-shaped.
-
-  The design notes are `docs/research/08`-`11`.
-
-## 9. Feature flags
-
-Root `Cargo.toml` default: `stdlib, typescript, react, wasm, jit, mimalloc`.
-Nearly every root feature is a pass-through to `den-core`.
-
-| Feature | Effect |
-|---|---|
-| `stdlib` | all of `stdlib-console/core/crypto/fs/networking/path/process/temporal/text/timer/whatwg-fetch/whatwg/worker` |
-| `stdlib-*` | one standard-library crate each |
-| `stdlib-ffi` | opt-in `den:ffi`; **not** part of `stdlib`, and still denied at run time without an `--allow-ffi` grant |
-| `stdlib-sqlite` | opt-in `den:sqlite` backed by bundled rusqlite |
-| `transpile` | pulls in `den-transpiler-oxc`; loaders start transpiling |
-| `typescript` | implies `transpile`; `.ts`/`.tsx` and TS lowering |
-| `react` | implies `transpile`; `.jsx`/`.mjsx`/`.tsx` and classic-runtime JSX |
-| `wasm` | `den-stdlib-wasm` with wasmtime 48 |
-| `wasi` | opt-in `wasiImports` backed by wasmtime-wasi preview1 |
-| `jit` | native Cranelift when the host ISA supports it; without `jit`, Pulley |
-| `mimalloc` | mimalloc as the global allocator (binary only) |
-| `tokio-console` | `console-subscriber`; also needs `--cfg tokio_unstable` |
-
-`jit` is additive and empty at the wasm crate: Cranelift and Pulley stay
-linked either way. Leaving `jit` off (or building for a host Cranelift does
-not target) makes `new_engine` select Pulley.
-
-## 9. test262 (`vendor/test262`)
-
-The [test262](https://github.com/tc39/test262) harness lives as a git submodule
-at `vendor/test262` (not a second vendored copy). Temporal tests are
-`vendor/test262/test/built-ins/Temporal/`. `den-stdlib-temporal` registers
-every official `.js` file there as its own nextest test
-(`cargo nextest run -p den-stdlib-temporal --test test262`): it concatenates
-`harness/assert.js`, `harness/sta.js` and any frontmatter `$INCLUDE`s, then
-evals the official file body through `Engine` with `den:temporal` installed. Tests whose
-`features` we cannot execute yet (`Intl*`, `module`, `async`, negative) are
-registered and ignored, not hidden. The WebAssembly core `.wast` tree and the
-WPT testharness trees use the same per-file nextest shape
-(`--test spec_core`, `--test wpt`). If the submodule checkout is empty, `git
-submodule update --init vendor/test262` (or `git -C vendor/test262 fetch
---depth 1 origin master` on a shallow clone).
-
-## 10. Build and test
+The workspace manifest is the authoritative member and feature graph:
+[Cargo.toml](Cargo.toml). Each standard-library crate owns one JS-facing
+surface and must not depend on `den-core`; `den-core` composes them.
+
+## Runtime invariants
+
+- [`Engine`](den-core/src/engine.rs) owns one `rquickjs::AsyncRuntime` and
+  `AsyncContext`. JavaScript work runs on that context, never on an arbitrary
+  Tokio worker.
+- `AsyncRuntime::idle()` is the event loop. Do not run a second driver beside
+  it; two schedulers would compete for the same runtime lock.
+- A host stops work by cancelling its program future, calling
+  `Engine::shutdown()`, then dropping every engine clone. A QuickJS interrupt
+  handler is still required for bytecode that never yields.
+- `Engine::shutdown()` drains realm-owned resources, including workers and KV
+  stores, before the context disappears.
+- [`den_util::stack`](den-util/src/stack.rs) installs quickjs-ng's structured
+  `Error.prepareStackTrace` hook before any module runs. Loaders register the
+  generated source and OXC/`sourceMappingURL` maps before compilation; stack
+  lookup performs no I/O. QuickJS exposes only the live synchronous frame
+  chain, so den does not claim V8-style causal frames across `await`.
+- Workers use one QuickJS runtime per OS thread. The
+  [`WorkerHost`](den-stdlib-worker/src/host.rs) seam lets `den-core` build a
+  worker engine without reversing the dependency edge.
+- The REPL keeps durable history in `history.surrealkv`. Failure to acquire the
+  store lock falls back to in-memory history rather than preventing startup.
+
+## Module registration
+
+Every `den:*` module enabled in [`engine.rs`](den-core/src/engine.rs) must be in
+both the builtin resolver and native module loader. Modules that expose globals
+must also be evaluated during context construction.
+
+Import-only modules include `den:assert`, `den:ffi`, `den:fs`, `den:http`,
+`den:kv`, `den:networking`, `den:path` and `den:sqlite`. Global-producing
+modules include console, core, crypto, process, Temporal, text, timers, WHATWG,
+workers and WebAssembly. WHATWG is evaluated after workers because its APIs
+extend worker-owned event classes.
+
+The loader chain is:
+
+1. native builtins and the optional embedded bytecode bundle;
+2. HTTP modules through [`loader/http.rs`](den-core/src/loader/http.rs);
+3. filesystem modules through
+   [`loader/mmap_script.rs`](den-core/src/loader/mmap_script.rs).
+
+The resolver chain is:
+
+1. import maps in
+   [`resolver/import_map.rs`](den-core/src/resolver/import_map.rs);
+2. native builtins and the embedded bundle;
+3. HTTP URLs in [`resolver/http.rs`](den-core/src/resolver/http.rs);
+4. absolute and relative files in
+   [`resolver/file.rs`](den-core/src/resolver/file.rs).
+
+Import attributes are handled once by
+[`loader/typed.rs`](den-core/src/loader/typed.rs): `json`, `text`, and `bytes`
+produce synthetic modules; other types fail loading.
+
+## Standard-library boundaries
+
+- [`den:http`](den-stdlib-http/src/lib.rs) accepts Fetch `Request` objects and
+  requires handlers to return `Response` objects. It supports HTTP/1 and
+  cleartext HTTP/2 prior knowledge, bounds buffered bodies, and exposes
+  explicit graceful drain through `Server.close()` and `Server.finished`.
+- [`den:kv`](den-stdlib-kv/src/lib.rs) stores byte keys and values in
+  SurrealKV. Resolved mutations use immediate durability; transactions are
+  explicit and stores are closed during engine shutdown.
+- [`den:whatwg`](den-stdlib-whatwg/src/lib.rs) owns Fetch together with the
+  other WHATWG globals. `den:whatwg-fetch` remains an independently selectable
+  module surface, not a separate crate.
+- [`den:wasm`](den-stdlib-wasm/src/lib.rs) uses Cranelift under `jit` and Pulley
+  otherwise. WASI is independently gated by the `wasi` feature.
+- `den:ffi` is denied at runtime unless the host grants the requested library
+  path, even when the crate is compiled in.
+
+## Feature invariants
+
+Root features pass through to `den-core`; focused `stdlib-*` features select
+one surface, while `stdlib` selects the complete standard library. `react` and
+`typescript` imply `transpile`. `wasi` implies `wasm`; `jit` only changes the
+wasmtime execution engine.
+
+Keep conditional registration synchronized across dependency declarations,
+resolver entries, loader entries and eager evaluation. A feature that compiles
+but leaves one of those lists out is broken.
+
+## Verification
+
+Use nextest, never `cargo test`:
 
 ```bash
-cargo build                                  # debug
-cargo build --release
-cargo build --profile min-size-release       # size-favoured
-
-# wasmtime + native Cranelift (default: `wasm` + `jit`)
-cargo nextest run --workspace --build-jobs 8
-
-# den unit tests only
-cargo nextest run --profile compat --workspace --build-jobs 8
-
-# official vendor files (spec / WPT / test262)
-cargo nextest run --profile official
-
-# wasmtime + Pulley (no JIT pages; App Store / hardened runtime / iOS)
-cargo nextest run --workspace --build-jobs 8 --no-default-features \
-  --features stdlib,typescript,react,wasm
+cargo nextest run --workspace --profile official --build-jobs 8
+cargo nextest run --workspace --profile official --build-jobs 8 \
+  --no-default-features --features stdlib,typescript,react,wasm,wasi,ring
 ```
 
-Both invocations must be green. The bulk is still `den-stdlib-worker` and
-`den-stdlib-wasm`; the WinterTC crates add process, whatwg, fetch, fs, crypto,
-networking, and den-core import-map/attribute suites on top. The timer crate
-now covers numeric ids, and den-core pins dropping an engine parked on a
-pending timer returning promptly.
+Focused conformance suites are Test262 Temporal, the WebAssembly spec runner,
+and WPT. WPT uses the vendored sparse checkout and the official `wptserve`
+process on ports 8000–8002; [the workflow](.github/workflows/wpt.yml) owns that
+server lifecycle.
 
-JS that a script would run is tested on the crate that owns the API
-(`den-stdlib-*/tests/js`, `tests/fixtures`, or `tests/webassembly`, static
-`import { … } from "den:assert"`), through `Engine::run_file` (a `den-core`
-dev-dependency with `features = ["stdlib"]`). `Engine::eval` is a global
-script, so a static `import` is a SyntaxError there; `run_file` wraps the
-path with `Module::import` and sets `BaseUrl` from the file's parent.
-`den-core/tests/e2e/stdlib.js` is the one file that reaches every stdlib
-module from a single engine. Official harnesses (test262, spec_core, WPT)
-use the same `Engine` realm. Unit tests that call native wrappers with a
-`Ctx` (wasm `Memory::new`, worker `NativePort`, fetch `Response::from_reqwest`)
-live in `tests/unit` and are path-included from `src`, so they still run in a
-same-crate realm: `den-core`'s `Engine` installs a differently-compiled copy of
-the crate, so userdata/`Class<T>` TypeIds do not match. Deterministic generated
-output is locked with Insta snapshots; snapshots are committed and test runs use
-`INSTA_UPDATE=no` in verification.
-
-`den-stdlib-worker/tests/workers.rs` is the layer that proves a *user* gets the worker
-semantics: it writes its fixtures under `std::env::temp_dir()` at test time and
-drives them through `Engine::run_file`, so the loaders, the transpiler, the
-`BaseUrl` and `Engine::shutdown`'s thread reaping are all in the path. Every
-cross-thread wait is a promise settled by an event under a
-`tokio::time::timeout`; nothing synchronises by sleeping.
-
-CI (`.github/workflows/lint.yml`) runs clippy, `fmt --check`, `doc` and the
-test suite. A green `jit` run says nothing about Pulley: same JS-API layer,
-different compiler target.
+Closed investigation notes stay available in Git history. The remaining
+[research index](docs/research/README.md) points back here.

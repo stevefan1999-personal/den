@@ -12,11 +12,15 @@ Made during the Easter holiday of 2023.
 - A standard library exposed both as `den:*` modules and as globals: `console`, `atob`/`btoa`/`gc`,
   `TextEncoder`/`TextDecoder`, timers, `fetch` (`Headers`/`Request`/`Response`), `crypto.subtle.digest`,
   `den:assert` (including Insta-backed named snapshots), `den:fs`,
+  `den:http` (cleartext HTTP/1 and HTTP/2 prior-knowledge server with a Fetch handler, graceful
+  drain, and 16 MiB buffered-body limit),
+  `den:kv` (durable byte CRUD and snapshot transactions over SurrealKV),
   `den:path` (portable/POSIX/Windows lexical paths),
   `den:networking` (TCP/UDP/Unix/TLS), `den:process`,
   `Temporal` (`temporal_rs`)
-- Optional bundled SQLite as `den:sqlite` (`--features stdlib-sqlite`)
-- Optional C FFI as `den:ffi` (`--features stdlib-ffi`, off by default; a script still needs
+- Bundled SQLite as `den:sqlite` (selectable alone with
+  `--no-default-features --features stdlib-sqlite`)
+- C FFI as `den:ffi` (selectable alone with `--no-default-features --features stdlib-ffi`; a script still needs
   a `--allow-ffi[=PATH,...]` grant at run time)
 - WinterTC / WHATWG web platform APIs: `AbortController`, `Blob`/`File`/`FileReader`/`FormData`,
   `XMLHttpRequest`, `EventSource`, `URLPattern`, `CompressionStream`, `WebSocket`,
@@ -26,17 +30,21 @@ Made during the Easter holiday of 2023.
   WebAssembly spec (`cargo nextest run -p den-stdlib-wasm --test spec_core`),
   WPT (`cargo nextest run -p den-core --test wpt --features stdlib`).
   All three: `cargo nextest run --profile official --build-jobs 8`
+  WPT expects the official `vendor/wpt` server on ports 8000–8002; the CI workflow contains the
+  matching startup and cleanup command.
 - Import maps and import attributes (`json` / `text` / `bytes`)
 - The WebAssembly JS API on wasmtime 48, with a `jit` feature (native Cranelift)
   and Pulley for no-JIT / unsupported hosts (App Store, hardened runtime, iOS)
 - Optional WASI preview1 imports as `den:wasm`'s `wasiImports` (`--features wasi`)
+- TLS uses ring by default. Without the `ring` feature Den leaves Rustls provider and
+  cipher-suite selection to the embedding application.
 - Web Workers: `Worker` (classic and module), `MessageChannel`/`MessagePort`, `BroadcastChannel`,
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
   thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
 - Everything above is a cargo feature, so you can compile most of it away
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together, and
-[docs/research/](docs/research/) for the dependency/API research notes behind them.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together. Closed
+research remains available in Git history.
 
 # Build instruction
 
@@ -54,10 +62,17 @@ Run the following command to get an optimized release build:
 $ cargo build --release
 ```
 
-Add the optional SQLite module when it is needed:
+The checked-in Cargo config also makes the same command work for
+`x86_64-unknown-linux-musl`. Plain musl-gcc sysroots omit Linux UAPI headers,
+so two private compatibility headers keep libffi's static-trampoline hardening
+enabled without mixing host headers into the musl build. Static musl cannot
+`dlopen`, so `den:ffi` runtime loading requires a dynamically linked build;
+CI exercises it with the pinned [musl nextest image](.github/musl-nextest.Dockerfile).
+
+Build only the SQLite standard-library module when it is needed:
 
 ```bash
-$ cargo build --features stdlib-sqlite
+$ cargo build --no-default-features --features stdlib-sqlite
 ```
 
 Or choose the `min-size-release` profile to get a size-favored build:
@@ -79,6 +94,13 @@ The aggressive artifact is isolated under `target/<host-triple>/min-size-release
 
 This profile stays on stable Rust. A nightly toolchain can go further by rebuilding
 the standard library; see the [min-sized-rust `build-std` guide](https://github.com/johnthagen/min-sized-rust#optimize-libstd-with-build-std).
+
+For stalled async tasks, leaked spawns, or I/O that never wakes, build with the
+Tokio console instrumentation and attach the `tokio-console` client:
+
+```bash
+$ RUSTFLAGS="--cfg tokio_unstable" cargo run --features tokio-console -- app.ts
+```
 
 ### Embedded bytecode modules
 
@@ -143,9 +165,10 @@ const goodbye = async () => {
 addSignalListener("SIGINT", goodbye);
 ```
 
-An embedder stops a realm by dropping it, plus its own flag in
-`runtime.set_interrupt_handler` for a script spinning in bytecode — the
-compiled recipe is the rustdoc on `den_core::engine::Engine`. See
+An embedder stops a realm by cancelling its program future, awaiting
+`Engine::shutdown()`, then dropping it; its own `runtime.set_interrupt_handler`
+flag stops a script spinning in bytecode. The compiled recipe is the rustdoc on
+`den_core::engine::Engine`. See
 [ARCHITECTURE.md](ARCHITECTURE.md) §2.
 
 ## Testing
@@ -162,7 +185,7 @@ $ cargo nextest run --profile compat --workspace --build-jobs 8
 
 # wasmtime + Pulley (no JIT pages)
 $ cargo nextest run --workspace --build-jobs 8 --no-default-features \
-    --features stdlib,typescript,react,wasm
+    --features stdlib,typescript,react,wasm,wasi,ring
 ```
 
 `--no-default-features` is required for the Pulley run: cargo features are additive,
@@ -198,63 +221,6 @@ assertSnapshot(JSON.stringify(value), "stable_name");
 
 Names are required because JavaScript calls share one Rust assertion site;
 snapshots live under `./snapshots` in the process working directory. Review
-updates with `cargo insta review` (from the separate `cargo-insta` CLI), or use
-`INSTA_UPDATE` with ordinary `cargo test`; see the
+updates with `cargo insta review` (from the separate `cargo-insta` CLI), or set
+`INSTA_UPDATE` on a focused `cargo nextest run`; see the
 [Insta documentation](https://docs.rs/insta/latest/insta/).
-
-# TODO LIST
-
-Note that this project is still in its pre-alpha and subjects to major re-architect. Den *can* run for now but it is not
-yet functional and reliable. I expect this to be at least yearlong to come and I hope I have enough free time to spend
-on it.
-
-There are still a lot of bugs that needs to be addressed before it can be deemed functional:
-
-- [ ] MAKE SOME UNIT TESTS AND INTEGRATION TESTS
-    - [x] Unit tests for the transpiler, the engine and the standard library
-    - [x] Integration tests for the WebAssembly JS API, driven as JS through a real QuickJS context
-      on wasmtime (native Cranelift and Pulley)
-    - [x] Unit and integration tests for Web Workers, including the thread boundary, the error
-      chain and the process-lifetime rule
-    - [ ] End-to-end tests that actually run the `den` binary (the worker suite spawns a child
-      *test* process to capture stderr, which is as close as it gets today)
-- [x] Detect when the task list is empty and is safe to shutdown (like Node)
-    - `AsyncRuntime::idle()` is the whole rule: den exits when nothing is spawned. A worker only
-      keeps the process alive while it is doing work or something is still listening to it — see
-      [ARCHITECTURE.md](ARCHITECTURE.md) §7.5. The process still exits 0 on an uncaught error,
-      which is the next thing to fix.
-- [x] Make it easily embeddable to other Rust projects
-    - [x] Remove the need for the global state. The last of it was the "global cancellation token":
-      an `Engine` now carries no realm-wide cancellation at all — stopping one is dropping it, and a
-      host that has to interrupt a running script installs its own interrupt flag. See
-      [docs/research/16](docs/research/16-cancellation-without-tokens.md) and
-      [17](docs/research/17-graceful-shutdown-and-external-stop.md).
-    - This is also important because we can reuse it to test the standard library
-    - Better yet, integrate some crates and libraries to upstream rquickjs so everybody can enjoy
-- [ ] Finish up the standard libraries
-    - [ ] Rewrite [RegExp](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp)
-      using [rust-lang/regex](https://github.com/rust-lang/regex)
-    - [ ] Rewrite [BigInt](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/BigInt),
-      BigFloat and BigDecimal using [rust-num/num](https://github.com/rust-num/num)
-        - Although I hardly doubt it will work because bignum is a language-level construct
-- [x] Mark more parts of the code as features and let user to selective include them
-- [ ] Filling up comments and documentations once it is stable in the future (I hope so)
-- [x] Figure out how to expose Rust modules as one big module. You don't want to cherrypick each exposed Rust rquickjs
-  module in one big Rust module
-- [ ] Add GH Actions manifests to automate CI/CD workflow such as linting, testing and build release
-    - [x] Linting: `cargo clippy` and `cargo fmt --check` (`.github/workflows/lint.yml`)
-    - [x] Docs: `cargo doc --no-deps`
-    - [x] Testing: `cargo nextest run` as a matrix over `jit` and Pulley
-    - [ ] Release builds and artifact publishing
-- [ ] Add GH Workspace config or Nix to have consistent build environment
-    - There is a `devfile.yaml` for Che/OpenShift Dev Spaces, but no devcontainer and no Nix flake
-- [ ] Add [tracing](https://docs.rs/tracing/latest/tracing/) support and also instruments
-    - [x] `tracing-subscriber` installed in `main` with `RUST_LOG` filtering, and `console.*` routed
-      to `tracing` instead of `println!`
-    - [x] Optional `tokio-console` support behind the `tokio-console` feature (needs
-      `--cfg tokio_unstable`)
-    - [ ] Actual `#[instrument]` spans on the runtime's own code paths
-
-# Contributors
-
-#
