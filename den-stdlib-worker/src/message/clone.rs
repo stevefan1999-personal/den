@@ -5,11 +5,11 @@
 use std::collections::HashMap;
 
 use den_util::{
-    BufferSource, ClassId as _, ObjectExt, coerce_string, construct, instance_of_global,
+    BufferSource, ClassId as _, ObjectExt as _, coerce_string, construct, instance_of_global,
 };
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object, Result,
-    Symbol, Value, object::Property, qjs,
+    Array, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs as _, JsLifetime, Object,
+    Result, Symbol, Value, object::Property, qjs,
 };
 
 use crate::{
@@ -31,7 +31,9 @@ impl<'js> CloneState<'js> {
         ctx.store_userdata(Self {
             port_handle: port_handle.clone(),
         })
-        .map_err(|_| Exception::throw_internal(ctx, "den:worker is already installed"))?;
+        .map_err(|_store_error| {
+            Exception::throw_internal(ctx, "den:worker is already installed")
+        })?;
         Ok(port_handle)
     }
 
@@ -180,15 +182,15 @@ fn copy<'js>(
             .as_symbol()
             .and_then(|symbol| symbol.description().ok())
             .filter(|value| !value.is_undefined());
-        let text = match description {
-            Some(description) => {
+        let text = description.map_or_else(
+            || "Symbol()".to_owned(),
+            |description| {
                 let description: String = Coerced::from_js(ctx, description)
                     .map(|Coerced(s)| s)
                     .unwrap_or_default();
                 format!("Symbol({description})")
-            }
-            None => "Symbol()".to_owned(),
-        };
+            },
+        );
         return Err(fail(ctx, &text));
     }
     if value.is_function() {
@@ -241,7 +243,9 @@ fn copy<'js>(
     }
     if instance_of_global(ctx, &value, "RegExp")? {
         let tagged = tag_object(ctx, "RegExp")?;
-        let object = value.as_object().expect("RegExp");
+        let Some(object) = value.as_object() else {
+            return Err(fail(ctx, "RegExp"));
+        };
         define_data(&tagged, "source", object.get("source")?)?;
         define_data(&tagged, "flags", object.get("flags")?)?;
         let out = tagged.into_value();
@@ -250,7 +254,9 @@ fn copy<'js>(
     }
     if instance_of_global(ctx, &value, "DataView")? {
         let tagged = tag_object(ctx, "DataView")?;
-        let object = value.as_object().expect("DataView");
+        let Some(object) = value.as_object() else {
+            return Err(fail(ctx, "DataView"));
+        };
         define_data(
             &tagged,
             "buffer",
@@ -271,7 +277,9 @@ fn copy<'js>(
     }
     if instance_of_global(ctx, &value, "DOMException")? {
         let tagged = tag_object(ctx, "DOMException")?;
-        let object = value.as_object().expect("DOMException");
+        let Some(object) = value.as_object() else {
+            return Err(fail(ctx, "DOMException"));
+        };
         define_data(&tagged, "name", object.get("name")?)?;
         define_data(&tagged, "message", object.get("message")?)?;
         if let Ok(stack) = object.get::<_, Value<'js>>("stack")
@@ -284,7 +292,9 @@ fn copy<'js>(
         return Ok(out);
     }
     if value.is_error() {
-        let object = value.as_object().expect("Error");
+        let Some(object) = value.as_object() else {
+            return Err(fail(ctx, "Error"));
+        };
         let name: String = object
             .get::<_, String>("name")
             .unwrap_or_else(|_| "Error".to_owned());
@@ -303,7 +313,7 @@ fn copy<'js>(
         {
             define_data(&tagged, "stack", stack)?;
         }
-        let out = tagged.into_value();
+        let out = tagged.clone().into_value();
         seen.insert(value.clone(), out.clone());
         if object.has_own("cause")? {
             let cause = copy(
@@ -314,15 +324,12 @@ fn copy<'js>(
                 transferred,
                 seen,
             )?;
-            define_data(out.as_object().expect("tag"), "cause", cause)?;
+            define_data(&tagged, "cause", cause)?;
         }
         return Ok(out);
     }
     if value.is_array() {
-        let array = value.as_array().expect("array");
-        let length = array.len();
         let dest = Array::new(ctx.clone())?;
-        let _ = length;
         let dest_value = dest.clone().into_value();
         seen.insert(value.clone(), dest_value.clone());
         copy_own(
@@ -518,7 +525,9 @@ fn revive<'js>(
                     &object.get::<_, String>("message").unwrap_or_default(),
                     &object.get::<_, String>("name").unwrap_or_default(),
                 )?;
-                let object_out = exception.as_object().expect("DOMException").clone();
+                let Some(object_out) = exception.as_object().cloned() else {
+                    return Err(fail(ctx, "DOMException"));
+                };
                 let stacked = with_stack(object_out, object.get::<_, Value<'js>>("stack").ok())?;
                 let revived = stacked.into_value();
                 seen.insert(value, revived.clone());
@@ -536,11 +545,11 @@ fn revive<'js>(
                     revived_obj.clone(),
                     object.get::<_, Value<'js>>("stack").ok(),
                 )?;
-                let revived = stacked.into_value();
+                let revived = stacked.clone().into_value();
                 seen.insert(value.clone(), revived.clone());
                 if object.has_own("cause")? {
                     let cause = revive(ctx, object.get("cause")?, ports, seen)?;
-                    define_data(revived.as_object().expect("Error"), "cause", cause)?;
+                    define_data(&stacked, "cause", cause)?;
                 }
                 return Ok(revived);
             }
@@ -549,7 +558,9 @@ fn revive<'js>(
     }
     seen.insert(value.clone(), value.clone());
     if value.is_array() {
-        let array = value.as_array().expect("array");
+        let Some(array) = value.as_array() else {
+            return Err(fail(ctx, "Array"));
+        };
         let object: &Object<'js> = array.as_inner();
         let keys: Vec<String> = object.keys().collect::<Result<Vec<_>>>()?;
         for key in keys {

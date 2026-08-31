@@ -1,4 +1,4 @@
-use rquickjs::{CatchResultExt, Context, FromJs, Function, Object, Result, Runtime, Value};
+use rquickjs::{CatchResultExt as _, Context, FromJs, Function, Object, Result, Runtime, Value};
 
 const EXPOSED: [&str; 2] = ["reportError", "__defineEventHandler"];
 

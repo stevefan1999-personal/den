@@ -12,22 +12,28 @@ use tokio::{
 /// `Uint8Array`. Detached buffers are refused rather than treated as empty.
 pub type JsByteBuf<'js> = Either<String, Either<Vec<u8>, TypedArray<'js, u8>>>;
 
-pub fn js_bytes<'a>(buf: &'a JsByteBuf<'_>) -> Result<&'a [u8]> {
-    match buf {
-        Either::Left(text) => Ok(text.as_bytes()),
-        Either::Right(Either::Left(bytes)) => Ok(bytes.as_slice()),
-        Either::Right(Either::Right(array)) => {
-            array
-                .as_bytes()
-                .ok_or_else(|| Error::new_from_js_message("typed array", "bytes", "detached"))
+pub trait JsByteBufExt {
+    fn as_bytes(&self) -> Result<&[u8]>;
+}
+
+impl JsByteBufExt for JsByteBuf<'_> {
+    fn as_bytes(&self) -> Result<&[u8]> {
+        match self {
+            Either::Left(text) => Ok(text.as_bytes()),
+            Either::Right(Either::Left(bytes)) => Ok(bytes.as_slice()),
+            Either::Right(Either::Right(array)) => {
+                array
+                    .as_bytes()
+                    .ok_or_else(|| Error::new_from_js_message("typed array", "bytes", "detached"))
+            }
         }
     }
 }
 
 #[derive(Clone, From, Into, Deref, DerefMut)]
-pub struct AsyncReadWrapper(pub Arc<RwLock<dyn AsyncRead + Unpin>>);
+pub struct AsyncReadWrapper<T: ?Sized>(pub Arc<RwLock<T>>);
 
-impl AsyncReadWrapper {
+impl<T: AsyncRead + Unpin + ?Sized> AsyncReadWrapper<T> {
     pub async fn read_to_end(self) -> Result<Vec<u8>> {
         let mut buf = vec![];
         let mut write = self.write().await;
@@ -64,11 +70,11 @@ impl AsyncReadWrapper {
 }
 
 #[derive(Clone, From, Into, Deref, DerefMut)]
-pub struct AsyncWriteWrapper(pub Arc<RwLock<dyn AsyncWrite + Unpin>>);
+pub struct AsyncWriteWrapper<T: ?Sized>(pub Arc<RwLock<T>>);
 
-impl AsyncWriteWrapper {
+impl<T: AsyncWrite + Unpin + ?Sized> AsyncWriteWrapper<T> {
     pub async fn write_all(self, buf: JsByteBuf<'_>) -> Result<()> {
-        let bytes = js_bytes(&buf)?;
+        let bytes = buf.as_bytes()?;
         let mut write = self.write().await;
         write.write_all(bytes).await?;
         drop(write);

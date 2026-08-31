@@ -1,6 +1,6 @@
 use den_core::engine::Engine;
 use either::Either;
-use rquickjs::{CatchResultExt, convert::List};
+use rquickjs::{CatchResultExt as _, convert::List};
 
 use super::UdpSocketWrapper;
 

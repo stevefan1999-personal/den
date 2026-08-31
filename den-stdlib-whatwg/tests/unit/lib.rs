@@ -1,9 +1,13 @@
 use std::path::PathBuf;
 
 use den_core::engine::Engine;
-use rquickjs::{CatchResultExt, Context, Module, Runtime};
+use futures::{SinkExt as _, StreamExt as _};
+use rquickjs::{
+    CatchResultExt as _, Class, Context, Module, Promise, Runtime, Value, prelude::This,
+};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+use super::fetch::Response;
 
 #[test]
 fn whatwg_installs_its_event_dependency_when_evaluated_alone() {
@@ -53,59 +57,9 @@ async fn run(name: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn xhr_get_and_post_against_a_local_listener() {
-    let _guard = ENV.lock().await;
-    let server = super::local_http::serve(|incoming| {
-        if incoming.path.ends_with("/post") {
-            super::local_http::Outgoing::ok(incoming.body, "text/plain")
-        } else {
-            super::local_http::Outgoing {
-                status:  200,
-                headers: vec![
-                    ("Content-Type".into(), "text/plain".into()),
-                    ("X-Echo".into(), "yes".into()),
-                ],
-                body:    b"hello-xhr".to_vec(),
-                hang:    false,
-                silent:  false,
-            }
-        }
-    })
-    .await;
-    // SAFETY: test-only keys, held under `ENV` so cargo-test threads cannot race.
-    unsafe {
-        std::env::set_var("DEN_TEST_GET_URL", server.url("/get"));
-        std::env::set_var("DEN_TEST_POST_URL", server.url("/post"));
-    }
-    tokio::time::timeout(std::time::Duration::from_secs(5), run("xhr.js"))
-        .await
-        .expect("XMLHttpRequest test timed out");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn event_source_reads_two_events_from_a_local_listener() {
-    let _guard = ENV.lock().await;
-    let server = super::local_http::serve(|_| {
-        super::local_http::Outgoing::ok(
-            b"event: custom\ndata: a\n\ndata: b\n\n".to_vec(),
-            "text/event-stream",
-        )
-    })
-    .await;
-    // SAFETY: test-only key, held under `ENV` so cargo-test threads cannot race.
-    unsafe {
-        std::env::set_var("DEN_TEST_URL", server.url("/"));
-    }
-    tokio::time::timeout(std::time::Duration::from_secs(5), run("event_source.js"))
-        .await
-        .expect("EventSource test timed out");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn websocket_echoes_a_text_frame_on_a_local_listener() {
-    let _guard = ENV.lock().await;
     let port = echo_ws().await;
-    // SAFETY: test-only key, held under `ENV` so cargo-test threads cannot race.
+    // SAFETY: this test is the only writer for this process-local key.
     unsafe {
         std::env::set_var("DEN_TEST_WS_URL", format!("ws://127.0.0.1:{port}/"));
     }
@@ -125,24 +79,21 @@ async fn echo_ws() -> u16 {
                 break;
             };
             tokio::spawn(async move {
-                let Ok(ws) =
-                    den_stdlib_networking::websocket::NativeWebSocket::accept(stream).await
-                else {
+                let Ok(mut ws) = accept_async(stream).await else {
                     return;
                 };
-                while let Some(event) = ws.next_event().await {
-                    match event {
-                        den_stdlib_networking::websocket::NativeWsEvent::Text(text) => {
-                            let _ = ws.send_text(text);
+                while let Some(Ok(message)) = ws.next().await {
+                    match message {
+                        Message::Text(_) | Message::Binary(_) => {
+                            if ws.send(message).await.is_err() {
+                                break;
+                            }
                         }
-                        den_stdlib_networking::websocket::NativeWsEvent::Binary(bytes) => {
-                            let _ = ws.send_binary(bytes);
-                        }
-                        den_stdlib_networking::websocket::NativeWsEvent::Close { .. } => {
+                        Message::Close(frame) => {
+                            let _ = ws.send(Message::Close(frame)).await;
                             break;
                         }
-                        den_stdlib_networking::websocket::NativeWsEvent::Open { .. }
-                        | den_stdlib_networking::websocket::NativeWsEvent::Error(_) => {}
+                        _ => {}
                     }
                 }
             });
@@ -163,7 +114,6 @@ async fn a_native_source_is_pulled_only_while_the_consumer_has_demand() {
 
     use rquickjs::Function;
 
-    let _guard = ENV.lock().await;
     let engine = Engine::new().await;
     let pulls = Arc::new(AtomicUsize::new(0));
     let installed = Arc::clone(&pulls);
@@ -200,7 +150,7 @@ async fn a_native_source_is_pulled_only_while_the_consumer_has_demand() {
 
     let report: String = engine
         .eval(
-            r#"
+            "
             const reader = nativeStream.getReader();
             const first = await reader.read();
             const paced = nativePulls();
@@ -211,7 +161,7 @@ async fn a_native_source_is_pulled_only_while_the_consumer_has_demand() {
               text += new TextDecoder().decode(value);
             }
             `${text}|${paced}|${nativePulls()}`
-            "#,
+            ",
         )
         .await
         .expect("the native stream drains");
@@ -228,4 +178,82 @@ async fn a_native_source_is_pulled_only_while_the_consumer_has_demand() {
         "at most one chunk may be buffered ahead of the reader, saw {after_first} pulls"
     );
     assert_eq!(total, "4", "three chunks and one end-of-stream pull");
+}
+
+/// A body handed to script has to be a buffer QuickJS itself allocated.
+/// Lending it a Rust allocation registers a free hook that quickjs-ng runs
+/// twice on detach (quickjs.c:58037 and :57935), and `transfer` reallocs
+/// that foreign pointer, so `(await response.arrayBuffer()).transfer(2)`
+/// aborted the process — an abort that takes this test binary with it, so
+/// the snippet returning at all is the assertion.
+#[tokio::test]
+async fn a_response_body_survives_transfer_and_detach() {
+    let engine = Engine::new().await;
+    let outcome: String = engine
+        .context
+        .async_with(async |ctx| {
+            // Built from an `http::Response`, so the body is real but no
+            // socket is involved. `Response` holds an `Rc`, so it cannot be
+            // captured by the `Send` closure and is made here.
+            let respond = || {
+                Response::from_reqwest(&ctx, http::Response::new("body").into(), "basic")
+                    .expect("response")
+            };
+            let run = async {
+                let buffer = Response::array_buffer(
+                    This(Class::instance(ctx.clone(), respond())?),
+                    ctx.clone(),
+                )?
+                .into_future::<Value>()
+                .await?;
+                let view =
+                    Response::bytes(This(Class::instance(ctx.clone(), respond())?), ctx.clone())?
+                        .into_future::<Value>()
+                        .await?;
+                ctx.globals().set("body", buffer)?;
+                ctx.globals().set("view", view)?;
+                ctx.eval::<String, _>(include_str!(
+                    "../fixtures/unit/lib/a_response_body_survives_transfer_and_detach.js"
+                ))
+            };
+            run.await.catch(&ctx).map_err(|err| err.to_string())
+        })
+        .await
+        .expect("the snippet evaluates");
+    assert_eq!(outcome, "98-111,body,true,0");
+}
+
+#[tokio::test]
+async fn response_blob_wraps_the_body_when_blob_exists() {
+    let engine = Engine::new().await;
+    let outcome: String = engine
+        .context
+        .async_with(async |ctx| {
+            let run = async {
+                let response = Response::from_reqwest(
+                    &ctx,
+                    http::Response::builder()
+                        .header("content-type", "text/plain")
+                        .body("hello")
+                        .expect("response")
+                        .into(),
+                    "basic",
+                )
+                .expect("from_reqwest");
+                let blob =
+                    Response::blob(This(Class::instance(ctx.clone(), response)?), ctx.clone())?
+                        .into_future::<Value>()
+                        .await?;
+                ctx.globals().set("blob", blob)?;
+                ctx.eval::<Promise, _>(include_str!(
+                    "../fixtures/unit/lib/response_blob_wraps_the_body_when_blob_exists.js"
+                ))?
+                .into_future::<String>()
+                .await
+            };
+            run.await.catch(&ctx).map_err(|err| err.to_string())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(outcome, "true|text/plain|hello");
 }

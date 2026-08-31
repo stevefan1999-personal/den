@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt, FromJs, Function, Module};
+use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt as _, FromJs, Function, Module};
 use tokio::time;
 
 use super::NativePort;

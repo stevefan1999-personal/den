@@ -2,25 +2,23 @@
 //! plus MIME Sniff parse/serialize (`https://mimesniff.spec.whatwg.org/`).
 
 use indexmap::IndexMap;
-
-pub(crate) struct DataUrl {
+pub struct DataUrl {
     pub mime: String,
     pub body: Vec<u8>,
 }
 
-pub(crate) fn parse(input: &str) -> Option<DataUrl> {
+pub fn parse(input: &str) -> Option<DataUrl> {
     let parsed = reqwest::Url::parse(input).ok()?;
     if parsed.scheme() != "data" {
         return None;
     }
-    let mut serialized = parsed.clone();
+    let mut serialized = parsed;
     serialized.set_fragment(None);
     let rest = serialized.as_str().strip_prefix("data:")?;
-    let comma = rest.find(',')?;
-    let mut mime_type = rest[..comma]
+    let (raw_mime, encoded_body) = rest.split_once(',')?;
+    let mut mime_type = raw_mime
         .trim_matches(|ch: char| ch.is_ascii_whitespace())
         .to_string();
-    let encoded_body = &rest[comma + 1..];
     let mut body = percent_decode(encoded_body.as_bytes());
     if let Some(stripped) = strip_base64_flag(&mime_type) {
         mime_type = stripped;
@@ -30,18 +28,19 @@ pub(crate) fn parse(input: &str) -> Option<DataUrl> {
     if mime_type.starts_with(';') {
         mime_type.insert_str(0, "text/plain");
     }
-    let mime = match parse_mime(&mime_type) {
-        Some(parsed) => serialize_mime(&parsed),
-        None => "text/plain;charset=US-ASCII".to_string(),
-    };
+    let mime = parse_mime(&mime_type).map_or_else(
+        || "text/plain;charset=US-ASCII".to_string(),
+        |parsed| serialize_mime(&parsed),
+    );
     Some(DataUrl { mime, body })
 }
 
 fn strip_base64_flag(mime: &str) -> Option<String> {
-    if mime.len() < 6 || !mime[mime.len() - 6..].eq_ignore_ascii_case("base64") {
+    let split = mime.len().checked_sub(6)?;
+    if !mime.get(split..)?.eq_ignore_ascii_case("base64") {
         return None;
     }
-    let before = mime[..mime.len() - 6].trim_end_matches(' ');
+    let before = mime.get(..split)?.trim_end_matches(' ');
     before.strip_suffix(';').map(str::to_string)
 }
 
@@ -51,7 +50,7 @@ struct MimeType {
     parameters:   IndexMap<String, String>,
 }
 
-fn is_http_token(ch: char) -> bool {
+const fn is_http_token(ch: char) -> bool {
     matches!(
         ch,
         '0'..='9'
@@ -75,11 +74,11 @@ fn is_http_token(ch: char) -> bool {
     )
 }
 
-fn is_http_quoted_string_token(ch: char) -> bool {
+const fn is_http_quoted_string_token(ch: char) -> bool {
     matches!(ch, '\t' | '\u{20}'..='\u{7e}' | '\u{80}'..='\u{ff}')
 }
 
-fn is_http_whitespace(ch: char) -> bool { matches!(ch, '\t' | '\n' | '\r' | ' ') }
+const fn is_http_whitespace(ch: char) -> bool { matches!(ch, '\t' | '\n' | '\r' | ' ') }
 
 fn tokens_only(input: &str) -> bool { !input.is_empty() && input.chars().all(is_http_token) }
 
@@ -88,13 +87,15 @@ fn quoted_string_tokens_only(input: &str) -> bool { input.chars().all(is_http_qu
 fn parse_mime(input: &str) -> Option<MimeType> {
     let input = input.trim_matches(is_http_whitespace);
     let slash = input.find('/')?;
-    let kind = &input[..slash];
+    let (kind, after_slash) = input.split_at(slash);
     if !tokens_only(kind) {
         return None;
     }
-    let after_slash = &input[slash + 1..];
+    let after_slash = after_slash.strip_prefix('/')?;
     let subtype_rel = after_slash.find(';').unwrap_or(after_slash.len());
-    let subtype = after_slash[..subtype_rel].trim_end_matches(is_http_whitespace);
+    let subtype = after_slash
+        .get(..subtype_rel)?
+        .trim_end_matches(is_http_whitespace);
     if !tokens_only(subtype) {
         return None;
     }
@@ -110,10 +111,11 @@ fn parse_mime(input: &str) -> Option<MimeType> {
         }
         pos += 1;
         pos = skip_http_whitespace(input, pos);
-        let name_end = input[pos..]
-            .find(|ch| ch == ';' || ch == '=')
+        let name_end = input
+            .get(pos..)?
+            .find([';', '='])
             .map_or(input.len(), |rel| pos + rel);
-        let name = input[pos..name_end].to_ascii_lowercase();
+        let name = input.get(pos..name_end)?.to_ascii_lowercase();
         pos = name_end;
         if input.as_bytes().get(pos).copied() == Some(b';') {
             continue;
@@ -127,14 +129,19 @@ fn parse_mime(input: &str) -> Option<MimeType> {
         }
         let value = if input.as_bytes().get(pos).copied() == Some(b'"') {
             let (extracted, next) = collect_http_quoted_string(input, pos);
-            pos = match input[next..].find(';') {
-                Some(rel) => next + rel,
-                None => input.len(),
-            };
+            pos = input
+                .get(next..)
+                .and_then(|tail| tail.find(';'))
+                .map_or(input.len(), |rel| next + rel);
             extracted
         } else {
-            let value_end = input[pos..].find(';').map_or(input.len(), |rel| pos + rel);
-            let value = input[pos..value_end].trim_end_matches(is_http_whitespace);
+            let value_end = input
+                .get(pos..)
+                .and_then(|tail| tail.find(';'))
+                .map_or(input.len(), |rel| pos + rel);
+            let value = input
+                .get(pos..value_end)?
+                .trim_end_matches(is_http_whitespace);
             pos = value_end;
             if value.is_empty() {
                 continue;
@@ -154,7 +161,7 @@ fn parse_mime(input: &str) -> Option<MimeType> {
 
 fn skip_http_whitespace(input: &str, mut pos: usize) -> usize {
     while pos < input.len() {
-        let Some(ch) = input[pos..].chars().next() else {
+        let Some(ch) = input.get(pos..).and_then(|tail| tail.chars().next()) else {
             break;
         };
         if !is_http_whitespace(ch) {
@@ -170,7 +177,7 @@ fn collect_http_quoted_string(input: &str, mut pos: usize) -> (String, usize) {
     let mut value = String::new();
     loop {
         while pos < input.len() {
-            let Some(ch) = input[pos..].chars().next() else {
+            let Some(ch) = input.get(pos..).and_then(|tail| tail.chars().next()) else {
                 break;
             };
             if ch == '"' || ch == '\\' {
@@ -214,26 +221,8 @@ fn serialize_mime(mime: &MimeType) -> String {
     out
 }
 
-fn percent_decode(input: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len());
-    let mut index = 0;
-    while index < input.len() {
-        if input[index] == b'%' && index + 2 < input.len() {
-            let hex = &input[index + 1..index + 3];
-            if let Ok(text) = std::str::from_utf8(hex)
-                && let Ok(byte) = u8::from_str_radix(text, 16)
-            {
-                out.push(byte);
-                index += 3;
-                continue;
-            }
-        }
-        out.push(input[index]);
-        index += 1;
-    }
-    out
-}
+fn percent_decode(input: &[u8]) -> Vec<u8> { percent_encoding::percent_decode(input).collect() }
 
 #[cfg(test)]
-#[path = "../tests/unit/data_url.rs"]
+#[path = "../../tests/unit/data_url.rs"]
 mod tests;

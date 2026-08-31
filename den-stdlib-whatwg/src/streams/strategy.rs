@@ -52,13 +52,13 @@ macro_rules! queuing_strategy {
             }
 
             #[qjs(get)]
-            pub fn high_water_mark(&self) -> f64 { self.mark }
+            pub const fn high_water_mark(&self) -> f64 { self.mark }
 
             #[qjs(get)]
             pub fn size(&self) -> Function<'js> { self.size.clone() }
 
             #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-            pub fn to_string_tag() -> &'static str { $tag }
+            pub const fn to_string_tag() -> &'static str { $tag }
         }
     };
 }

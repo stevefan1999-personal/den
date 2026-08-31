@@ -2,12 +2,13 @@
 
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    fmt::Write as _,
+    rc::{Rc, Weak},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 
 use dashmap::DashMap;
@@ -20,7 +21,7 @@ use rquickjs::{
 };
 use tokio::sync::Notify;
 
-use crate::{
+use super::{
     Request, Response,
     body::is_blocked_port,
     data_url,
@@ -30,10 +31,11 @@ use crate::{
 struct AbortWatch {
     aborted: Arc<AtomicBool>,
     notify:  Arc<Notify>,
+    body:    Rc<RefCell<Option<Weak<RefCell<super::ResponseBody>>>>>,
 }
 
 impl AbortWatch {
-    fn from_js<'js>(_ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Option<Self>> {
+    fn from_js<'js>(ctx: &Ctx<'js>, value: JsValue<'js>) -> Result<Option<Self>> {
         if value.is_null() || value.is_undefined() {
             return Ok(None);
         }
@@ -44,14 +46,19 @@ impl AbortWatch {
         let watch = Self {
             aborted: Arc::new(AtomicBool::new(already)),
             notify:  Arc::new(Notify::new()),
+            body:    Rc::new(RefCell::new(None)),
         };
         if already {
             watch.notify.notify_one();
         } else if let Ok(add) = obj.get::<_, Function>("addEventListener") {
             let aborted = Arc::clone(&watch.aborted);
             let notify = Arc::clone(&watch.notify);
-            let listener = Function::new(_ctx.clone(), move || {
+            let body = Rc::clone(&watch.body);
+            let listener = Function::new(ctx.clone(), move || {
                 aborted.store(true, Ordering::SeqCst);
+                if let Some(body) = body.borrow().as_ref().and_then(Weak::upgrade) {
+                    *body.borrow_mut() = super::ResponseBody::Failed("aborted".into());
+                }
                 notify.notify_waiters();
                 notify.notify_one();
                 Ok::<(), Error>(())
@@ -59,6 +66,13 @@ impl AbortWatch {
             let _ = add.call::<_, ()>((This(value.clone()), "abort", listener));
         }
         Ok(Some(watch))
+    }
+
+    fn attach(&self, response: &Response<'_>) {
+        *self.body.borrow_mut() = Some(Rc::downgrade(&response.inner));
+        if self.aborted.load(Ordering::SeqCst) {
+            *response.inner.borrow_mut() = super::ResponseBody::Failed("aborted".into());
+        }
     }
 
     fn refresh(&self, signal: &JsValue<'_>) {
@@ -71,7 +85,7 @@ impl AbortWatch {
     }
 }
 
-pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
+pub fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
     if let Some(object) = signal.as_object()
         && let Ok(reason) = object.get::<_, JsValue>("reason")
         && !reason.is_undefined()
@@ -94,10 +108,10 @@ pub(crate) fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
             }
             Ok(exc)
         });
-    match plain {
-        Ok(exc) => ctx.throw(exc),
-        Err(_) => Exception::throw_type(ctx, "The operation was aborted."),
-    }
+    plain.map_or_else(
+        |_error| Exception::throw_type(ctx, "The operation was aborted."),
+        |exc| ctx.throw(exc),
+    )
 }
 
 fn network_error(ctx: &Ctx<'_>, message: &str) -> Error { Exception::throw_type(ctx, message) }
@@ -107,7 +121,7 @@ fn network_error(ctx: &Ctx<'_>, message: &str) -> Error { Exception::throw_type(
 /// `Bytes` has a source and can be replayed, which redirects and retries need.
 /// `Stream` does not: it is consumed the moment it is sent, so a second send
 /// has to be a network error rather than a silently empty body.
-pub(crate) enum Outgoing {
+pub enum Outgoing {
     None,
     Bytes(Vec<u8>),
     Stream(reqwest::Body),
@@ -115,9 +129,9 @@ pub(crate) enum Outgoing {
 }
 
 impl Outgoing {
-    fn is_none(&self) -> bool { matches!(self, Self::None) }
+    const fn is_none(&self) -> bool { matches!(self, Self::None) }
 
-    fn is_stream(&self) -> bool { matches!(self, Self::Stream(_)) }
+    const fn is_stream(&self) -> bool { matches!(self, Self::Stream(_)) }
 
     fn take_for_send(&mut self) -> Self {
         match self {
@@ -146,12 +160,21 @@ struct CacheEntry {
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+        client_builder()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
+}
+
+fn client_builder() -> reqwest::ClientBuilder {
+    den_stdlib_networking::tls::install_default_crypto_provider();
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+}
+
+#[derive(Default)]
+struct SendOptions {
+    cookies:          bool,
+    fresh_connection: bool,
 }
 
 fn cookie_jar() -> &'static reqwest::cookie::Jar {
@@ -182,7 +205,7 @@ fn origin_of(ctx: &Ctx<'_>) -> String {
 
 fn url_origin(url: &reqwest::Url) -> String { format!("{}://{}", url.scheme(), url.authority()) }
 
-fn same_origin(a: &str, b: &str) -> bool { a.eq_ignore_ascii_case(b) }
+const fn same_origin(a: &str, b: &str) -> bool { a.eq_ignore_ascii_case(b) }
 
 fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
@@ -240,6 +263,29 @@ fn cors_safelisted_request_header(name: &str, value: &str) -> bool {
                 "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
             ) && value.len() <= 128
         }
+        "range" => {
+            if value.len() > 128 {
+                return false;
+            }
+            let Some((first, last)) = value
+                .strip_prefix("bytes=")
+                .and_then(|value| value.split_once('-'))
+            else {
+                return false;
+            };
+            if first.is_empty()
+                || !first.bytes().all(|byte| byte.is_ascii_digit())
+                || !last.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return false;
+            }
+            if last.is_empty() {
+                return true;
+            }
+            let first = first.trim_start_matches('0');
+            let last = last.trim_start_matches('0');
+            first.len() < last.len() || (first.len() == last.len() && first <= last)
+        }
         _ => false,
     }
 }
@@ -275,6 +321,15 @@ fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a s
         .map(|(_, value)| value.as_str())
 }
 
+fn single_header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    let mut values = headers
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str());
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
+}
+
 fn parse_max_age(headers: &[(String, String)]) -> Option<Duration> {
     let cc = header_value(headers, "cache-control")?;
     for part in cc.split(',') {
@@ -288,32 +343,7 @@ fn parse_max_age(headers: &[(String, String)]) -> Option<Duration> {
     None
 }
 
-fn parse_http_date(value: &str) -> Option<SystemTime> {
-    let parsed = chrono_http_date(value)?;
-    Some(UNIX_EPOCH + Duration::from_secs(parsed))
-}
-
-fn chrono_http_date(value: &str) -> Option<u64> {
-    let months = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let parts: Vec<&str> = value.split([',', ' ']).filter(|p| !p.is_empty()).collect();
-    if parts.len() < 5 {
-        return None;
-    }
-    let day: u64 = parts[1].parse().ok()?;
-    let month = months.iter().position(|m| *m == parts[2])? as u64 + 1;
-    let year: u64 = parts[3].parse().ok()?;
-    let time: Vec<u64> = parts[4].split(':').filter_map(|p| p.parse().ok()).collect();
-    if time.len() != 3 {
-        return None;
-    }
-    let days = year.saturating_sub(1970) * 365
-        + (year.saturating_sub(1969) / 4)
-        + [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][(month as usize).min(12) - 1]
-        + day.saturating_sub(1);
-    Some(days * 86400 + time[0] * 3600 + time[1] * 60 + time[2])
-}
+fn parse_http_date(value: &str) -> Option<SystemTime> { httpdate::parse_http_date(value).ok() }
 
 fn cache_directive(headers: &[(String, String)], name: &str) -> bool {
     header_value(headers, "cache-control").is_some_and(|value| {
@@ -385,7 +415,7 @@ fn user_has_conditional(headers: &[(String, String)]) -> bool {
     })
 }
 
-fn is_redirect_status(status: u16) -> bool { matches!(status, 301 | 302 | 303 | 307 | 308) }
+const fn is_redirect_status(status: u16) -> bool { matches!(status, 301 | 302 | 303 | 307 | 308) }
 
 fn is_unsafe_method(method: &str) -> bool {
     !matches!(method, "GET" | "HEAD" | "OPTIONS" | "TRACE")
@@ -398,11 +428,11 @@ fn encode_location(location: &str) -> String {
         if code < 0x80 {
             out.push(ch);
         } else if code <= 0xff {
-            out.push_str(&format!("%{code:02X}"));
+            let _ = write!(out, "%{code:02X}");
         } else {
-            let mut buf = [0u8; 4];
+            let mut buf = [0_u8; 4];
             for byte in ch.encode_utf8(&mut buf).as_bytes() {
-                out.push_str(&format!("%{byte:02X}"));
+                let _ = write!(out, "%{byte:02X}");
             }
         }
     }
@@ -446,33 +476,6 @@ fn request_no_store(headers: &[(String, String)]) -> bool {
     })
 }
 
-fn is_http_token(name: &str) -> bool {
-    !name.is_empty()
-        && name.bytes().all(|byte| {
-            matches!(
-                byte,
-                b'0'..=b'9'
-                    | b'a'..=b'z'
-                    | b'A'..=b'Z'
-                    | b'!'
-                    | b'#'
-                    | b'$'
-                    | b'%'
-                    | b'&'
-                    | b'\''
-                    | b'*'
-                    | b'+'
-                    | b'-'
-                    | b'.'
-                    | b'^'
-                    | b'_'
-                    | b'`'
-                    | b'|'
-                    | b'~'
-            )
-        })
-}
-
 fn parse_cors_token_list(value: &str) -> Option<Vec<String>> {
     let trimmed = value.trim();
     if trimmed == "*" {
@@ -481,7 +484,7 @@ fn parse_cors_token_list(value: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     for part in trimmed.split(',') {
         let part = part.trim();
-        if !is_http_token(part) {
+        if reqwest::header::HeaderName::from_bytes(part.as_bytes()).is_err() {
             return None;
         }
         out.push(part.to_string());
@@ -558,7 +561,7 @@ fn store_cache(
 /// bytes are mirrored here as the consumer reads them; the entry is written
 /// only when the body ends cleanly, so a body nobody reads is never buffered
 /// and a truncated one is never cached.
-pub(crate) struct PendingCacheWrite {
+pub struct PendingCacheWrite {
     url:             String,
     credentials:     String,
     status:          u16,
@@ -571,7 +574,7 @@ pub(crate) struct PendingCacheWrite {
 }
 
 #[derive(Default)]
-pub(crate) struct CacheFill {
+pub struct CacheFill {
     writes: Vec<PendingCacheWrite>,
     body:   RefCell<Vec<u8>>,
     done:   Cell<bool>,
@@ -729,17 +732,17 @@ fn normalize_sri_b64(input: &str) -> String {
             }
         })
         .collect();
-    while filtered.len() % 4 != 0 {
+    while !filtered.len().is_multiple_of(4) {
         filtered.push('=');
     }
     filtered
 }
 
-async fn digest_b64<'js>(ctx: &Ctx<'js>, algorithm: &str, bytes: &[u8]) -> Result<String> {
+async fn digest_b64(ctx: &Ctx<'_>, algorithm: &str, bytes: &[u8]) -> Result<String> {
     let crypto: Object = ctx
         .globals()
         .get("crypto")
-        .map_err(|_| Exception::throw_type(ctx, "crypto is not defined"))?;
+        .map_err(|_error| Exception::throw_type(ctx, "crypto is not defined"))?;
     let subtle: Object = crypto.get("subtle")?;
     let digest: Function = subtle.get("digest")?;
     let view = TypedArray::<u8>::new_copy(ctx.clone(), bytes)?;
@@ -750,7 +753,7 @@ async fn digest_b64<'js>(ctx: &Ctx<'js>, algorithm: &str, bytes: &[u8]) -> Resul
     Ok(base64_simd::STANDARD.encode_to_string(resolved.as_bytes().unwrap_or(&[])))
 }
 
-async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> Result<()> {
+async fn check_integrity(ctx: &Ctx<'_>, integrity: &str, body: &[u8]) -> Result<()> {
     let integrity = integrity.trim();
     if integrity.is_empty() {
         return Ok(());
@@ -782,7 +785,10 @@ async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> R
         .into_iter()
         .filter(|opt| opt.0 == strongest)
         .collect();
-    let hashed = digest_b64(ctx, strongest[0].1, body).await?;
+    let Some((_, algorithm, _)) = strongest.first() else {
+        return Err(network_error(ctx, "Invalid integrity metadata"));
+    };
+    let hashed = digest_b64(ctx, algorithm, body).await?;
     if strongest.iter().any(|opt| opt.2 == hashed) {
         Ok(())
     } else {
@@ -790,17 +796,27 @@ async fn check_integrity<'js>(ctx: &Ctx<'js>, integrity: &str, body: &[u8]) -> R
     }
 }
 
-async fn send_http<'js>(
-    ctx: &Ctx<'js>, method: reqwest::Method, url: &reqwest::Url, headers: &[(String, String)],
-    body: Outgoing, watch: Option<&AbortWatch>, send_cookies: bool,
+async fn send_http(
+    ctx: &Ctx<'_>, method: reqwest::Method, url: &reqwest::Url, headers: &[(String, String)],
+    body: Outgoing, watch: Option<&AbortWatch>, options: SendOptions,
 ) -> Result<reqwest::Response> {
     use reqwest::{
         cookie::CookieStore as _,
         header::{COOKIE, SET_COOKIE},
     };
 
-    let mut builder = client().request(method, connect_url(url));
-    if send_cookies && let Some(cookies) = cookie_jar().cookies(url) {
+    let one_shot = options
+        .fresh_connection
+        .then(|| client_builder().pool_max_idle_per_host(0).build())
+        .transpose()
+        .map_err(|error| network_error(ctx, &format!("{error}")))?;
+    let mut builder = one_shot
+        .as_ref()
+        .unwrap_or_else(|| client())
+        .request(method, connect_url(url));
+    if options.cookies
+        && let Some(cookies) = cookie_jar().cookies(url)
+    {
         builder = builder.header(COOKIE, cookies);
     }
     let mut saw_host = false;
@@ -818,10 +834,9 @@ async fn send_http<'js>(
         builder = builder.header(header_name, header_value);
     }
     if !saw_host && let Some(host) = url.host_str() {
-        let host = match url.port() {
-            Some(port) => format!("{host}:{port}"),
-            None => host.to_string(),
-        };
+        let host = url
+            .port()
+            .map_or_else(|| host.to_string(), |port| format!("{host}:{port}"));
         builder = builder.header("host", host);
     }
     match body {
@@ -845,7 +860,7 @@ async fn send_http<'js>(
             .await
             .map_err(|err| network_error(ctx, &format!("{err}")))?
     };
-    if send_cookies {
+    if options.cookies {
         cookie_jar().set_cookies(&mut response.headers().get_all(SET_COOKIE).iter(), url);
     }
     Ok(response)
@@ -854,10 +869,10 @@ async fn send_http<'js>(
 fn response_header_pairs(response: &reqwest::Response) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for (name, value) in response.headers() {
-        let text = value
-            .to_str()
-            .map(ToString::to_string)
-            .unwrap_or_else(|_| value.as_bytes().iter().map(|byte| *byte as char).collect());
+        let text = value.to_str().map_or_else(
+            |_| value.as_bytes().iter().map(|byte| *byte as char).collect(),
+            ToString::to_string,
+        );
         if name.as_str() == "set-cookie" {
             pairs.push(("set-cookie".to_string(), text));
         } else {
@@ -868,8 +883,8 @@ fn response_header_pairs(response: &reqwest::Response) -> Vec<(String, String)> 
 }
 
 fn collect_request_headers(
-    headers: Vec<(String, String)>, origin: &str, _method: &str, cross_origin: bool,
-    referrer: &str, redirected: bool,
+    headers: Vec<(String, String)>, origin: &str, method: &str, cross_origin: bool, referrer: &str,
+    redirected: bool,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut has_accept = false;
@@ -890,6 +905,9 @@ fn collect_request_headers(
         }
         out.push((name, value));
     }
+    if out.iter().any(|(name, _)| name == "range") {
+        out.push(("accept-encoding".to_string(), "identity".to_string()));
+    }
     if !has_accept {
         out.push(("accept".to_string(), "*/*".to_string()));
     }
@@ -900,7 +918,7 @@ fn collect_request_headers(
         out.push(("user-agent".to_string(), "den/0.4".to_string()));
     }
     let send_origin =
-        cross_origin || origin == "null" || (!matches!(_method, "GET" | "HEAD") && !redirected);
+        cross_origin || origin == "null" || (!matches!(method, "GET" | "HEAD") && !redirected);
     if send_origin {
         out.push(("origin".to_string(), origin.to_string()));
     }
@@ -961,8 +979,8 @@ fn store_preflight(
     }
 }
 
-async fn preflight<'js>(
-    ctx: &Ctx<'js>, url: &reqwest::Url, method: &str, headers: &[(String, String)], origin: &str,
+async fn preflight(
+    ctx: &Ctx<'_>, url: &reqwest::Url, method: &str, headers: &[(String, String)], origin: &str,
     credentials: &str, watch: Option<&AbortWatch>,
 ) -> Result<()> {
     let mut extra: Vec<String> = headers
@@ -1001,7 +1019,7 @@ async fn preflight<'js>(
         &preflight_headers,
         Outgoing::None,
         watch,
-        false,
+        SendOptions::default(),
     )
     .await?;
     let status = response.status().as_u16();
@@ -1014,7 +1032,7 @@ async fn preflight<'js>(
     let pairs = response_header_pairs(&response);
     let include = credentials == "include";
     if !check_acao(
-        header_value(&pairs, "access-control-allow-origin"),
+        single_header_value(&pairs, "access-control-allow-origin"),
         origin,
         include,
     ) {
@@ -1092,7 +1110,7 @@ async fn preflight<'js>(
     Ok(())
 }
 
-pub(crate) async fn run<'js>(
+pub async fn run<'js>(
     ctx: Ctx<'js>, input: JsValue<'js>, init: Option<Object<'js>>,
 ) -> Result<Response<'js>> {
     let request = Request::wrap_input(ctx.clone(), input, init)?;
@@ -1150,7 +1168,15 @@ pub(crate) async fn run<'js>(
             } else {
                 Some(data.body)
             };
-            return Response::from_bytes(&ctx, 200, "OK".to_string(), url, "basic", headers, body);
+            return Ok(Response::from_bytes(
+                &ctx,
+                200,
+                "OK".to_string(),
+                url,
+                "basic",
+                headers,
+                body,
+            ));
         }
         "about" | "blob" | "javascript" | "file" => {
             return Err(network_error(&ctx, "Scheme is not supported"));
@@ -1167,10 +1193,10 @@ pub(crate) async fn run<'js>(
         match taken
             .as_ref()
             .and_then(JsValue::as_object)
-            .and_then(Class::<den_stdlib_whatwg::streams::ReadableStream>::from_object)
+            .and_then(Class::<crate::streams::ReadableStream>::from_object)
         {
-            Some(stream) => Outgoing::Stream(crate::upload::stream_request_body(&ctx, &stream)?),
-            None => Outgoing::Bytes(crate::body::value_to_bytes(&ctx, taken).await?),
+            Some(stream) => Outgoing::Stream(super::upload::stream_request_body(&ctx, &stream)?),
+            None => Outgoing::Bytes(super::body::value_to_bytes(&ctx, taken).await?),
         }
     } else {
         Outgoing::None
@@ -1187,9 +1213,9 @@ pub(crate) async fn run<'js>(
         return Err(abort_error(&ctx, &signal));
     }
 
-    let mut response = http_fetch(
-        &ctx,
-        parsed,
+    let mut response = HttpFetch {
+        ctx: &ctx,
+        url: parsed,
         method,
         mode,
         credentials,
@@ -1199,617 +1225,703 @@ pub(crate) async fn run<'js>(
         referrer,
         headers,
         body,
-        abort.as_ref(),
-        &signal,
-        0,
-        false,
-        false,
-        false,
-        false,
-    )
+        watch: abort.as_ref(),
+        signal: &signal,
+        hops: 0,
+        redirected: false,
+        streamed_upload: false,
+        tainted_origin: false,
+        saw_cross: false,
+    }
+    .run()
     .await?;
     response.abort_signal = signal.clone();
     if let Some(watch) = &abort {
         response.abort_notify = Some(Arc::clone(&watch.notify));
+        watch.attach(&response);
     }
     Ok(response)
 }
 
-async fn http_fetch<'js>(
-    ctx: &Ctx<'js>, mut url: reqwest::Url, mut method: String, mode: String, credentials: String,
-    redirect: String, cache_mode: String, integrity: String, referrer: String,
-    mut headers: Vec<(String, String)>, mut body: Outgoing, watch: Option<&AbortWatch>,
-    signal: &JsValue<'js>, hops: u8, mut redirected: bool, streamed_upload: bool,
-    mut tainted_origin: bool, mut saw_cross: bool,
-) -> Result<Response<'js>> {
-    if hops > 20 {
-        return Err(network_error(ctx, "Too many redirects"));
-    }
-    // The specification's "request's body's source is null" case: a stream body
-    // was already handed to the transport and there is nothing to replay.
-    if matches!(body, Outgoing::Spent) {
-        return Err(network_error(
+struct HttpFetch<'a, 'js> {
+    ctx:             &'a Ctx<'js>,
+    url:             reqwest::Url,
+    method:          String,
+    mode:            String,
+    credentials:     String,
+    redirect:        String,
+    cache_mode:      String,
+    integrity:       String,
+    referrer:        String,
+    headers:         Vec<(String, String)>,
+    body:            Outgoing,
+    watch:           Option<&'a AbortWatch>,
+    signal:          &'a JsValue<'js>,
+    hops:            u8,
+    redirected:      bool,
+    streamed_upload: bool,
+    tainted_origin:  bool,
+    saw_cross:       bool,
+}
+
+impl<'js> HttpFetch<'_, 'js> {
+    async fn run(self) -> Result<Response<'js>> {
+        let Self {
             ctx,
-            "a streaming request body cannot be sent twice",
-        ));
-    }
-    if let Some(watch) = watch {
-        watch.refresh(signal);
-        if watch.aborted.load(Ordering::SeqCst) {
-            return Err(abort_error(ctx, signal));
+            mut url,
+            mut method,
+            mode,
+            credentials,
+            redirect,
+            cache_mode,
+            integrity,
+            referrer,
+            mut headers,
+            mut body,
+            watch,
+            signal,
+            hops,
+            mut redirected,
+            mut streamed_upload,
+            mut tainted_origin,
+            mut saw_cross,
+        } = self;
+        if hops > 20 {
+            return Err(network_error(ctx, "Too many redirects"));
         }
-    }
-    if let Some(port) = url.port_or_known_default()
-        && is_blocked_port(port)
-    {
-        return Err(network_error(ctx, "Port is blocked"));
-    }
-    let origin = origin_of(ctx);
-    let response_origin = url_origin(&url);
-    let cross_origin = !same_origin(&origin, &response_origin);
-    if cross_origin {
-        saw_cross = true;
-    }
-    if mode == "same-origin" && cross_origin {
-        return Err(network_error(
-            ctx,
-            "same-origin mode cannot fetch cross-origin",
-        ));
-    }
-    if mode == "no-cors" && redirect != "follow" && cross_origin {
-        return Err(network_error(
-            ctx,
-            "no-cors non-follow redirect is cross-origin",
-        ));
-    }
-    if cache_mode == "only-if-cached" && cross_origin {
-        return Err(network_error(ctx, "only-if-cached requires same-origin"));
-    }
-
-    let origin_header = if tainted_origin {
-        "null".to_string()
-    } else {
-        origin.clone()
-    };
-    let mut request_headers = collect_request_headers(
-        headers.clone(),
-        &origin_header,
-        &method,
-        cross_origin || tainted_origin,
-        &referrer,
-        redirected,
-    );
-    if matches!(method.as_str(), "POST" | "PUT" | "PATCH") && body.is_none() {
-        request_headers.push(("content-length".to_string(), "0".to_string()));
-    }
-
-    let cors_mode = mode == "cors";
-    let preflighted =
-        cors_mode && needs_preflight(&method, &request_headers) && (cross_origin || saw_cross);
-    let user_conditional = user_has_conditional(&headers);
-    let cacheable_method = matches!(method.as_str(), "GET" | "HEAD");
-    let skip_reuse = user_conditional
-        || request_no_store(&request_headers)
-        || cache_directive(&request_headers, "no-cache");
-
-    if cacheable_method
-        && let Some(cached) = lookup_cache(url.as_str(), &credentials, &request_headers)
-    {
-        let fresh = cache_fresh(&cached);
-        let age = header_value(&cached.headers, "age")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(0)
-            + cached.stored_at.elapsed().as_secs();
-        let freshness = cached.max_age.map(|max| max.as_secs());
-        let remaining = freshness.unwrap_or(0).saturating_sub(age);
-        let min_fresh_ok = request_min_fresh(&request_headers).is_none_or(|min| remaining >= min);
-        let stale_ok = request_max_stale(&request_headers).is_some_and(|stale| {
-            let lifetime = freshness.unwrap_or(0);
-            age <= lifetime.saturating_add(stale)
-        });
-        let reuse = !skip_reuse
-            && min_fresh_ok
-            && !header_value(&request_headers, "cache-control")
-                .is_some_and(|value| value.to_ascii_lowercase().contains("max-age=0"))
-            && request_max_age(&request_headers).is_none_or(|max| age <= max);
-        if is_redirect_status(cached.status)
-            && redirect == "follow"
-            && (cache_mode == "only-if-cached"
-                || cache_mode == "force-cache"
-                || (cache_mode == "default" && reuse && (fresh || stale_ok)))
-            && let Some(location) = header_value(&cached.headers, "location")
-        {
-            let next = url
-                .join(&encode_location(location))
-                .map_err(|error| network_error(ctx, &format!("{error}")))?;
-            return Box::pin(http_fetch(
+        // The specification's "request's body's source is null" case: a stream body
+        // was already handed to the transport and there is nothing to replay.
+        if matches!(body, Outgoing::Spent) {
+            return Err(network_error(
                 ctx,
-                next,
-                method,
-                mode,
-                credentials,
-                redirect,
-                cache_mode,
-                integrity,
-                referrer,
-                headers,
-                body,
-                watch,
-                signal,
-                hops + 1,
-                true,
-                false,
-                tainted_origin,
-                saw_cross,
-            ))
-            .await;
+                "a streaming request body cannot be sent twice",
+            ));
         }
-        match cache_mode.as_str() {
-            "only-if-cached" | "force-cache" => {
-                return cached_response(
-                    ctx,
-                    &url,
-                    cached,
-                    redirected,
-                    &mode,
-                    &origin,
-                    &credentials,
-                );
+        if let Some(watch) = watch {
+            watch.refresh(signal);
+            if watch.aborted.load(Ordering::SeqCst) {
+                return Err(abort_error(ctx, signal));
             }
-            "default" if reuse && (fresh || stale_ok) => {
-                return cached_response(
-                    ctx,
-                    &url,
-                    cached,
-                    redirected,
-                    &mode,
-                    &origin,
-                    &credentials,
-                );
+        }
+        if let Some(port) = url.port_or_known_default()
+            && is_blocked_port(port)
+        {
+            return Err(network_error(ctx, "Port is blocked"));
+        }
+        let origin = origin_of(ctx);
+        let response_origin = url_origin(&url);
+        let cross_origin = !same_origin(&origin, &response_origin);
+        if cross_origin {
+            saw_cross = true;
+        }
+        if mode == "same-origin" && cross_origin {
+            return Err(network_error(
+                ctx,
+                "same-origin mode cannot fetch cross-origin",
+            ));
+        }
+        if mode == "no-cors" && redirect != "follow" && cross_origin {
+            return Err(network_error(
+                ctx,
+                "no-cors non-follow redirect is cross-origin",
+            ));
+        }
+        if cache_mode == "only-if-cached" && cross_origin {
+            return Err(network_error(ctx, "only-if-cached requires same-origin"));
+        }
+
+        let origin_header = if tainted_origin {
+            "null".to_string()
+        } else {
+            origin.clone()
+        };
+        let mut request_headers = collect_request_headers(
+            headers.clone(),
+            &origin_header,
+            &method,
+            cross_origin || tainted_origin,
+            &referrer,
+            redirected,
+        );
+        if matches!(method.as_str(), "POST" | "PUT" | "PATCH") && body.is_none() {
+            request_headers.push(("content-length".to_string(), "0".to_string()));
+        }
+
+        let cors_mode = mode == "cors";
+        let preflighted =
+            cors_mode && needs_preflight(&method, &request_headers) && (cross_origin || saw_cross);
+        let user_conditional = user_has_conditional(&headers);
+        let cacheable_method = matches!(method.as_str(), "GET" | "HEAD");
+        let skip_reuse = user_conditional
+            || request_no_store(&request_headers)
+            || cache_directive(&request_headers, "no-cache");
+
+        if cacheable_method
+            && let Some(cached) = lookup_cache(url.as_str(), &credentials, &request_headers)
+        {
+            let fresh = cache_fresh(&cached);
+            let age = header_value(&cached.headers, "age")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0)
+                + cached.stored_at.elapsed().as_secs();
+            let freshness = cached.max_age.map(|max| max.as_secs());
+            let remaining = freshness.unwrap_or(0).saturating_sub(age);
+            let min_fresh_ok =
+                request_min_fresh(&request_headers).is_none_or(|min| remaining >= min);
+            let stale_ok = request_max_stale(&request_headers).is_some_and(|stale| {
+                let lifetime = freshness.unwrap_or(0);
+                age <= lifetime.saturating_add(stale)
+            });
+            let reuse = !skip_reuse
+                && min_fresh_ok
+                && !header_value(&request_headers, "cache-control")
+                    .is_some_and(|value| value.to_ascii_lowercase().contains("max-age=0"))
+                && request_max_age(&request_headers).is_none_or(|max| age <= max);
+            if is_redirect_status(cached.status)
+                && redirect == "follow"
+                && (cache_mode == "only-if-cached"
+                    || cache_mode == "force-cache"
+                    || (cache_mode == "default" && reuse && (fresh || stale_ok)))
+                && let Some(location) = header_value(&cached.headers, "location")
+            {
+                let next = url
+                    .join(&encode_location(location))
+                    .map_err(|error| network_error(ctx, &format!("{error}")))?;
+                return Box::pin(
+                    Self {
+                        ctx,
+                        url: next,
+                        method,
+                        mode,
+                        credentials,
+                        redirect,
+                        cache_mode,
+                        integrity,
+                        referrer,
+                        headers,
+                        body,
+                        watch,
+                        signal,
+                        hops: hops + 1,
+                        redirected: true,
+                        streamed_upload: false,
+                        tainted_origin,
+                        saw_cross,
+                    }
+                    .run(),
+                )
+                .await;
             }
-            "no-cache" | "default" if !fresh && !user_conditional => {
-                if let Some(etag) = &cached.etag {
-                    request_headers.push(("if-none-match".to_string(), etag.clone()));
+            match cache_mode.as_str() {
+                "only-if-cached" | "force-cache" => {
+                    return cached_response(
+                        ctx,
+                        &url,
+                        cached,
+                        redirected,
+                        &mode,
+                        &origin,
+                        &credentials,
+                    );
                 }
-                if let Some(last_modified) = &cached.last_modified {
-                    request_headers.push(("if-modified-since".to_string(), last_modified.clone()));
+                "default" if reuse && (fresh || stale_ok) => {
+                    return cached_response(
+                        ctx,
+                        &url,
+                        cached,
+                        redirected,
+                        &mode,
+                        &origin,
+                        &credentials,
+                    );
+                }
+                "no-cache" | "default" if !fresh && !user_conditional => {
+                    if let Some(etag) = &cached.etag {
+                        request_headers.push(("if-none-match".to_string(), etag.clone()));
+                    }
+                    if let Some(last_modified) = &cached.last_modified {
+                        request_headers
+                            .push(("if-modified-since".to_string(), last_modified.clone()));
+                    }
+                }
+                _ => {}
+            }
+        } else if cache_mode == "only-if-cached" {
+            return Err(network_error(ctx, "only-if-cached miss"));
+        } else if request_only_if_cached(&request_headers) {
+            let headers =
+                Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
+            return Ok(Response::from_bytes(
+                ctx,
+                504,
+                "Gateway Timeout".to_string(),
+                url.to_string(),
+                "basic",
+                headers,
+                None,
+            ));
+        }
+
+        match cache_mode.as_str() {
+            "no-cache" => {
+                if !request_headers
+                    .iter()
+                    .any(|(name, _)| name == "cache-control")
+                {
+                    request_headers.push(("cache-control".to_string(), "max-age=0".to_string()));
+                }
+            }
+            "reload" | "no-store" => {
+                if !request_headers.iter().any(|(name, _)| name == "pragma") {
+                    request_headers.push(("pragma".to_string(), "no-cache".to_string()));
+                }
+                if !request_headers
+                    .iter()
+                    .any(|(name, _)| name == "cache-control")
+                {
+                    request_headers.push(("cache-control".to_string(), "no-cache".to_string()));
+                }
+            }
+            _ if user_conditional => {
+                if !request_headers.iter().any(|(name, _)| name == "pragma") {
+                    request_headers.push(("pragma".to_string(), "no-cache".to_string()));
+                }
+                if !request_headers
+                    .iter()
+                    .any(|(name, _)| name == "cache-control")
+                {
+                    request_headers.push(("cache-control".to_string(), "no-cache".to_string()));
                 }
             }
             _ => {}
         }
-    } else if cache_mode == "only-if-cached" {
-        return Err(network_error(ctx, "only-if-cached miss"));
-    } else if request_only_if_cached(&request_headers) {
-        let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        return Response::from_bytes(
-            ctx,
-            504,
-            "Gateway Timeout".to_string(),
-            url.to_string(),
-            "basic",
-            headers,
-            None,
-        );
-    }
 
-    match cache_mode.as_str() {
-        "no-cache" => {
-            if !request_headers
-                .iter()
-                .any(|(name, _)| name == "cache-control")
+        if preflighted {
+            preflight(
+                ctx,
+                &url,
+                &method,
+                &request_headers,
+                &origin,
+                &credentials,
+                watch,
+            )
+            .await?;
+        }
+
+        let http_method = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))?;
+        let send_cookies =
+            credentials == "include" || (credentials == "same-origin" && !cross_origin);
+        let mut fresh_connection = false;
+        let response = loop {
+            let send_body = if matches!(method.as_str(), "GET" | "HEAD") {
+                Outgoing::None
+            } else {
+                body.take_for_send()
+            };
+            streamed_upload |= send_body.is_stream();
+            let response = match send_http(
+                ctx,
+                http_method.clone(),
+                &url,
+                &request_headers,
+                send_body,
+                watch,
+                SendOptions {
+                    cookies: send_cookies,
+                    fresh_connection,
+                },
+            )
+            .await
             {
-                request_headers.push(("cache-control".to_string(), "max-age=0".to_string()));
-            }
-        }
-        "reload" | "no-store" => {
-            if !request_headers.iter().any(|(name, _)| name == "pragma") {
-                request_headers.push(("pragma".to_string(), "no-cache".to_string()));
-            }
-            if !request_headers
-                .iter()
-                .any(|(name, _)| name == "cache-control")
+                Ok(response) => response,
+                Err(error) => {
+                    if watch.is_some_and(|watch| watch.aborted.load(Ordering::SeqCst)) {
+                        return Err(abort_error(ctx, signal));
+                    }
+                    return Err(error);
+                }
+            };
+            if !fresh_connection
+                && response.status().as_u16() == 421
+                && !matches!(body, Outgoing::Spent)
             {
-                request_headers.push(("cache-control".to_string(), "no-cache".to_string()));
+                fresh_connection = true;
+                continue;
             }
-        }
-        _ if user_conditional => {
-            if !request_headers.iter().any(|(name, _)| name == "pragma") {
-                request_headers.push(("pragma".to_string(), "no-cache".to_string()));
-            }
-            if !request_headers
-                .iter()
-                .any(|(name, _)| name == "cache-control")
-            {
-                request_headers.push(("cache-control".to_string(), "no-cache".to_string()));
-            }
-        }
-        _ => {}
-    }
+            break response;
+        };
 
-    if preflighted {
-        preflight(
-            ctx,
-            &url,
-            &method,
-            &request_headers,
-            &origin,
-            &credentials,
-            watch,
-        )
-        .await?;
-    }
-
-    let http_method = reqwest::Method::from_bytes(method.as_bytes())
-        .map_err(|err| Exception::throw_type(ctx, &format!("{err}")))?;
-    let send_body = if matches!(method.as_str(), "GET" | "HEAD") {
-        Outgoing::None
-    } else {
-        body.take_for_send()
-    };
-    let streamed_upload = streamed_upload || send_body.is_stream();
-    let send_cookies = credentials == "include" || (credentials == "same-origin" && !cross_origin);
-    let response = match send_http(
-        ctx,
-        http_method,
-        &url,
-        &request_headers,
-        send_body,
-        watch,
-        send_cookies,
-    )
-    .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            if watch.is_some_and(|watch| watch.aborted.load(Ordering::SeqCst)) {
-                return Err(abort_error(ctx, signal));
-            }
-            return Err(error);
+        if streamed_upload && response.status().as_u16() == 401 {
+            return Err(network_error(ctx, "Streaming upload rejected by 401"));
         }
-    };
 
-    if streamed_upload && response.status().as_u16() == 401 {
-        return Err(network_error(ctx, "Streaming upload rejected by 401"));
-    }
-
-    let status = response.status().as_u16();
-    if is_redirect_status(status) {
-        if redirect == "error" {
-            return Err(network_error(ctx, "Redirect not allowed"));
-        }
-        if redirect == "manual" {
-            if cors_mode && cross_origin {
-                let pairs = response_header_pairs(&response);
+        let status = response.status().as_u16();
+        if is_redirect_status(status) {
+            if preflighted {
+                let redirect_headers = response_header_pairs(&response);
                 let include = credentials == "include";
                 if !check_acao(
-                    header_value(&pairs, "access-control-allow-origin"),
-                    &origin,
+                    single_header_value(&redirect_headers, "access-control-allow-origin"),
+                    &origin_header,
                     include,
-                ) {
-                    return Err(network_error(ctx, "CORS failed"));
+                ) || (include
+                    && header_value(&redirect_headers, "access-control-allow-credentials")
+                        != Some("true"))
+                {
+                    return Err(network_error(ctx, "CORS redirect after preflight"));
                 }
+            }
+            if redirect == "error" {
+                return Err(network_error(ctx, "Redirect not allowed"));
+            }
+            if redirect == "manual" {
+                if cors_mode && cross_origin {
+                    let pairs = response_header_pairs(&response);
+                    let include = credentials == "include";
+                    if !check_acao(
+                        single_header_value(&pairs, "access-control-allow-origin"),
+                        &origin,
+                        include,
+                    ) {
+                        return Err(network_error(ctx, "CORS failed"));
+                    }
+                }
+                let headers =
+                    Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
+                return Ok(Response::from_bytes(
+                    ctx,
+                    0,
+                    String::new(),
+                    url.to_string(),
+                    "opaqueredirect",
+                    headers,
+                    None,
+                ));
+            }
+            let location = response.headers().get("location").map(|value| {
+                value.to_str().map_or_else(
+                    |_| value.as_bytes().iter().map(|byte| *byte as char).collect(),
+                    ToString::to_string,
+                )
+            });
+            match location.as_deref() {
+                Some("") => return Err(network_error(ctx, "Redirect with empty location")),
+                None => {}
+                Some(location) => {
+                    let redirect_pairs = response_header_pairs(&response);
+                    if mode == "no-cors"
+                        && corp_blocks(
+                            header_value(&redirect_pairs, "cross-origin-resource-policy"),
+                            !cross_origin,
+                            same_site(&origin, &response_origin),
+                        )
+                    {
+                        return Err(network_error(ctx, "CORP blocked"));
+                    }
+                    if cacheable_method
+                        && !cache_no_store(&redirect_pairs)
+                        && cache_mode != "no-store"
+                    {
+                        store_cache(
+                            url.to_string(),
+                            &credentials,
+                            status,
+                            response
+                                .status()
+                                .canonical_reason()
+                                .unwrap_or("")
+                                .to_string(),
+                            redirect_pairs.clone(),
+                            Vec::new(),
+                            &request_headers,
+                        );
+                    }
+                    let next = url
+                        .join(&encode_location(location))
+                        .map_err(|error| network_error(ctx, &format!("{error}")))?;
+                    if next.scheme() == "data" || next.scheme() == "blob" {
+                        return Err(network_error(ctx, "Redirect to data: or blob:"));
+                    }
+                    if !next.username().is_empty()
+                        || next.password().is_some_and(|password| !password.is_empty())
+                    {
+                        return Err(network_error(ctx, "Redirect URL has credentials"));
+                    }
+                    if (matches!(status, 301 | 302) && method == "POST")
+                        || (status == 303 && !matches!(method.as_str(), "GET" | "HEAD"))
+                    {
+                        method = "GET".to_string();
+                        body = Outgoing::None;
+                        headers.retain(|(name, _)| {
+                            !matches!(
+                                name.as_str(),
+                                "content-type"
+                                    | "content-length"
+                                    | "content-encoding"
+                                    | "content-language"
+                                    | "content-location"
+                            )
+                        });
+                    }
+                    if url_origin(&next) != url_origin(&url) {
+                        headers.retain(|(name, _)| name != "authorization");
+                        if cross_origin {
+                            tainted_origin = true;
+                        }
+                    }
+                    redirected = true;
+                    url = next;
+                    return Box::pin(
+                        Self {
+                            ctx,
+                            url,
+                            method,
+                            mode,
+                            credentials,
+                            redirect,
+                            cache_mode,
+                            integrity,
+                            referrer,
+                            headers,
+                            body,
+                            watch,
+                            signal,
+                            hops: hops + 1,
+                            redirected,
+                            streamed_upload: false,
+                            tainted_origin,
+                            saw_cross,
+                        }
+                        .run(),
+                    )
+                    .await;
+                }
+            }
+        }
+
+        let wire_pairs = response_header_pairs(&response);
+        if wire_pairs.iter().any(|(_, value)| value.contains('\0')) {
+            return Err(network_error(ctx, "NUL in header"));
+        }
+        let mut pairs = wire_pairs.clone();
+        if cors_mode && cross_origin {
+            let include = credentials == "include";
+            // Validate against the origin that was actually sent: a cross-origin
+            // redirect taints it to "null", and the server opts back in with
+            // `Access-Control-Allow-Origin: null`.
+            if !check_acao(
+                single_header_value(&pairs, "access-control-allow-origin"),
+                &origin_header,
+                include,
+            ) {
+                return Err(network_error(ctx, "CORS failed"));
+            }
+            if include
+                && header_value(&pairs, "access-control-allow-credentials")
+                    .is_none_or(|value| value != "true")
+            {
+                return Err(network_error(ctx, "CORS credentials failed"));
+            }
+            let expose = header_value(&pairs, "access-control-expose-headers").map(str::to_owned);
+            pairs = filter_cors_headers(pairs, expose.as_deref(), include);
+        }
+
+        if mode == "no-cors" && (cross_origin || saw_cross) {
+            if !integrity.is_empty() {
+                return Err(network_error(
+                    ctx,
+                    "Integrity cannot be used with opaque response",
+                ));
+            }
+            if corp_blocks(
+                header_value(&wire_pairs, "cross-origin-resource-policy"),
+                !cross_origin,
+                same_site(&origin, &response_origin),
+            ) {
+                return Err(network_error(ctx, "CORP blocked"));
+            }
+            if orb_blocks(
+                header_value(&wire_pairs, "content-type"),
+                header_value(&wire_pairs, "x-content-type-options")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("nosniff")),
+                status,
+            ) {
+                return Err(network_error(ctx, "ORB blocked"));
             }
             let headers =
                 Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-            return Response::from_bytes(
+            return Ok(Response::from_bytes(
                 ctx,
                 0,
                 String::new(),
-                url.to_string(),
-                "opaqueredirect",
+                String::new(),
+                "opaque",
                 headers,
                 None,
-            );
-        }
-        let location = response.headers().get("location").map(|value| {
-            value
-                .to_str()
-                .map(ToString::to_string)
-                .unwrap_or_else(|_| value.as_bytes().iter().map(|byte| *byte as char).collect())
-        });
-        match location.as_deref() {
-            Some("") => return Err(network_error(ctx, "Redirect with empty location")),
-            None => {}
-            Some(location) => {
-                let redirect_pairs = response_header_pairs(&response);
-                if mode == "no-cors"
-                    && corp_blocks(
-                        header_value(&redirect_pairs, "cross-origin-resource-policy"),
-                        !cross_origin,
-                        same_site(&origin, &response_origin),
-                    )
-                {
-                    return Err(network_error(ctx, "CORP blocked"));
-                }
-                if cacheable_method && !cache_no_store(&redirect_pairs) && cache_mode != "no-store"
-                {
-                    store_cache(
-                        url.to_string(),
-                        &credentials,
-                        status,
-                        response
-                            .status()
-                            .canonical_reason()
-                            .unwrap_or("")
-                            .to_string(),
-                        redirect_pairs.clone(),
-                        Vec::new(),
-                        &request_headers,
-                    );
-                }
-                let next = url
-                    .join(&encode_location(location))
-                    .map_err(|error| network_error(ctx, &format!("{error}")))?;
-                if next.scheme() == "data" || next.scheme() == "blob" {
-                    return Err(network_error(ctx, "Redirect to data: or blob:"));
-                }
-                if !next.username().is_empty()
-                    || next.password().is_some_and(|password| !password.is_empty())
-                {
-                    return Err(network_error(ctx, "Redirect URL has credentials"));
-                }
-                if (matches!(status, 301 | 302) && method == "POST")
-                    || (status == 303 && !matches!(method.as_str(), "GET" | "HEAD"))
-                {
-                    method = "GET".to_string();
-                    body = Outgoing::None;
-                    headers.retain(|(name, _)| {
-                        !matches!(
-                            name.as_str(),
-                            "content-type"
-                                | "content-length"
-                                | "content-encoding"
-                                | "content-language"
-                                | "content-location"
-                        )
-                    });
-                }
-                if url_origin(&next) != url_origin(&url) {
-                    headers.retain(|(name, _)| name != "authorization");
-                    if cross_origin {
-                        tainted_origin = true;
-                    }
-                }
-                redirected = true;
-                url = next;
-                return Box::pin(http_fetch(
-                    ctx,
-                    url,
-                    method,
-                    mode,
-                    credentials,
-                    redirect,
-                    cache_mode,
-                    integrity,
-                    referrer,
-                    headers,
-                    body,
-                    watch,
-                    signal,
-                    hops + 1,
-                    redirected,
-                    false,
-                    tainted_origin,
-                    saw_cross,
-                ))
-                .await;
-            }
-        }
-    }
-
-    let mut pairs = response_header_pairs(&response);
-    if pairs.iter().any(|(_, value)| value.contains('\0')) {
-        return Err(network_error(ctx, "NUL in header"));
-    }
-    if cors_mode && cross_origin {
-        let include = credentials == "include";
-        // Validate against the origin that was actually sent: a cross-origin
-        // redirect taints it to "null", and the server opts back in with
-        // `Access-Control-Allow-Origin: null`.
-        if !check_acao(
-            header_value(&pairs, "access-control-allow-origin"),
-            &origin_header,
-            include,
-        ) {
-            return Err(network_error(ctx, "CORS failed"));
-        }
-        if include
-            && header_value(&pairs, "access-control-allow-credentials")
-                .is_none_or(|value| value != "true")
-        {
-            return Err(network_error(ctx, "CORS credentials failed"));
-        }
-        let expose = header_value(&pairs, "access-control-expose-headers").map(str::to_owned);
-        pairs = filter_cors_headers(pairs, expose.as_deref(), include);
-    }
-
-    if mode == "no-cors" && (cross_origin || saw_cross) {
-        if !integrity.is_empty() {
-            return Err(network_error(
-                ctx,
-                "Integrity cannot be used with opaque response",
             ));
         }
-        if corp_blocks(
-            header_value(&pairs, "cross-origin-resource-policy"),
-            !cross_origin,
-            same_site(&origin, &response_origin),
-        ) {
-            return Err(network_error(ctx, "CORP blocked"));
-        }
-        if orb_blocks(
-            header_value(&pairs, "content-type"),
-            header_value(&pairs, "x-content-type-options")
-                .is_some_and(|value| value.eq_ignore_ascii_case("nosniff")),
-            status,
-        ) {
-            return Err(network_error(ctx, "ORB blocked"));
-        }
-        let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        return Response::from_bytes(
-            ctx,
-            0,
-            String::new(),
-            String::new(),
-            "opaque",
-            headers,
-            None,
-        );
-    }
 
-    if mode != "no-cors"
-        && corp_blocks(
-            header_value(&pairs, "cross-origin-resource-policy"),
-            !cross_origin,
-            same_site(&origin, &response_origin),
-        )
-    {
-        return Err(network_error(ctx, "CORP blocked"));
-    }
-
-    if is_unsafe_method(&method) && (200..300).contains(&status) {
-        invalidate_cache(url.as_str());
-        for name in ["location", "content-location"] {
-            if let Some(related) = header_value(&pairs, name)
-                && let Ok(next) = url.join(&encode_location(related))
-            {
-                invalidate_cache(next.as_str());
+        if is_unsafe_method(&method) && (200..300).contains(&status) {
+            invalidate_cache(url.as_str());
+            for name in ["location", "content-location"] {
+                if let Some(related) = header_value(&wire_pairs, name)
+                    && let Ok(next) = url.join(&encode_location(related))
+                {
+                    invalidate_cache(next.as_str());
+                }
             }
         }
-    }
 
-    let kind = if (cross_origin || saw_cross) && cors_mode {
-        "cors"
-    } else {
-        "basic"
-    };
-    let mut header_obj = Headers::from_pairs(pairs.clone());
-    header_obj.set_guard(headers::Guard::Immutable);
-    let headers = Class::instance(ctx.clone(), header_obj)?;
-    let status_text = response
-        .status()
-        .canonical_reason()
-        .unwrap_or("")
-        .to_string();
-    let null_body = crate::body::null_body_status(status) || method == "HEAD";
-    if !integrity.is_empty() && null_body {
-        return Err(network_error(ctx, "Integrity check on null body"));
-    }
-
-    if status == 304
-        && !user_conditional
-        && let Some(mut cached) = lookup_cache(url.as_str(), &credentials, &request_headers)
-    {
-        for (name, value) in &pairs {
-            if let Some(existing) = cached
-                .headers
-                .iter_mut()
-                .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            {
-                existing.1.clone_from(value);
-            } else {
-                cached.headers.push((name.clone(), value.clone()));
-            }
+        let kind = if (cross_origin || saw_cross) && cors_mode {
+            "cors"
+        } else {
+            "basic"
+        };
+        let mut header_obj = Headers::from_pairs(pairs.clone());
+        header_obj.set_guard(headers::Guard::Immutable);
+        let headers = Class::instance(ctx.clone(), header_obj)?;
+        let status_text = response
+            .status()
+            .canonical_reason()
+            .unwrap_or("")
+            .to_string();
+        let null_body = super::body::null_body_status(status) || method == "HEAD";
+        if !integrity.is_empty() && null_body {
+            return Err(network_error(ctx, "Integrity check on null body"));
         }
-        store_cache(
-            url.to_string(),
-            &credentials,
-            cached.status,
-            cached.status_text.clone(),
-            cached.headers.clone(),
-            cached.body.clone(),
-            &request_headers,
-        );
-        return cached_response(ctx, &url, cached, redirected, &mode, &origin, &credentials);
-    }
 
-    let can_store = !cache_no_store(&pairs)
-        && !matches!(cache_mode.as_str(), "no-store")
-        && !user_conditional
-        && !matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
-
-    if null_body {
-        if can_store {
+        if status == 304
+            && !user_conditional
+            && let Some(mut cached) = lookup_cache(url.as_str(), &credentials, &request_headers)
+        {
+            for (name, value) in &wire_pairs {
+                if let Some(existing) = cached
+                    .headers
+                    .iter_mut()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                {
+                    existing.1.clone_from(value);
+                } else {
+                    cached.headers.push((name.clone(), value.clone()));
+                }
+            }
             store_cache(
                 url.to_string(),
                 &credentials,
-                status,
-                status_text.clone(),
-                pairs,
-                Vec::new(),
+                cached.status,
+                cached.status_text.clone(),
+                cached.headers.clone(),
+                cached.body.clone(),
                 &request_headers,
             );
+            return cached_response(ctx, &url, cached, redirected, &mode, &origin, &credentials);
         }
-        let mut produced = Response::from_bytes(
-            ctx,
-            status,
-            status_text,
-            url.to_string(),
-            kind,
-            headers,
-            None,
-        )?;
-        produced.redirected = redirected;
-        return Ok(produced);
-    }
 
-    // Every cache entry this response would populate, described up front so the
-    // body can be streamed and mirrored into them instead of pre-buffered.
-    let mut cache_writes = Vec::new();
-    if matches!(method.as_str(), "POST" | "PATCH")
-        && (200..300).contains(&status)
-        && let Some(cl) = header_value(&pairs, "content-location")
-        && (parse_max_age(&pairs).is_some()
-            || header_value(&pairs, "expires").is_some()
-            || cache_directive(&pairs, "public"))
-        && let Ok(cl_url) = url.join(&encode_location(cl))
-    {
-        cache_writes.push(PendingCacheWrite {
-            url: cl_url.to_string(),
-            credentials: credentials.clone(),
-            status,
-            status_text: status_text.clone(),
-            headers: pairs.clone(),
-            request_headers: request_headers.clone(),
-            body_override: url
-                .query_pairs()
-                .find(|(key, _)| key == "uuid")
-                .map(|(_, value)| value.into_owned().into_bytes())
-                .filter(|body| !body.is_empty()),
-        });
-    }
-    if can_store {
-        cache_writes.push(PendingCacheWrite {
-            url: url.to_string(),
-            credentials: credentials.clone(),
-            status,
-            status_text: status_text.clone(),
-            headers: pairs.clone(),
-            request_headers: request_headers.clone(),
-            body_override: None,
-        });
-    }
+        let can_store = !cache_no_store(&wire_pairs)
+            && !matches!(cache_mode.as_str(), "no-store")
+            && !user_conditional
+            && !matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
 
-    // Stream unless the whole body is needed before any of it can be handed
-    // over, which is only subresource integrity: it has to hash the body to
-    // decide whether the response exists at all. Size is not a reason — a body
-    // that fits in memory is still one the consumer wants the first chunk of
-    // now — and neither is caching, which the fill mirrors as bytes flow.
-    let content_len = response.content_length();
-    if integrity.is_empty() {
-        let mut produced = Response::from_reqwest(ctx, response, kind)?;
-        produced.expected_length = content_len;
-        produced.cache_fill = CacheFill::pending(cache_writes);
-        produced.redirected = redirected;
-        produced.headers = headers;
-        produced.url = url.to_string();
-        produced.status = status;
-        return Ok(produced);
-    }
+        if null_body {
+            if can_store {
+                store_cache(
+                    url.to_string(),
+                    &credentials,
+                    status,
+                    status_text.clone(),
+                    wire_pairs,
+                    Vec::new(),
+                    &request_headers,
+                );
+            }
+            let mut produced = Response::from_bytes(
+                ctx,
+                status,
+                status_text,
+                url.to_string(),
+                kind,
+                headers,
+                None,
+            );
+            produced.redirected = redirected;
+            return Ok(produced);
+        }
 
-    let bytes = match response.bytes().await {
-        Ok(bytes) => bytes.to_vec(),
-        Err(error) => {
+        // Every cache entry this response would populate, described up front so the
+        // body can be streamed and mirrored into them instead of pre-buffered.
+        let mut cache_writes = Vec::new();
+        if matches!(method.as_str(), "POST" | "PATCH")
+            && (200..300).contains(&status)
+            && let Some(cl) = header_value(&wire_pairs, "content-location")
+            && (parse_max_age(&wire_pairs).is_some()
+                || header_value(&wire_pairs, "expires").is_some()
+                || cache_directive(&wire_pairs, "public"))
+            && let Ok(cl_url) = url.join(&encode_location(cl))
+        {
+            cache_writes.push(PendingCacheWrite {
+                url: cl_url.to_string(),
+                credentials: credentials.clone(),
+                status,
+                status_text: status_text.clone(),
+                headers: wire_pairs.clone(),
+                request_headers: request_headers.clone(),
+                body_override: url
+                    .query_pairs()
+                    .find(|(key, _)| key == "uuid")
+                    .map(|(_, value)| value.into_owned().into_bytes())
+                    .filter(|body| !body.is_empty()),
+            });
+        }
+        if can_store {
+            cache_writes.push(PendingCacheWrite {
+                url: url.to_string(),
+                credentials: credentials.clone(),
+                status,
+                status_text: status_text.clone(),
+                headers: wire_pairs.clone(),
+                request_headers: request_headers.clone(),
+                body_override: None,
+            });
+        }
+
+        // Stream unless the whole body is needed before any of it can be handed
+        // over, which is only subresource integrity: it has to hash the body to
+        // decide whether the response exists at all. Size is not a reason — a body
+        // that fits in memory is still one the consumer wants the first chunk of
+        // now — and neither is caching, which the fill mirrors as bytes flow.
+        let content_len = response.content_length();
+        if integrity.is_empty() {
+            let mut produced = Response::from_reqwest(ctx, response, kind)?;
+            produced.expected_length = content_len;
+            produced.cache_fill = CacheFill::pending(cache_writes);
+            produced.redirected = redirected;
+            produced.headers = headers;
+            produced.url = url.to_string();
+            produced.status = status;
+            return Ok(produced);
+        }
+
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(error) => {
+                let mut produced = Response::from_failed(
+                    ctx,
+                    status,
+                    status_text,
+                    url.to_string(),
+                    kind,
+                    headers,
+                    error.to_string(),
+                );
+                produced.redirected = redirected;
+                return Ok(produced);
+            }
+        };
+        if let Some(expected) = content_len
+            && expected as usize > bytes.len()
+        {
             let mut produced = Response::from_failed(
                 ctx,
                 status,
@@ -1817,40 +1929,25 @@ async fn http_fetch<'js>(
                 url.to_string(),
                 kind,
                 headers,
-                error.to_string(),
-            )?;
+                "response body shorter than Content-Length".to_string(),
+            );
             produced.redirected = redirected;
             return Ok(produced);
         }
-    };
-    if let Some(expected) = content_len
-        && expected as usize > bytes.len()
-    {
-        let mut produced = Response::from_failed(
+        check_integrity(ctx, &integrity, &bytes).await?;
+        CacheFill::commit_now(cache_writes, &bytes);
+        let mut produced = Response::from_bytes(
             ctx,
             status,
             status_text,
             url.to_string(),
             kind,
             headers,
-            "response body shorter than Content-Length".to_string(),
-        )?;
+            Some(bytes),
+        );
         produced.redirected = redirected;
-        return Ok(produced);
+        Ok(produced)
     }
-    check_integrity(ctx, &integrity, &bytes).await?;
-    CacheFill::commit_now(cache_writes, &bytes);
-    let mut produced = Response::from_bytes(
-        ctx,
-        status,
-        status_text,
-        url.to_string(),
-        kind,
-        headers,
-        Some(bytes),
-    )?;
-    produced.redirected = redirected;
-    Ok(produced)
 }
 
 fn cached_response<'js>(
@@ -1860,7 +1957,7 @@ fn cached_response<'js>(
     let cross_origin = !same_origin(origin, &url_origin(url));
     if mode == "no-cors" && cross_origin {
         let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        return Response::from_bytes(
+        return Ok(Response::from_bytes(
             ctx,
             0,
             String::new(),
@@ -1868,7 +1965,7 @@ fn cached_response<'js>(
             "opaque",
             headers,
             None,
-        );
+        ));
     }
     let kind = if cross_origin && mode == "cors" {
         "cors"
@@ -1879,7 +1976,7 @@ fn cached_response<'js>(
     if mode == "cors" && cross_origin {
         let include = credentials == "include";
         if !check_acao(
-            header_value(&pairs, "access-control-allow-origin"),
+            single_header_value(&pairs, "access-control-allow-origin"),
             origin,
             include,
         ) {
@@ -1898,7 +1995,32 @@ fn cached_response<'js>(
         kind,
         Class::instance(ctx.clone(), header_obj)?,
         Some(entry.body),
-    )?;
+    );
     response.redirected = redirected;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cors_safelisted_request_header;
+
+    #[test]
+    fn cors_safelists_only_a_single_ordered_byte_range() {
+        for value in ["bytes=0-10", "bytes=0-", "bytes=00011-00111", "bytes=0-0"] {
+            assert!(cors_safelisted_request_header("range", value), "{value}");
+        }
+        for value in [
+            "bytes=10-9",
+            "bytes=-0",
+            "bytes=1-0",
+            "bytes=0-1,2-3",
+            "foo=0-10",
+        ] {
+            assert!(!cors_safelisted_request_header("range", value), "{value}");
+        }
+        assert!(!cors_safelisted_request_header(
+            "range",
+            &format!("bytes=0-{}", "1".repeat(121))
+        ));
+    }
 }

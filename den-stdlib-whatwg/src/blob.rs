@@ -2,21 +2,21 @@
 
 use den_util::coerce_string;
 use rquickjs::{
-    ArrayBuffer, Class, Coerced, Ctx, FromJs, JsIterator, JsLifetime, Object, Result, TypedArray,
-    Value, atom::PredefinedAtom, class::Trace, function::Opt,
+    ArrayBuffer, Class, Coerced, Ctx, FromJs as _, JsIterator, JsLifetime, Object, Result,
+    TypedArray, Value, atom::PredefinedAtom, class::Trace, function::Opt,
 };
 
 use crate::{host::Host, streams::ReadableStream};
 
-const POOL_SIZE: usize = 65536;
+const POOL_SIZE: usize = 0x0001_0000;
 
 #[derive(Clone)]
-pub struct BlobInner {
+pub struct Inner {
     bytes: Vec<u8>,
     type_: String,
 }
 
-impl BlobInner {
+impl Inner {
     pub fn from_bytes(bytes: Vec<u8>, type_: String) -> Self {
         Self {
             bytes,
@@ -50,17 +50,17 @@ impl BlobInner {
 
     pub fn mime_type(&self) -> &str { &self.type_ }
 
-    pub fn size(&self) -> usize { self.bytes.len() }
+    pub const fn size(&self) -> usize { self.bytes.len() }
 
     pub fn slice(&self, start: f64, end: f64, type_: String) -> Self {
         let size = self.bytes.len() as f64;
         let relative_start = if start < 0.0 {
-            (size + start).max(0.0)
+            std::ops::Add::add(size, start).max(0.0)
         } else {
             start.min(size)
         };
         let relative_end = if end < 0.0 {
-            (size + end).max(0.0)
+            std::ops::Add::add(size, end).max(0.0)
         } else {
             end.min(size)
         };
@@ -68,20 +68,15 @@ impl BlobInner {
         let to = relative_end.max(relative_start) as usize;
         let to = to.min(self.bytes.len());
         let from = from.min(to);
-        Self::from_bytes(self.bytes[from..to].to_vec(), type_)
+        Self::from_bytes(self.bytes.get(from..to).unwrap_or_default().to_vec(), type_)
     }
 
     pub fn stream<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, ReadableStream<'js>>> {
         let source = Object::new(ctx.clone())?;
-        let chunks: Vec<Vec<u8>> = self
-            .bytes
-            .chunks(POOL_SIZE)
-            .map(|chunk| chunk.to_vec())
-            .collect();
+        let chunks: Vec<Vec<u8>> = self.bytes.chunks(POOL_SIZE).map(<[u8]>::to_vec).collect();
         source.set(
             "start",
             rquickjs::Function::new(ctx.clone(), {
-                let chunks = chunks.clone();
                 move |ctx: Ctx<'js>, controller: Object<'js>| -> Result<()> {
                     let enqueue: rquickjs::Function = controller.get("enqueue")?;
                     for chunk in &chunks {
@@ -107,17 +102,17 @@ impl BlobInner {
 #[rquickjs::class]
 pub struct Blob {
     #[qjs(skip_trace)]
-    inner: BlobInner,
+    inner: Inner,
 }
 
 impl Blob {
-    pub fn from_inner(inner: BlobInner) -> Self { Self { inner } }
+    pub const fn from_inner(inner: Inner) -> Self { Self { inner } }
 
     pub fn bytes(&self) -> &[u8] { self.inner.bytes() }
 
     pub fn mime_type(&self) -> &str { self.inner.mime_type() }
 
-    pub fn inner(&self) -> &BlobInner { &self.inner }
+    pub const fn inner(&self) -> &Inner { &self.inner }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -134,25 +129,27 @@ impl Blob {
         let collected = collect_parts(&ctx, parts)?;
         let bag = parse_blob_bag(&ctx, options.0)?;
         Ok(Self {
-            inner: BlobInner::from_collected(collected, bag.type_, bag.native),
+            inner: Inner::from_collected(collected, bag.type_, bag.native),
         })
     }
 
     #[qjs(get, enumerable)]
-    pub fn size(&self) -> usize { self.inner.size() }
+    pub const fn size(&self) -> usize { self.inner.size() }
 
     #[qjs(get, enumerable, rename = "type")]
     pub fn mime_type_js(&self) -> String { self.inner.mime_type().to_string() }
 
-    pub async fn text(&self) -> String { String::from_utf8_lossy(self.inner.bytes()).into_owned() }
+    pub async fn text(&self) -> String {
+        std::future::ready(String::from_utf8_lossy(self.inner.bytes()).into_owned()).await
+    }
 
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        ArrayBuffer::new_copy(ctx, self.inner.bytes())
+        std::future::ready(ArrayBuffer::new_copy(ctx, self.inner.bytes())).await
     }
 
     #[qjs(rename = "bytes")]
     pub async fn bytes_js<'js>(&self, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        TypedArray::<u8>::new_copy(ctx, self.inner.bytes())
+        std::future::ready(TypedArray::<u8>::new_copy(ctx, self.inner.bytes())).await
     }
 
     pub fn stream<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, ReadableStream<'js>>> {
@@ -168,14 +165,14 @@ impl Blob {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Blob" }
+    pub const fn to_string_tag() -> &'static str { "Blob" }
 }
 
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class(rename_all = "camelCase")]
 pub struct File {
     #[qjs(skip_trace)]
-    inner:         BlobInner,
+    inner:         Inner,
     #[qjs(skip_trace, get, enumerable)]
     name:          String,
     #[qjs(get, enumerable)]
@@ -183,7 +180,7 @@ pub struct File {
 }
 
 impl File {
-    pub fn from_parts(inner: BlobInner, name: String, last_modified: f64) -> Self {
+    pub const fn from_parts(inner: Inner, name: String, last_modified: f64) -> Self {
         Self {
             inner,
             name,
@@ -197,7 +194,7 @@ impl File {
 
     pub fn file_name(&self) -> &str { &self.name }
 
-    pub fn inner(&self) -> &BlobInner { &self.inner }
+    pub const fn inner(&self) -> &Inner { &self.inner }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -223,7 +220,7 @@ impl File {
         let name = coerce_string(&ctx, file_name)?;
         let (bag, last_modified) = parse_file_bag(&ctx, options.0)?;
         Ok(Self {
-            inner: BlobInner::from_collected(collected, bag.type_, bag.native),
+            inner: Inner::from_collected(collected, bag.type_, bag.native),
             name,
             last_modified: last_modified.unwrap_or_else(Self::now_millis),
         })
@@ -233,25 +230,26 @@ impl File {
     pub fn now_millis() -> f64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as f64)
-            .unwrap_or(0.0)
+            .map_or(0.0, |duration| duration.as_millis() as f64)
     }
 
     #[qjs(get, enumerable)]
-    pub fn size(&self) -> usize { self.inner.size() }
+    pub const fn size(&self) -> usize { self.inner.size() }
 
     #[qjs(get, enumerable, rename = "type")]
     pub fn mime_type_js(&self) -> String { self.inner.mime_type().to_string() }
 
-    pub async fn text(&self) -> String { String::from_utf8_lossy(self.inner.bytes()).into_owned() }
+    pub async fn text(&self) -> String {
+        std::future::ready(String::from_utf8_lossy(self.inner.bytes()).into_owned()).await
+    }
 
     pub async fn array_buffer<'js>(&self, ctx: Ctx<'js>) -> Result<ArrayBuffer<'js>> {
-        ArrayBuffer::new_copy(ctx, self.inner.bytes())
+        std::future::ready(ArrayBuffer::new_copy(ctx, self.inner.bytes())).await
     }
 
     #[qjs(rename = "bytes")]
     pub async fn bytes_js<'js>(&self, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
-        TypedArray::<u8>::new_copy(ctx, self.inner.bytes())
+        std::future::ready(TypedArray::<u8>::new_copy(ctx, self.inner.bytes())).await
     }
 
     pub fn stream<'js>(&self, ctx: Ctx<'js>) -> Result<Class<'js, ReadableStream<'js>>> {
@@ -271,7 +269,7 @@ impl File {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "File" }
+    pub const fn to_string_tag() -> &'static str { "File" }
 }
 
 enum Part {
@@ -291,7 +289,7 @@ fn collect_parts<'js>(ctx: &Ctx<'js>, parts: Value<'js>) -> Result<Vec<Part>> {
             "Failed to construct 'Blob': The provided value cannot be converted to a sequence.",
         ));
     }
-    let iterator = JsIterator::<Value<'js>>::from_js(ctx, parts).map_err(|_| {
+    let iterator = JsIterator::<Value<'js>>::from_js(ctx, parts).map_err(|_error| {
         Host::throw_type(
             ctx,
             "Failed to construct 'Blob': The object must have a callable @@iterator property.",
@@ -353,7 +351,7 @@ fn dictionary_object<'js>(
         return Ok(None);
     }
     if value.is_object() || value.as_function().is_some() {
-        return Ok(value.as_object().map(|object| object.clone()));
+        return Ok(value.as_object().cloned());
     }
     Err(Host::throw_type(
         ctx,
@@ -401,7 +399,10 @@ fn native_line_endings(text: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        match bytes[index] {
+        let Some(&byte) = bytes.get(index) else {
+            break;
+        };
+        match byte {
             b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
                 out.push(b'\n');
                 index += 2;
@@ -424,9 +425,9 @@ fn empty_sequence<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
 }
 
 fn slice_inner<'js>(
-    ctx: &Ctx<'js>, inner: &BlobInner, start: Option<Value<'js>>, end: Option<Value<'js>>,
+    ctx: &Ctx<'js>, inner: &Inner, start: Option<Value<'js>>, end: Option<Value<'js>>,
     type_: Option<Value<'js>>,
-) -> Result<BlobInner> {
+) -> Result<Inner> {
     let size = inner.size() as f64;
     Ok(inner.slice(
         optional_clamp(ctx, start)?.unwrap_or(0.0),

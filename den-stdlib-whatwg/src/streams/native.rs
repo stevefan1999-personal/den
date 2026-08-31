@@ -27,10 +27,10 @@ pub enum StreamError {
 }
 
 impl fmt::Display for StreamError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "{error}"),
-            Self::Message(message) => formatter.write_str(message),
+            Self::Io(error) => write!(f, "{error}"),
+            Self::Message(message) => f.write_str(message),
         }
     }
 }
@@ -84,10 +84,13 @@ impl<'js> ByteSink<'js> {
 impl<'js> ReadableStream<'js> {
     /// Build a stream over a Rust byte source. `hwm` counts chunks: 1 paces the
     /// producer to one chunk in flight, which is what fetch and den:http want.
-    pub fn from_native(
-        ctx: &Ctx<'js>, hwm: f64, pull: impl FnMut(Ctx<'js>) -> PullFuture<'js> + 'js,
-        cancel: impl FnOnce(Value<'js>) + 'js,
-    ) -> Result<Class<'js, Self>> {
+    pub fn from_native<P, C>(
+        ctx: &Ctx<'js>, hwm: f64, pull: P, cancel: C,
+    ) -> Result<Class<'js, Self>>
+    where
+        P: FnMut(Ctx<'js>) -> PullFuture<'js> + 'js,
+        C: FnOnce(Value<'js>) + 'js,
+    {
         let inner = Self::new_inner(ctx)?;
         {
             let mut borrow = inner.borrow_mut();
@@ -105,11 +108,14 @@ impl<'js> ReadableStream<'js> {
 }
 
 impl<'js> WritableStream<'js> {
-    pub fn to_native(
-        ctx: &Ctx<'js>, hwm: f64, write: impl FnMut(Ctx<'js>, Vec<u8>) -> SinkFuture<'js> + 'js,
-        close: impl FnOnce(Ctx<'js>) -> SinkFuture<'js> + 'js,
-        abort: impl FnOnce(Value<'js>) + 'js,
-    ) -> Result<Class<'js, Self>> {
+    pub fn to_native<W, C, A>(
+        ctx: &Ctx<'js>, hwm: f64, write: W, close: C, abort: A,
+    ) -> Result<Class<'js, Self>>
+    where
+        W: FnMut(Ctx<'js>, Vec<u8>) -> SinkFuture<'js> + 'js,
+        C: FnOnce(Ctx<'js>) -> SinkFuture<'js> + 'js,
+        A: FnOnce(Value<'js>) + 'js,
+    {
         let inner = Self::new_inner(ctx)?;
         {
             let mut borrow = inner.borrow_mut();

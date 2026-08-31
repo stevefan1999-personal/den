@@ -58,10 +58,11 @@ pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
     let then: Function = proto.get("then")?;
     let noop = Function::new(ctx.clone(), || {})?;
     let count = Function::new(ctx.clone(), || 1.0)?.with_name("size")?;
-    let byte_size = Function::new(ctx.clone(), |chunk: Object<'_>| -> Result<f64> {
-        Ok(chunk.get::<_, rquickjs::Coerced<f64>>("byteLength")?.0)
-    })?
-    .with_name("size")?;
+    // JavaScript property access performs ToObject for primitives, while
+    // preserving the TypeError for null/undefined and any getter exception.
+    let byte_size = ctx
+        .eval::<Function, _>("chunk => chunk.byteLength")?
+        .with_name("size")?;
     let _ = ctx.store_userdata(Intrinsics {
         then,
         noop,
@@ -116,6 +117,12 @@ pub(crate) fn react<'js>(
     };
     then.call::<_, Value>((This(promise), on_ok, on_err))?;
     Ok(())
+}
+
+/// A one-turn identity chain using the pristine `Promise.prototype.then`.
+pub(crate) fn chain<'js>(ctx: &Ctx<'js>, promise: Promise<'js>) -> Result<Promise<'js>> {
+    let (then, _) = intrinsics(ctx)?;
+    then.call((This(promise),))
 }
 
 /// Chain a user-returned value onto a fresh promise that fulfils with
@@ -213,7 +220,7 @@ impl<'js> Cap<'js> {
 
     pub(crate) fn promise(&self) -> Promise<'js> { self.promise.clone() }
 
-    pub(crate) fn is_pending(&self) -> bool { self.resolve.is_some() }
+    pub(crate) const fn is_pending(&self) -> bool { self.resolve.is_some() }
 
     pub(crate) fn resolve(&mut self, value: Value<'js>) {
         self.reject = None;
@@ -271,9 +278,10 @@ pub(crate) fn thrown<'js>(ctx: &Ctx<'js>, error: rquickjs::Error) -> Value<'js> 
     match error {
         rquickjs::Error::Exception => ctx.catch(),
         other => {
-            Exception::from_message(ctx.clone(), &other.to_string())
-                .map(|exception| exception.into_object().into_value())
-                .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
+            den_util::stack::error_from_message(ctx, &other.to_string()).map_or_else(
+                |_| Value::new_undefined(ctx.clone()),
+                |exception| exception.into_object().into_value(),
+            )
         }
     }
 }

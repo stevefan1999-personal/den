@@ -19,7 +19,7 @@ use std::{
 use dashmap::DashMap;
 use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
-    Class, Ctx, Function, IntoJs, JsLifetime, Object, Result, Value,
+    Class, Ctx, Function, IntoJs as _, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{FuncArg, Opt},
@@ -283,7 +283,7 @@ impl<'js> BroadcastChannel<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "BroadcastChannel" }
+    pub const fn to_string_tag() -> &'static str { "BroadcastChannel" }
 }
 
 /// NativeBroadcast stays off the public surface; the wrapper is the export.
@@ -292,7 +292,7 @@ pub fn install<'js>(_ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
 }
 
 /// Prototype chain and `onmessage` / `onmessageerror`.
-pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
+pub fn finish(ctx: &Ctx<'_>) -> Result<()> {
     inherit::<BroadcastChannel, EventTarget>(ctx)?;
     if let Some(proto) = Class::<BroadcastChannel>::prototype(ctx)? {
         define_event_handler(
@@ -373,7 +373,9 @@ mod registry_tests {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match outcome.recv_timeout(remaining) {
                 Ok(verdict) => verdict.unwrap_or_else(|reason| panic!("{reason}")),
-                Err(_) => panic!("the registry deadlocked: a churn thread never finished"),
+                Err(error) => {
+                    panic!("the registry deadlocked: a churn thread never finished: {error}")
+                }
             }
         }
         assert!(

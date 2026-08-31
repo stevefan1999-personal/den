@@ -1,14 +1,14 @@
 use indexmap::IndexMap;
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Exception, Filter, Function, IntoJs, Iterable, JsLifetime, Object,
-    Result, Value,
+    Array, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs, Iterable, JsIterator,
+    JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Guard {
+pub enum Guard {
     None,
     Immutable,
     Request,
@@ -28,7 +28,7 @@ pub struct Headers {
 }
 
 impl Headers {
-    fn guard(&self) -> Guard {
+    pub(crate) const fn guard(&self) -> Guard {
         match self.guard {
             1 => Guard::Immutable,
             2 => Guard::Request,
@@ -38,7 +38,7 @@ impl Headers {
         }
     }
 
-    pub(crate) fn set_guard(&mut self, guard: Guard) {
+    pub(crate) const fn set_guard(&mut self, guard: Guard) {
         self.guard = match guard {
             Guard::None => 0,
             Guard::Immutable => 1,
@@ -86,7 +86,7 @@ impl Headers {
         ctx: Ctx<'js>, init: Option<Value<'js>>, guard: Guard,
     ) -> Result<Self> {
         let mut headers = Self::empty_with(guard);
-        if let Some(init) = init.filter(|value| !value.is_null() && !value.is_undefined()) {
+        if let Some(init) = init.filter(|value| !value.is_undefined()) {
             headers.fill(&ctx, init)?;
         }
         Ok(headers)
@@ -164,44 +164,68 @@ impl Headers {
 
     fn fill<'js>(&mut self, ctx: &Ctx<'js>, init: Value<'js>) -> Result<()> {
         let Some(object) = init.as_object() else {
-            return Ok(());
+            return Err(Exception::throw_type(ctx, "HeadersInit must be an object"));
         };
-        if let Some(other) = Class::<Headers>::from_object(object) {
-            let other = other.borrow();
-            self.map = other.map.clone();
-            self.cookies = other.cookies.clone();
-            return Ok(());
+
+        let iterator: Value = object.get(PredefinedAtom::SymbolIterator)?;
+        if !iterator.is_null() && !iterator.is_undefined() {
+            let iterator =
+                Function::from_js(ctx, iterator)?.call::<_, Value>((This(object.clone()),))?;
+            return self.fill_pairs(ctx, JsIterator::from_js(ctx, iterator)?);
         }
-        if object.is_array() {
-            return self.fill_pairs(ctx, object);
-        }
-        for name in object.own_keys::<String>(Filter::new().string()) {
-            let name = name?;
-            let value = den_util::coerce_string(ctx, object.get(&name)?)?;
+
+        let reflect: Object = ctx.globals().get("Reflect")?;
+        let own_keys: Function = reflect.get("ownKeys")?;
+        let keys: Array = own_keys.call((object.clone(),))?;
+        let object_ctor: Object = ctx.globals().get(PredefinedAtom::Object)?;
+        let descriptor: Function = object_ctor.get(PredefinedAtom::GetOwnPropertyDescriptor)?;
+        for index in 0..keys.len() {
+            let key: Value = keys.get(index)?;
+            let property: Value = descriptor.call((object.clone(), key.clone()))?;
+            let Some(property) = property.as_object() else {
+                continue;
+            };
+            if !property.get::<_, bool>("enumerable").unwrap_or(false) {
+                continue;
+            }
+            let name = den_util::coerce_string(ctx, key.clone())?;
+            if name.chars().any(|ch| (ch as u32) > 0xff) {
+                return Err(Exception::throw_type(
+                    ctx,
+                    "Header name is not a ByteString",
+                ));
+            }
+            let value = den_util::coerce_string(ctx, object.get::<_, Value>(key)?)?;
             self.append(ctx.clone(), Coerced(name), Coerced(value))?;
         }
         Ok(())
     }
 
-    fn fill_pairs<'js>(&mut self, ctx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
-        let length: i32 = object.get("length").unwrap_or(0);
-        for index in 0..length {
-            let entry: Value = object.get(index as u32)?;
-            let Some(pair) = entry.as_object() else {
+    fn fill_pairs<'js>(
+        &mut self, ctx: &Ctx<'js>, entries: impl Iterator<Item = Result<Value<'js>>>,
+    ) -> Result<()> {
+        for entry in entries {
+            let mut pair = JsIterator::<Value>::from_js(ctx, entry?)?;
+            let Some(name) = pair.next().transpose()? else {
                 return Err(Exception::throw_type(
                     ctx,
-                    "Expected name/value pair to be length 2, found0",
+                    "Expected name/value pair to be length 2, found 0",
                 ));
             };
-            let pair_len: i32 = pair.get("length").unwrap_or(0);
-            if pair_len != 2 {
+            let Some(value) = pair.next().transpose()? else {
                 return Err(Exception::throw_type(
                     ctx,
-                    &format!("Expected name/value pair to be length 2, found{pair_len}"),
+                    "Expected name/value pair to be length 2, found 1",
+                ));
+            };
+            if pair.next().transpose()?.is_some() {
+                return Err(Exception::throw_type(
+                    ctx,
+                    "Expected name/value pair to be length 2, found more than 2",
                 ));
             }
-            let name = den_util::coerce_string(ctx, pair.get(0)?)?;
-            let value = den_util::coerce_string(ctx, pair.get(1)?)?;
+            let name = den_util::coerce_string(ctx, name)?;
+            let value = den_util::coerce_string(ctx, value)?;
             self.append(ctx.clone(), Coerced(name), Coerced(value))?;
         }
         Ok(())
@@ -226,15 +250,16 @@ impl Headers {
         pairs
     }
 
-    fn entries_iter<'js>(&self, ctx: &Ctx<'js>) -> Result<Value<'js>> {
-        let mut pairs = Vec::new();
-        for (name, value) in self.sorted_pairs() {
-            let pair = Array::new(ctx.clone())?;
-            pair.set(0, name)?;
-            pair.set(1, value)?;
-            pairs.push(pair);
-        }
-        Iterable::from(pairs).into_js(ctx)
+    fn live_iter<'js, T: IntoJs<'js> + 'js>(
+        ctx: &Ctx<'js>, headers: Class<'js, Self>, map: impl Fn((String, String)) -> T + 'js,
+    ) -> Result<Value<'js>> {
+        let mut index = 0;
+        Iterable::from_fn(move || {
+            let pair = headers.borrow().sorted_pairs().get(index).cloned();
+            index += usize::from(pair.is_some());
+            pair.map(&map)
+        })
+        .into_js(ctx)
     }
 
     fn check_guard(&self, ctx: &Ctx<'_>, name: &str, value: &str, combine: bool) -> Result<bool> {
@@ -266,10 +291,7 @@ impl Headers {
             cookies: Vec::new(),
             guard:   0,
         };
-        if let Some(init) = init
-            .0
-            .filter(|value| !value.is_null() && !value.is_undefined())
-        {
+        if let Some(init) = init.0.filter(|value| !value.is_undefined()) {
             headers.fill(&ctx, init)?;
         }
         Ok(headers)
@@ -346,41 +368,34 @@ impl Headers {
         this: This<Class<'js, Headers>>, callback: Function<'js>, this_arg: Opt<Value<'js>>,
         ctx: Ctx<'js>,
     ) -> Result<()> {
-        let entries = this.0.borrow().sorted_pairs();
         let this_arg = this_arg.0.unwrap_or_else(|| Value::new_undefined(ctx));
-        for (name, value) in entries {
+        let mut index = 0;
+        while let Some((name, value)) = this.0.borrow().sorted_pairs().get(index).cloned() {
             callback.call::<_, ()>((This(this_arg.clone()), value, name, this.0.clone()))?;
+            index += 1;
         }
         Ok(())
     }
 
-    pub fn keys<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        Iterable::from(
-            self.sorted_pairs()
-                .into_iter()
-                .map(|(name, _)| name)
-                .collect::<Vec<_>>(),
-        )
-        .into_js(&ctx)
+    pub fn keys<'js>(this: This<Class<'js, Headers>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
+        Self::live_iter(&ctx, this.0, |(name, _)| name)
     }
 
-    pub fn values<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        Iterable::from(
-            self.sorted_pairs()
-                .into_iter()
-                .map(|(_, value)| value)
-                .collect::<Vec<_>>(),
-        )
-        .into_js(&ctx)
+    pub fn values<'js>(this: This<Class<'js, Headers>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
+        Self::live_iter(&ctx, this.0, |(_, value)| value)
     }
 
-    pub fn entries<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> { self.entries_iter(&ctx) }
+    pub fn entries<'js>(this: This<Class<'js, Headers>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
+        Self::live_iter(&ctx, this.0, |(name, value)| vec![name, value])
+    }
 
     #[qjs(rename = PredefinedAtom::SymbolIterator)]
-    pub fn iterate<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> { self.entries_iter(&ctx) }
+    pub fn iterate<'js>(this: This<Class<'js, Headers>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
+        Self::live_iter(&ctx, this.0, |(name, value)| vec![name, value])
+    }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Headers" }
+    pub const fn to_string_tag() -> &'static str { "Headers" }
 }
 
 fn strip_http_whitespace(value: &str) -> String {
@@ -389,14 +404,14 @@ fn strip_http_whitespace(value: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn is_forbidden_method(method: &str) -> bool {
+pub fn is_forbidden_method(method: &str) -> bool {
     matches!(
         method.to_ascii_uppercase().as_str(),
         "CONNECT" | "TRACE" | "TRACK"
     )
 }
 
-pub(crate) fn is_forbidden_request_header(name: &str, value: &str) -> bool {
+pub fn is_forbidden_request_header(name: &str, value: &str) -> bool {
     if matches!(
         name,
         "accept-charset"
@@ -436,7 +451,7 @@ pub(crate) fn is_forbidden_request_header(name: &str, value: &str) -> bool {
     false
 }
 
-fn is_cors_unsafe_byte(byte: u8) -> bool {
+const fn is_cors_unsafe_byte(byte: u8) -> bool {
     matches!(
         byte,
         0x00..=0x08
@@ -461,10 +476,7 @@ fn is_cors_unsafe_byte(byte: u8) -> bool {
 fn is_forbidden_response_header(name: &str) -> bool { matches!(name, "set-cookie" | "set-cookie2") }
 
 fn is_no_cors_safelisted(name: &str, value: &str, existing: Option<&String>) -> bool {
-    let combined = match existing {
-        Some(old) => format!("{old}, {value}"),
-        None => value.to_string(),
-    };
+    let combined = existing.map_or_else(|| value.to_string(), |old| format!("{old}, {value}"));
     match name {
         "accept" | "accept-language" | "content-language" => {
             combined.len() <= 128 && !combined.bytes().any(is_cors_unsafe_byte)

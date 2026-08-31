@@ -172,17 +172,20 @@ impl WebSocket {
                             let data = if binary_type == "blob" {
                                 Class::instance(
                                     ctx.clone(),
-                                    Blob::from_inner(crate::blob::BlobInner::from_bytes(
+                                    Blob::from_inner(crate::blob::Inner::from_bytes(
                                         bytes,
                                         String::new(),
                                     )),
                                 )
-                                .map(Class::into_value)
-                                .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
+                                .map_or_else(
+                                    |_| Value::new_undefined(ctx.clone()),
+                                    Class::into_value,
+                                )
                             } else {
-                                ArrayBuffer::new_copy(ctx.clone(), bytes)
-                                    .map(ArrayBuffer::into_value)
-                                    .unwrap_or_else(|_| Value::new_undefined(ctx.clone()))
+                                ArrayBuffer::new_copy(ctx.clone(), bytes).map_or_else(
+                                    |_| Value::new_undefined(ctx.clone()),
+                                    ArrayBuffer::into_value,
+                                )
                             };
                             let _ = WebSocket::dispatch(
                                 &this,
@@ -290,16 +293,16 @@ impl WebSocket {
     }
 
     #[qjs(static, get, rename = "CONNECTING")]
-    pub fn connecting_const() -> i32 { CONNECTING }
+    pub const fn connecting_const() -> i32 { CONNECTING }
 
     #[qjs(static, get, rename = "OPEN")]
-    pub fn open_const() -> i32 { OPEN }
+    pub const fn open_const() -> i32 { OPEN }
 
     #[qjs(static, get, rename = "CLOSING")]
-    pub fn closing_const() -> i32 { CLOSING }
+    pub const fn closing_const() -> i32 { CLOSING }
 
     #[qjs(static, get, rename = "CLOSED")]
-    pub fn closed_const() -> i32 { CLOSED }
+    pub const fn closed_const() -> i32 { CLOSED }
 
     #[qjs(get)]
     pub fn binary_type(&self) -> String { self.binary_type.clone() }
@@ -383,5 +386,5 @@ impl WebSocket {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "WebSocket" }
+    pub const fn to_string_tag() -> &'static str { "WebSocket" }
 }

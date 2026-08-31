@@ -1,7 +1,7 @@
 // Regressions for the three composition primitives that used to be silent
 // no-ops: piping wrote once and never closed, piping through a transformer
 // moved nothing at all, and tee handed back a locked original.
-import { assert, assertEquals } from "den:assert";
+import { assert, assertEquals, assertThrows } from "den:assert";
 
 const events = [];
 const recorder = () =>
@@ -24,6 +24,22 @@ const source = (chunks) =>
       controller.close();
     },
   });
+
+// Dictionary conversion and getter order are observable WebIDL behavior.
+assertThrows(() => source([]).getReader(5), TypeError);
+source([]).getReader(null).releaseLock();
+const touched = [];
+const orderedOptions = {};
+for (const name of ["preventAbort", "preventCancel", "preventClose", "signal"]) {
+  Object.defineProperty(orderedOptions, name, {
+    get() { touched.push(name); return undefined; },
+  });
+}
+await source([]).pipeTo(new WritableStream(), orderedOptions);
+assertEquals(touched.join(","), "preventAbort,preventCancel,preventClose,signal");
+
+// ByteLengthQueuingStrategy uses ordinary JS property access for primitives.
+assertEquals(new ByteLengthQueuingStrategy({ highWaterMark: 1 }).size("x"), undefined);
 
 // Every chunk arrives separately, in order, followed by exactly one close.
 await source([new Uint8Array([1, 2]), new Uint8Array([3, 4, 5])]).pipeTo(recorder());

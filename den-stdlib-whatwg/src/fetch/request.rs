@@ -1,15 +1,23 @@
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
-    Promise, Result, Value,
+    Array, ArrayBuffer, Class, Ctx, Exception, Function, IntoJs, JsLifetime, Object, Promise,
+    Result, TypedArray, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
 };
 
-use crate::{
+pub struct ServerRequest<'js> {
+    pub url:     String,
+    pub method:  String,
+    pub headers: Vec<(String, String)>,
+    pub body:    Vec<u8>,
+    pub signal:  Value<'js>,
+}
+
+use super::{
     body::{
-        apply_body_types, bytes_to_stream, is_readable_stream, is_valid_method, stream_is_locked,
-        tee_stream, value_to_bytes,
+        apply_body_types, is_readable_stream, is_valid_method, stream_is_locked, tee_stream,
+        value_as_body_stream, value_to_bytes,
     },
     headers::{Guard, Headers, is_forbidden_method},
 };
@@ -52,11 +60,43 @@ pub struct Request<'js> {
     pub(crate) headers:               Class<'js, Headers>,
     pub(crate) body:                  Option<Value<'js>>,
     pub(crate) body_stream:           Option<Value<'js>>,
-    #[qjs(get, enumerable, rename = "bodyUsed")]
     pub(crate) body_used:             bool,
 }
 
 impl<'js> Request<'js> {
+    pub fn from_server(ctx: &Ctx<'js>, request: ServerRequest<'js>) -> Result<Self> {
+        let mut headers = Headers::from_pairs(request.headers);
+        headers.set_guard(Guard::Request);
+        let body = if request.body.is_empty() {
+            None
+        } else {
+            Some(TypedArray::<u8>::new_copy(ctx.clone(), request.body)?.into_value())
+        };
+        let signal = request.signal;
+        Ok(Self {
+            url: request.url,
+            method: request.method,
+            credentials: "same-origin".to_string(),
+            redirect: "manual".to_string(),
+            mode: "same-origin".to_string(),
+            cache: "no-store".to_string(),
+            integrity: String::new(),
+            destination: String::new(),
+            referrer: "no-referrer".to_string(),
+            referrer_policy: String::new(),
+            duplex: "half".to_string(),
+            keepalive: false,
+            is_reload_navigation: false,
+            is_history_navigation: false,
+            signal: signal.clone(),
+            follow_source: signal,
+            headers: Class::instance(ctx.clone(), headers)?,
+            body,
+            body_stream: None,
+            body_used: false,
+        })
+    }
+
     pub(crate) fn wrap_input(
         ctx: Ctx<'js>, input: Value<'js>, init: Option<Object<'js>>,
     ) -> Result<Class<'js, Self>> {
@@ -73,36 +113,42 @@ impl<'js> Request<'js> {
     }
 
     fn following_signal(ctx: &Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
-        // Realms without `den:worker`'s `AbortSignal` fail the global lookup
-        // or the construct, so both phases need the fallback. A source that
-        // is already an `AbortSignal` is used as-is: wrapping it in
-        // `AbortSignal.any` would pin listener<->source cycles that QuickJS's
-        // refcount GC cannot collect.
-        let followed = (|| -> Result<Value<'js>> {
-            let ctor: Function = ctx.globals().get("AbortSignal")?;
+        let fallback = || {
             if source.is_null() || source.is_undefined() {
-                return ctor
-                    .as_constructor()
-                    .ok_or_else(|| Exception::throw_type(ctx, "AbortSignal is not a constructor"))?
-                    .construct(());
+                Value::new_null(ctx.clone())
+            } else {
+                source.clone()
             }
-            if den_util::instance_of_global(ctx, &source, "AbortSignal")? {
-                return Ok(source.clone());
-            }
-            let any: Function = ctor.get("any")?;
-            let sources = Array::new(ctx.clone())?;
+        };
+        let ctor: Function = if let Ok(ctor) = ctx.globals().get("AbortSignal") {
+            ctor
+        } else {
+            drop(ctx.catch());
+            return Ok(fallback());
+        };
+        let any: Function = if let Ok(any) = ctor.get("any") {
+            any
+        } else {
+            drop(ctx.catch());
+            return Ok(fallback());
+        };
+        let sources = Array::new(ctx.clone())?;
+        if !source.is_null() && !source.is_undefined() {
             sources.set(0, source.clone())?;
-            any.call((This(ctor.into_value()), sources))
-        })();
-        match followed {
-            Ok(signal) => Ok(signal),
-            Err(_) if source.is_null() || source.is_undefined() => Ok(Value::new_null(ctx.clone())),
-            Err(_) => Ok(source),
         }
+        any.call((This(ctor.into_value()), sources))
+    }
+
+    fn is_body_used(&self) -> bool {
+        self.body_used
+            || self
+                .body_stream
+                .as_ref()
+                .is_some_and(super::body::stream_is_disturbed)
     }
 
     pub(crate) fn take_body(&mut self, ctx: &Ctx<'_>) -> Result<Option<Value<'js>>> {
-        if self.body_used {
+        if self.is_body_used() {
             return Err(Exception::throw_type(ctx, "Already read"));
         }
         if self.body.is_none() && self.body_stream.is_none() {
@@ -119,34 +165,25 @@ impl<'js> Request<'js> {
         T: IntoJs<'js> + 'js,
         F: FnOnce(Vec<u8>, Ctx<'js>) -> Result<T> + 'js,
     {
-        let taken = match request.borrow_mut().take_body(&ctx) {
-            Ok(body) => body,
-            Err(_) => {
-                let thrown = ctx.catch();
-                let (promise, _resolve, reject) = ctx.promise()?;
-                let _ = reject.call::<_, ()>((thrown,));
-                return Ok(promise);
-            }
+        let Ok(taken) = request.borrow_mut().take_body(&ctx) else {
+            let thrown = ctx.catch();
+            let (promise, _resolve, reject) = ctx.promise()?;
+            let _ = reject.call::<_, ()>((thrown,));
+            return Ok(promise);
         };
         let (promise, resolve, reject) = ctx.promise()?;
         let ctx_err = ctx.clone();
         ctx.spawn(async move {
-            match value_to_bytes(&ctx_err, taken).await {
-                Ok(bytes) => {
-                    match map(bytes, ctx_err.clone()) {
-                        Ok(value) => {
-                            let _ = resolve.call::<_, ()>((value,));
-                        }
-                        Err(_) => {
-                            let thrown = ctx_err.catch();
-                            let _ = reject.call::<_, ()>((thrown,));
-                        }
-                    }
-                }
-                Err(_) => {
+            if let Ok(bytes) = value_to_bytes(&ctx_err, taken).await {
+                if let Ok(value) = map(bytes, ctx_err.clone()) {
+                    let _ = resolve.call::<_, ()>((value,));
+                } else {
                     let thrown = ctx_err.catch();
                     let _ = reject.call::<_, ()>((thrown,));
                 }
+            } else {
+                let thrown = ctx_err.catch();
+                let _ = reject.call::<_, ()>((thrown,));
             }
         });
         Ok(promise)
@@ -175,10 +212,7 @@ impl<'js> Request<'js> {
             return number != 0.0 && !number.is_nan();
         }
         if let Some(string) = value.as_string() {
-            return string
-                .to_string()
-                .map(|text| !text.is_empty())
-                .unwrap_or(true);
+            return string.to_string().map_or(true, |text| !text.is_empty());
         }
         true
     }
@@ -244,7 +278,7 @@ impl<'js> Request<'js> {
 impl<'js> Request<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>, input: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
-        let options = crate::body::optional_object(&ctx, options)?;
+        let options = super::body::optional_object(&ctx, options)?;
         if let Some(object) = options.as_ref() {
             let window: Value = object.get("window")?;
             if !window.is_undefined() && !window.is_null() {
@@ -258,7 +292,7 @@ impl<'js> Request<'js> {
         let mut body = match options.as_ref() {
             Some(object) => {
                 let value: Value = object.get("body")?;
-                if value.is_undefined() {
+                if value.is_undefined() || value.is_null() {
                     None
                 } else {
                     Some(value)
@@ -280,14 +314,12 @@ impl<'js> Request<'js> {
         let mut keepalive = false;
         let mut signal = Value::new_null(ctx.clone());
         let mut copied_headers = None;
-        let mut copied_from_request = false;
-        let mut copied_stream = None;
-
-        if let Some(object) = input.as_object()
+        let source_request = if let Some(object) = input.as_object()
             && let Some(existing) = Class::<Request>::from_object(object)
         {
+            let source = existing.clone();
             let existing = existing.borrow();
-            if existing.body_used && body.is_none() {
+            if existing.is_body_used() && body.is_none() {
                 return Err(Exception::throw_type(&ctx, "Already read"));
             }
             url = existing.url.clone();
@@ -301,18 +333,22 @@ impl<'js> Request<'js> {
             referrer_policy = existing.referrer_policy.clone();
             duplex = existing.duplex.clone();
             keepalive = existing.keepalive;
-            signal = existing.signal.clone();
+            signal = if existing.follow_source.is_null() || existing.follow_source.is_undefined() {
+                existing.signal.clone()
+            } else {
+                existing.follow_source.clone()
+            };
             copied_headers = Some(existing.headers.clone().into_value());
-            copied_from_request = true;
-        }
-        let existing_has_body = copied_from_request
-            && input.as_object().is_some_and(|object| {
-                Class::<Request>::from_object(object).is_some_and(|existing| {
-                    let existing = existing.borrow();
-                    existing.body.is_some() || existing.body_stream.is_some()
-                })
-            });
-        if !copied_from_request {
+            drop(existing);
+            Some(source)
+        } else {
+            None
+        };
+        let source_has_body = source_request.as_ref().is_some_and(|existing| {
+            let existing = existing.borrow();
+            existing.body.is_some() || existing.body_stream.is_some()
+        });
+        if source_request.is_none() {
             url = Self::coerce_url(&ctx, input.clone())?;
         }
 
@@ -363,8 +399,8 @@ impl<'js> Request<'js> {
                 integrity = value;
             }
             if let Some(value) = Self::optional_string(&ctx, object, "referrer")? {
-                if value != "about:client" && value != "" {
-                    let parsed = Self::resolve_url(&ctx, &value).map_err(|_| {
+                if value != "about:client" && !value.is_empty() {
+                    let parsed = Self::resolve_url(&ctx, &value).map_err(|_error| {
                         Exception::throw_type(&ctx, "RequestInit.referrer is invalid")
                     })?;
                     referrer = parsed.to_string();
@@ -397,6 +433,9 @@ impl<'js> Request<'js> {
             if let Some(value) = Self::optional_string(&ctx, object, "duplex")? {
                 duplex = Self::parse_enum(&ctx, &value, &["half"], "duplex")?;
             }
+            if let Some(value) = Self::optional_string(&ctx, object, "priority")? {
+                Self::parse_enum(&ctx, &value, &["high", "low", "auto"], "priority")?;
+            }
             let keepalive_value: Value = object.get("keepalive")?;
             if !keepalive_value.is_undefined() {
                 keepalive = Self::is_truthy(&keepalive_value);
@@ -427,10 +466,10 @@ impl<'js> Request<'js> {
         let headers_init = match options.as_ref() {
             Some(object) => {
                 let value: Value = object.get("headers")?;
-                if Self::is_truthy(&value) {
-                    Some(value)
-                } else {
+                if value.is_undefined() {
                     copied_headers
+                } else {
+                    Some(value)
                 }
             }
             None => copied_headers,
@@ -448,48 +487,18 @@ impl<'js> Request<'js> {
             )?,
         )?;
 
-        if (method == "GET" || method == "HEAD")
-            && (body.as_ref().is_some_and(Self::is_truthy) || existing_has_body && body.is_none())
-        {
+        let body_override = body.is_some();
+        if (method == "GET" || method == "HEAD") && (body_override || source_has_body) {
             return Err(Exception::throw_type(
                 &ctx,
                 "Body not allowed for GET or HEAD requests",
             ));
         }
 
-        if copied_from_request
-            && body.is_none()
-            && let Some(object) = input.as_object()
-            && let Some(existing) = Class::<Request>::from_object(object)
-        {
-            let stream = existing.borrow().body_stream.clone();
-            if let Some(stream) = stream {
-                if crate::body::stream_is_disturbed(&stream) {
-                    return Err(Exception::throw_type(
-                        &ctx,
-                        "ReadableStream is locked or disturbed",
-                    ));
-                }
-                let (left, right) = tee_stream(&ctx, stream)?;
-                let mut existing = existing.borrow_mut();
-                existing.body_used = true;
-                existing.body_stream = Some(left);
-                copied_stream = Some(right);
-                body = None;
-            } else if existing_has_body {
-                let mut existing = existing.borrow_mut();
-                existing.body_used = true;
-                body = existing.body.clone();
-            }
-        }
-
-        let mut body_stream = copied_stream;
-        if let Some(value) = body.take()
-            && !value.is_null()
-            && !value.is_undefined()
-        {
-            if is_readable_stream(&ctx, &value)? {
-                if stream_is_locked(&value) || crate::body::stream_is_disturbed(&value) {
+        let mut body_stream = None;
+        if let Some(value) = body.take() {
+            if is_readable_stream(&ctx, &value) {
+                if stream_is_locked(&value) || super::body::stream_is_disturbed(&value) {
                     return Err(Exception::throw_type(
                         &ctx,
                         "ReadableStream is locked or disturbed",
@@ -518,6 +527,31 @@ impl<'js> Request<'js> {
                 body = Some(apply_body_types(&ctx, &headers, value)?);
             }
         }
+        let follow_source = signal;
+        let signal = Self::following_signal(&ctx, follow_source.clone())?;
+
+        if source_has_body && let Some(existing) = source_request {
+            if !body_override {
+                let (source_body, source_stream) = {
+                    let existing = existing.borrow();
+                    (existing.body.clone(), existing.body_stream.clone())
+                };
+                if let Some(stream) = source_stream {
+                    if stream_is_locked(&stream) || super::body::stream_is_disturbed(&stream) {
+                        return Err(Exception::throw_type(
+                            &ctx,
+                            "ReadableStream is locked or disturbed",
+                        ));
+                    }
+                    let (_unused, copied) = tee_stream(&ctx, stream)?;
+                    body_stream = Some(copied);
+                    body = None;
+                } else {
+                    body = source_body;
+                }
+            }
+            existing.borrow_mut().body_used = true;
+        }
 
         Ok(Self {
             url,
@@ -534,8 +568,8 @@ impl<'js> Request<'js> {
             keepalive,
             is_reload_navigation: false,
             is_history_navigation: false,
-            follow_source: signal.clone(),
-            signal: Self::following_signal(&ctx, signal)?,
+            signal,
+            follow_source,
             headers,
             body,
             body_stream,
@@ -555,30 +589,13 @@ impl<'js> Request<'js> {
         if body.is_null() || body.is_undefined() {
             return Ok(Value::new_null(ctx));
         }
-        if is_readable_stream(&ctx, &body)? {
-            request.body_stream = Some(body.clone());
-            return Ok(body);
-        }
-        if let Some(string) = body.as_string() {
-            let stream = bytes_to_stream(&ctx, string.to_string()?.as_bytes())?;
-            request.body_stream = Some(stream.clone());
-            return Ok(stream);
-        }
-        if let Ok(buffer) = ArrayBuffer::from_js(&ctx, body.clone()) {
-            let bytes = buffer.as_bytes().unwrap_or(&[]).to_vec();
-            let stream = bytes_to_stream(&ctx, &bytes)?;
-            request.body_stream = Some(stream.clone());
-            return Ok(stream);
-        }
-        if let Some(object) = body.as_object()
-            && let Some(blob) = Class::<den_stdlib_whatwg::blob::Blob>::from_object(object)
-        {
-            let stream = bytes_to_stream(&ctx, blob.borrow().bytes())?;
-            request.body_stream = Some(stream.clone());
-            return Ok(stream);
-        }
-        Ok(Value::new_null(ctx))
+        let stream = value_as_body_stream(&ctx, body)?;
+        request.body_stream = Some(stream.clone());
+        Ok(stream)
     }
+
+    #[qjs(get, enumerable, rename = "bodyUsed")]
+    pub fn body_used(&self) -> bool { self.is_body_used() }
 
     pub fn array_buffer(
         this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>,
@@ -594,30 +611,48 @@ impl<'js> Request<'js> {
 
     pub fn text(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         Self::consume_promise(this.0, ctx, |bytes, _ctx| {
-            Ok(crate::body::utf8_text(&bytes))
+            Ok(super::body::utf8_text(&bytes))
         })
     }
 
     pub fn json(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         Self::consume_promise(this.0, ctx, |bytes, ctx| {
-            crate::body::parse_json_js(&ctx, &bytes)
+            super::body::parse_json_js(&ctx, &bytes)
         })
     }
 
     pub fn text_stream(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
         let mut request = this.0.borrow_mut();
-        if request.body_used {
+        if request.body.is_none() && request.body_stream.is_none() {
+            return super::body::text_to_stream(&ctx, "");
+        }
+        if request.is_body_used() || request.body_stream.as_ref().is_some_and(stream_is_locked) {
             return Err(Exception::throw_type(&ctx, "Already read"));
         }
-        request.body_used = true;
-        let taken = request.body.take().or_else(|| request.body_stream.take());
-        drop(request);
-        if let Some(value) = taken {
-            if let Some(string) = value.as_string() {
-                return crate::body::text_to_stream(&ctx, &string.to_string()?);
+        let stream = match request.body_stream.clone() {
+            Some(stream) => stream,
+            None => {
+                value_as_body_stream(
+                    &ctx,
+                    request
+                        .body
+                        .clone()
+                        .ok_or_else(|| Exception::throw_type(&ctx, "Body is unavailable"))?,
+                )?
             }
+        };
+        if stream_is_locked(&stream) || super::body::stream_is_disturbed(&stream) {
+            return Err(Exception::throw_type(&ctx, "Already read"));
         }
-        crate::body::text_to_stream(&ctx, "")
+        if let Some(object) = stream.as_object()
+            && let Some(readable) = Class::<crate::streams::ReadableStream>::from_object(object)
+        {
+            crate::streams::ReadableStream::lock_for_consume(&readable, &ctx)?;
+        }
+        request.body_used = true;
+        request.body_stream = Some(stream.clone());
+        drop(request);
+        super::body::text_stream_from_byte_stream(&ctx, stream)
     }
 
     pub fn blob(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
@@ -631,7 +666,7 @@ impl<'js> Request<'js> {
             .cloned()
             .unwrap_or_default();
         Self::consume_promise(this.0, ctx, move |bytes, ctx| {
-            crate::body::blob_from_bytes(&ctx, bytes, &mime.to_ascii_lowercase())
+            super::body::blob_from_bytes(&ctx, bytes, &mime.to_ascii_lowercase())
         })
     }
 
@@ -665,9 +700,9 @@ impl<'js> Request<'js> {
             let ctor: rquickjs::function::Constructor = ctx
                 .globals()
                 .get("FormData")
-                .map_err(|_| Exception::throw_type(&ctx, "FormData is not defined"))?;
+                .map_err(|_error| Exception::throw_type(&ctx, "FormData is not defined"))?;
             let form: Object = ctor.construct(())?;
-            crate::FormBody.parse_into(&ctx, &form, &bytes, &mime)?;
+            super::FormBody::parse_into(&ctx, &form, &bytes, &mime)?;
             Ok(form.into_value())
         })
     }
@@ -675,7 +710,7 @@ impl<'js> Request<'js> {
     #[qjs(rename = "clone")]
     pub fn clone_request(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Self> {
         let mut request = this.0.borrow_mut();
-        if request.body_used {
+        if request.is_body_used() {
             return Err(Exception::throw_type(&ctx, "Already read"));
         }
         let (body, body_stream) = if let Some(stream) = &request.body_stream {
@@ -691,6 +726,8 @@ impl<'js> Request<'js> {
             } else {
                 request.follow_source.clone()
             };
+        let signal = Self::following_signal(&ctx, follow_source.clone())?;
+        let guard = request.headers.borrow().guard();
         Ok(Self {
             url: request.url.clone(),
             method: request.method.clone(),
@@ -706,11 +743,15 @@ impl<'js> Request<'js> {
             keepalive: request.keepalive,
             is_reload_navigation: request.is_reload_navigation,
             is_history_navigation: request.is_history_navigation,
-            follow_source: follow_source.clone(),
-            signal: Self::following_signal(&ctx, follow_source)?,
+            signal,
+            follow_source,
             headers: Class::instance(
                 ctx.clone(),
-                Headers::new(ctx.clone(), Opt(Some(request.headers.clone().into_value())))?,
+                Headers::from_init(
+                    ctx.clone(),
+                    Some(request.headers.clone().into_value()),
+                    guard,
+                )?,
             )?,
             body,
             body_stream,
@@ -719,7 +760,7 @@ impl<'js> Request<'js> {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Request" }
+    pub const fn to_string_tag() -> &'static str { "Request" }
 }
 
 impl Drop for Request<'_> {

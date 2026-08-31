@@ -8,7 +8,8 @@ const reported = await new Promise((resolve) => {
       event.message,
       event.filename.endsWith("throw.js"),
       event.lineno,
-      event.error,
+      event.error instanceof TypeError,
+      event.error.stack.includes("throw.js:3:"),
     ].join("|"));
   };
 });

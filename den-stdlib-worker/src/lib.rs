@@ -8,8 +8,11 @@
 
 pub mod abort;
 pub mod broadcast;
+#[path = "host.rs"] mod embedder;
 pub mod events;
-pub mod host;
+pub mod host {
+    pub use crate::embedder::*;
+}
 pub mod message;
 pub mod navigator;
 pub mod performance;
@@ -19,7 +22,7 @@ pub mod transport;
 pub mod worker;
 
 pub use den_stdlib_core::exceptions::report_exception;
-pub use host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost, WorkerHostError};
+pub use embedder::{BaseUrl, HostHandle, WorkerEngine, WorkerHost, WorkerHostError};
 pub use message::{Message, throw_data_clone};
 pub use port::NativePort;
 pub use transport::{Envelope, PortHandle};
@@ -135,7 +138,7 @@ pub mod worker_module {
             "performance",
             crate::performance::Performance::instance(ctx)?,
         )?;
-        crate::navigator::install_navigator(ctx, &api)?;
+        crate::navigator::install(ctx, &api)?;
 
         let globals = ctx.globals();
         for name in crate::API {

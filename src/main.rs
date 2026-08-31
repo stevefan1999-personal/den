@@ -1,7 +1,6 @@
 use std::{env, ffi::OsString, path::PathBuf};
 
-use app::{App, print_js_error};
-use den_core::engine::EngineError;
+use app::App;
 #[cfg(not(all(feature = "tokio-console", tokio_unstable)))]
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
@@ -117,12 +116,7 @@ async fn main() -> color_eyre::eyre::Result<()> {
     if let Some(x) = cli.file.clone()
         && let Err(error) = app.engine.run_file(x).await
     {
-        match error {
-            EngineError::Rquickjs(_) => {
-                app.engine.context.with(|ctx| print_js_error(&ctx)).await;
-            }
-            error => eprintln!("{error}"),
-        }
+        eprintln!("{error}");
         // A failed entry file is fatal: Node and Deno exit here and never fall
         // through into the REPL.
         std::process::exit(1)

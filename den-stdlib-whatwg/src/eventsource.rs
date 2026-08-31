@@ -3,7 +3,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use rquickjs::{
-    Class, Ctx, FromJs, Function, JsLifetime, Object, Promise, Result, Value,
+    Class, Ctx, FromJs as _, Function, JsLifetime, Object, Promise, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
@@ -108,13 +108,13 @@ impl EventSource {
     }
 
     #[qjs(static, get, rename = "CONNECTING")]
-    pub fn connecting_const() -> i32 { CONNECTING }
+    pub const fn connecting_const() -> i32 { CONNECTING }
 
     #[qjs(static, get, rename = "OPEN")]
-    pub fn open_const() -> i32 { OPEN }
+    pub const fn open_const() -> i32 { OPEN }
 
     #[qjs(static, get, rename = "CLOSED")]
-    pub fn closed_const() -> i32 { CLOSED }
+    pub const fn closed_const() -> i32 { CLOSED }
 
     #[qjs(get)]
     pub fn ready_state(&self) -> i32 {
@@ -132,11 +132,11 @@ impl EventSource {
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "EventSource" }
+    pub const fn to_string_tag() -> &'static str { "EventSource" }
 }
 
 impl EventSource {
-    fn ready_state_slot_closed(&self) { let _ = self; }
+    const fn ready_state_slot_closed(&self) { let _ = self; }
 
     fn start<'js>(this: Class<'js, Self>, ctx: Ctx<'js>) {
         if this.borrow().closed.get() {
@@ -175,12 +175,9 @@ impl EventSource {
         ctx.spawn({
             let ctx = ctx.clone();
             async move {
-                let response = match promise.into_future::<Object>().await {
-                    Ok(response) => response,
-                    Err(_) => {
-                        EventSource::reconnect(this, ctx);
-                        return;
-                    }
+                let Ok(response) = promise.into_future::<Object>().await else {
+                    EventSource::reconnect(this, ctx);
+                    return;
                 };
                 if this.borrow().closed.get() {
                     if let Ok(cancel) = response.get::<_, Function>("_cancelBody") {
@@ -203,20 +200,16 @@ impl EventSource {
                     let response_url: String =
                         response.get("url").unwrap_or_else(|_| es.url.clone());
                     es.origin = Url::parse(&response_url)
-                        .map(|url| url.origin().ascii_serialization())
-                        .unwrap_or_else(|_| es.url.clone());
+                        .map_or_else(|_| es.url.clone(), |url| url.origin().ascii_serialization());
                 }
                 let _ = EventSource::dispatch(
                     &this,
                     &ctx,
                     Host::event(&ctx, "open").unwrap_or_else(|_| Value::new_undefined(ctx.clone())),
                 );
-                let text = match EventSource::response_text(&ctx, &response).await {
-                    Ok(text) => text,
-                    Err(_) => {
-                        EventSource::reconnect(this, ctx);
-                        return;
-                    }
+                let Ok(text) = EventSource::response_text(&ctx, &response).await else {
+                    EventSource::reconnect(this, ctx);
+                    return;
                 };
                 if this.borrow().closed.get() || text.is_empty() {
                     return;
@@ -311,10 +304,11 @@ impl EventSource {
         let bytes = buffer.as_bytes();
         let mut pos = 0;
         let mut line_start = 0;
-        while pos < len {
-            let c = bytes[pos];
+        while let Some(&c) = bytes.get(pos) {
             if c == 0x0a {
-                let line = &buffer[line_start..pos];
+                let Some(line) = buffer.get(line_start..pos) else {
+                    break;
+                };
                 Self::process_line(this, ctx, line);
                 pos += 1;
                 line_start = pos;
@@ -322,15 +316,21 @@ impl EventSource {
                 if pos == len - 1 {
                     break;
                 }
-                let line = &buffer[line_start..pos];
+                let Some(line) = buffer.get(line_start..pos) else {
+                    break;
+                };
                 Self::process_line(this, ctx, line);
-                pos += if bytes[pos + 1] == 0x0a { 2 } else { 1 };
+                pos += if bytes.get(pos + 1) == Some(&0x0a) {
+                    2
+                } else {
+                    1
+                };
                 line_start = pos;
             } else {
                 pos += 1;
             }
         }
-        this.borrow_mut().buffer = buffer[line_start..].to_string();
+        this.borrow_mut().buffer = buffer.get(line_start..).unwrap_or_default().to_owned();
     }
 
     fn process_line<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>, line: &str) {
@@ -364,11 +364,9 @@ impl EventSource {
                     es.last_event_id_buf = value.to_string();
                 }
             }
-            "retry" => {
-                if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-                    if let Ok(ms) = value.parse() {
-                        es.reconnect_ms = ms;
-                    }
+            "retry" if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+                if let Ok(ms) = value.parse() {
+                    es.reconnect_ms = ms;
                 }
             }
             _ => {}

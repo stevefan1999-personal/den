@@ -5,16 +5,16 @@ use std::{
     sync::Arc,
 };
 
-use den_stdlib_whatwg::streams::ReadableStream;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt as _};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs, JsLifetime, Object,
     Promise, Result, TypedArray, Value as JsValue,
     class::Trace,
     function::{Constructor, FuncArg, Opt as JsOpt, Rest, This},
 };
 use tokio::sync::Notify;
-use typed_builder::TypedBuilder;
+
+use crate::streams::ReadableStream;
 
 mod body;
 mod data_url;
@@ -24,7 +24,13 @@ mod request;
 mod upload;
 
 pub use headers::Headers;
-pub use request::Request;
+pub use request::{Request, ServerRequest};
+
+pub struct BufferedResponse {
+    pub status:  u16,
+    pub headers: Vec<(String, String)>,
+    pub body:    Vec<u8>,
+}
 
 type BodyStream = Pin<Box<dyn Stream<Item = std::result::Result<Vec<u8>, String>> + Send>>;
 
@@ -37,59 +43,114 @@ enum ResponseBody {
     Taken,
 }
 
-#[derive(Trace, JsLifetime, Clone, TypedBuilder)]
-#[builder(
-    builder_method(vis = "pub(crate)"),
-    builder_type(vis = "pub(crate)"),
-    build_method(vis = "pub(crate)")
-)]
+#[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class(rename = "Response")]
 pub struct Response<'js> {
     #[qjs(get, enumerable)]
     pub(crate) status:          u16,
     #[qjs(get, enumerable)]
-    #[builder(default)]
     pub(crate) redirected:      bool,
     #[qjs(get, enumerable, rename = "statusText", skip_trace)]
-    #[builder(default, setter(into))]
     pub(crate) status_text:     String,
     #[qjs(get, enumerable, skip_trace)]
-    #[builder(default, setter(into))]
     pub(crate) url:             String,
     #[qjs(get, enumerable, rename = "type", skip_trace)]
-    #[builder(default_code = r#""default".to_owned()"#, setter(into))]
     pub(crate) kind:            String,
     #[qjs(get, enumerable)]
     pub(crate) headers:         Class<'js, Headers>,
-    #[builder(default)]
     body_stream:                Option<JsValue<'js>>,
     #[qjs(skip_trace)]
     inner:                      Rc<RefCell<ResponseBody>>,
     #[qjs(skip_trace)]
-    #[builder(default)]
     consume_started:            Cell<bool>,
     pub(crate) abort_signal:    JsValue<'js>,
     #[qjs(skip_trace)]
-    #[builder(default)]
     pub(crate) abort_notify:    Option<Arc<Notify>>,
     /// `Content-Length` of a body that is being streamed rather than buffered.
     /// The buffered path compares lengths once; a streamed one has to count as
     /// it goes, or a truncated response looks like a clean end of stream.
     #[qjs(skip_trace)]
-    #[builder(default)]
     pub(crate) expected_length: Option<u64>,
     #[qjs(skip_trace)]
-    #[builder(default)]
     seen_length:                Cell<u64>,
     /// Cache entries waiting on this body. Filled as the body is read and
     /// written only when it ends cleanly, so nothing is buffered on behalf of
     /// a response nobody consumes.
     #[qjs(skip_trace)]
-    #[builder(default)]
     pub(crate) cache_fill:      Option<Rc<fetch_op::CacheFill>>,
 }
 
 impl<'js> Response<'js> {
+    fn from_body(
+        status: u16, headers: Class<'js, Headers>, body: ResponseBody, abort_signal: JsValue<'js>,
+    ) -> Self {
+        Self {
+            status,
+            redirected: false,
+            status_text: String::new(),
+            url: String::new(),
+            kind: "default".to_owned(),
+            headers,
+            body_stream: None,
+            inner: Rc::new(RefCell::new(body)),
+            consume_started: Cell::new(false),
+            abort_signal,
+            abort_notify: None,
+            expected_length: None,
+            seen_length: Cell::new(0),
+            cache_fill: None,
+        }
+    }
+
+    pub async fn into_server(
+        response: &Class<'js, Self>, ctx: &Ctx<'js>, max_bytes: usize,
+    ) -> Result<BufferedResponse> {
+        Self::begin_consume(response, ctx)?;
+        {
+            let response = response.borrow();
+            if response.body_stream.is_some() {
+                return Err(Exception::throw_type(
+                    ctx,
+                    "streaming server responses are not implemented",
+                ));
+            }
+            match &*response.inner.borrow() {
+                ResponseBody::Bytes(bytes) if bytes.len() > max_bytes => {
+                    return Err(Exception::throw_range(
+                        ctx,
+                        "server response body is too large",
+                    ));
+                }
+                ResponseBody::Live(_) | ResponseBody::Stream(_) => {
+                    return Err(Exception::throw_type(
+                        ctx,
+                        "streaming server responses are not implemented",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let (status, mut headers) = {
+            let response = response.borrow();
+            let headers = response.headers.borrow();
+            let mut pairs = headers.pairs();
+            pairs.extend(
+                headers
+                    .cookies
+                    .iter()
+                    .cloned()
+                    .map(|value| ("set-cookie".to_string(), value)),
+            );
+            (response.status, pairs)
+        };
+        let body = consume_response(response, ctx).await?;
+        Ok(BufferedResponse {
+            status,
+            headers: core::mem::take(&mut headers),
+            body,
+        })
+    }
+
     pub(crate) fn from_reqwest(
         ctx: &Ctx<'js>, response: reqwest::Response, kind: &str,
     ) -> Result<Self> {
@@ -98,42 +159,40 @@ impl<'js> Response<'js> {
             .headers()
             .iter()
             .map(|(name, value)| {
-                let text = value.to_str().map(ToString::to_string).unwrap_or_else(|_| {
-                    value.as_bytes().iter().map(|byte| *byte as char).collect()
-                });
+                let text = value.to_str().map_or_else(
+                    |_| value.as_bytes().iter().map(|byte| *byte as char).collect(),
+                    ToString::to_string,
+                );
                 (name.as_str().to_string(), text)
             })
             .collect::<Vec<_>>();
         let mut header_obj = Headers::from_pairs(headers);
         header_obj.set_guard(headers::Guard::Immutable);
-        Ok(Self::builder()
-            .status(status.as_u16())
-            .status_text(status.canonical_reason().unwrap_or(""))
-            .url(response.url().to_string())
-            .kind(kind)
-            .headers(Class::instance(ctx.clone(), header_obj)?)
-            .inner(Rc::new(RefCell::new(ResponseBody::Live(response))))
-            .abort_signal(JsValue::new_null(ctx.clone()))
-            .build())
+        let status_text = status.canonical_reason().unwrap_or("").to_owned();
+        let url = response.url().to_string();
+        let headers = Class::instance(ctx.clone(), header_obj)?;
+        let mut result = Self::from_body(
+            status.as_u16(),
+            headers,
+            ResponseBody::Live(response),
+            JsValue::new_null(ctx.clone()),
+        );
+        result.status_text = status_text;
+        result.url = url;
+        result.kind = kind.to_owned();
+        Ok(result)
     }
 
     pub(crate) fn from_bytes(
         ctx: &Ctx<'js>, status: u16, status_text: String, url: String, kind: &str,
         headers: Class<'js, Headers>, body: Option<Vec<u8>>,
-    ) -> Result<Self> {
-        let inner = match body {
-            None => ResponseBody::None,
-            Some(bytes) => ResponseBody::Bytes(bytes),
-        };
-        Ok(Self::builder()
-            .status(status)
-            .status_text(status_text)
-            .url(url)
-            .kind(kind)
-            .headers(headers)
-            .inner(Rc::new(RefCell::new(inner)))
-            .abort_signal(JsValue::new_null(ctx.clone()))
-            .build())
+    ) -> Self {
+        let inner = body.map_or(ResponseBody::None, ResponseBody::Bytes);
+        let mut response = Self::from_body(status, headers, inner, JsValue::new_null(ctx.clone()));
+        response.status_text = status_text;
+        response.url = url;
+        response.kind = kind.to_owned();
+        response
     }
 
     fn content_type(&self) -> String {
@@ -159,7 +218,7 @@ impl<'js> Response<'js> {
         let stream = this.body_stream.clone();
         drop(this);
         if let Some(value) = stream
-            && body::is_readable_stream(ctx, &value)?
+            && body::is_readable_stream(ctx, &value)
         {
             if body::stream_is_locked(&value) || Self::stream_disturbed(&value) {
                 return Err(Exception::throw_type(ctx, "ReadableStream is locked"));
@@ -195,22 +254,16 @@ impl<'js> Response<'js> {
         let (promise, resolve, reject) = ctx.promise()?;
         let ctx_err = ctx.clone();
         ctx.spawn(async move {
-            match consume_response(&response, &ctx_err).await {
-                Ok(bytes) => {
-                    match map(bytes, ctx_err.clone()) {
-                        Ok(value) => {
-                            let _ = resolve.call::<_, ()>((value,));
-                        }
-                        Err(_) => {
-                            let thrown = ctx_err.catch();
-                            let _ = reject.call::<_, ()>((thrown,));
-                        }
-                    }
-                }
-                Err(_) => {
+            if let Ok(bytes) = consume_response(&response, &ctx_err).await {
+                if let Ok(value) = map(bytes, ctx_err.clone()) {
+                    let _ = resolve.call::<_, ()>((value,));
+                } else {
                     let thrown = ctx_err.catch();
                     let _ = reject.call::<_, ()>((thrown,));
                 }
+            } else {
+                let thrown = ctx_err.catch();
+                let _ = reject.call::<_, ()>((thrown,));
             }
             if let Ok(mut response) = response.try_borrow_mut() {
                 response.body_stream = None;
@@ -315,16 +368,17 @@ impl<'js> Response<'js> {
     pub(crate) fn from_failed(
         ctx: &Ctx<'js>, status: u16, status_text: String, url: String, kind: &str,
         headers: Class<'js, Headers>, message: String,
-    ) -> Result<Self> {
-        Ok(Self::builder()
-            .status(status)
-            .status_text(status_text)
-            .url(url)
-            .kind(kind)
-            .headers(headers)
-            .inner(Rc::new(RefCell::new(ResponseBody::Failed(message))))
-            .abort_signal(JsValue::new_null(ctx.clone()))
-            .build())
+    ) -> Self {
+        let mut response = Self::from_body(
+            status,
+            headers,
+            ResponseBody::Failed(message),
+            JsValue::new_null(ctx.clone()),
+        );
+        response.status_text = status_text;
+        response.url = url;
+        response.kind = kind.to_owned();
+        response
     }
 
     pub(crate) fn abort_fetch_body(&self, _ctx: &Ctx<'js>, reason: JsValue<'js>) {
@@ -388,7 +442,7 @@ async fn consume_response<'js>(
 ) -> Result<Vec<u8>> {
     let stream = response.borrow().body_stream.clone();
     if let Some(value) = stream {
-        if body::is_readable_stream(ctx, &value)? {
+        if body::is_readable_stream(ctx, &value) {
             // Do not poison `inner`: it is the feed behind this stream, and a
             // stream over a live HTTP body still has to pull from it. Reading
             // the stream is what marks the body used.
@@ -463,23 +517,23 @@ impl<'js> Response<'js> {
         init: rquickjs::function::Opt<JsValue<'js>>,
     ) -> Result<Self> {
         let init = body::optional_object(&ctx, init)?;
-        let mut status = 200u16;
+        let mut status = 200_u16;
         let mut status_text = String::new();
         let headers_init = match init.as_ref() {
             Some(object) => {
-                if let Some(value) = object.get::<_, JsValue>("status").ok() {
-                    if !value.is_undefined() {
-                        let number = value
-                            .as_number()
-                            .unwrap_or(value.as_int().unwrap_or(0) as f64);
-                        status = body::validate_status(&ctx, number as i32)?;
-                    }
+                if let Ok(value) = object.get::<_, JsValue>("status")
+                    && !value.is_undefined()
+                {
+                    let number = value
+                        .as_number()
+                        .unwrap_or_else(|| value.as_int().unwrap_or(0) as f64);
+                    status = body::validate_status(&ctx, number as i32)?;
                 }
-                if let Some(value) = object.get::<_, JsValue>("statusText").ok() {
-                    if !value.is_undefined() {
-                        status_text = den_util::coerce_string(&ctx, value)?;
-                        body::validate_status_text(&ctx, &status_text)?;
-                    }
+                if let Ok(value) = object.get::<_, JsValue>("statusText")
+                    && !value.is_undefined()
+                {
+                    status_text = den_util::coerce_string(&ctx, value)?;
+                    body::validate_status_text(&ctx, &status_text)?;
                 }
                 let headers: JsValue = object.get("headers")?;
                 if headers.is_undefined() || headers.is_null() {
@@ -502,7 +556,7 @@ impl<'js> Response<'js> {
                     "Response with null body status cannot have a body",
                 ));
             }
-            if body::is_readable_stream(&ctx, value)?
+            if body::is_readable_stream(&ctx, value)
                 && (body::stream_is_locked(value) || body::stream_is_disturbed(value))
             {
                 return Err(Exception::throw_type(
@@ -513,15 +567,14 @@ impl<'js> Response<'js> {
         }
         let (inner, body_stream) = match body {
             None => (ResponseBody::None, None),
-            Some(ref value) if value.is_null() => (ResponseBody::None, None),
+            Some(value) if value.is_null() => (ResponseBody::None, None),
             Some(value) => {
-                if body::is_readable_stream(&ctx, &value)? {
+                if body::is_readable_stream(&ctx, &value) {
                     (ResponseBody::Bytes(Vec::new()), Some(value))
                 } else {
                     let extracted = body::apply_body_types(&ctx, &headers, value)?;
                     if let Some(object) = extracted.as_object()
-                        && let Some(blob) =
-                            Class::<den_stdlib_whatwg::blob::Blob>::from_object(object)
+                        && let Some(blob) = Class::<crate::blob::Blob>::from_object(object)
                     {
                         (ResponseBody::Bytes(blob.borrow().bytes().to_vec()), None)
                     } else if let Some(string) = extracted.as_string() {
@@ -542,26 +595,23 @@ impl<'js> Response<'js> {
                 }
             }
         };
-        Ok(Self::builder()
-            .status(status)
-            .status_text(status_text)
-            .headers(headers)
-            .body_stream(body_stream)
-            .inner(Rc::new(RefCell::new(inner)))
-            .abort_signal(JsValue::new_null(ctx.clone()))
-            .build())
+        let mut response = Self::from_body(status, headers, inner, JsValue::new_null(ctx.clone()));
+        response.status_text = status_text;
+        response.body_stream = body_stream;
+        Ok(response)
     }
 
     #[qjs(static)]
     pub fn error(ctx: Ctx<'js>) -> Result<Self> {
         let headers = Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
-        Ok(Self::builder()
-            .status(0)
-            .kind("error")
-            .headers(headers)
-            .inner(Rc::new(RefCell::new(ResponseBody::None)))
-            .abort_signal(JsValue::new_null(ctx.clone()))
-            .build())
+        let mut response = Self::from_body(
+            0,
+            headers,
+            ResponseBody::None,
+            JsValue::new_null(ctx.clone()),
+        );
+        response.kind = "error".to_owned();
+        Ok(response)
     }
 
     #[qjs(static)]
@@ -584,12 +634,12 @@ impl<'js> Response<'js> {
             .map
             .insert("location".to_string(), parsed.to_string());
         let headers = Class::instance(ctx.clone(), headers)?;
-        Ok(Self::builder()
-            .status(status as u16)
-            .headers(headers)
-            .inner(Rc::new(RefCell::new(ResponseBody::None)))
-            .abort_signal(JsValue::new_null(ctx.clone()))
-            .build())
+        Ok(Self::from_body(
+            status as u16,
+            headers,
+            ResponseBody::None,
+            JsValue::new_null(ctx.clone()),
+        ))
     }
 
     #[qjs(static, rename = "json")]
@@ -669,9 +719,9 @@ impl<'js> Response<'js> {
             let ctor: Constructor = ctx
                 .globals()
                 .get("FormData")
-                .map_err(|_| Exception::throw_type(&ctx, "FormData is not defined"))?;
+                .map_err(|_error| Exception::throw_type(&ctx, "FormData is not defined"))?;
             let form: Object = ctor.construct(())?;
-            FormBody.parse_into(&ctx, &form, &bytes, &content_type)?;
+            FormBody::parse_into(&ctx, &form, &bytes, &content_type)?;
             Ok(form.into_value())
         })
     }
@@ -696,6 +746,18 @@ impl<'js> Response<'js> {
         if !self.has_body() {
             return body::text_to_stream(&ctx, "");
         }
+        if let Some(stream) = self.body_stream.clone() {
+            if body::stream_is_locked(&stream) || body::stream_is_disturbed(&stream) {
+                return Err(Exception::throw_type(&ctx, "Already read"));
+            }
+            if let Some(object) = stream.as_object()
+                && let Some(readable) = Class::<ReadableStream>::from_object(object)
+            {
+                ReadableStream::lock_for_consume(&readable, &ctx)?;
+            }
+            self.consume_started.set(true);
+            return body::text_stream_from_byte_stream(&ctx, stream);
+        }
         // Decode before marking used: `mark_used` borrows `inner` mutably, so
         // holding the read borrow across it aborts the process.
         let buffered = match &*self.inner.borrow() {
@@ -708,7 +770,7 @@ impl<'js> Response<'js> {
             return body::text_to_stream(&ctx, &text);
         }
         let host = Class::instance(ctx.clone(), self.clone())?.into_value();
-        self.mark_used();
+        self.consume_started.set(true);
         body::text_chunks_to_stream(&ctx, host)
     }
 
@@ -721,7 +783,9 @@ impl<'js> Response<'js> {
             return Ok(tagged.into_value());
         }
         match self.next_chunk(&ctx).await {
-            Ok(Some(bytes)) => TypedArray::<u8>::new_copy(ctx, bytes).map(|view| view.into_value()),
+            Ok(Some(bytes)) => {
+                TypedArray::<u8>::new_copy(ctx, bytes).map(rquickjs::TypedArray::into_value)
+            }
             Ok(None) => Ok(JsValue::new_null(ctx)),
             Err(_) => {
                 let thrown = ctx.catch();
@@ -734,8 +798,7 @@ impl<'js> Response<'js> {
                 if thrown.as_object().is_some_and(|object| {
                     object
                         .get::<_, String>("name")
-                        .ok()
-                        .is_some_and(|name| name != "TypeError")
+                        .is_ok_and(|name| name != "TypeError")
                 }) {
                     let tagged = Object::new(ctx.clone())?;
                     tagged.set("__denAbort", true)?;
@@ -767,10 +830,10 @@ impl<'js> Response<'js> {
         // `body_stream` to release it.
         self.has_body()
             && (self.consume_started.get()
-                || match &self.body_stream {
-                    Some(stream) => Self::stream_disturbed(stream),
-                    None => matches!(*self.inner.borrow(), ResponseBody::Taken),
-                })
+                || self.body_stream.as_ref().map_or_else(
+                    || matches!(*self.inner.borrow(), ResponseBody::Taken),
+                    Self::stream_disturbed,
+                ))
     }
 
     #[qjs(enumerable, get)]
@@ -793,7 +856,7 @@ impl<'js> Response<'js> {
             return Ok(JsValue::new_null(ctx));
         }
         if let Some(value) = &self.body_stream {
-            if body::is_readable_stream(&ctx, value)? {
+            if body::is_readable_stream(&ctx, value) {
                 return Ok(value.clone());
             }
             let stream = body::value_as_body_stream(&ctx, value.clone())?;
@@ -844,17 +907,18 @@ impl<'js> Response<'js> {
                         rquickjs::function::Opt(Some(response.headers.clone().into_value())),
                     )?,
                 )?;
-                return Ok(Self::builder()
-                    .status(response.status)
-                    .redirected(response.redirected)
-                    .status_text(response.status_text.clone())
-                    .url(response.url.clone())
-                    .kind(response.kind.clone())
-                    .headers(headers)
-                    .inner(Rc::new(RefCell::new(ResponseBody::Bytes(bytes.clone()))))
-                    .abort_signal(response.abort_signal.clone())
-                    .abort_notify(response.abort_notify.clone())
-                    .build());
+                let mut result = Self::from_body(
+                    response.status,
+                    headers,
+                    ResponseBody::Bytes(bytes.clone()),
+                    response.abort_signal.clone(),
+                );
+                result.redirected = response.redirected;
+                result.status_text = response.status_text.clone();
+                result.url = response.url.clone();
+                result.kind = response.kind.clone();
+                result.abort_notify = response.abort_notify.clone();
+                return Ok(result);
             }
             if !matches!(*response.inner.borrow(), ResponseBody::None) {
                 let host = Class::instance(ctx.clone(), response.clone())?.into_value();
@@ -871,18 +935,19 @@ impl<'js> Response<'js> {
                     rquickjs::function::Opt(Some(response.headers.clone().into_value())),
                 )?,
             )?;
-            return Ok(Self::builder()
-                .status(response.status)
-                .redirected(response.redirected)
-                .status_text(response.status_text.clone())
-                .url(response.url.clone())
-                .kind(response.kind.clone())
-                .headers(headers)
-                .body_stream(Some(right))
-                .inner(Rc::new(RefCell::new(ResponseBody::Bytes(Vec::new()))))
-                .abort_signal(response.abort_signal.clone())
-                .abort_notify(response.abort_notify.clone())
-                .build());
+            let mut result = Self::from_body(
+                response.status,
+                headers,
+                ResponseBody::Bytes(Vec::new()),
+                response.abort_signal.clone(),
+            );
+            result.redirected = response.redirected;
+            result.status_text = response.status_text.clone();
+            result.url = response.url.clone();
+            result.kind = response.kind.clone();
+            result.body_stream = Some(right);
+            result.abort_notify = response.abort_notify.clone();
+            return Ok(result);
         }
         let cloned_inner = match &*response.inner.borrow() {
             ResponseBody::None => ResponseBody::None,
@@ -904,28 +969,29 @@ impl<'js> Response<'js> {
                 rquickjs::function::Opt(Some(response.headers.clone().into_value())),
             )?,
         )?;
-        Ok(Self::builder()
-            .status(response.status)
-            .redirected(response.redirected)
-            .status_text(response.status_text.clone())
-            .url(response.url.clone())
-            .kind(response.kind.clone())
-            .headers(headers)
-            .inner(Rc::new(RefCell::new(cloned_inner)))
-            .abort_signal(response.abort_signal.clone())
-            .abort_notify(response.abort_notify.clone())
-            .build())
+        let mut result = Self::from_body(
+            response.status,
+            headers,
+            cloned_inner,
+            response.abort_signal.clone(),
+        );
+        result.redirected = response.redirected;
+        result.status_text = response.status_text.clone();
+        result.url = response.url.clone();
+        result.kind = response.kind.clone();
+        result.abort_notify = response.abort_notify.clone();
+        Ok(result)
     }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "Response" }
+    pub const fn to_string_tag() -> &'static str { "Response" }
 }
 
 struct FormBody;
 
 impl FormBody {
     fn parse_into<'js>(
-        &self, ctx: &Ctx<'js>, form: &Object<'js>, bytes: &[u8], content_type: &str,
+        ctx: &Ctx<'js>, form: &Object<'js>, bytes: &[u8], content_type: &str,
     ) -> Result<()> {
         if bytes.is_empty()
             && content_type
@@ -938,7 +1004,7 @@ impl FormBody {
             && content_type
                 .get(..19)
                 .is_some_and(|head| head.eq_ignore_ascii_case("multipart/form-data"))
-            && self.boundary(content_type).is_some()
+            && Self::boundary(content_type).is_some()
         {
             return Ok(());
         }
@@ -946,19 +1012,19 @@ impl FormBody {
             .get(..19)
             .is_some_and(|head| head.eq_ignore_ascii_case("multipart/form-data"))
         {
-            let Some(boundary) = self.boundary(content_type) else {
+            let Some(boundary) = Self::boundary(content_type) else {
                 return Err(Exception::throw_type(
                     ctx,
                     "Failed to parse body as FormData: missing multipart boundary",
                 ));
             };
-            return self.parse_multipart(ctx, form, bytes, &boundary);
+            return Self::parse_multipart(ctx, form, bytes, &boundary);
         }
         if content_type
             .get(..33)
             .is_some_and(|head| head.eq_ignore_ascii_case("application/x-www-form-urlencoded"))
         {
-            return self.parse_urlencoded(ctx, form, &String::from_utf8_lossy(bytes));
+            return Self::parse_urlencoded(form, &String::from_utf8_lossy(bytes));
         }
         Err(Exception::throw_type(
             ctx,
@@ -966,75 +1032,54 @@ impl FormBody {
         ))
     }
 
-    fn boundary(&self, content_type: &str) -> Option<String> {
+    fn boundary(content_type: &str) -> Option<String> {
         let lower = content_type.to_ascii_lowercase();
         let marker = "boundary=";
         let pos = lower.find(marker)?;
-        let rest = content_type[pos + marker.len()..].trim();
+        let rest = content_type.get(pos + marker.len()..)?.trim();
         if let Some(stripped) = rest.strip_prefix('"') {
             let end = stripped.find('"')?;
-            Some(stripped[..end].to_string())
+            Some(stripped.get(..end)?.to_string())
         } else {
             Some(rest.split(';').next()?.trim().to_string())
         }
     }
 
-    fn parse_urlencoded<'js>(&self, _ctx: &Ctx<'js>, form: &Object<'js>, text: &str) -> Result<()> {
+    fn parse_urlencoded(form: &Object<'_>, text: &str) -> Result<()> {
         let append: Function = form.get("append")?;
         for pair in text.split('&') {
             if pair.is_empty() {
                 continue;
             }
             let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
-            append.call::<_, ()>((This(form.clone()), self.decode(name), self.decode(value)))?;
+            append.call::<_, ()>((This(form.clone()), Self::decode(name), Self::decode(value)))?;
         }
         Ok(())
     }
 
-    fn decode(&self, input: &str) -> String {
-        let bytes = input.as_bytes();
-        let mut out = Vec::with_capacity(bytes.len());
-        let mut offset = 0;
-        while offset < bytes.len() {
-            match bytes[offset] {
-                b'+' => {
-                    out.push(b' ');
-                    offset += 1;
-                }
-                b'%' if offset + 2 < bytes.len() => {
-                    if let Ok(byte) = u8::from_str_radix(&input[offset + 1..offset + 3], 16) {
-                        out.push(byte);
-                        offset += 3;
-                    } else {
-                        out.push(b'%');
-                        offset += 1;
-                    }
-                }
-                byte => {
-                    out.push(byte);
-                    offset += 1;
-                }
-            }
-        }
-        String::from_utf8_lossy(&out).into_owned()
+    fn decode(input: &str) -> String {
+        percent_encoding::percent_decode(input.replace('+', " ").as_bytes())
+            .decode_utf8_lossy()
+            .into_owned()
     }
 
-    fn index_of(&self, haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    fn index_of(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         if needle.is_empty() || from > haystack.len() {
             return None;
         }
-        haystack[from..]
+        haystack
+            .get(from..)?
             .windows(needle.len())
             .position(|window| window == needle)
             .map(|pos| pos + from)
     }
 
     fn parse_multipart<'js>(
-        &self, ctx: &Ctx<'js>, form: &Object<'js>, bytes: &[u8], boundary: &str,
+        ctx: &Ctx<'js>, form: &Object<'js>, bytes: &[u8], boundary: &str,
     ) -> Result<()> {
         let append: Function = form.get("append")?;
         let delimiter = format!("--{boundary}").into_bytes();
-        let Some(mut pos) = self.index_of(bytes, &delimiter, 0) else {
+        let Some(mut pos) = Self::index_of(bytes, &delimiter, 0) else {
             return Err(Exception::throw_type(
                 ctx,
                 "Failed to parse body as FormData: missing multipart boundary",
@@ -1050,18 +1095,22 @@ impl FormBody {
             if bytes.get(pos) == Some(&0x0d) && bytes.get(pos + 1) == Some(&0x0a) {
                 pos += 2;
             }
-            let Some(next) = self.index_of(bytes, &delimiter, pos) else {
+            let Some(next) = Self::index_of(bytes, &delimiter, pos) else {
                 break;
             };
             let mut end = next;
-            if end >= 2 && bytes[end - 2] == 0x0d && bytes[end - 1] == 0x0a {
+            if end >= 2 && bytes.get(end - 2..end) == Some(b"\r\n") {
                 end -= 2;
             }
-            let part = &bytes[pos..end];
-            if let Some(header_end) = self.index_of(part, b"\r\n\r\n", 0) {
-                let header_text = String::from_utf8_lossy(&part[..header_end]);
-                let content = &part[header_end + 4..];
-                self.append_part(ctx, form, &append, &header_text, content)?;
+            let Some(part) = bytes.get(pos..end) else {
+                break;
+            };
+            if let Some(header_end) = Self::index_of(part, b"\r\n\r\n", 0)
+                && let (Some(headers), Some(content)) =
+                    (part.get(..header_end), part.get(header_end + 4..))
+            {
+                let header_text = String::from_utf8_lossy(headers);
+                Self::append_part(ctx, form, &append, &header_text, content)?;
             }
             pos = next + delimiter.len();
         }
@@ -1075,7 +1124,7 @@ impl FormBody {
     }
 
     fn append_part<'js>(
-        &self, ctx: &Ctx<'js>, form: &Object<'js>, append: &Function<'js>, header_text: &str,
+        ctx: &Ctx<'js>, form: &Object<'js>, append: &Function<'js>, header_text: &str,
         content: &[u8],
     ) -> Result<()> {
         let mut name = None;
@@ -1106,7 +1155,7 @@ impl FormBody {
                 let file_ctor: Constructor<'js> = ctx
                     .globals()
                     .get("File")
-                    .map_err(|_| Exception::throw_type(ctx, "File is not defined"))?;
+                    .map_err(|_error| Exception::throw_type(ctx, "File is not defined"))?;
                 let parts = Array::new(ctx.clone())?;
                 parts.set(0, TypedArray::<u8>::new_copy(ctx.clone(), content)?)?;
                 let opts = Object::new(ctx.clone())?;
@@ -1123,9 +1172,10 @@ impl FormBody {
     fn quoted_param(header_value: &str, key: &str) -> Option<String> {
         let needle = format!("{key}=\"");
         let start = header_value.find(&needle)? + needle.len();
-        let end = header_value[start..].find('"')?;
+        let rest = header_value.get(start..)?;
+        let end = rest.find('"')?;
         Some(
-            header_value[start..start + end]
+            rest.get(..end)?
                 .replace("%0A", "\n")
                 .replace("%0D", "\r")
                 .replace("%22", "\""),
@@ -1165,12 +1215,11 @@ fn wrapped_fetch<'js>(
         Some(value) if value.is_undefined() => den_util::construct(&ctx, "Request", (input,)),
         Some(value) => den_util::construct(&ctx, "Request", (input, value)),
     };
-    let request: JsValue = match request {
-        Ok(value) => value,
-        Err(_) => {
-            let thrown = ctx.catch();
-            return body::promise_reject(&ctx, thrown);
-        }
+    let request: JsValue = if let Ok(value) = request {
+        value
+    } else {
+        let thrown = ctx.catch();
+        return body::promise_reject(&ctx, thrown);
     };
     if let Some(reason) = aborted_fetch_reason(&ctx, &request)? {
         cancel_request_body(&ctx, &request, reason.clone());
@@ -1210,16 +1259,16 @@ fn aborted_fetch_reason<'js>(
 }
 
 fn abort_error_reason<'js>(ctx: &Ctx<'js>) -> Result<JsValue<'js>> {
-    match den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError") {
-        Ok(value) => Ok(value),
-        Err(_) => {
-            if ctx.has_exception() {
-                drop(ctx.catch());
-            }
-            let error: Object = den_util::construct(ctx, "Error", ("The operation was aborted.",))?;
-            error.set("name", "AbortError")?;
-            Ok(error.into_value())
+    if let Ok(value) = den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError")
+    {
+        Ok(value)
+    } else {
+        if ctx.has_exception() {
+            drop(ctx.catch());
         }
+        let error: Object = den_util::construct(ctx, "Error", ("The operation was aborted.",))?;
+        error.set("name", "AbortError")?;
+        Ok(error.into_value())
     }
 }
 
@@ -1277,10 +1326,11 @@ fn wrap_readable_stream_cancel<'js>(ctx: &Ctx<'js>) -> Result<()> {
 
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
+    use den_util::ConstructorInstaller as _;
     use rquickjs::{Ctx, Function, Result, Value, function::Opt, module::Exports};
 
+    use super::body;
     pub use super::{Headers, Request, Response};
-    use crate::body;
 
     #[rquickjs::function]
     pub async fn fetch<'js>(
@@ -1292,19 +1342,18 @@ pub mod whatwg {
 
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
+        den_stdlib_networking::tls::install_default_crypto_provider();
         let globals = ctx.globals();
-        for name in ["fetch", "Headers", "Request", "Response"] {
+        for name in ["fetch", "Headers", "Response"] {
             globals.set(name, exports.module().get::<_, Value>(name)?)?;
         }
+        globals.install_constructor::<Request>(1)?;
         let inner: Function = globals.get("fetch")?;
         let wrapped = super::wrap_global_fetch(ctx, inner)?;
         wrapped.set_name("fetch")?;
+        exports.export("fetch", wrapped.clone())?;
         globals.set("fetch", wrapped)?;
         super::wrap_readable_stream_cancel(ctx)?;
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/lib.rs"]
-mod tests;

@@ -7,8 +7,11 @@ use std::ffi::CString;
 
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Constructor, Ctx, Error, Exception, FromJs, Function, Object,
-    Result, Value, class::JsClass, function::IntoArgs, object::Filter, qjs,
+    Proxy, Result, Value, atom::PredefinedAtom, class::JsClass, function::IntoArgs, object::Filter,
+    proxy::ProxyHandler, qjs,
 };
+
+pub mod stack;
 
 /// WebIDL `BufferSource` — an `ArrayBuffer` or `ArrayBufferView`, with its
 /// bytes copied up front so later mutation of the source cannot change what
@@ -106,6 +109,45 @@ where
     Ok(())
 }
 
+/// Install a native Rust class as a JavaScript constructor that rejects calls
+/// without `new`.
+///
+/// rquickjs class constructors are callable objects; a constructor proxy lets
+/// QuickJS enforce the distinction while forwarding `new.target` unchanged.
+pub trait ConstructorInstaller<'js> {
+    fn install_constructor<C: JsClass<'js>>(&self, length: usize) -> Result<()>;
+}
+
+impl<'js> ConstructorInstaller<'js> for Object<'js> {
+    fn install_constructor<C: JsClass<'js>>(&self, length: usize) -> Result<()> {
+        let ctx = self.ctx();
+        let constructor = Class::<C>::create_constructor(ctx)?.ok_or_else(|| {
+            Exception::throw_internal(ctx, &format!("{} has no constructor", C::NAME))
+        })?;
+        constructor.set_length(length)?;
+
+        let handler = Object::new(ctx.clone())?;
+        handler.set(
+            "apply",
+            Function::new(ctx.clone(), |ctx: Ctx<'js>| -> Result<()> {
+                Err(Exception::throw_type(
+                    &ctx,
+                    "class constructors must be invoked with 'new'",
+                ))
+            })?,
+        )?;
+        let constructor = Proxy::new(
+            ctx.clone(),
+            constructor,
+            ProxyHandler::from_object(handler)?,
+        )?;
+        if let Some(prototype) = Class::<C>::prototype(ctx)? {
+            prototype.set(PredefinedAtom::Constructor, constructor.clone())?;
+        }
+        self.set(C::NAME, constructor)
+    }
+}
+
 /// Speculative conversions that leave no pending exception behind.
 ///
 /// `Class::from_object` is `JS_GetOpaque2` (quickjs.c:11681), which *throws* a
@@ -185,20 +227,6 @@ pub fn dict_get<'js>(options: Option<&Value<'js>>, key: &str) -> Result<Option<V
     } else {
         Ok(Some(value))
     }
-}
-
-/// `JSON.parse(text)`.
-pub fn json_parse<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
-    let json: Object = ctx.globals().get("JSON")?;
-    let parse: Function = json.get("parse")?;
-    parse.call((text,))
-}
-
-/// `JSON.stringify(value)`.
-pub fn json_stringify<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Value<'js>> {
-    let json: Object = ctx.globals().get("JSON")?;
-    let stringify: Function = json.get("stringify")?;
-    stringify.call((value.clone(),))
 }
 
 /// QuickJS class id (`JS_GetClassID`).

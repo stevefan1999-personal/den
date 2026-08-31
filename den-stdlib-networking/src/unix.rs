@@ -125,6 +125,10 @@ impl UnixListenerWrapper {
     }
 
     #[qjs(static)]
+    #[expect(
+        clippy::unused_async,
+        reason = "keeps the listener factory consistently awaitable"
+    )]
     pub async fn listen(path: String) -> Result<Self> {
         #[cfg(unix)]
         {

@@ -9,6 +9,8 @@ members = [
     "den-stdlib-crypto",
     "den-stdlib-ffi",
     "den-stdlib-fs",
+    "den-stdlib-http",
+    "den-stdlib-kv",
     "den-stdlib-networking",
     "den-stdlib-path",
     "den-stdlib-process",
@@ -18,7 +20,6 @@ members = [
     "den-stdlib-timer",
     "den-stdlib-wasm",
     "den-stdlib-whatwg",
-    "den-stdlib-whatwg-fetch",
     "den-stdlib-worker",
     "den-transpiler-oxc",
     "den-util",
@@ -45,7 +46,9 @@ den-stdlib-core = { version = "0.4.0", path = "den-stdlib-core" }
 den-stdlib-crypto = { version = "0.4.0", path = "den-stdlib-crypto" }
 den-stdlib-ffi = { version = "0.4.0", path = "den-stdlib-ffi" }
 den-stdlib-fs = { version = "0.4.0", path = "den-stdlib-fs" }
-den-stdlib-networking = { version = "0.4.0", path = "den-stdlib-networking" }
+den-stdlib-http = { version = "0.4.0", path = "den-stdlib-http", default-features = false }
+den-stdlib-kv = { version = "0.4.0", path = "den-stdlib-kv" }
+den-stdlib-networking = { version = "0.4.0", path = "den-stdlib-networking", default-features = false }
 den-stdlib-path = { version = "0.4.0", path = "den-stdlib-path" }
 den-stdlib-process = { version = "0.4.0", path = "den-stdlib-process" }
 den-stdlib-sqlite = { version = "0.4.0", path = "den-stdlib-sqlite" }
@@ -53,8 +56,7 @@ den-stdlib-temporal = { version = "0.4.0", path = "den-stdlib-temporal" }
 den-stdlib-text = { version = "0.4.0", path = "den-stdlib-text" }
 den-stdlib-timer = { version = "0.4.0", path = "den-stdlib-timer" }
 den-stdlib-wasm = { version = "0.4.0", path = "den-stdlib-wasm", default-features = false }
-den-stdlib-whatwg = { version = "0.4.0", path = "den-stdlib-whatwg" }
-den-stdlib-whatwg-fetch = { version = "0.4.0", path = "den-stdlib-whatwg-fetch" }
+den-stdlib-whatwg = { version = "0.4.0", path = "den-stdlib-whatwg", default-features = false }
 den-stdlib-worker = { version = "0.4.0", path = "den-stdlib-worker", default-features = false }
 den-transpiler-oxc = { version = "0.4.0", path = "den-transpiler-oxc", default-features = false }
 den-util = { version = "0.4.0", path = "den-util" }
@@ -62,6 +64,7 @@ den-util = { version = "0.4.0", path = "den-util" }
 # Shared third-party. Versions stay pinned to what the tree already declared;
 # members name features (and optional / default-features) at the call site.
 base64-simd = "0.8.0"
+bytes = "1.12.1"
 color-eyre = { version = "0.6.5", default-features = false }
 console-subscriber = "0.5.0"
 dashmap = "6.2.1"
@@ -71,7 +74,6 @@ derive_more = { version = "2.1.1", features = [
     "from",
     "into",
     "display",
-    "from",
     "error",
     "debug",
 ] }
@@ -82,6 +84,10 @@ encoding_rs = "0.8.35"
 flate2 = "1"
 futures = "0.3.34"
 http = "1.5.0"
+http-body-util = "0.1.2"
+httpdate = "1.0.3"
+hyper = "1.11.0"
+hyper-util = "0.1.20"
 indexmap = "2.14.0"
 insta = { version = "=1.48.0", default-features = false }
 libc = "0.2"
@@ -94,14 +100,16 @@ oxc_codegen = { version = "0.146.0", default-features = false }
 oxc_diagnostics = "0.146.0"
 oxc_parser = "0.146.0"
 oxc_semantic = "0.146.0"
+oxc_sourcemap = "8.1.2"
 oxc_span = "0.146.0"
 oxc_transformer = "0.146.0"
+percent-encoding = "2.3.2"
 rand = "0.10.2"
-rcgen = "0.14"
+rcgen = { version = "0.14", default-features = false, features = ["pem"] }
 reqwest = { version = "0.13.4", default-features = false, features = [
-    "rustls-no-provider",
     "charset",
     "http2",
+    "rustls-no-provider",
     "system-proxy",
 ] }
 rquickjs = { version = "0.12.2", features = [
@@ -113,13 +121,12 @@ rquickjs = { version = "0.12.2", features = [
 ] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 rustls = { version = "0.23.43", default-features = false, features = [
-    "ring",
     "logging",
     "std",
     "tls12",
 ] }
 rustls-pemfile = "2.2.0"
-rustls-platform-verifier = "0.7.0"
+rustls-platform-verifier = { version = "0.7.0", default-features = false }
 rustyline = { version = "18.0.1", default-features = false }
 serde_json = "1.0.151"
 sha1 = "0.11"
@@ -127,9 +134,9 @@ sha2 = "0.11"
 surrealkv = "=0.21.4"
 tempfile = "3"
 temporal_rs = "0.2.6"
+thiserror = "2.0.20"
 tokio = "1.53.1"
 tokio-rustls = { version = "0.26.4", default-features = false, features = [
-    "ring",
     "logging",
     "tls12",
 ] }
@@ -137,7 +144,6 @@ tokio-tungstenite = { version = "0.26", default-features = false }
 tokio-util = "0.7.19"
 tracing = { version = "0.1.44", features = ["release_max_level_info"] }
 tracing-subscriber = { version = "0.3.23", default-features = false }
-typed-builder = "0.23.2"
 url = "2.5.8"
 urlpattern = "0.6"
 uuid = "1.24.1"
@@ -699,6 +705,7 @@ keywords.workspace = true
 color-eyre = { workspace = true, default-features = false }
 console-subscriber = { workspace = true, optional = true }
 den-core = { workspace = true, default-features = false }
+den-util.workspace = true
 # Feature carrier: compile out dependency DEBUG/TRACE records in release builds.
 log.workspace = true
 mimalloc = { workspace = true, optional = true }
@@ -710,24 +717,27 @@ tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"
 
 [dev-dependencies]
 libc.workspace = true
+oxc_sourcemap.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
-default = ["stdlib", "typescript", "react", "wasm", "wasi", "jit", "mimalloc"]
+default = ["stdlib", "typescript", "react", "wasm", "jit", "mimalloc", "ring"]
+ring = ["den-core/ring"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
 
-tokio-console = ["console-subscriber"]
+tokio-console = ["dep:console-subscriber"]
 
-stdlib = ["den-core/stdlib"]
+stdlib = ["den-core/stdlib", "stdlib-ffi"]
 stdlib-assert = ["den-core/stdlib-assert"]
 stdlib-console = ["den-core/stdlib-console"]
 stdlib-core = ["den-core/stdlib-core"]
 stdlib-crypto = ["den-core/stdlib-crypto"]
 stdlib-ffi = ["den-core/stdlib-ffi"]
 stdlib-fs = ["den-core/stdlib-fs"]
+stdlib-http = ["den-core/stdlib-http"]
+stdlib-kv = ["den-core/stdlib-kv"]
 stdlib-networking = ["den-core/stdlib-networking"]
 stdlib-path = ["den-core/stdlib-path"]
 stdlib-process = ["den-core/stdlib-process"]

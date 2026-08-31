@@ -33,7 +33,7 @@ pub struct Message {
 
 /// The `Send` bound is load-bearing, so it is checked at compile time.
 const _: fn() = || {
-    fn assert_send<T: Send>() {}
+    const fn assert_send<T: Send>() {}
     assert_send::<Message>();
 };
 
@@ -157,7 +157,7 @@ impl Message {
         for (index, entry) in entries.iter().enumerate() {
             // ponytail: O(n²) duplicate scan; a transfer list is a handful of
             // entries, and a hash of JSValue bits would need its own newtype.
-            if entries[..index].iter().any(|seen| seen == entry) {
+            if entries.iter().take(index).any(|seen| seen == entry) {
                 return Err(throw_data_clone(
                     ctx,
                     "the same object appears twice in the transfer list",
@@ -223,8 +223,9 @@ impl Message {
     /// mutation instead, after other ports have already been moved out.
     fn validate_ports<'js>(ctx: &Ctx<'js>, ports: &[Class<'js, NativePort>]) -> Result<()> {
         for (index, port) in ports.iter().enumerate() {
-            if ports[..index]
+            if ports
                 .iter()
+                .take(index)
                 .any(|seen| seen.as_inner().as_value() == port.as_inner().as_value())
             {
                 return Err(throw_data_clone(
@@ -271,7 +272,7 @@ impl Message {
         let buffer = unsafe {
             qjs::JS_WriteObject2(
                 ctx.as_raw().as_ptr(),
-                &mut len,
+                &raw mut len,
                 value.as_raw(),
                 FLAGS,
                 ptr::null_mut(),
@@ -348,7 +349,12 @@ pub fn structured_clone<'js>(
     ctx: Ctx<'js>, value: Value<'js>, options: rquickjs::function::Opt<Value<'js>>,
 ) -> Result<Value<'js>> {
     let transfer = match options.0 {
-        Some(options) if options.is_object() => options.as_object().unwrap().get("transfer")?,
+        Some(options) if options.is_object() => {
+            options
+                .as_object()
+                .ok_or_else(|| Exception::throw_type(&ctx, "clone options must be an object"))?
+                .get("transfer")?
+        }
         _ => None,
     };
     let (buffers, ports) = clone::split_transfer(&ctx, transfer)?;

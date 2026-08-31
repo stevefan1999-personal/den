@@ -16,6 +16,7 @@ den-stdlib-core.workspace = true
 den-transpiler-oxc = { workspace = true, optional = true }
 den-util.workspace = true
 dashmap.workspace = true
+oxc_sourcemap.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-util.workspace = true
@@ -34,7 +35,6 @@ den-core = { workspace = true, features = [
     "typescript",
 ] }
 insta.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = ["transpile"]

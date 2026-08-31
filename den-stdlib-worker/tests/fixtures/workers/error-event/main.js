@@ -9,9 +9,8 @@ const failure = new Promise((resolve) => {
       event.message,
       event.filename.endsWith("/worker.js"),
       event.lineno,
-      // v1 divergence (docs/research/08 §1.4): an Error does not
-      // serialise, so only the location crosses the thread.
-      typeof event.error,
+      event.error instanceof TypeError,
+      event.error.stack.includes("worker.js:3:"),
     ].join(","));
   };
 });

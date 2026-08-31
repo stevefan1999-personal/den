@@ -15,8 +15,8 @@ use std::{
 
 use den_util::{coerce_string, construct};
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Object,
-    Result, Value,
+    Array, Class, Coerced, Ctx, Error, Exception, FromJs as _, Function, IntoJs as _, JsLifetime,
+    Object, Result, Value,
     class::Trace,
     function::{Args, FuncArg, Opt, Rest, This},
     object::{Accessor, Property},
@@ -112,7 +112,7 @@ impl NativePort {
     /// detached: `take_handle` refuses a started port, and
     /// a refusal discovered halfway through the transfer is a port the sender
     /// silently loses.
-    pub fn is_started(&self) -> bool { self.started.get() }
+    pub const fn is_started(&self) -> bool { self.started.get() }
 
     /// Whether this port still holds a live channel end.
     pub fn is_open(&self) -> bool {
@@ -174,7 +174,7 @@ impl NativePort {
     /// Clear the pending exception behind an `Err`, so that it cannot surface
     /// at the next unrelated call into this context.
     fn discard(ctx: &Ctx<'_>, error: Error) {
-        if let Error::Exception = error {
+        if matches!(error, Error::Exception) {
             ctx.catch();
         }
     }
@@ -188,18 +188,13 @@ impl NativePort {
     /// queue.
     fn recv(state: &PortState) -> impl Future<Output = Option<Envelope>> + '_ {
         poll_fn(|cx| {
-            match state.inbox.try_borrow_mut() {
-                Ok(mut inbox) => {
-                    match inbox.as_mut() {
-                        Some(inbox) => inbox.poll_recv(cx),
-                        // Detached, or transferred away before this run noticed.
-                        None => Poll::Ready(None),
-                    }
-                }
-                Err(_) => {
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
+            if let Ok(mut inbox) = state.inbox.try_borrow_mut() {
+                inbox
+                    .as_mut()
+                    .map_or_else(|| Poll::Ready(None), |inbox| inbox.poll_recv(cx))
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
             }
         })
     }
@@ -380,7 +375,7 @@ impl NativePort {
 
 /// `natives.pair()` — two entangled ports, the guts of `new MessageChannel()`.
 #[rquickjs::function(rename = "pair")]
-pub fn pair<'js>(ctx: Ctx<'js>) -> Result<Vec<Class<'js, NativePort>>> {
+pub fn pair(ctx: Ctx<'_>) -> Result<Vec<Class<'_, NativePort>>> {
     let (first, second) = PortHandle::pair();
     Ok(vec![
         Class::instance(ctx.clone(), NativePort::from_handle(first))?,
@@ -392,7 +387,7 @@ const WRAPPER_SLOT: &str = "\0den:port-wrapper";
 
 fn dispatch_messages_at<'js>(
     ctx: &Ctx<'js>, target: Value<'js>, native: Class<'js, NativePort>, after: Function<'js>,
-) {
+) -> Result<()> {
     let on_message = Function::new(ctx.clone(), {
         let target = target.clone();
         let after = after.clone();
@@ -416,8 +411,7 @@ fn dispatch_messages_at<'js>(
             after.call::<_, ()>(("message",))?;
             Ok(())
         }
-    })
-    .expect("on_message");
+    })?;
     let on_message_error = Function::new(ctx.clone(), {
         let target = target.clone();
         let after = after.clone();
@@ -434,8 +428,7 @@ fn dispatch_messages_at<'js>(
             after.call::<_, ()>(("messageerror",))?;
             Ok(())
         }
-    })
-    .expect("on_message_error");
+    })?;
     let on_close = Function::new(ctx.clone(), {
         let target = target.clone();
         move |ctx: Ctx<'js>| -> Result<()> {
@@ -446,11 +439,11 @@ fn dispatch_messages_at<'js>(
             crate::events::dispatch_trusted(ctx.clone(), target.clone(), event.into_value())?;
             Ok(())
         }
-    })
-    .expect("on_close");
+    })?;
     native
         .borrow()
         .start(ctx.clone(), on_message, on_message_error, on_close);
+    Ok(())
 }
 
 /// HTML §9.4.4 `MessagePort`. Ports come from a channel, a transfer, or a
@@ -490,7 +483,14 @@ impl<'js> MessagePort<'js> {
     ) -> Result<()> {
         let transfer = match options.0 {
             Some(options) if options.is_array() => Some(options),
-            Some(options) if options.is_object() => options.as_object().unwrap().get("transfer")?,
+            Some(options) if options.is_object() => {
+                options
+                    .as_object()
+                    .ok_or_else(|| {
+                        Exception::throw_type(&ctx, "transfer options must be an object")
+                    })?
+                    .get("transfer")?
+            }
             _ => None,
         };
         let (buffers, ports) = crate::message::clone::split_transfer(&ctx, transfer)?;
@@ -500,14 +500,13 @@ impl<'js> MessagePort<'js> {
     pub fn start(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<()> {
         let native = this.0.borrow().native();
         let noop = Function::new(ctx.clone(), |_: String| ())?;
-        dispatch_messages_at(&ctx, this.0.clone().into_value(), native, noop);
-        Ok(())
+        dispatch_messages_at(&ctx, this.0.clone().into_value(), native, noop)
     }
 
     pub fn close(&self) { self.native.borrow().close(); }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "MessagePort" }
+    pub const fn to_string_tag() -> &'static str { "MessagePort" }
 }
 
 #[derive(Trace, JsLifetime)]
@@ -524,14 +523,17 @@ impl<'js> MessageChannel<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>) -> Result<Self> {
         let pair = pair(ctx.clone())?;
+        let [first, second] = pair.as_slice() else {
+            return Err(Exception::throw_internal(&ctx, "port pair is incomplete"));
+        };
         Ok(Self {
-            port1: MessagePort::wrap(&ctx, pair[0].clone())?,
-            port2: MessagePort::wrap(&ctx, pair[1].clone())?,
+            port1: MessagePort::wrap(&ctx, first.clone())?,
+            port2: MessagePort::wrap(&ctx, second.clone())?,
         })
     }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]
-    pub fn to_string_tag() -> &'static str { "MessageChannel" }
+    pub const fn to_string_tag() -> &'static str { "MessageChannel" }
 }
 
 struct TrackerState {
@@ -640,7 +642,7 @@ fn refresh<'js>(
     let native: Class<'js, NativePort> = bag.get("native")?;
     if listening {
         let retire: Function<'js> = bag.get("retire")?;
-        dispatch_messages_at(ctx, target, native, retire);
+        dispatch_messages_at(ctx, target, native, retire)?;
     } else {
         native.borrow().pause();
     }

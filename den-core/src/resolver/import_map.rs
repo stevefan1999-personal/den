@@ -25,7 +25,7 @@ pub struct ImportMap {
 }
 
 // SAFETY: `ImportMap` borrows no `'js` lifetime.
-unsafe impl<'js> JsLifetime<'js> for ImportMap {
+unsafe impl JsLifetime<'_> for ImportMap {
     type Changed<'to> = ImportMap;
 }
 
@@ -35,6 +35,10 @@ struct SpecifierMap {
     entries: Vec<(String, Option<String>)>,
 }
 
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "ImportMapError is the public error paired with ImportMap"
+)]
 #[derive(Debug, Display, Error, From)]
 pub enum ImportMapError {
     #[display("import map is not valid JSON: {_0}")]
@@ -90,18 +94,25 @@ impl ImportMap {
 
     /// Remap `specifier` as imported from `parent_url`.
     ///
-    /// `None` — no mapping. `Some(None)` — blocked. `Some(Some(target))` —
-    /// load `target` instead.
-    pub fn resolve(&self, specifier: &str, parent_url: &str) -> Option<Option<String>> {
+    /// Resolve to a target, block the import, or leave it to the next resolver.
+    fn resolve(&self, specifier: &str, parent_url: &str) -> Mapping {
         for (scope_key, scope_map) in &self.scopes {
-            if parent_url.starts_with(scope_key.as_str())
-                && let Some(mapped) = scope_map.resolve(specifier)
-            {
-                return Some(mapped);
+            if parent_url.starts_with(scope_key.as_str()) {
+                let mapped = scope_map.resolve(specifier);
+                if mapped != Mapping::Miss {
+                    return mapped;
+                }
             }
         }
         self.imports.resolve(specifier)
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum Mapping {
+    Miss,
+    Blocked,
+    Target(String),
 }
 
 impl SpecifierMap {
@@ -132,24 +143,31 @@ impl SpecifierMap {
         Ok(Self { entries })
     }
 
-    fn resolve(&self, specifier: &str) -> Option<Option<String>> {
+    fn resolve(&self, specifier: &str) -> Mapping {
         if let Some((_, target)) = self.entries.iter().find(|(key, _)| key == specifier) {
-            return Some(canonicalize_target(target.clone()));
+            return target.as_ref().map_or(Mapping::Blocked, |target| {
+                Mapping::Target(canonicalize_file_specifier(target.clone()))
+            });
         }
         for (key, target) in &self.entries {
-            if key.ends_with('/') && specifier.starts_with(key) {
-                let mapped = target
-                    .as_ref()
-                    .map(|prefix| format!("{}{}", prefix, &specifier[key.len()..]));
-                return Some(canonicalize_target(mapped));
+            if key.ends_with('/')
+                && let Some(remainder) = specifier.strip_prefix(key)
+            {
+                return target.as_ref().map_or(Mapping::Blocked, |prefix| {
+                    Mapping::Target(canonicalize_file_specifier(format!("{prefix}{remainder}")))
+                });
             }
         }
-        None
+        Mapping::Miss
     }
 }
 
 /// Remaps a specifier when a map is installed on the context; otherwise a
 /// resolving error so `BuiltinResolver` / files / HTTP still run.
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "the qualified name distinguishes this resolver from other resolvers"
+)]
 #[derive(Debug, Default)]
 pub struct ImportMapResolver;
 
@@ -162,15 +180,15 @@ impl Resolver for ImportMapResolver {
             return Err(Error::new_resolving(base, name));
         };
         match map.resolve(name, base) {
-            None => Err(Error::new_resolving(base, name)),
-            Some(None) => {
+            Mapping::Miss => Err(Error::new_resolving(base, name)),
+            Mapping::Blocked => {
                 Err(Error::new_resolving_message(
                     base,
                     name,
                     format!("import of '{name}' was blocked by import map"),
                 ))
             }
-            Some(Some(target)) => Ok(target),
+            Mapping::Target(target) => Ok(target),
         }
     }
 }
@@ -180,7 +198,7 @@ fn directory_url(base_dir: &Path) -> std::result::Result<Url, ImportMapError> {
         base_dir.to_path_buf()
     } else {
         std::env::current_dir()
-            .map_err(|_| ImportMapError::BaseDirectory)?
+            .map_err(|_error| ImportMapError::BaseDirectory)?
             .join(base_dir)
     };
     Url::from_directory_path(&absolute).map_err(|()| ImportMapError::BaseDirectory)
@@ -190,7 +208,7 @@ fn resolve_against_base(value: &str, base: &Url) -> std::result::Result<String, 
     if value.starts_with("./") || value.starts_with("../") {
         let joined = base
             .join(value)
-            .map_err(|_| ImportMapError::Join(value.into()))?;
+            .map_err(|_error| ImportMapError::Join(value.into()))?;
         Ok(url_to_specifier(&joined))
     } else {
         Ok(value.to_string())
@@ -201,19 +219,15 @@ fn url_to_specifier(url: &Url) -> String {
     if url.scheme() != "file" {
         return url.to_string();
     }
-    let mut path = url
-        .to_file_path()
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| url.to_string());
+    let mut path = url.to_file_path().map_or_else(
+        |()| url.to_string(),
+        |path| path.to_string_lossy().replace('\\', "/"),
+    );
     // Prefix mappings end in `/`; `Url::to_file_path` drops that slash.
     if url.path().ends_with('/') && !path.ends_with('/') {
         path.push('/');
     }
     path
-}
-
-fn canonicalize_target(target: Option<String>) -> Option<String> {
-    target.map(canonicalize_file_specifier)
 }
 
 fn canonicalize_file_specifier(target: String) -> String {

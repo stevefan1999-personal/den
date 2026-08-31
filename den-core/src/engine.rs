@@ -8,12 +8,13 @@ use std::{
 
 #[cfg(feature = "transpile")]
 use den_transpiler_oxc::{
-    EasyOxcTranspilerError, get_best_transpiling, infer_transpile_syntax_by_extension, transpile,
+    EasyOxcTranspilerError, get_best_transpiling, infer_transpile_syntax_by_extension,
+    transpile_with_source_map,
 };
 use derive_more::{Debug, Display, Error, From};
 use rquickjs::{
-    AsyncContext, AsyncRuntime, Coerced, Ctx, FromJs, JsLifetime, Module, Object, Persistent,
-    Promise, Value,
+    AsyncContext, AsyncRuntime, Ctx, FromJs, JsLifetime, Module, Object, Persistent, Promise,
+    Value,
     context::EvalOptions,
     function::{Constructor, This},
     loader::{BuiltinLoader, BuiltinResolver, Bundle, FileResolver, ModuleLoader},
@@ -73,10 +74,25 @@ struct PendingRejections {
     reported:    Cell<usize>,
 }
 
+#[derive(Default)]
+struct EvalSequence(Cell<u64>);
+
+// SAFETY: the sequence counter contains no JavaScript-lifetime data.
+unsafe impl JsLifetime<'_> for EvalSequence {
+    type Changed<'to> = EvalSequence;
+}
+
+/// JavaScript ready for evaluation under the unique filename whose source map
+/// was registered with this realm.
+pub struct PreparedSource {
+    code:     String,
+    filename: String,
+}
+
 // SAFETY: `PendingRejections` borrows no `'js` lifetime — a `Persistent` owns
 // its value outright and is tied to the runtime, not to a scope — so the type
 // is the same type for every choice of `'to`.
-unsafe impl<'js> JsLifetime<'js> for PendingRejections {
+unsafe impl JsLifetime<'_> for PendingRejections {
     type Changed<'to> = PendingRejections;
 }
 
@@ -119,13 +135,20 @@ impl WorkerHost for DenWorkerHost {
             context: engine.context,
         })
     }
+
+    #[cfg(feature = "stdlib-kv")]
+    fn shutdown<'a>(
+        &'a self, context: &'a AsyncContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(den_stdlib_kv::KvRegistry::shutdown(context))
+    }
 }
 
 /// One QuickJS realm — an [`AsyncRuntime`] plus its [`AsyncContext`] — and the
 /// whole of den's embedding surface.
 ///
-/// There is deliberately no stop token here. Stopping a realm is *dropping* it,
-/// which drops every `ctx.spawn`ed future before the QuickJS runtime is freed;
+/// There is deliberately no stop token here. A host stops a realm by dropping
+/// its program future, awaiting [`Engine::shutdown`], then dropping the engine;
 /// interrupting a script already spinning in bytecode is a flag the **host**
 /// owns, polled by QuickJS's interrupt handler every few thousand back-edges.
 /// A host that wants both composes them itself, the way `axum` takes a
@@ -167,7 +190,8 @@ impl WorkerHost for DenWorkerHost {
 ///       result = program => if !*stop.borrow() { result? },
 ///       _ = stopped.changed() => {}
 ///     }
-///     drop(engine); // the cancel; the losing arm is dropped mid-await
+///     engine.shutdown().await; // finish deferred QuickJS/resource teardown
+///     drop(engine);
 ///     Ok(())
 /// }
 /// ```
@@ -187,13 +211,12 @@ impl WorkerHost for DenWorkerHost {
 ///    dies at its first interrupt poll. The engine is single-use after a hard
 ///    stop — including a "goodbye" script, which needs the interrupter to hold
 ///    a second flag if it is to survive at all.
-/// 5. [`Engine`] is [`Clone`], so `drop` cancels only when the *last* clone
-///    dies, and a clone must never be moved into a `ctx.spawn`ed future:
-///    runtime → spawner → future → `Engine` → runtime is a cycle that drop
-///    cannot break.
+/// 5. [`Engine`] is [`Clone`], so the realm dies only with the *last* clone,
+///    and a clone must never be moved into a `ctx.spawn`ed future: runtime →
+///    spawner → future → `Engine` → runtime is a cycle that drop cannot break.
 /// 6. For a deadline instead of an event, run the loop under a timeout: `let _
 ///    = tokio::time::timeout(grace, engine.run_event_loop()).await;` then flip
-///    the flag and drop.
+///    the flag, await [`Engine::shutdown`], and drop.
 ///
 /// Ctrl-C is not in this list on purpose: den installs no signal handler, and a
 /// script that wants a graceful one installs it itself with
@@ -206,8 +229,6 @@ pub struct Engine {
 
 impl Engine {
     const EMPTY_BUNDLE: Bundle = rquickjs::loader::bundle::Bundle(&rquickjs::phf::Map::new());
-    /// What a script with no file of its own is called.
-    const EVAL_SCRIPT_NAME: &'static str = "<eval>";
     /// How many reported rejections stay remembered, so that a handler attached
     /// to one afterwards still fires `rejectionhandled`.
     ///
@@ -244,84 +265,53 @@ impl Engine {
     pub async fn new_with_bundle(bundle: Bundle) -> Engine { Self::build(bundle).await }
 
     async fn build(bundle: Bundle) -> Engine {
-        let runtime = AsyncRuntime::new().unwrap();
+        let runtime = AsyncRuntime::new()
+            .unwrap_or_else(|error| panic!("could not create QuickJS runtime: {error}"));
         runtime.set_max_stack_size(0).await;
 
         {
             let resolver = (
                 ImportMapResolver,
                 {
-                    #[allow(unused_mut)]
-                    let mut resolver = BuiltinResolver::default();
-
+                    let resolver = BuiltinResolver::default();
                     #[cfg(feature = "stdlib-assert")]
-                    {
-                        resolver = resolver.with_module("den:assert");
-                    }
+                    let resolver = resolver.with_module("den:assert");
                     #[cfg(feature = "stdlib-core")]
-                    {
-                        resolver = resolver.with_module("den:core");
-                    }
+                    let resolver = resolver.with_module("den:core");
                     #[cfg(feature = "stdlib-console")]
-                    {
-                        resolver = resolver.with_module("den:console");
-                    }
+                    let resolver = resolver.with_module("den:console");
                     #[cfg(feature = "stdlib-networking")]
-                    {
-                        resolver = resolver.with_module("den:networking");
-                    }
+                    let resolver = resolver.with_module("den:networking");
                     #[cfg(feature = "stdlib-path")]
-                    {
-                        resolver = resolver.with_module("den:path");
-                    }
+                    let resolver = resolver.with_module("den:path");
                     #[cfg(feature = "stdlib-text")]
-                    {
-                        resolver = resolver.with_module("den:text");
-                    }
+                    let resolver = resolver.with_module("den:text");
                     #[cfg(feature = "stdlib-timer")]
-                    {
-                        resolver = resolver.with_module("den:timer");
-                    }
+                    let resolver = resolver.with_module("den:timer");
                     #[cfg(feature = "stdlib-fs")]
-                    {
-                        resolver = resolver.with_module("den:fs");
-                    }
+                    let resolver = resolver.with_module("den:fs");
+                    #[cfg(feature = "stdlib-http")]
+                    let resolver = resolver.with_module("den:http");
+                    #[cfg(feature = "stdlib-kv")]
+                    let resolver = resolver.with_module("den:kv");
                     #[cfg(feature = "stdlib-ffi")]
-                    {
-                        resolver = resolver.with_module("den:ffi");
-                    }
+                    let resolver = resolver.with_module("den:ffi");
                     #[cfg(feature = "stdlib-sqlite")]
-                    {
-                        resolver = resolver.with_module("den:sqlite");
-                    }
+                    let resolver = resolver.with_module("den:sqlite");
                     #[cfg(feature = "stdlib-whatwg-fetch")]
-                    {
-                        resolver = resolver.with_module("den:whatwg-fetch");
-                    }
+                    let resolver = resolver.with_module("den:whatwg-fetch");
                     #[cfg(feature = "stdlib-crypto")]
-                    {
-                        resolver = resolver.with_module("den:crypto");
-                    }
+                    let resolver = resolver.with_module("den:crypto");
                     #[cfg(feature = "stdlib-process")]
-                    {
-                        resolver = resolver.with_module("den:process");
-                    }
+                    let resolver = resolver.with_module("den:process");
                     #[cfg(feature = "stdlib-temporal")]
-                    {
-                        resolver = resolver.with_module("den:temporal");
-                    }
+                    let resolver = resolver.with_module("den:temporal");
                     #[cfg(feature = "wasm")]
-                    {
-                        resolver = resolver.with_module("den:wasm");
-                    }
+                    let resolver = resolver.with_module("den:wasm");
                     #[cfg(feature = "stdlib-worker")]
-                    {
-                        resolver = resolver.with_module("den:worker");
-                    }
+                    let resolver = resolver.with_module("den:worker");
                     #[cfg(feature = "stdlib-whatwg")]
-                    {
-                        resolver = resolver.with_module("den:whatwg");
-                    }
+                    let resolver = resolver.with_module("den:whatwg");
                     resolver
                 },
                 bundle,
@@ -338,88 +328,48 @@ impl Engine {
             let loader = (
                 BuiltinLoader::default(),
                 {
-                    #[allow(unused_mut)]
-                    let mut loader = ModuleLoader::default();
-
+                    let loader = ModuleLoader::default();
                     #[cfg(feature = "stdlib-core")]
-                    {
-                        loader = loader.with_module("den:core", den_stdlib_core::js_core);
-                    }
-
+                    let loader = loader.with_module("den:core", den_stdlib_core::js_core);
                     #[cfg(feature = "stdlib-assert")]
-                    {
-                        loader = loader.with_module("den:assert", den_stdlib_assert::js_assert);
-                    }
-
+                    let loader = loader.with_module("den:assert", den_stdlib_assert::js_assert);
                     #[cfg(feature = "stdlib-console")]
-                    {
-                        loader = loader.with_module("den:console", den_stdlib_console::js_console);
-                    }
-
+                    let loader = loader.with_module("den:console", den_stdlib_console::js_console);
                     #[cfg(feature = "stdlib-networking")]
-                    {
-                        loader = loader
-                            .with_module("den:networking", den_stdlib_networking::js_networking);
-                    }
+                    let loader =
+                        loader.with_module("den:networking", den_stdlib_networking::js_networking);
                     #[cfg(feature = "stdlib-path")]
-                    {
-                        loader = loader.with_module("den:path", den_stdlib_path::js_path);
-                    }
-
+                    let loader = loader.with_module("den:path", den_stdlib_path::js_path);
                     #[cfg(feature = "stdlib-text")]
-                    {
-                        loader = loader.with_module("den:text", den_stdlib_text::js_text);
-                    }
-
+                    let loader = loader.with_module("den:text", den_stdlib_text::js_text);
                     #[cfg(feature = "stdlib-timer")]
-                    {
-                        loader = loader.with_module("den:timer", den_stdlib_timer::js_timer);
-                    }
-
+                    let loader = loader.with_module("den:timer", den_stdlib_timer::js_timer);
                     #[cfg(feature = "stdlib-fs")]
-                    {
-                        loader = loader.with_module("den:fs", den_stdlib_fs::js_fs);
-                    }
-
+                    let loader = loader.with_module("den:fs", den_stdlib_fs::js_fs);
+                    #[cfg(feature = "stdlib-http")]
+                    let loader = loader.with_module("den:http", den_stdlib_http::js_http);
+                    #[cfg(feature = "stdlib-kv")]
+                    let loader = loader.with_module("den:kv", den_stdlib_kv::js_kv);
                     #[cfg(feature = "stdlib-ffi")]
-                    {
-                        loader = loader.with_module("den:ffi", den_stdlib_ffi::js_ffi);
-                    }
-
+                    let loader = loader.with_module("den:ffi", den_stdlib_ffi::js_ffi);
                     #[cfg(feature = "stdlib-sqlite")]
-                    {
-                        loader = loader.with_module("den:sqlite", den_stdlib_sqlite::js_sqlite);
-                    }
+                    let loader = loader.with_module("den:sqlite", den_stdlib_sqlite::js_sqlite);
                     #[cfg(feature = "stdlib-whatwg-fetch")]
-                    {
-                        loader = loader
-                            .with_module("den:whatwg-fetch", den_stdlib_whatwg_fetch::js_whatwg);
-                    }
+                    let loader =
+                        loader.with_module("den:whatwg-fetch", den_stdlib_whatwg::fetch::js_whatwg);
                     #[cfg(feature = "stdlib-crypto")]
-                    {
-                        loader = loader.with_module("den:crypto", den_stdlib_crypto::js_crypto);
-                    }
+                    let loader = loader.with_module("den:crypto", den_stdlib_crypto::js_crypto);
                     #[cfg(feature = "stdlib-process")]
-                    {
-                        loader = loader.with_module("den:process", den_stdlib_process::js_process);
-                    }
+                    let loader = loader.with_module("den:process", den_stdlib_process::js_process);
                     #[cfg(feature = "stdlib-temporal")]
-                    {
-                        loader =
-                            loader.with_module("den:temporal", den_stdlib_temporal::js_temporal);
-                    }
+                    let loader =
+                        loader.with_module("den:temporal", den_stdlib_temporal::js_temporal);
                     #[cfg(feature = "wasm")]
-                    {
-                        loader = loader.with_module("den:wasm", den_stdlib_wasm::js_wasm)
-                    }
+                    let loader = loader.with_module("den:wasm", den_stdlib_wasm::js_wasm);
                     #[cfg(feature = "stdlib-worker")]
-                    {
-                        loader = loader.with_module("den:worker", den_stdlib_worker::js_worker);
-                    }
+                    let loader = loader.with_module("den:worker", den_stdlib_worker::js_worker);
                     #[cfg(feature = "stdlib-whatwg")]
-                    {
-                        loader = loader.with_module("den:whatwg", den_stdlib_whatwg::js_whatwg);
-                    }
+                    let loader = loader.with_module("den:whatwg", den_stdlib_whatwg::js_whatwg);
                     loader
                 },
                 bundle,
@@ -456,10 +406,14 @@ impl Engine {
             .set_host_promise_rejection_tracker(Some(Box::new(Self::track_rejection)))
             .await;
 
-        let context = AsyncContext::full(&runtime).await.unwrap();
+        let context = AsyncContext::full(&runtime)
+            .await
+            .unwrap_or_else(|error| panic!("could not create QuickJS context: {error}"));
 
         context
             .with(|ctx| {
+                den_util::stack::install(&ctx)?;
+                Self::store_userdata(&ctx, EvalSequence::default())?;
                 // Every stdlib module is wired the same way: evaluate its
                 // definition under its `den:` name. The resolver and loader
                 // lists above decide which modules exist; this list decides
@@ -496,7 +450,7 @@ impl Engine {
                 evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
 
                 #[cfg(feature = "stdlib-whatwg-fetch")]
-                evaluate_stdlib_module!(den_stdlib_whatwg_fetch::js_whatwg, "den:whatwg-fetch");
+                evaluate_stdlib_module!(den_stdlib_whatwg::fetch::js_whatwg, "den:whatwg-fetch");
 
                 #[cfg(feature = "stdlib-crypto")]
                 evaluate_stdlib_module!(den_stdlib_crypto::js_crypto, "den:crypto");
@@ -534,7 +488,7 @@ impl Engine {
                 Ok::<_, rquickjs::Error>(())
             })
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("could not initialize QuickJS context: {error}"));
 
         Self { runtime, context }
     }
@@ -583,8 +537,12 @@ impl Engine {
 
         let specifier = specifier.to_owned();
         let entry = self.context.async_with(async |ctx| {
-            let _: Object = Module::import(&ctx, specifier)?.into_future().await?;
-            Ok::<_, rquickjs::Error>(())
+            let result = async {
+                let _: Object = Module::import(&ctx, specifier)?.into_future().await?;
+                Ok::<_, rquickjs::Error>(())
+            }
+            .await;
+            result.map_err(|error| Self::take_error(&ctx, error))
         });
         // A server spends its whole life inside the entry module's top-level
         // await, so a signal that lands there has to reach JS there.
@@ -612,19 +570,44 @@ impl Engine {
     /// transpiler; otherwise the source is used as-is. Independent of the
     /// runtime lock, so a `ctx.spawn`ed pump can prepare a line without
     /// waiting for `idle()`.
-    pub fn prepare_eval_source(&self, src: &str) -> Result<String, EngineError> {
+    pub fn prepare_eval_source(
+        &self, ctx: &Ctx<'_>, src: &str,
+    ) -> Result<PreparedSource, EngineError> {
+        let filename = Self::next_eval_filename(ctx);
         #[cfg(feature = "transpile")]
         {
             let source_type = infer_transpile_syntax_by_extension(get_best_transpiling())
                 .unwrap_or_default()
                 .with_unambiguous(true);
-            Ok(transpile(src, source_type)?)
+            let output = transpile_with_source_map(src, source_type, &filename)?;
+            den_util::stack::register_source(ctx, &filename, output.code.clone(), [output
+                .source_map
+                .into_inner()])?;
+            Ok(PreparedSource {
+                code: output.code,
+                filename,
+            })
         }
         #[cfg(not(feature = "transpile"))]
         {
             let _ = self;
-            Ok(src.to_owned())
+            den_util::stack::register_source(ctx, &filename, src.to_owned(), std::iter::empty())?;
+            Ok(PreparedSource {
+                code: src.to_owned(),
+                filename,
+            })
         }
+    }
+
+    fn next_eval_filename(ctx: &Ctx<'_>) -> String {
+        ctx.userdata::<EvalSequence>().map_or_else(
+            || "<eval>".to_owned(),
+            |sequence| {
+                let next = sequence.0.get().saturating_add(1);
+                sequence.0.set(next);
+                format!("<eval:{next}>")
+            },
+        )
     }
 
     /// Evaluate an already-prepared snippet on a context the caller is holding.
@@ -634,9 +617,15 @@ impl Engine {
     /// `async_with` during `idle()` would park on the mutex until idle
     /// returned.
     pub async fn eval_prepared<'js, U: FromJs<'js>>(
-        ctx: Ctx<'js>, src: &str,
+        ctx: Ctx<'js>, source: &PreparedSource,
     ) -> rquickjs::Result<U> {
-        ctx.eval_with_options::<Promise, _>(src, {
+        den_util::stack::register_source(
+            &ctx,
+            &source.filename,
+            source.code.clone(),
+            std::iter::empty(),
+        )?;
+        ctx.eval_with_options::<Promise, _>(source.code.as_str(), {
             let mut options = EvalOptions::default();
             options.global = true;
             options.promise = true;
@@ -644,7 +633,7 @@ impl Engine {
             // A REPL line has no file; naming it after one would be a
             // lie the resolver could act on, so it gets a name no URL
             // parser accepts.
-            options.filename = Some(Self::EVAL_SCRIPT_NAME.to_owned());
+            options.filename = Some(source.filename.clone());
             options
         })?
         .into_future::<Object>()
@@ -655,20 +644,41 @@ impl Engine {
     pub async fn eval<U: for<'js> FromJs<'js> + Send + Sync + 'static>(
         &self, src: &str,
     ) -> Result<U, EngineError> {
-        let src = self.prepare_eval_source(src)?;
-        Ok(self
-            .context
-            .async_with(async |ctx| Self::eval_prepared(ctx, &src).await)
-            .await?)
+        self.context
+            .async_with(async |ctx| {
+                let src = self.prepare_eval_source(&ctx, src)?;
+                Self::eval_prepared(ctx.clone(), &src)
+                    .await
+                    .map_err(|error| Self::take_error(&ctx, error))
+            })
+            .await
     }
 
-    /// Reap every worker this realm spawned: interrupt each one and join its
-    /// thread, which a parked worker needs because it has nothing to
-    /// interrupt. Stopping the realm itself is dropping the `Engine`, so an
-    /// embedder calls this and then drops it.
+    /// Take a pending exception that a host handled directly, and retract the
+    /// promise-tracker copy of the same reason before formatting it.
+    pub fn take_exception(ctx: &Ctx<'_>) -> den_util::stack::JsError {
+        let value = ctx.catch();
+        if let Some(pending) = ctx.userdata::<PendingRejections>() {
+            let reason = Persistent::save(ctx, value.clone());
+            if let Ok(mut unhandled) = pending.unhandled.try_borrow_mut() {
+                unhandled.retain(|(_, candidate)| *candidate != reason);
+            }
+            if let Ok(mut claimed) = pending.claimed.try_borrow_mut() {
+                claimed.push(reason);
+            }
+        }
+        den_util::stack::JsError::from_value(ctx, &value)
+    }
+
+    /// Finish host resources and deferred QuickJS cleanup before dropping the
+    /// engine. This is required after cancelling `run_file`, `run_module`, or
+    /// `eval` mid-await; dropping such a future can defer value release until
+    /// the runtime lock is reacquired here.
     pub async fn shutdown(&self) {
         #[cfg(feature = "stdlib-worker")]
         den_stdlib_worker::worker::shutdown(&self.context).await;
+        #[cfg(feature = "stdlib-kv")]
+        den_stdlib_kv::KvRegistry::shutdown(&self.context).await;
         let _ = self
             .context
             .with(|ctx| {
@@ -698,8 +708,8 @@ impl Engine {
     /// Install an [import map](https://wicg.github.io/import-maps/) on this
     /// realm. Relative `./` / `../` targets join against `base_dir`. Calling
     /// again replaces the previous map.
-    pub async fn set_import_map(
-        &self, json: &str, base_dir: impl AsRef<Path> + Send,
+    pub async fn set_import_map<P: AsRef<Path> + Send>(
+        &self, json: &str, base_dir: P,
     ) -> Result<(), EngineError> {
         let map = ImportMap::parse(json, base_dir.as_ref())?;
         self.context
@@ -752,7 +762,7 @@ impl Engine {
     {
         ctx.store_userdata(data)
             .map(|_| ())
-            .map_err(|_| rquickjs::Error::UserData(UserDataError(())))
+            .map_err(|_error| rquickjs::Error::UserData(UserDataError(())))
     }
 
     /// QuickJS' promise rejection tracker: `handled` is false when a promise
@@ -790,12 +800,11 @@ impl Engine {
         let was_reported = pending
             .outstanding
             .try_borrow_mut()
-            .map(|mut outstanding| {
+            .is_ok_and(|mut outstanding| {
                 let before = outstanding.len();
                 outstanding.retain(|(promise, _)| *promise != rejected);
                 outstanding.len() != before
-            })
-            .unwrap_or(false);
+            });
         drop(pending);
 
         if was_reported {
@@ -923,20 +932,22 @@ impl Engine {
 
     /// How den renders a value nobody caught: an exception prints itself,
     /// message and stack included; anything else is coerced to a string.
-    fn describe(value: &Value<'_>) -> String {
-        value
-            .as_exception()
-            .map(|exception| exception.to_string())
-            .or_else(|| {
-                value
-                    .get::<Coerced<String>>()
-                    .ok()
-                    .map(|Coerced(text)| text)
-            })
-            .unwrap_or_else(|| "unknown error".to_owned())
+    fn describe(value: &Value<'_>) -> String { den_util::stack::format_thrown(value.ctx(), value) }
+
+    fn take_error(ctx: &Ctx<'_>, error: rquickjs::Error) -> EngineError {
+        match error {
+            rquickjs::Error::Exception => {
+                EngineError::JavaScript(Box::new(Self::take_exception(ctx)))
+            }
+            error => EngineError::Rquickjs(error),
+        }
     }
 }
 
+#[expect(
+    clippy::module_name_repetitions,
+    reason = "EngineError is the public error paired with Engine"
+)]
 #[derive(Display, From, Error, Debug)]
 pub enum EngineError {
     #[cfg(feature = "transpile")]
@@ -944,6 +955,7 @@ pub enum EngineError {
     EasyOxcTranspiler(EasyOxcTranspilerError),
     #[from]
     Rquickjs(rquickjs::Error),
+    JavaScript(Box<den_util::stack::JsError>),
     #[from]
     ImportMap(ImportMapError),
 }
