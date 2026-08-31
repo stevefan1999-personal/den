@@ -1,5 +1,4 @@
-if (typeof self === "undefined") { globalThis.self = globalThis; }
-globalThis.window = globalThis;
+if (typeof self === "undefined") globalThis.self = globalThis;
 (function () {
   var nativeSet = globalThis.setTimeout;
   var nativeClear = globalThis.clearTimeout;
@@ -10,7 +9,7 @@ globalThis.window = globalThis;
   }
   if (typeof nativeClear === "function") {
     globalThis.clearTimeout = function (id) {
-      if (id == null) { return; }
+      if (id == null) return;
       return nativeClear(id);
     };
   }

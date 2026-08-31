@@ -1077,7 +1077,6 @@ dependencies = [
  "den-util",
  "derive_more",
  "dunce",
- "futures",
  "libtest-mimic",
  "oxc_sourcemap",
  "reqwest",
@@ -1085,7 +1084,6 @@ dependencies = [
  "rustls",
  "serde_json",
  "tokio",
- "tokio-tungstenite",
  "url",
 ]
 
