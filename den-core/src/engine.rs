@@ -677,8 +677,8 @@ impl Engine {
             .await;
     }
 
-    /// The authority installed by the builder. A missing value fails closed,
-    /// though initialized engines always contain one.
+    /// The host policy metadata installed by the builder. Builtin operations
+    /// do not enforce it yet.
     pub async fn policy(&self) -> Policy {
         self.context
             .with(|ctx| {

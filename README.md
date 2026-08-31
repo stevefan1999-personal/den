@@ -44,9 +44,11 @@ Made during the Easter holiday of 2023.
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
   thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
 - Everything above is a cargo feature, so you can compile most of it away
-- Host-side foundations for deny-by-default capability policies and bounded
+- Host-side policy values (not yet enforced by builtin operations) and bounded
   engines, plus a SeaORM-managed SQLite content-addressed package store using
-  Resolvo for deterministic flat dependency solving. Hosts can hydrate an
+  Resolvo for deterministic flat dependency solving. Solved root/dependency
+  edges stay importer-scoped; SeaORM migrations, exact schema validation, and
+  finite hydration budgets protect the store boundary. Hosts can hydrate an
   immutable package-module snapshot into `EngineBuilder`; registry fetching,
   lockfiles, and package commands are not wired into the CLI yet.
 

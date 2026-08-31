@@ -6,6 +6,9 @@
 //! logical avoids lossy scope rewriting and makes it impossible for a child
 //! to broaden its parent.
 //!
+//! These are host-side policy values. Den's standard-library operations do not
+//! enforce them yet; embedders must call [`Policy::check`] at their boundaries.
+//!
 //! Path matching here is deliberately lexical. [`NormalizedPath`] removes
 //! `.` and `..`, requires an absolute path, and uses path-component boundaries,
 //! but it cannot stop symlink swaps or other TOCTOU attacks. Filesystem and FFI
