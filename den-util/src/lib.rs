@@ -26,9 +26,9 @@ pub struct BufferSource(Vec<u8>);
 
 #[derive(JsLifetime)]
 struct BufferSourceIntrinsics<'js> {
-    data_view_buffer: Function<'js>,
-    data_view_offset: Function<'js>,
-    data_view_length: Function<'js>,
+    buffer: Function<'js>,
+    offset: Function<'js>,
+    length: Function<'js>,
 }
 
 /// Capture DataView's native accessors before user code can replace globals or
@@ -44,9 +44,9 @@ pub fn install_buffer_source_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
             .get("get")
     };
     ctx.store_userdata(BufferSourceIntrinsics {
-        data_view_buffer: getter("buffer")?,
-        data_view_offset: getter("byteOffset")?,
-        data_view_length: getter("byteLength")?,
+        buffer: getter("buffer")?,
+        offset: getter("byteOffset")?,
+        length: getter("byteLength")?,
     })
     .map(|_| ())
     .map_err(|_error| Error::UserData(UserDataError(())))
@@ -132,9 +132,9 @@ impl BufferSource {
             .userdata::<BufferSourceIntrinsics<'js>>()
             .ok_or_else(|| Exception::throw_type(ctx, "BufferSource intrinsics are unavailable"))?;
         Ok((
-            intrinsics.data_view_buffer.clone(),
-            intrinsics.data_view_offset.clone(),
-            intrinsics.data_view_length.clone(),
+            intrinsics.buffer.clone(),
+            intrinsics.offset.clone(),
+            intrinsics.length.clone(),
         ))
     }
 }

@@ -241,6 +241,10 @@ mod tests {
 
     #[cfg(feature = "transpile")]
     #[tokio::test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions verify package modules cannot be shadowed"
+    )]
     async fn package_modules_precede_embedded_bundle_entries() -> TestResult {
         let snapshot = Arc::new(fixture().await?);
         assert_eq!(snapshot.resolve("entry", "@scope/app")?, PACKAGE_MAIN);
