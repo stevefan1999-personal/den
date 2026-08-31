@@ -91,8 +91,8 @@ fn value_of_agrees_with_the_value_getter() {
         let by_getter = global.get_value(ctx.clone()).unwrap();
         let by_value_of = global.value_of(ctx.clone()).unwrap();
         assert_eq!(
-            by_getter.as_float().unwrap(),
-            by_value_of.as_float().unwrap()
+            by_getter.as_float().unwrap().to_bits(),
+            by_value_of.as_float().unwrap().to_bits()
         );
     })
 }
