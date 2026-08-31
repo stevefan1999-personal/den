@@ -7,19 +7,14 @@
 use std::{
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
 
 use derive_more::{Display, Error};
-use either::Either;
 use futures::{SinkExt as _, StreamExt as _};
-use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result as JsResult, TypedArray,
-    Value, class::Trace, function::Opt,
-};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
@@ -149,12 +144,9 @@ impl AsyncWrite for Transport {
 
 /// Background client with command/event channels.
 pub struct NativeWebSocket {
-    commands:   mpsc::UnboundedSender<Command>,
-    events:     tokio::sync::Mutex<mpsc::UnboundedReceiver<NativeWsEvent>>,
-    buffered:   Arc<AtomicUsize>,
-    protocol:   Arc<Mutex<String>>,
-    extensions: Arc<Mutex<String>>,
-    url:        String,
+    commands: mpsc::UnboundedSender<Command>,
+    events:   tokio::sync::Mutex<mpsc::UnboundedReceiver<NativeWsEvent>>,
+    buffered: Arc<AtomicUsize>,
 }
 
 impl NativeWebSocket {
@@ -230,12 +222,7 @@ impl NativeWebSocket {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let buffered = Arc::new(AtomicUsize::new(0));
-        let protocol = Arc::new(Mutex::new(String::new()));
-        let extensions = Arc::new(Mutex::new(String::new()));
-        let serialized = parsed.to_string();
         handle.spawn({
-            let protocol = Arc::clone(&protocol);
-            let extensions = Arc::clone(&extensions);
             let buffered = Arc::clone(&buffered);
             async move {
                 let opened = async {
@@ -320,10 +307,8 @@ impl NativeWebSocket {
                 .await;
                 match opened {
                     Ok((stream, selected, negotiated_ext)) => {
-                        store_string(&protocol, selected.clone());
-                        store_string(&extensions, negotiated_ext.clone());
                         let _ = event_tx.send(NativeWsEvent::Open {
-                            protocol:   selected.clone(),
+                            protocol:   selected,
                             extensions: negotiated_ext,
                         });
                         let _ = run(stream, event_tx, command_rx, buffered).await;
@@ -343,9 +328,6 @@ impl NativeWebSocket {
             commands: command_tx,
             events: tokio::sync::Mutex::new(event_rx),
             buffered,
-            protocol,
-            extensions,
-            url: serialized,
         })
     }
 
@@ -366,12 +348,6 @@ impl NativeWebSocket {
     pub async fn next_event(&self) -> Option<NativeWsEvent> {
         self.events.lock().await.recv().await
     }
-
-    pub fn url(&self) -> &str { &self.url }
-
-    pub fn protocol(&self) -> String { lock_string(&self.protocol) }
-
-    pub fn extensions(&self) -> String { lock_string(&self.extensions) }
 
     pub fn buffered_amount(&self) -> usize { self.buffered.load(Ordering::Relaxed) }
 
@@ -407,17 +383,6 @@ pub fn is_valid_subprotocol(name: &str) -> bool {
 }
 
 fn discard_error(error: impl std::fmt::Display) { let _ = error.to_string(); }
-
-fn lock_string(lock: &Mutex<String>) -> String {
-    lock.lock()
-        .map_or_else(|_| String::new(), |guard| guard.clone())
-}
-
-fn store_string(lock: &Mutex<String>, value: String) {
-    if let Ok(mut guard) = lock.lock() {
-        *guard = value;
-    }
-}
 
 fn reduce_buffered(buffered: &AtomicUsize, amount: usize) {
     let _ = buffered.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -545,139 +510,6 @@ where
             });
             Err(error)
         }
-    }
-}
-
-/// Low-level `den:networking` export. Not installed as a global — the WHATWG
-/// `WebSocket` constructor stays in `den:whatwg`.
-#[derive(Trace, JsLifetime)]
-#[rquickjs::class(rename = "WebSocket")]
-pub struct WebSocketWrapper {
-    #[qjs(skip_trace)]
-    inner: std::rc::Rc<NativeWebSocket>,
-}
-
-#[rquickjs::methods(rename_all = "camelCase")]
-impl WebSocketWrapper {
-    #[qjs(constructor)]
-    pub fn js_ctor(ctx: Ctx<'_>) -> JsResult<Self> {
-        Err(Exception::throw_type(
-            &ctx,
-            "WebSocket is not constructible; use WebSocket.connect",
-        ))
-    }
-
-    #[qjs(static)]
-    pub fn connect<'js>(ctx: Ctx<'js>, url: String, protocols: Opt<Value<'js>>) -> JsResult<Self> {
-        let protocols = match protocols.0 {
-            None => Vec::new(),
-            Some(value) if value.is_undefined() => Vec::new(),
-            Some(value) => {
-                if let Some(string) = value.as_string() {
-                    let text = string.to_string()?;
-                    if text.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![text]
-                    }
-                } else if let Some(array) = value.as_array() {
-                    let mut protocols = Vec::new();
-                    for entry in array.clone() {
-                        protocols.push(Coerced::<String>::from_js(&ctx, entry?)?.0);
-                    }
-                    protocols
-                } else {
-                    return Err(Exception::throw_type(
-                        &ctx,
-                        "Failed to convert value to a sequence of protocol strings",
-                    ));
-                }
-            }
-        };
-        let inner = NativeWebSocket::connect(&url, &protocols)
-            .map_err(|error| den_util::stack::throw_error(&ctx, &error.to_string()))?;
-        Ok(Self {
-            inner: std::rc::Rc::new(inner),
-        })
-    }
-
-    #[qjs(get)]
-    pub fn url(&self) -> String { self.inner.url().to_owned() }
-
-    #[qjs(get)]
-    pub fn protocol(&self) -> String { self.inner.protocol() }
-
-    #[qjs(get)]
-    pub fn extensions(&self) -> String { self.inner.extensions() }
-
-    #[qjs(get)]
-    pub fn buffered_amount(&self) -> i32 {
-        i32::try_from(self.inner.buffered_amount()).unwrap_or(i32::MAX)
-    }
-
-    pub fn send<'js>(&self, ctx: Ctx<'js>, data: crate::io::JsByteBuf<'js>) -> JsResult<()> {
-        let result = match data {
-            Either::Left(text) => self.inner.send_text(text),
-            Either::Right(Either::Left(bytes)) => self.inner.send_binary(bytes),
-            Either::Right(Either::Right(view)) => {
-                let Some(bytes) = view.as_bytes() else {
-                    return Err(Exception::throw_type(&ctx, "ArrayBuffer is detached"));
-                };
-                self.inner.send_binary(bytes.to_vec())
-            }
-        };
-        result.map_err(|error| den_util::stack::throw_error(&ctx, &error.to_string()))
-    }
-
-    pub fn close(&self, code: Opt<u32>, reason: Opt<String>) {
-        let code = code.0.and_then(|value| u16::try_from(value).ok());
-        self.inner.close_opt(code, reason.0.unwrap_or_default());
-    }
-
-    pub async fn next_event<'js>(&self, ctx: Ctx<'js>) -> JsResult<Object<'js>> {
-        let event = self
-            .inner
-            .next_event()
-            .await
-            .unwrap_or(NativeWsEvent::Close {
-                code:      1006,
-                reason:    String::new(),
-                was_clean: false,
-            });
-        let object = Object::new(ctx.clone())?;
-        match event {
-            NativeWsEvent::Open {
-                protocol,
-                extensions,
-            } => {
-                object.set("type", "open")?;
-                object.set("protocol", protocol)?;
-                object.set("extensions", extensions)?;
-            }
-            NativeWsEvent::Text(text) => {
-                object.set("type", "text")?;
-                object.set("data", text)?;
-            }
-            NativeWsEvent::Binary(bytes) => {
-                object.set("type", "binary")?;
-                object.set("data", TypedArray::<u8>::new_copy(ctx.clone(), bytes)?)?;
-            }
-            NativeWsEvent::Error(message) => {
-                object.set("type", "error")?;
-                object.set("message", message)?;
-            }
-            NativeWsEvent::Close {
-                code,
-                reason,
-                was_clean,
-            } => {
-                object.set("type", "close")?;
-                object.set("code", code)?;
-                object.set("reason", reason)?;
-                object.set("wasClean", was_clean)?;
-            }
-        }
-        Ok(object)
     }
 }
 
