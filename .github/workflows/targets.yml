@@ -499,55 +499,6 @@ jobs:
               --target ${{ matrix.target }} --no-default-features \
               --features stdlib,typescript,react,wasm,wasi,jit,mimalloc,ring,rquickjs/bindgen
 
-  illumos:
-    name: x86_64-unknown-illumos
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-    env:
-      CARGO_BUILD_JOBS: "2"
-      DEN_TEST_CC: gcc
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
-      - name: Build and test on OmniOS r151058
-        uses: vmactions/omnios-vm@317e4f8069dad8a65e1520808f1a68ef3fd20565 # v1.3.6
-        with:
-          release: r151058-build
-          mem: 10240
-          copyback: false
-          envs: >-
-            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
-            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
-          prepare: |
-            pkg install build-essential developer/nasm developer/pkg-config \
-              developer/versioning/git web/curl runtime/perl
-            pkg publisher extra.omnios >/dev/null 2>&1 || \
-              pkg set-publisher -g https://pkg.omnios.org/r151058/extra/ extra.omnios
-            pkg install ooce/developer/cmake ooce/developer/clang-19
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain stable
-            mkdir -p "$HOME/.cargo/bin"
-            archive=/tmp/cargo-nextest.tar.gz
-            curl --proto '=https' --tlsv1.2 -fsSLo "$archive" \
-              https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.143/cargo-nextest-0.9.143-x86_64-unknown-illumos.tar.gz
-            test "$(digest -a sha256 "$archive")" = \
-              91e6d9fa6bd5c4f30ab8b8bdc3cd3a7e225d2f91b4a2c35a1164c9e5d972e9c9
-            tar -xzf "$archive" -C "$HOME/.cargo/bin"
-          run: |
-            export PATH="$HOME/.cargo/bin:/opt/ooce/bin:/usr/gnu/bin:$PATH"
-            export LIBCLANG_PATH=/opt/ooce/llvm-19/lib
-            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
-              --target x86_64-unknown-illumos --no-default-features \
-              --features stdlib,typescript,react,wasm,wasi,jit,ring,rquickjs/bindgen \
-              --test-threads 1
-
   netbsd:
     name: x86_64-unknown-netbsd
     runs-on: ubuntu-24.04
@@ -583,58 +534,13 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
               | sh -s -- -y --profile minimal --default-toolchain stable
             . "$HOME/.cargo/env"
-            # Newer releases pull a pager stack that does not compile on NetBSD or Solaris.
+            # Newer releases pull a pager stack that does not compile on NetBSD.
             cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
           run: |
             export PATH="$HOME/.cargo/bin:/usr/pkg/bin:$PATH"
             export LIBCLANG_PATH=/usr/pkg/lib
             cargo nextest run --locked --profile compat --no-fail-fast --workspace \
               --exclude den-stdlib-wasm --target x86_64-unknown-netbsd \
-              --no-default-features \
-              --features stdlib,typescript,react,ring,rquickjs/bindgen \
-              --test-threads 1
-
-  solaris:
-    name: x86_64-pc-solaris
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-    env:
-      CARGO_BUILD_JOBS: "2"
-      DEN_TEST_CC: clang
-    steps:
-      - uses: actions/checkout@v4
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
-      - name: Build and test on Solaris 11.4
-        uses: vmactions/solaris-vm@96d8d976f9e67d82ec6c7e8ce9c1060731f9e21c # v1.3.9
-        with:
-          release: 11.4-clang-19
-          mem: 10240
-          copyback: false
-          envs: >-
-            CARGO_BUILD_JOBS CARGO_INCREMENTAL CARGO_PROFILE_TEST_DEBUG
-            DEN_TEST_CC INSTA_UPDATE RUST_BACKTRACE
-          prepare: |
-            export PATH="/usr/llvm/19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
-            pkg install --accept developer/nasm
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain stable
-            . "$HOME/.cargo/env"
-            # Newer releases pull a pager stack that does not compile on NetBSD or Solaris.
-            cargo install cargo-nextest --version 0.9.114 --locked --no-default-features
-          run: |
-            export PATH="$HOME/.cargo/bin:/usr/llvm/19/bin:/usr/gnu/bin:/opt/csw/bin:$PATH"
-            export LIBCLANG_PATH=/usr/llvm/19/lib/amd64
-            export CC_x86_64_pc_solaris=clang
-            export CFLAGS_x86_64_pc_solaris='-U_GNU_SOURCE -D_POSIX_C_SOURCE=200809L -D_STRICT_SYMBOLS'
-            cargo nextest run --locked --profile compat --no-fail-fast --workspace \
-              --exclude den-stdlib-wasm --target x86_64-pc-solaris \
               --no-default-features \
               --features stdlib,typescript,react,ring,rquickjs/bindgen \
               --test-threads 1
