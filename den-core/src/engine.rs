@@ -29,6 +29,8 @@ use {
     tokio::{runtime::Handle, task::block_in_place},
 };
 
+#[cfg(feature = "package-store")]
+use crate::package::{PackageLoader, PackageResolver};
 use crate::{
     builder::{EngineBuilder, EngineSettings},
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
@@ -283,6 +285,8 @@ impl Engine {
         let worker_settings = settings.clone();
         #[cfg(feature = "stdlib-process")]
         let argv = settings.argv.clone();
+        #[cfg(feature = "package-store")]
+        let package_modules = settings.package_modules.clone();
         let policy = settings.policy;
 
         {
@@ -342,6 +346,8 @@ impl Engine {
                 ImportMapResolver,
                 builtin_resolver,
                 bundle,
+                #[cfg(feature = "package-store")]
+                PackageResolver::optional(package_modules.clone()),
                 HttpResolver,
                 // Ahead of `FileResolver`, which reads every name as relative
                 // to the working directory and so can answer neither for an
@@ -356,6 +362,8 @@ impl Engine {
                 BuiltinLoader::default(),
                 builtin_loader,
                 bundle,
+                #[cfg(feature = "package-store")]
+                PackageLoader::optional(package_modules),
                 HttpLoader,
                 Self::SCRIPT_PATTERNS
                     .iter()

@@ -1,4 +1,9 @@
+#[cfg(feature = "package-store")]
+use std::sync::Arc;
+
 use den_capabilities::Policy;
+#[cfg(feature = "package-store")]
+use den_package_store::PackageModuleSnapshot;
 use rquickjs::{AsyncRuntime, loader::Bundle};
 
 use self::allocator::BoundedAllocator;
@@ -15,23 +20,27 @@ const EMPTY_BUNDLE: Bundle = rquickjs::loader::bundle::Bundle(&rquickjs::phf::Ma
 
 #[derive(Clone, Debug)]
 pub(crate) struct EngineSettings {
-    pub(crate) max_stack_size: usize,
-    pub(crate) gc_threshold:   usize,
-    pub(crate) heap_limit:     Option<usize>,
-    pub(crate) policy:         Policy,
-    pub(crate) argv:           Vec<String>,
+    pub(crate) max_stack_size:  usize,
+    pub(crate) gc_threshold:    usize,
+    pub(crate) heap_limit:      Option<usize>,
+    pub(crate) policy:          Policy,
+    pub(crate) argv:            Vec<String>,
+    #[cfg(feature = "package-store")]
+    pub(crate) package_modules: Option<Arc<PackageModuleSnapshot>>,
 }
 
 impl Default for EngineSettings {
     fn default() -> Self {
         Self {
-            max_stack_size: DEFAULT_MAX_STACK_SIZE,
-            gc_threshold:   DEFAULT_GC_THRESHOLD,
-            heap_limit:     None,
-            policy:         Policy::default(),
-            argv:           std::env::args_os()
+            max_stack_size:                                    DEFAULT_MAX_STACK_SIZE,
+            gc_threshold:                                      DEFAULT_GC_THRESHOLD,
+            heap_limit:                                        None,
+            policy:                                            Policy::default(),
+            argv:                                              std::env::args_os()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
+            #[cfg(feature = "package-store")]
+            package_modules:                                   None,
         }
     }
 }
@@ -85,6 +94,13 @@ impl EngineBuilder {
     #[must_use]
     pub fn argv(mut self, argv: Vec<String>) -> Self {
         self.settings.argv = argv;
+        self
+    }
+
+    #[cfg(feature = "package-store")]
+    #[must_use]
+    pub fn package_modules(mut self, snapshot: Arc<PackageModuleSnapshot>) -> Self {
+        self.settings.package_modules = Some(snapshot);
         self
     }
 

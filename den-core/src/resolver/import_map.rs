@@ -54,6 +54,9 @@ impl ImportMap {
     /// Resolve to a target, block the import, or leave it to the next resolver.
     fn resolve(&self, specifier: &str, parent: &str) -> Mapping {
         let referrer = specifier_url(parent).unwrap_or_else(|| self.0.base_url().clone());
+        if referrer.scheme() == "den-pkg" {
+            return Mapping::Miss;
+        }
         let fallback = url_like_specifier(specifier, &referrer);
         match self.0.resolve(specifier, &referrer) {
             Ok(target) if fallback.as_ref() == Some(&target) => Mapping::Miss,
