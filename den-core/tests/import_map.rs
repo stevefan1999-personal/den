@@ -29,6 +29,17 @@ async fn exact_import_map_match_loads_the_mapped_module() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn eval_uses_the_top_level_import_map() -> eyre::Result<()> {
+    let directory = fixture("exact");
+    let map = std::fs::read_to_string(directory.join("map.json"))?;
+    let engine = Engine::new().await;
+    engine.set_import_map(&map, &directory).await?;
+    let got = engine.eval::<usize>(r#"(await import("lib")).x"#).await?;
+    eyre::ensure!(got == 42, "expected 42, got {got}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn prefix_import_map_match_appends_the_remainder() -> eyre::Result<()> {
     let engine = run("prefix").await?;
     let got = engine.eval::<String>("globalThis.got").await?;
