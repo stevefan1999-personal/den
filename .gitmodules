@@ -23,3 +23,10 @@
 	path = vendor/wpt
 	url = https://github.com/web-platform-tests/wpt.git
 	shallow = true
+# vendor/cts is the official WebGPU Conformance Test Suite.
+# Official files are `src/webgpu/**/*.spec.ts`. The harness never rewrites them.
+# After `git submodule update --init --depth 1 vendor/cts` the tree is ready.
+[submodule "vendor/cts"]
+	path = vendor/cts
+	url = https://github.com/gpuweb/cts.git
+	shallow = true
