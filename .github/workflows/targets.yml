@@ -11,6 +11,7 @@ on:
       - ".cargo/**"
       - ".config/nextest.toml"
       - ".github/musl-nextest.*"
+      - ".github/workflows/runner-route.yml"
       - ".github/workflows/targets.yml"
       - "den-*/**"
       - "src/**"
@@ -24,6 +25,7 @@ on:
       - ".cargo/**"
       - ".config/nextest.toml"
       - ".github/musl-nextest.*"
+      - ".github/workflows/runner-route.yml"
       - ".github/workflows/targets.yml"
       - "den-*/**"
       - "src/**"
@@ -43,16 +45,19 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  route:
+    uses: ./.github/workflows/runner-route.yml
+
   native:
     name: ${{ matrix.target }}
-    runs-on: ${{ matrix.runner }}
+    needs: route
+    runs-on: ${{ matrix.runner || needs.route.outputs.shell }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
             cc: cc
             cc_args: ""
             features: stdlib,typescript,react,wasm,wasi,jit,mimalloc
@@ -150,7 +155,8 @@ jobs:
 
   cross-linux:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-24.04
+    needs: route
+    runs-on: ${{ needs.route.outputs.dind }}
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -317,7 +323,8 @@ jobs:
 
   powerpc-musl:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-24.04
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -348,9 +355,11 @@ jobs:
           curl --proto '=https' --tlsv1.2 -fsSL \
             "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
             -o "$fixture"
-      - name: Install Rust, QEMU, and libclang
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET"
+      - name: Install hosted-runner dependencies
+        if: needs.route.outputs.available != 'true'
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET"
           sudo apt-get update
           sudo apt-get install -y libclang-dev qemu-user
       - name: Install musl cross-toolchain
@@ -393,7 +402,8 @@ jobs:
 
   musl-release:
     name: x86_64-unknown-linux-musl release
-    runs-on: ubuntu-24.04
+    needs: route
+    runs-on: ${{ needs.route.outputs.shell }}
     timeout-minutes: 30
     env:
       RUSTC_WRAPPER: sccache
@@ -405,8 +415,10 @@ jobs:
         with:
           version: v0.16.0
       - name: Install musl target and toolchain
+        run: rustup target add x86_64-unknown-linux-musl
+      - name: Install hosted-runner musl tools
+        if: needs.route.outputs.available != 'true'
         run: |
-          rustup target add x86_64-unknown-linux-musl
           sudo apt-get update
           sudo apt-get install -y musl-tools
       - name: Build the default-static release binary
@@ -418,7 +430,8 @@ jobs:
 
   musl-ffi:
     name: x86_64-unknown-linux-musl dynamic FFI
-    runs-on: ubuntu-24.04
+    needs: route
+    runs-on: ${{ needs.route.outputs.dind }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

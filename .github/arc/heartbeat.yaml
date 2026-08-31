@@ -1,0 +1,173 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arc-heartbeat
+  namespace: arc-runners
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: arc-heartbeat
+  namespace: arc-systems
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: arc-heartbeat
+  namespace: arc-systems
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: arc-heartbeat
+subjects:
+  - kind: ServiceAccount
+    name: arc-heartbeat
+    namespace: arc-runners
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: arc-heartbeat-apiserver
+  namespace: arc-runners
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: arc-heartbeat
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Standard NetworkPolicy cannot select GitHub by DNS name.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32
+        - ipBlock:
+            cidr: fd01::1/128
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 192.168.2.10/32
+        - ipBlock:
+            cidr: fd02::10/128
+      ports:
+        - protocol: TCP
+          port: 6443
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: arc-heartbeat
+  namespace: arc-runners
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 45
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: arc-heartbeat
+        spec:
+          serviceAccountName: arc-heartbeat
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: heartbeat
+              image: curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: arc-github-auth
+                      key: github_token
+              command: ["/bin/sh", "-eu", "-c"]
+              args:
+                - |
+                  api=https://kubernetes.default.svc
+                  token=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  pods=$(curl --fail --silent --show-error \
+                    --connect-timeout 5 --max-time 10 \
+                    --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+                    --header "Authorization: Bearer $token" \
+                    "$api/api/v1/namespaces/arc-systems/pods?pretty=false&labelSelector=app.kubernetes.io%2Fcomponent%3Drunner-scale-set-listener%2Cactions.github.com%2Frepository%3Dden")
+
+                  running=$(printf %s "$pods" | grep -o '"phase":"Running"' | wc -l)
+                  ready=$(printf %s "$pods" | grep -o '"type":"Ready"[^}]*"status":"True"' | wc -l)
+                  if test "$running" -ne 3 -o "$ready" -ne 3; then
+                    echo "ARC listeners: running=$running ready=$ready expected=3" >&2
+                    exit 1
+                  fi
+
+                  now=$(date +%s)
+                  body=$(printf '{"name":"ARC_HEARTBEAT_EPOCH","value":"%s"}' "$now")
+                  status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                    --connect-timeout 5 --max-time 10 \
+                    --request PATCH \
+                    --header 'Accept: application/vnd.github+json' \
+                    --header "Authorization: Bearer $GITHUB_TOKEN" \
+                    --header 'Content-Type: application/json' \
+                    --header 'X-GitHub-Api-Version: 2022-11-28' \
+                    --data "$body" \
+                    https://api.github.com/repos/stevefan1999-personal/den/actions/variables/ARC_HEARTBEAT_EPOCH)
+
+                  if test "$status" = 404; then
+                    status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                      --connect-timeout 5 --max-time 10 \
+                      --request POST \
+                      --header 'Accept: application/vnd.github+json' \
+                      --header "Authorization: Bearer $GITHUB_TOKEN" \
+                      --header 'Content-Type: application/json' \
+                      --header 'X-GitHub-Api-Version: 2022-11-28' \
+                      --data "$body" \
+                      https://api.github.com/repos/stevefan1999-personal/den/actions/variables)
+                  fi
+
+                  test "$status" = 204 -o "$status" = 201
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 32Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+                runAsGroup: 102
+                runAsNonRoot: true
+                runAsUser: 101
