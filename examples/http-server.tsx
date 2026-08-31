@@ -1,41 +1,38 @@
+/// <reference path="../types/den-http.d.ts" />
+
 // cargo run -- examples/http-server.tsx
-//
-// Stays up until Ctrl+C. Open http://127.0.0.1:8080
-// One QuickJS realm does accept + SQLite + React. For a worker pool, see
-// http-server-workers.tsx.
+// Open http://127.0.0.1:8080 and press Ctrl+C to stop.
 
+import { serve } from "den:http";
 import { addSignalListener, cwd, env, exit } from "den:process";
-import { TcpListener } from "den:networking";
-import { encode, readRequest } from "./http.ts";
-import { connections, dest, writeAll, type ByteStream } from "./net.ts";
-import { ensureSchema, handle, openNotes, type Sqlite } from "./notes.ts";
+import { fromRequest, toResponse } from "./http.ts";
+import { ensureSchema, handle, openNotes } from "./notes.ts";
 
-addSignalListener("SIGINT", () => exit(0));
-addSignalListener("SIGTERM", () => exit(0));
-
-async function serve(db: Sqlite, stream: ByteStream, peer: { toString(): string }): Promise<void> {
-  try {
-    const request = await readRequest(stream);
-    console.log(request.method, request.path, "from", peer.toString());
-    await writeAll(stream, encode(handle(db, request)));
-  } catch (error) {
-    console.error(error);
-  } finally {
-    await stream.shutdown();
-  }
-}
-
-const port = env.PORT ?? "8080";
 const dbPath = `${cwd()}/notes.db`;
 const db = openNotes(dbPath);
 ensureSchema(db);
 
-const listener = await TcpListener.listen(`0.0.0.0:${port}`);
-console.log(`Open http://${dest(listener)}  (Ctrl+C to stop)`);
-console.log("sqlite", dbPath);
+const server = serve({
+  listen: { host: "0.0.0.0", port: Number(env.PORT ?? "8080") },
+  async fetch(request, connection) {
+    const input = await fromRequest(request);
+    console.log(
+      input.method,
+      input.path,
+      "from",
+      `${connection.remote.hostname}:${connection.remote.port}`,
+    );
+    return toResponse(handle(db, input));
+  },
+});
 
-for await (const { stream, peer } of connections(listener)) {
-  serve(db, stream, peer).catch((error: unknown) => {
-    console.error(error);
-  });
+async function shutdown(): Promise<void> {
+  await server.close();
+  exit(0);
 }
+
+addSignalListener("SIGINT", () => void shutdown());
+addSignalListener("SIGTERM", () => void shutdown());
+console.log(`Open ${server.url}  (Ctrl+C to stop)`);
+console.log("sqlite", dbPath);
+await server.finished;

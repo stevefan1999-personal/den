@@ -10,18 +10,17 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 publish = false
-
-[lib]
-test = false
+autolib = false
 
 [dev-dependencies]
 color-eyre.workspace = true
 den-core = { workspace = true }
-rquickjs.workspace = true
+rcgen.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [features]
-default = ["stdlib", "wasm", "jit", "typescript", "react"]
+default = ["stdlib", "wasm", "wasi", "jit", "typescript", "react", "ring"]
+ring = ["den-core/ring", "rcgen/ring"]
 stdlib = ["den-core/stdlib"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]

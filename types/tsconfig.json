@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "ESNext.Disposable"],
+    "lib": ["ES2022", "DOM", "ESNext.Disposable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "types": [],
@@ -10,5 +10,5 @@
     "skipLibCheck": false,
     "noEmit": true
   },
-  "include": ["./den-ffi.d.ts", "./use.ts"]
+  "include": ["./den-ffi.d.ts", "./den-http.d.ts", "./den-kv.d.ts", "./use.ts"]
 }
