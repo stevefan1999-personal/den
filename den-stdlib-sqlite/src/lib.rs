@@ -1,8 +1,10 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc};
+use std::{cell::RefCell, ops::Deref as _, rc::Rc};
 
+use den_util::BufferSource;
 use either::Either;
 use rquickjs::{
-    Array, BigInt, Ctx, Exception, JsLifetime, Object, Result, Value, class::Trace, prelude::*,
+    Array, BigInt, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, TypedArray, Value,
+    class::Trace, prelude::*,
 };
 use rusqlite::Statement;
 
@@ -18,12 +20,12 @@ impl Connection {
     // rquickjs only attaches `#[qjs(static)]` members to a class that
     // declares a constructor, and a `()` return makes `new Connection()`
     // throw: instances only come from `open`/`openInMemory`.
-    #[allow(
+    #[expect(
         clippy::new_ret_no_self,
         reason = "`#[qjs(constructor)]` marker; not constructible from JS"
     )]
     #[qjs(constructor)]
-    pub fn new() {}
+    pub const fn new() {}
 
     #[qjs(static)]
     pub fn open_in_memory(ctx: Ctx<'_>) -> Result<Connection> {
@@ -109,16 +111,15 @@ fn bind_parameters_from_rquickjs_object<'js>(
         return Err(Exception::throw_internal(&ctx, "too many parameters"));
     }
 
-    for param in params.into_iter() {
+    for param in params {
         let (key, value) = param?;
         let named_key = format!(":{}", key.to_string()?);
         let idx = stmt
             .parameter_index(&named_key)
             .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?
-            .ok_or(Exception::throw_internal(
-                &ctx,
-                &format!("no index for key {named_key}"),
-            ))?;
+            .ok_or_else(|| {
+                Exception::throw_internal(&ctx, &format!("no index for key {named_key}"))
+            })?;
 
         bind_rusqlite_statement_index_to_rquickjs_value(stmt, idx, value, ctx.clone())?;
     }
@@ -142,25 +143,50 @@ fn bind_parameters_from_rquickjs_array<'js>(
 fn bind_rusqlite_statement_index_to_rquickjs_value<'js>(
     stmt: &mut Statement<'_>, index: usize, value: Value<'js>, ctx: Ctx<'js>,
 ) -> Result<()> {
-    match value.type_of() {
-        rquickjs::Type::Bool => stmt.raw_bind_parameter(index, value.as_bool().unwrap()),
+    let bind = match value.type_of() {
+        rquickjs::Type::Bool => {
+            value
+                .as_bool()
+                .map(|value| stmt.raw_bind_parameter(index, value))
+        }
         rquickjs::Type::Int => {
-            if let Some(val) = value.as_big_int() {
-                stmt.raw_bind_parameter(index, val.clone().to_i64()?)
-            } else if let Some(val) = value.as_int() {
-                stmt.raw_bind_parameter(index, val)
-            } else {
-                unimplemented!("missing case for number")
-            }
+            value
+                .as_int()
+                .map(|value| stmt.raw_bind_parameter(index, value))
         }
-        rquickjs::Type::Float => stmt.raw_bind_parameter(index, value.as_float().unwrap()),
+        rquickjs::Type::BigInt => {
+            value
+                .as_big_int()
+                .map(|value| value.clone().to_i64())
+                .transpose()?
+                .map(|value| stmt.raw_bind_parameter(index, value))
+        }
+        rquickjs::Type::Float => {
+            value
+                .as_float()
+                .map(|value| stmt.raw_bind_parameter(index, value))
+        }
         rquickjs::Type::String => {
-            stmt.raw_bind_parameter(index, value.as_string().unwrap().to_string()?)
+            value
+                .as_string()
+                .map(rquickjs::String::to_string)
+                .transpose()?
+                .map(|value| stmt.raw_bind_parameter(index, value))
         }
-        rquickjs::Type::Null => stmt.raw_bind_parameter(index, rusqlite::types::Null),
-        _ => stmt.raw_bind_parameter(index, value.get::<Coerced<String>>()?.0),
-    }
-    .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
+        rquickjs::Type::Null => Some(stmt.raw_bind_parameter(index, rusqlite::types::Null)),
+        rquickjs::Type::Object => {
+            let bytes = BufferSource::from_js(&ctx, value)?.into_bytes();
+            Some(stmt.raw_bind_parameter(index, bytes))
+        }
+        _ => {
+            return Err(Exception::throw_type(
+                &ctx,
+                "SQLite parameters must be boolean, number, bigint, string, null, or BufferSource",
+            ));
+        }
+    };
+    bind.ok_or_else(|| Exception::throw_type(&ctx, "invalid SQLite parameter value"))?
+        .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
     Ok(())
 }
 
@@ -173,7 +199,10 @@ fn execute_stmt_and_collect_rows<'js>(
     let mut row_num = 0;
 
     let mut rows = stmt.raw_query();
-    while let Ok(Some(row)) = rows.next() {
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
+    {
         let values = Array::new(ctx.clone())?;
         for i in 0..column_count {
             let ctx = ctx.clone();
@@ -223,7 +252,7 @@ fn convert_rusqlite_to_rquickjs_value<'js>(
             let as_blob = this
                 .as_blob()
                 .map_err(|e| Exception::throw_internal(&ctx, &format!("{e}")))?;
-            as_blob.into_js(&ctx)
+            TypedArray::<u8>::new_copy(ctx, as_blob).map(TypedArray::into_value)
         }
     }
 }
