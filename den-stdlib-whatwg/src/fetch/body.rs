@@ -13,16 +13,6 @@ use rquickjs::{
 use super::headers::Headers;
 use crate::streams::ReadableStream;
 
-pub fn optional_object<'js>(
-    ctx: &Ctx<'js>, value: rquickjs::function::Opt<Value<'js>>,
-) -> Result<Option<Object<'js>>> {
-    match value.0 {
-        None => Ok(None),
-        Some(value) if value.is_undefined() || value.is_null() => Ok(None),
-        Some(value) => Object::from_js(ctx, value).map(Some),
-    }
-}
-
 pub fn is_readable_stream<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
     instance_of_global(ctx, value, "ReadableStream").unwrap_or(false)
 }

@@ -1,6 +1,6 @@
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, Function, IntoJs, JsLifetime, Object, Promise,
-    Result, TypedArray, Value,
+    Array, ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs, JsLifetime,
+    Object, Promise, Result, TypedArray, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
@@ -106,10 +106,7 @@ impl<'js> Request<'js> {
         {
             return Ok(existing);
         }
-        Class::instance(
-            ctx.clone(),
-            Self::new(ctx, input, Opt(init.map(Object::into_value)))?,
-        )
+        Class::instance(ctx.clone(), Self::new(ctx, input, Opt(Some(init)))?)
     }
 
     fn following_signal(ctx: &Ctx<'js>, source: Value<'js>) -> Result<Value<'js>> {
@@ -197,28 +194,12 @@ impl<'js> Request<'js> {
         }
     }
 
-    fn is_truthy(value: &Value<'js>) -> bool {
-        if value.is_null() || value.is_undefined() {
-            return false;
-        }
-        if let Some(flag) = value.as_bool() {
-            return flag;
-        }
-        if let Some(number) = value.as_number() {
-            return number != 0.0 && !number.is_nan();
-        }
-        if let Some(string) = value.as_string() {
-            return string.to_string().map_or(true, |text| !text.is_empty());
-        }
-        true
-    }
-
     fn optional_string(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<String>> {
         let value: Value = object.get(key)?;
-        if value.is_undefined() || value.is_null() {
+        if value.is_undefined() {
             return Ok(None);
         }
-        Ok(Some(den_util::coerce_string(ctx, value)?))
+        Ok(Some(Coerced::<String>::from_js(ctx, value)?.0))
     }
 
     fn location_href(ctx: &Ctx<'js>) -> String {
@@ -273,8 +254,10 @@ impl<'js> Request<'js> {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> Request<'js> {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, input: Value<'js>, options: Opt<Value<'js>>) -> Result<Self> {
-        let options = super::body::optional_object(&ctx, options)?;
+    pub fn new(
+        ctx: Ctx<'js>, input: Value<'js>, options: Opt<Option<Object<'js>>>,
+    ) -> Result<Self> {
+        let options = options.0.flatten();
         if let Some(object) = options.as_ref() {
             let window: Value = object.get("window")?;
             if !window.is_undefined() && !window.is_null() {
@@ -434,7 +417,7 @@ impl<'js> Request<'js> {
             }
             let keepalive_value: Value = object.get("keepalive")?;
             if !keepalive_value.is_undefined() {
-                keepalive = Self::is_truthy(&keepalive_value);
+                keepalive = Coerced::<bool>::from_js(&ctx, keepalive_value)?.0;
             }
             let signal_value: Value = object.get("signal")?;
             if !signal_value.is_undefined() {

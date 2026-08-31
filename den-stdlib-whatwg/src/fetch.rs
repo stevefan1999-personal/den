@@ -7,8 +7,8 @@ use std::{
 
 use futures::{Stream, StreamExt as _};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs, JsLifetime, Object,
-    Promise, Result, TypedArray, Value as JsValue,
+    Array, ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs, JsLifetime,
+    Object, Promise, Result, TypedArray, Value as JsValue,
     class::Trace,
     function::{Constructor, FuncArg, Opt as JsOpt, Rest, This},
 };
@@ -505,25 +505,21 @@ impl<'js> Response<'js> {
     #[qjs(constructor)]
     pub fn new(
         ctx: Ctx<'js>, body: rquickjs::function::Opt<JsValue<'js>>,
-        init: rquickjs::function::Opt<JsValue<'js>>,
+        init: rquickjs::function::Opt<Option<Object<'js>>>,
     ) -> Result<Self> {
-        let init = body::optional_object(&ctx, init)?;
+        let init = init.0.flatten();
         let mut status = 200_u16;
         let mut status_text = String::new();
         let headers_init = match init.as_ref() {
             Some(object) => {
-                if let Ok(value) = object.get::<_, JsValue>("status")
-                    && !value.is_undefined()
-                {
-                    let number = value
-                        .as_number()
-                        .unwrap_or_else(|| value.as_int().unwrap_or(0) as f64);
+                let value: JsValue = object.get("status")?;
+                if !value.is_undefined() {
+                    let number = Coerced::<f64>::from_js(&ctx, value)?.0;
                     status = body::validate_status(&ctx, number as i32)?;
                 }
-                if let Ok(value) = object.get::<_, JsValue>("statusText")
-                    && !value.is_undefined()
-                {
-                    status_text = den_util::coerce_string(&ctx, value)?;
+                let value: JsValue = object.get("statusText")?;
+                if !value.is_undefined() {
+                    status_text = Coerced::<String>::from_js(&ctx, value)?.0;
                     body::validate_status_text(&ctx, &status_text)?;
                 }
                 let headers: JsValue = object.get("headers")?;
@@ -656,7 +652,7 @@ impl<'js> Response<'js> {
         let response = Self::new(
             ctx.clone(),
             rquickjs::function::Opt(Some(text.into_js(&ctx)?)),
-            rquickjs::function::Opt(init.map(Object::into_value)),
+            rquickjs::function::Opt(Some(init)),
         )?;
         {
             let mut headers = response.headers.borrow_mut();
@@ -1320,17 +1316,15 @@ fn wrap_readable_stream_cancel<'js>(ctx: &Ctx<'js>) -> Result<()> {
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
     use den_util::ConstructorInstaller as _;
-    use rquickjs::{Ctx, Function, Result, Value, function::Opt, module::Exports};
+    use rquickjs::{Ctx, Function, Object, Result, Value, function::Opt, module::Exports};
 
-    use super::body;
     pub use super::{Headers, Request, Response};
 
     #[rquickjs::function]
     pub async fn fetch<'js>(
-        ctx: Ctx<'js>, input: Value<'js>, init: Opt<Value<'js>>,
+        ctx: Ctx<'js>, input: Value<'js>, init: Opt<Option<Object<'js>>>,
     ) -> Result<Response<'js>> {
-        let init = body::optional_object(&ctx, init)?;
-        super::fetch(ctx, input, init).await
+        super::fetch(ctx, input, init.0.flatten()).await
     }
 
     #[qjs(evaluate)]
