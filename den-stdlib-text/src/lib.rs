@@ -4,6 +4,8 @@ use rquickjs::{
     ArrayBuffer, Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*,
 };
 
+pub use crate::js_text_module as js_text;
+
 #[derive(Trace, JsLifetime, Clone)]
 #[rquickjs::class]
 pub struct TextDecoder {
@@ -20,7 +22,7 @@ pub struct TextDecoder {
 impl TextDecoder {
     #[qjs(constructor)]
     pub fn new<'js>(label: Opt<String>, opts: Opt<Object<'js>>, ctx: Ctx<'js>) -> Result<Self> {
-        let label = label.0.unwrap_or("utf-8".to_string());
+        let label = label.0.unwrap_or_else(|| "utf-8".to_owned());
 
         let encoding = Encoding::for_label(label.as_bytes())
             .ok_or_else(|| Exception::throw_range(&ctx, &format!("unknown encoding {label}")))?;
@@ -55,9 +57,9 @@ impl TextDecoder {
 
                 // `as_bytes` yields `None` once the buffer is detached, which JS can do at
                 // any point before the call lands here.
-                let buffer = match buffer {
-                    Either::Left(ref buf) => buf.as_bytes(),
-                    Either::Right(ref buf) => buf.as_bytes(),
+                let buffer = match &buffer {
+                    Either::Left(buf) => buf.as_bytes(),
+                    Either::Right(buf) => buf.as_bytes(),
                 }
                 .ok_or_else(|| Exception::throw_type(&ctx, "buffer is detached"))?;
 
@@ -67,21 +69,21 @@ impl TextDecoder {
                     decoder.max_utf8_buffer_length(buffer.len())
                 };
 
-                let mut decoded = len.map(String::with_capacity).unwrap_or_else(String::new);
+                let mut output = len.map_or_else(String::new, String::with_capacity);
                 if self.fatal {
                     let (res, _) =
-                        decoder.decode_to_string_without_replacement(buffer, &mut decoded, true);
+                        decoder.decode_to_string_without_replacement(buffer, &mut output, true);
                     if let DecoderResult::Malformed(_, _) = res {
                         Err(Exception::throw_type(
                             &ctx,
                             "invalid decoding encountered and no replacements allowed",
                         ))
                     } else {
-                        Ok(decoded)
+                        Ok(output)
                     }
                 } else {
-                    let _ = decoder.decode_to_string(buffer, &mut decoded, true);
-                    Ok(decoded)
+                    let _ = decoder.decode_to_string(buffer, &mut output, true);
+                    Ok(output)
                 }
             }
             None => Ok(String::new()),
@@ -100,10 +102,10 @@ impl Default for TextEncoder {
 #[rquickjs::methods(rename_all = "camelCase")]
 impl TextEncoder {
     #[qjs(constructor)]
-    pub fn new() -> Self { Self {} }
+    pub const fn new() -> Self { Self {} }
 
     #[qjs(get, enumerable)]
-    pub fn encoding(&self) -> &'static str { "utf-8" }
+    pub const fn encoding(&self) -> &'static str { "utf-8" }
 
     pub fn encode<'js>(&self, src: String, ctx: Ctx<'js>) -> Result<TypedArray<'js, u8>> {
         TypedArray::new_copy(ctx, src)
@@ -124,14 +126,16 @@ impl TextEncoder {
         // aliases it here — no JS runs between `as_raw` and the end of the
         // copy, so the buffer cannot be detached or resized underneath us.
         let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
-        dest[..written].copy_from_slice(&src.as_bytes()[..written]);
+        let encoded = src
+            .get(..written)
+            .ok_or_else(|| Exception::throw_internal(&ctx, "invalid UTF-8 boundary"))?;
+        dest.get_mut(..written)
+            .ok_or_else(|| Exception::throw_internal(&ctx, "destination is too short"))?
+            .copy_from_slice(encoded.as_bytes());
 
         // `read` is counted in UTF-16 code units, `written` in bytes.
         let result = Object::new(ctx)?;
-        result.set(
-            "read",
-            src[..written].chars().map(char::len_utf16).sum::<usize>(),
-        )?;
+        result.set("read", encoded.chars().map(char::len_utf16).sum::<usize>())?;
         result.set("written", written)?;
         Ok(result)
     }
@@ -142,8 +146,8 @@ impl TextEncoder {
     rename_vars = "camelCase",
     rename_types = "PascalCase"
 )]
-pub mod text {
-    use rquickjs::{Ctx, Result, class::JsClass, module::Exports};
+pub mod text_module {
+    use rquickjs::{Ctx, Result, class::JsClass as _, module::Exports};
 
     pub use super::{TextDecoder, TextEncoder};
 
