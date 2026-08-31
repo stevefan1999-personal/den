@@ -1,0 +1,28 @@
+[package]
+name = "den-package-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+description = "SQLite-backed content-addressed package metadata and dependency resolution for Den"
+publish = false
+
+[dependencies]
+node-semver.workspace = true
+resolvo = { workspace = true, default-features = false }
+sea-orm.workspace = true
+sea-orm-migration.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
