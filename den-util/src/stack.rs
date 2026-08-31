@@ -25,16 +25,16 @@ const MAPPED_FRAMES: &str = "\0den:mapped-frames";
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Location {
     pub filename: String,
-    pub line:     u32,
-    pub column:   u32,
+    pub line: u32,
+    pub column: u32,
 }
 
 /// An owned JavaScript failure that remains useful after leaving the realm.
 #[derive(Clone, Debug)]
 pub struct JsError {
-    name:     Option<String>,
-    message:  String,
-    stack:    Option<String>,
+    name: Option<String>,
+    message: String,
+    stack: Option<String>,
     rendered: String,
     location: Option<Location>,
 }
@@ -80,17 +80,27 @@ impl JsError {
         }
     }
 
-    pub fn name(&self) -> Option<&str> { self.name.as_deref() }
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
 
-    pub fn message(&self) -> &str { &self.message }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 
-    pub fn stack(&self) -> Option<&str> { self.stack.as_deref() }
+    pub fn stack(&self) -> Option<&str> {
+        self.stack.as_deref()
+    }
 
-    pub const fn location(&self) -> Option<&Location> { self.location.as_ref() }
+    pub const fn location(&self) -> Option<&Location> {
+        self.location.as_ref()
+    }
 }
 
 impl fmt::Display for JsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.rendered) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.rendered)
+    }
 }
 
 impl std::error::Error for JsError {}
@@ -103,7 +113,7 @@ struct SourceMaps(RefCell<Registry>);
 #[derive(Default)]
 struct Registry {
     scripts: HashMap<String, Script>,
-    evals:   VecDeque<String>,
+    evals: VecDeque<String>,
 }
 
 // SAFETY: the registry contains owned Rust strings and integers only.
@@ -113,52 +123,7 @@ unsafe impl JsLifetime<'_> for SourceMaps {
 
 struct Script {
     generated_source: String,
-    layers:           Vec<SourceMapLayer>,
-}
-
-struct SourceMapLayer {
-    lines: Vec<Vec<Mapping>>,
-}
-
-struct Mapping {
-    generated_column: u32,
-    source:           String,
-    original_line:    u32,
-    original_column:  u32,
-    name:             Option<String>,
-}
-
-impl SourceMapLayer {
-    fn new(map: SourceMap<'static>) -> Self {
-        let mut lines: Vec<Vec<Mapping>> = Vec::new();
-        for token in map.get_source_view_tokens() {
-            let Some(source) = token.get_source() else {
-                continue;
-            };
-            let line = token.get_dst_line() as usize;
-            if lines.len() <= line {
-                lines.resize_with(line + 1, Vec::new);
-            }
-            let Some(line) = lines.get_mut(line) else {
-                continue;
-            };
-            line.push(Mapping {
-                generated_column: token.get_dst_col(),
-                source:           source.to_owned(),
-                original_line:    token.get_src_line(),
-                original_column:  token.get_src_col(),
-                name:             token.get_name().map(str::to_owned),
-            });
-        }
-        Self { lines }
-    }
-
-    fn lookup(&self, line: u32, column: u32) -> Option<&Mapping> {
-        let mappings = self.lines.get(line as usize)?;
-        let end = mappings.partition_point(|mapping| mapping.generated_column <= column);
-        let index = end.checked_sub(1)?;
-        mappings.get(index)
-    }
+    layers: Vec<SourceMap<'static>>,
 }
 
 /// Install den's structured stack formatter on this realm.
@@ -194,7 +159,7 @@ where
         .0
         .try_borrow_mut()
         .map_err(|_error| Exception::throw_internal(ctx, "stack registry is busy"))?;
-    let layers: Vec<_> = source_maps.into_iter().map(SourceMapLayer::new).collect();
+    let layers: Vec<_> = source_maps.into_iter().collect();
     if layers.is_empty()
         && registry
             .scripts
@@ -204,10 +169,13 @@ where
         return Ok(());
     }
     let is_new_eval = filename.starts_with("<eval:") && !registry.scripts.contains_key(filename);
-    registry.scripts.insert(filename.to_owned(), Script {
-        generated_source,
-        layers,
-    });
+    registry.scripts.insert(
+        filename.to_owned(),
+        Script {
+            generated_source,
+            layers,
+        },
+    );
     if is_new_eval {
         registry.evals.push_back(filename.to_owned());
         // ponytail: keep recent REPL maps bounded; switch to weak script keys if
@@ -336,8 +304,8 @@ pub fn first_location(stack: &str) -> Option<Location> {
         let (filename, line) = head.rsplit_once(':')?;
         Some(Location {
             filename: filename.to_owned(),
-            line:     line.parse().ok()?,
-            column:   column.parse().ok()?,
+            line: line.parse().ok()?,
+            column: column.parse().ok()?,
         })
     })
 }
@@ -352,9 +320,9 @@ fn prepare_stack_trace<'js>(ctx: Ctx<'js>, error: Object<'js>, sites: Array<'js>
         let mut frame = StackFrame {
             function: call::<Option<String>>(&ctx, &site, "getFunctionName").flatten(),
             filename: call::<Option<String>>(&ctx, &site, "getFileName").flatten(),
-            line:     call::<i32>(&ctx, &site, "getLineNumber").unwrap_or(-1),
-            column:   call::<i32>(&ctx, &site, "getColumnNumber").unwrap_or(-1),
-            native:   call::<bool>(&ctx, &site, "isNative").unwrap_or(false),
+            line: call::<i32>(&ctx, &site, "getLineNumber").unwrap_or(-1),
+            column: call::<i32>(&ctx, &site, "getColumnNumber").unwrap_or(-1),
+            native: call::<bool>(&ctx, &site, "isNative").unwrap_or(false),
         };
         remap(&ctx, &mut frame);
         let _ = write_frame(&mut frames, &frame);
@@ -376,9 +344,9 @@ fn prepare_stack_trace<'js>(ctx: Ctx<'js>, error: Object<'js>, sites: Array<'js>
 struct StackFrame {
     function: Option<String>,
     filename: Option<String>,
-    line:     i32,
-    column:   i32,
-    native:   bool,
+    line: i32,
+    column: i32,
+    native: bool,
 }
 
 fn remap(ctx: &Ctx<'_>, frame: &mut StackFrame) {
@@ -410,14 +378,18 @@ fn remap(ctx: &Ctx<'_>, frame: &mut StackFrame) {
         column = byte_column_to_utf16(&script.generated_source, line, column);
         let previous_filename = filename.clone();
         for layer in &script.layers {
-            let Some(mapping) = layer.lookup(line, column) else {
+            let lookup = layer.generate_lookup_table();
+            let Some(mapping) = layer.lookup_source_view_token(&lookup, line, column) else {
                 break;
             };
-            filename.clone_from(&mapping.source);
-            line = mapping.original_line;
-            column = mapping.original_column;
-            if mapping.name.is_some() {
-                frame.function.clone_from(&mapping.name);
+            let Some(source) = mapping.get_source() else {
+                break;
+            };
+            filename = source.to_owned();
+            line = mapping.get_src_line();
+            column = mapping.get_src_col();
+            if let Some(name) = mapping.get_name() {
+                frame.function = Some(name.to_owned());
             }
         }
         if filename == previous_filename {
