@@ -125,11 +125,15 @@ async fn run_entry(engine: &den_core::engine::Engine, entry: &str) -> Result<(),
     ) {
         return engine.run_file(PathBuf::from(entry)).await;
     }
-    if url::Url::parse(entry).is_ok_and(|url| url.scheme() != "file") {
+    if is_remote_entry(entry) {
         engine.run_module(entry).await
     } else {
         engine.run_file(PathBuf::from(entry)).await
     }
+}
+
+fn is_remote_entry(entry: &str) -> bool {
+    url::Url::parse(entry).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 fn fatal(error: impl std::fmt::Display) -> ! {
@@ -141,3 +145,14 @@ mod app;
 mod cli;
 mod history;
 mod repl;
+
+#[cfg(test)]
+mod tests {
+    use super::is_remote_entry;
+
+    #[test]
+    fn colon_in_a_local_filename_is_not_a_remote_module() {
+        assert!(!is_remote_entry("foo:bar.js"));
+        assert!(is_remote_entry("https://example.test/main.js"));
+    }
+}
