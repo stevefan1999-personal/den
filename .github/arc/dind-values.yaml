@@ -1,0 +1,104 @@
+githubConfigUrl: https://github.com/stevefan1999-personal/den
+githubConfigSecret: arc-github-auth
+runnerScaleSetName: k0s-arc-dind
+minRunners: 0
+maxRunners: 2
+controllerServiceAccount:
+  name: arc-controller
+  namespace: arc-systems
+listenerTemplate:
+  spec:
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile: { type: RuntimeDefault }
+    containers:
+      - name: listener
+        resources:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { cpu: 250m, memory: 256Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsNonRoot: true
+template:
+  spec:
+    automountServiceAccountToken: false
+    terminationGracePeriodSeconds: 30
+    securityContext:
+      fsGroup: 123
+      fsGroupChangePolicy: OnRootMismatch
+      supplementalGroups: [123]
+    containers:
+      - name: runner
+        image: localhost/den-arc-runner:2.337.0-r1
+        imagePullPolicy: Never
+        command: [/home/runner/run.sh]
+        env:
+          - { name: DOCKER_HOST, value: "unix:///var/run/docker.sock" }
+          - { name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS, value: "120" }
+        resources:
+          requests: { cpu: 250m, memory: 512Mi }
+          limits: { cpu: "2", memory: 4Gi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsGroup: 1001
+          runAsNonRoot: true
+          runAsUser: 1001
+          seccompProfile: { type: RuntimeDefault }
+        volumeMounts:
+          - { name: work, mountPath: /home/runner/_work }
+          - { name: dind-sock, mountPath: /var/run }
+    initContainers:
+      - name: init-dind-externals
+        image: ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+        imagePullPolicy: IfNotPresent
+        command: [cp]
+        args: [-r, /home/runner/externals/., /home/runner/tmpDir/]
+        resources:
+          requests: { cpu: 25m, memory: 64Mi }
+          limits: { cpu: 250m, memory: 256Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsGroup: 1001
+          runAsNonRoot: true
+          runAsUser: 1001
+          seccompProfile: { type: RuntimeDefault }
+        volumeMounts:
+          - { name: dind-externals, mountPath: /home/runner/tmpDir }
+      - name: dind
+        image: docker.io/library/docker:29.7.2-dind@sha256:12e683a161823b2a839aeea999b9d960e6e1f9a97b1679ad6b441982e2d9cf07
+        imagePullPolicy: IfNotPresent
+        args:
+          - dockerd
+          - --host=unix:///var/run/docker.sock
+          - --group=$(DOCKER_GROUP_GID)
+        env:
+          - { name: DOCKER_GROUP_GID, value: "123" }
+        restartPolicy: Always
+        resources:
+          requests: { cpu: 500m, memory: 1Gi }
+          limits: { cpu: "4", memory: 8Gi }
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        startupProbe:
+          exec: { command: [docker, info] }
+          failureThreshold: 24
+          initialDelaySeconds: 0
+          periodSeconds: 5
+        volumeMounts:
+          - { name: work, mountPath: /home/runner/_work }
+          - { name: dind-sock, mountPath: /var/run }
+          - { name: dind-externals, mountPath: /home/runner/externals }
+          - { name: dind-storage, mountPath: /var/lib/docker }
+    volumes:
+      - name: work
+        emptyDir: { sizeLimit: 10Gi }
+      - name: dind-sock
+        emptyDir: { medium: Memory, sizeLimit: 64Mi }
+      - name: dind-externals
+        emptyDir: { sizeLimit: 1Gi }
+      - name: dind-storage
+        emptyDir: { sizeLimit: 20Gi }

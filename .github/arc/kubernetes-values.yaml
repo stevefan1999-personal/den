@@ -1,0 +1,51 @@
+githubConfigUrl: https://github.com/stevefan1999-personal/den
+githubConfigSecret: arc-github-auth
+runnerScaleSetName: k0s-arc-kubernetes
+minRunners: 0
+maxRunners: 2
+controllerServiceAccount:
+  name: arc-controller
+  namespace: arc-systems
+containerMode:
+  type: kubernetes
+  kubernetesModeWorkVolumeClaim:
+    accessModes: [ReadWriteOnce]
+    storageClassName: openebs-zfspv-arc
+    resources:
+      requests: { storage: 10Gi }
+listenerTemplate:
+  spec:
+    securityContext:
+      runAsNonRoot: true
+      seccompProfile: { type: RuntimeDefault }
+    containers:
+      - name: listener
+        resources:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { cpu: 250m, memory: 256Mi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsNonRoot: true
+template:
+  spec:
+    securityContext:
+      fsGroup: 1001
+      runAsGroup: 1001
+      runAsNonRoot: true
+      runAsUser: 1001
+      seccompProfile: { type: RuntimeDefault }
+    containers:
+      - name: runner
+        image: localhost/den-arc-runner:2.337.0-r1
+        imagePullPolicy: Never
+        command: [/home/runner/run.sh]
+        resources:
+          requests: { cpu: 250m, memory: 512Mi }
+          limits: { cpu: "2", memory: 4Gi }
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: [ALL] }
+          runAsGroup: 1001
+          runAsNonRoot: true
+          runAsUser: 1001
