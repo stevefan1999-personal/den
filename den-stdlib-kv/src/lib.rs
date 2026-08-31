@@ -235,7 +235,7 @@ impl KvStore {
                     Ok(()) => return Ok(()),
                     Err(
                         StorageError::TransactionWriteConflict | StorageError::TransactionRetry,
-                    ) if attempt + 1 < Self::IMPLICIT_ATTEMPTS => {}
+                    ) if attempt + 1 < Self::IMPLICIT_ATTEMPTS => std::thread::yield_now(),
                     Err(error) => return Err(error.into()),
                 }
             }
