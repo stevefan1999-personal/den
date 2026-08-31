@@ -54,20 +54,12 @@ pub(crate) fn new_dom_exception<'js>(
     den_util::new_dom_exception(ctx, message, name)
 }
 
-#[expect(
-    clippy::float_arithmetic,
-    reason = "DOMHighResTimeStamp is specified as fractional milliseconds"
-)]
 fn unix_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |elapsed| elapsed.as_secs_f64() * 1000.0)
 }
 
-#[expect(
-    clippy::float_arithmetic,
-    reason = "Event.timeStamp is specified as fractional milliseconds since the realm origin"
-)]
 fn time_stamp(ctx: &Ctx<'_>) -> f64 {
     let origin = ctx.userdata::<TimeOrigin>().map_or_else(
         || {

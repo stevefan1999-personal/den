@@ -47,10 +47,6 @@ impl Default for EngineSettings {
 /// the policy yet; hosts can retrieve it from
 /// [`Engine`](crate::engine::Engine).
 #[derive(Clone, Debug)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "EngineBuilder is the public builder paired with Engine"
-)]
 pub struct EngineBuilder {
     bundle:   Bundle,
     settings: EngineSettings,

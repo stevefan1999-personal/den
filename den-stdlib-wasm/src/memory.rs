@@ -125,10 +125,6 @@ impl ValueTypeName {
 }
 
 /// A `MemoryDescriptor`, in pages.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "WebAssembly names this dictionary MemoryDescriptor"
-)]
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryDescriptor {
     initial: u32,
@@ -166,10 +162,6 @@ impl<'js> FromJs<'js> for MemoryDescriptor {
 /// zero-page memories whose bases coincide would share one empty buffer. They
 /// have no bytes to confuse and separate again the moment either grows; keying
 /// by identity would need an `Eq` wasmtime does not give `Memory`.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the registry stores buffers belonging to WebAssembly memories"
-)]
 #[derive(Default)]
 pub struct MemoryBuffers<'js> {
     live: RefCell<Vec<LiveBuffer<'js>>>,

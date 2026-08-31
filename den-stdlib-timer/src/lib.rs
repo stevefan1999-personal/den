@@ -87,10 +87,6 @@ pub mod timer {
 
     // The macro injects `Ctx` by value, and the body only borrows it; a
     // reference parameter is not an option at this boundary.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     #[qjs(rename = "setInterval")]
     pub fn set_interval<'js>(
@@ -118,10 +114,6 @@ pub mod timer {
         Ok(id)
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     #[qjs(rename = "clearInterval")]
     pub fn clear_interval(Opt(id): Opt<u32>, ctx: Ctx<'_>) {
@@ -130,10 +122,6 @@ pub mod timer {
         }
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     #[qjs(rename = "setTimeout")]
     pub fn set_timeout<'js>(
@@ -159,10 +147,6 @@ pub mod timer {
         Ok(id)
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     #[qjs(rename = "clearTimeout")]
     pub fn clear_timeout(Opt(id): Opt<u32>, ctx: Ctx<'_>) {
@@ -171,10 +155,6 @@ pub mod timer {
         }
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     #[qjs(rename = "setImmediate")]
     pub fn set_immediate<'js>(
@@ -197,10 +177,6 @@ pub mod timer {
         Ok(id)
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the rquickjs function macro injects Ctx by value"
-    )]
     #[rquickjs::function]
     #[qjs(rename = "clearImmediate")]
     pub fn clear_immediate(Opt(id): Opt<u32>, ctx: Ctx<'_>) {

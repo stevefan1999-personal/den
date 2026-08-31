@@ -127,12 +127,8 @@ impl TlsListenerWrapper {
     // rquickjs only attaches `#[qjs(static)]` members to a class that
     // declares a constructor, and a `()` return makes `new TlsListener()`
     // throw: instances only ever come from `TlsListener.listen`.
-    #[expect(
-        clippy::new_ret_no_self,
-        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-    )]
     #[qjs(constructor)]
-    pub const fn new() {}
+    pub const fn new_js() {}
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<SocketAddrWrapper> { Ok(self.listener.local_addr()?.into()) }

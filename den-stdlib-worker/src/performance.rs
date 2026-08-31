@@ -24,10 +24,6 @@ unsafe impl JsLifetime<'_> for Performance {
 }
 
 impl Performance {
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "Performance.timeOrigin is specified as fractional milliseconds"
-    )]
     fn capture() -> Self {
         let origin = Instant::now();
         let time_origin = SystemTime::now()
@@ -47,10 +43,6 @@ impl Performance {
 
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Performance {
-    #[expect(
-        clippy::float_arithmetic,
-        reason = "performance.now() is specified as fractional milliseconds"
-    )]
     pub fn now(&self) -> f64 { self.origin.elapsed().as_secs_f64() * 1000.0 }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]

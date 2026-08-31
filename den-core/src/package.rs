@@ -14,10 +14,6 @@ use crate::loader::typed::{declare_import_kind, import_kind};
 
 /// Synchronous package resolution over one immutable, pre-hydrated snapshot.
 #[derive(Clone, Debug, Default)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "qualified name distinguishes this resolver at engine call sites"
-)]
 pub struct PackageResolver {
     snapshot: Option<Arc<PackageModuleSnapshot>>,
 }
@@ -55,10 +51,6 @@ impl Resolver for PackageResolver {
 
 /// Synchronous package loading over one immutable, pre-hydrated snapshot.
 #[derive(Clone, Debug, Default)]
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "qualified name distinguishes this loader at engine call sites"
-)]
 pub struct PackageLoader {
     snapshot: Option<Arc<PackageModuleSnapshot>>,
 }
@@ -241,10 +233,6 @@ mod tests {
 
     #[cfg(feature = "transpile")]
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions verify package modules cannot be shadowed"
-    )]
     async fn package_modules_precede_embedded_bundle_entries() -> TestResult {
         let snapshot = Arc::new(fixture().await?);
         assert_eq!(snapshot.resolve("entry", "@scope/app")?, PACKAGE_MAIN);
@@ -261,10 +249,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions verify strict package boundaries and exports"
-    )]
     async fn resolver_rejects_traversal_and_missing_exports() -> TestResult {
         let snapshot = fixture().await?;
         let root = snapshot.resolve("entry", "@scope/app")?;
@@ -293,10 +277,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions verify terminal package errors in a resolver tuple"
-    )]
     async fn claimed_package_errors_do_not_fall_through() -> TestResult {
         let snapshot = Arc::new(fixture().await?);
         let fallback_called = Arc::new(AtomicBool::new(false));
@@ -324,10 +304,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "assertions verify import maps cannot bypass solved package edges"
-    )]
     async fn package_imports_ignore_application_import_maps() -> TestResult {
         let snapshot = Arc::new(fixture().await?);
         let package_base = snapshot.resolve("entry", "@scope/app")?;

@@ -534,13 +534,6 @@ pub mod wasm {
     fn wasi_imports(ctx: Ctx<'_>) -> Result<Value<'_>> { WasiImports::namespace(&ctx) }
 
     #[qjs(declare)]
-    #[cfg_attr(
-        not(feature = "wasi"),
-        expect(
-            clippy::missing_const_for_fn,
-            reason = "the matching WASI hook calls a non-const declaration API"
-        )
-    )]
     pub fn declare(declarations: &Declarations<'_>) -> Result<()> {
         #[cfg(not(feature = "wasi"))]
         let _ = declarations;

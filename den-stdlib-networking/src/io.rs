@@ -118,12 +118,8 @@ macro_rules! impl_stream_wrapper {
             // that declares a constructor, and a `()` return makes `new`
             // throw: instances only ever come from the class's own
             // constructors.
-            #[expect(
-                clippy::new_ret_no_self,
-                reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-            )]
             #[qjs(constructor)]
-            pub const fn new() {}
+            pub const fn new_js() {}
 
             $($extra)*
 
@@ -211,12 +207,8 @@ macro_rules! impl_stream_wrapper {
             // that declares a constructor, and a `()` return makes `new`
             // throw: instances only ever come from the class's own
             // constructors.
-            #[expect(
-                clippy::new_ret_no_self,
-                reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-            )]
             #[qjs(constructor)]
-            pub const fn new() {}
+            pub const fn new_js() {}
 
             $($extra)*
 

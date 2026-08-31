@@ -9,10 +9,6 @@ use wasmtime::ValType;
 use crate::memory::{DescriptorObject as _, ValueTypeName};
 
 /// A `TagType`: the parameter types an exception thrown with this tag carries.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "WebAssembly names this descriptor TagType"
-)]
 #[derive(Clone, Debug)]
 pub struct TagType {
     parameters: Vec<ValType>,

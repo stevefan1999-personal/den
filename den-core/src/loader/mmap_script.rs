@@ -11,10 +11,6 @@ use url::Url;
 
 use crate::loader::typed::{declare_import_kind, import_kind};
 
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the qualified name distinguishes this loader from other loaders"
-)]
 #[derive(Debug, Default)]
 pub struct MmapScriptLoader {
     extensions: Vec<String>,

@@ -20,10 +20,6 @@ unsafe impl JsLifetime<'_> for ImportMap {
     type Changed<'to> = ImportMap;
 }
 
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "ImportMapError is the public error paired with ImportMap"
-)]
 #[derive(Debug, Display, Error, From)]
 pub enum ImportMapError {
     #[display("{_0}")]
@@ -79,10 +75,6 @@ enum Mapping {
 
 /// Remaps a specifier when a map is installed on the context; otherwise a
 /// resolving error lets the builtin, HTTP, and file resolvers continue.
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the qualified name distinguishes this resolver from other resolvers"
-)]
 #[derive(Debug, Default)]
 pub struct ImportMapResolver;
 

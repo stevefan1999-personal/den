@@ -20,12 +20,8 @@ impl Connection {
     // rquickjs only attaches `#[qjs(static)]` members to a class that
     // declares a constructor, and a `()` return makes `new Connection()`
     // throw: instances only come from `open`/`openInMemory`.
-    #[expect(
-        clippy::new_ret_no_self,
-        reason = "`#[qjs(constructor)]` marker; not constructible from JS"
-    )]
     #[qjs(constructor)]
-    pub const fn new() {}
+    pub const fn new_js() {}
 
     #[qjs(static)]
     pub fn open_in_memory(ctx: Ctx<'_>) -> Result<Connection> {

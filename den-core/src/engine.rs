@@ -927,10 +927,6 @@ impl Engine {
     }
 }
 
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "EngineError is the public error paired with Engine"
-)]
 #[derive(Display, From, Error, Debug)]
 pub enum EngineError {
     #[cfg(feature = "transpile")]

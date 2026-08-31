@@ -4,10 +4,6 @@ use rquickjs::{
 };
 use url::{ParseError, Url};
 
-#[expect(
-    clippy::module_name_repetitions,
-    reason = "the qualified name distinguishes this resolver from file resolvers"
-)]
 pub struct HttpResolver;
 
 impl Resolver for HttpResolver {

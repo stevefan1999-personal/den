@@ -35,10 +35,6 @@ pub mod ffi {
         module::{Declarations, Exports},
     };
 
-    #[expect(
-        clippy::module_name_repetitions,
-        reason = "the published names in `types/den-ffi.d.ts`"
-    )]
     pub use super::{FfiError, FfiGrant};
 
     /// Load a shared library and bind every symbol the schema names.

@@ -16,11 +16,9 @@ use std::path::PathBuf;
 use color_eyre::eyre;
 use den_core::engine::Engine;
 
-#[expect(
-    clippy::duplicate_mod,
-    reason = "integration targets share the same test-only engine helper"
-)]
-mod common;
+mod common {
+    include!("common.rs");
+}
 
 /// Enough repetitions that a per-engine leak is visible in RSS and a teardown
 /// abort is certain rather than lucky; still under a second in total.

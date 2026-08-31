@@ -8,10 +8,6 @@ mod serve;
 pub mod http {
     use rquickjs::{Ctx, Function, Object, Result, Value, module::Exports};
 
-    #[expect(
-        clippy::module_name_repetitions,
-        reason = "HttpError is the public JavaScript class name"
-    )]
     pub use crate::{error::HttpError, serve::Server};
 
     #[rquickjs::function]
