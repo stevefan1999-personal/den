@@ -18,6 +18,21 @@ namespace JSX {
   }
 }
 
+interface URLPatternInit {
+  pathname?: string;
+}
+
+declare class URLPattern {
+  constructor(input?: string | URLPatternInit, baseURL?: string);
+  test(input?: string | URLPatternInit, baseURL?: string): boolean;
+}
+
+declare namespace Temporal {
+  namespace Now {
+    function instant(): { toString(): string };
+  }
+}
+
 declare module "den:assert" {
   export function assert(value: unknown, message?: string): void;
   export function assertEquals(actual: unknown, expected: unknown, message?: string): void;
