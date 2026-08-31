@@ -1041,6 +1041,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
+name = "data-url"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
+
+[[package]]
 name = "den"
 version = "0.4.0"
 dependencies = [
@@ -1233,7 +1239,6 @@ dependencies = [
  "rcgen",
  "rquickjs",
  "rustls",
- "rustls-pemfile",
  "rustls-platform-verifier",
  "tokio",
  "tokio-rustls",
@@ -1297,7 +1302,7 @@ version = "0.4.0"
 dependencies = [
  "color-eyre",
  "den-core",
- "either",
+ "den-util",
  "encoding_rs",
  "rquickjs",
  "tokio",
@@ -1341,6 +1346,7 @@ dependencies = [
  "color-eyre",
  "cookie_store",
  "dashmap",
+ "data-url",
  "den-core",
  "den-stdlib-networking",
  "den-stdlib-text",
@@ -3815,15 +3821,6 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]

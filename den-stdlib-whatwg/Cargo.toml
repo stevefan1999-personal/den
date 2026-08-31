@@ -13,6 +13,7 @@ keywords.workspace = true
 [dependencies]
 base64-simd.workspace = true
 cookie_store = { version = "0.22.1", features = ["preserve_order"] }
+data-url.workspace = true
 den-stdlib-networking.workspace = true
 den-stdlib-worker = { workspace = true, default-features = false }
 den-util.workspace = true
