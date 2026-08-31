@@ -23,25 +23,6 @@ declare module "den:assert" {
   export function assertEquals(actual: unknown, expected: unknown, message?: string): void;
 }
 
-interface Navigator {
-  readonly hardwareConcurrency: number;
-}
-
-interface WorkerOptions {
-  type?: "classic" | "module";
-  name?: string;
-}
-
-declare var navigator: Navigator;
-
-declare class Worker extends EventTarget {
-  constructor(specifier: string, options?: WorkerOptions);
-  postMessage(data: unknown): void;
-  terminate(): void;
-  onmessage: ((event: MessageEvent) => void) | null;
-  onerror: ((event: ErrorEvent) => void) | null;
-}
-
 declare module "den:process" {
   export const env: Record<string, string | undefined>;
   export function cwd(): string;
