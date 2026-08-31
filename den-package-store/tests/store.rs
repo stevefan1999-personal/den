@@ -206,8 +206,60 @@ async fn rejects_altered_required_column() -> TestResult {
 
     assert!(matches!(
         PackageStore::open(&path).await,
-        Err(PackageStoreError::SchemaMismatch { object, .. }) if object == "registry"
+        Err(PackageStoreError::SchemaMismatch { object, .. })
+            if object == "registry table definition"
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejects_altered_check_unique_and_foreign_key_constraints() -> TestResult {
+    assert_schema_rewrite_rejected(
+        "blob",
+        "CHECK (length(\"digest\") = 32)",
+        "CHECK (length(\"digest\") >= 0)",
+    )
+    .await?;
+    assert_schema_rewrite_rejected(
+        "package",
+        "UNIQUE (\"registry_id\", \"name\")",
+        "UNIQUE (\"registry_id\", \"registry_id\")",
+    )
+    .await?;
+    assert_schema_rewrite_rejected(
+        "package_version",
+        "ON DELETE CASCADE",
+        "ON DELETE NO ACTION",
+    )
+    .await
+}
+
+#[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test assertion verifies a foreign application id is neither accepted nor replaced"
+)]
+async fn rejects_and_preserves_foreign_application_identity() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("foreign.sqlite3");
+    let database = Database::connect(format!("sqlite://{}?mode=rwc", path.display())).await?;
+    database
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA application_id = 305419896".to_owned(),
+        ))
+        .await?;
+    database.close().await?;
+
+    assert!(matches!(
+        PackageStore::open(&path).await,
+        Err(PackageStoreError::ForeignDatabase {
+            actual: 305_419_896,
+        })
+    ));
+    let database = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+    assert_eq!(pragma(&database, "application_id").await?, 305_419_896);
+    database.close().await?;
     Ok(())
 }
 
@@ -593,6 +645,67 @@ async fn insert_release(
         })
         .collect();
     store.insert_release(&release).await?;
+    Ok(())
+}
+
+async fn assert_schema_rewrite_rejected(table: &str, from: &str, to: &str) -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join(format!("altered-{table}.sqlite3"));
+    drop(PackageStore::create(&path).await?);
+    let database = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
+    let sql = database
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+            [table.to_owned().into()],
+        ))
+        .await?
+        .ok_or("fixture table has no sqlite_schema row")?
+        .try_get::<String>("", "sql")?;
+    let altered = sql.replacen(from, to, 1);
+    if altered == sql {
+        return Err(format!("fixture table `{table}` does not contain `{from}`").into());
+    }
+    database
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA writable_schema = ON".to_owned(),
+        ))
+        .await?;
+    database
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = ?",
+            [altered.into(), table.to_owned().into()],
+        ))
+        .await?;
+    let schema_version = pragma(&database, "schema_version").await?;
+    let next_schema_version = schema_version
+        .checked_add(1)
+        .ok_or("fixture schema version overflowed")?;
+    database
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!("PRAGMA schema_version = {next_schema_version}"),
+        ))
+        .await?;
+    database
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "PRAGMA writable_schema = OFF".to_owned(),
+        ))
+        .await?;
+    database.close().await?;
+
+    match PackageStore::open(&path).await {
+        Err(PackageStoreError::SchemaMismatch { object, .. })
+            if object == format!("{table} table definition") => {}
+        result => {
+            return Err(
+                format!("unexpected open result after altering `{table}`: {result:?}").into(),
+            );
+        }
+    }
     Ok(())
 }
 

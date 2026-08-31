@@ -491,15 +491,8 @@ async fn initialize(database: &DatabaseConnection, in_memory: bool) -> Result<()
             actual: application_id,
         });
     }
-    if application_id == 0 {
-        if !database_is_empty(database).await? {
-            return Err(PackageStoreError::UnrecognizedDatabase);
-        }
-        execute_pragma(
-            database,
-            &format!("PRAGMA application_id = {APPLICATION_ID}"),
-        )
-        .await?;
+    if application_id == 0 && !database_is_empty(database).await? {
+        return Err(PackageStoreError::UnrecognizedDatabase);
     }
 
     install_tracking_table(&SchemaManager::new(database)).await?;
@@ -565,6 +558,7 @@ async fn validate_schema(database: &DatabaseConnection) -> Result<()> {
                 "non-STRICT table",
             ));
         }
+        validate_table_definition(database, table_name, &table).await?;
 
         let expected = expected_columns(&table)?;
         let actual = database
@@ -598,6 +592,38 @@ async fn validate_schema(database: &DatabaseConnection) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn validate_table_definition(
+    database: &DatabaseConnection, table_name: &str, table: &TableCreateStatement,
+) -> Result<()> {
+    let actual = database
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+            [table_name.to_owned().into()],
+        ))
+        .await?
+        .ok_or_else(|| schema_mismatch(table_name, "SeaQuery table definition", "missing"))?
+        .try_get::<String>("", "sql")?;
+    let expected = DbBackend::Sqlite.build(table).sql;
+    let expected = normalized_table_sql(&expected);
+    let actual = normalized_table_sql(&actual);
+    if actual != expected {
+        return Err(schema_mismatch(
+            format!("{table_name} table definition"),
+            expected,
+            actual,
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_table_sql(sql: &str) -> String {
+    sql.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("IF NOT EXISTS ", "")
 }
 
 fn expected_columns(table: &TableCreateStatement) -> Result<Vec<SchemaColumn>> {
