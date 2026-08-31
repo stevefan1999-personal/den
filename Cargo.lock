@@ -1302,7 +1302,7 @@ version = "0.4.0"
 dependencies = [
  "color-eyre",
  "den-core",
- "den-util",
+ "either",
  "encoding_rs",
  "rquickjs",
  "tokio",

@@ -14,7 +14,7 @@ keywords.workspace = true
 test = false
 
 [dependencies]
-den-util.workspace = true
+either.workspace = true
 encoding_rs.workspace = true
 rquickjs = { workspace = true, features = ["macro"] }
 
