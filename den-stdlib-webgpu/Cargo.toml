@@ -1,6 +1,6 @@
 [package]
 name = "den-stdlib-webgpu"
-description = "Headless WebGPU compute API for den"
+description = "Headless WebGPU API for den"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ test = false
 den-util.workspace = true
 log.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt"] }
 wgpu.workspace = true
 

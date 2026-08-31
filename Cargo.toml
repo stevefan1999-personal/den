@@ -188,6 +188,7 @@ wgpu = { version = "30.0.1", default-features = false, features = [
     "gles",
     "metal",
     "noop",
+    "serde",
     "std",
     "vulkan",
     "wgsl",

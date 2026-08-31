@@ -1,4 +1,4 @@
-//! A native, headless WebGPU compute slice for `den:webgpu`.
+//! A native, headless WebGPU slice for `den:webgpu`.
 //!
 //! The public `wgpu` layer owns validation and backend dispatch. This crate is
 //! only the rquickjs boundary: branded handles, descriptor conversion, promise
@@ -9,6 +9,11 @@
 //! capability hole. `DENO_WEBGPU_BACKEND` selects wgpu backends; `noop` is the
 //! hermetic test path.
 #![recursion_limit = "256"]
+
+mod format;
+mod query;
+mod render;
+mod texture;
 
 use std::{
     cell::{Cell, RefCell},
@@ -22,81 +27,66 @@ use std::{
 
 use den_util::BufferSource;
 use rquickjs::{
-    Array, ArrayBuffer, Class, Constructor, Ctx, Error, Exception, FromJs, IntoJs as _, JsLifetime,
-    Object, Persistent, Promise, Result, Value, class::Trace, function::Opt,
+    Array, ArrayBuffer, Class, Coerced, Constructor, Ctx, Error, Exception, FromJs, Function,
+    IntoJs as _, JsLifetime, Object, Persistent, Promise, Result, Value,
+    class::{Trace, Tracer},
+    function::Opt,
 };
 
 const MAP_READ: u32 = 1;
 const MAP_WRITE: u32 = 2;
 const WEBGPU_BUFFER_USAGE_MASK: u32 = 0x03ff;
+const JS_MAX_SAFE_INTEGER: u64 = 0x001F_FFFF_FFFF_FFFF;
 
-fn illegal_constructor<T>(ctx: &Ctx<'_>) -> Result<T> {
+pub(crate) fn illegal_constructor<T>(ctx: &Ctx<'_>) -> Result<T> {
     Err(Exception::throw_type(ctx, "Illegal constructor"))
 }
 
-fn type_error(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
+pub(crate) fn type_error(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
     Exception::throw_type(ctx, message.as_ref())
 }
 
-fn operation_error(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
+pub(crate) fn operation_error(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
     den_util::throw_dom_exception(ctx, "OperationError", message.as_ref())
 }
 
-fn invalid_state(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
+pub(crate) fn invalid_state(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
     den_util::throw_dom_exception(ctx, "InvalidStateError", message.as_ref())
 }
 
 #[derive(Clone, Copy)]
 #[doc(hidden)]
-pub struct JsU32(u32);
+pub struct JsU32(pub(crate) u32);
 
 impl<'js> FromJs<'js> for JsU32 {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        let Some(number) = value.as_number() else {
-            return Err(type_error(ctx, "expected an unsigned integer"));
-        };
-        if !number.is_finite()
-            || number.fract() != 0.0
-            || !(0.0..=f64::from(u32::MAX)).contains(&number)
-        {
-            return Err(Exception::throw_range(
-                ctx,
-                "unsigned integer is out of range",
-            ));
-        }
-        Ok(Self(number as u32))
+        let Coerced(value) = Coerced::<u64>::from_js(ctx, value)?;
+        u32::try_from(value)
+            .map(Self)
+            .map_err(|_error| Exception::throw_range(ctx, "unsigned integer is out of range"))
     }
 }
 
 #[derive(Clone, Copy)]
 #[doc(hidden)]
-pub struct JsU64(u64);
+pub struct JsU64(pub(crate) u64);
 
 impl<'js> FromJs<'js> for JsU64 {
     fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        let Some(number) = value.as_number() else {
-            return Err(type_error(ctx, "expected an unsigned integer"));
-        };
-        if !number.is_finite()
-            || number.fract() != 0.0
-            || !(0.0..=9_007_199_254_740_991.0).contains(&number)
-        {
-            return Err(Exception::throw_range(
-                ctx,
-                "unsigned integer is outside JavaScript's safe range",
-            ));
-        }
-        Ok(Self(number as u64))
+        let Coerced(value) = Coerced::<u64>::from_js(ctx, value)?;
+        Ok(Self(value))
     }
 }
 
-fn label(object: &Object<'_>) -> Result<String> {
+pub(crate) fn label(object: &Object<'_>) -> Result<String> {
     Ok(object
         .get::<_, Option<String>>("label")?
         .unwrap_or_default())
 }
 
-fn class_value<'js, T>(object: &Object<'js>, key: &str, ctx: &Ctx<'js>) -> Result<Class<'js, T>>
+pub(crate) fn class_value<'js, T>(
+    object: &Object<'js>, key: &str, ctx: &Ctx<'js>,
+) -> Result<Class<'js, T>>
 where
     T: rquickjs::class::JsClass<'js>,
 {
@@ -112,10 +102,12 @@ fn array_value<'js>(object: &Object<'js>, key: &str, ctx: &Ctx<'js>) -> Result<A
 }
 
 fn parse_backends() -> wgpu::Backends {
-    std::env::var("DENO_WEBGPU_BACKEND").map_or_else(
-        |_error| wgpu::Backends::all(),
-        |value| wgpu::Backends::from_comma_list(&value),
-    )
+    std::env::var("DEN_WEBGPU_BACKEND")
+        .or_else(|_| std::env::var("DENO_WEBGPU_BACKEND"))
+        .map_or_else(
+            |_error| wgpu::Backends::all(),
+            |value| wgpu::Backends::from_comma_list(&value),
+        )
 }
 
 struct GpuPoll;
@@ -206,14 +198,18 @@ fn limits_object<'js>(ctx: &Ctx<'js>, limits: &wgpu::Limits) -> Result<Object<'j
         "maxUniformBuffersPerShaderStage",
         max_uniform_buffers_per_shader_stage
     );
-    set!(
+    object.set(
         "maxUniformBufferBindingSize",
-        max_uniform_buffer_binding_size
-    );
-    set!(
+        limits
+            .max_uniform_buffer_binding_size
+            .min(JS_MAX_SAFE_INTEGER),
+    )?;
+    object.set(
         "maxStorageBufferBindingSize",
-        max_storage_buffer_binding_size
-    );
+        limits
+            .max_storage_buffer_binding_size
+            .min(JS_MAX_SAFE_INTEGER),
+    )?;
     set!(
         "minUniformBufferOffsetAlignment",
         min_uniform_buffer_offset_alignment
@@ -223,7 +219,10 @@ fn limits_object<'js>(ctx: &Ctx<'js>, limits: &wgpu::Limits) -> Result<Object<'j
         min_storage_buffer_offset_alignment
     );
     set!("maxVertexBuffers", max_vertex_buffers);
-    set!("maxBufferSize", max_buffer_size);
+    object.set(
+        "maxBufferSize",
+        limits.max_buffer_size.min(JS_MAX_SAFE_INTEGER),
+    )?;
     set!("maxVertexAttributes", max_vertex_attributes);
     set!("maxVertexBufferArrayStride", max_vertex_buffer_array_stride);
     set!(
@@ -291,12 +290,20 @@ fn apply_required_limits<'js>(
                 u32_limit!(max_sampled_textures_per_shader_stage)
             }
             "maxSamplersPerShaderStage" => u32_limit!(max_samplers_per_shader_stage),
-            "maxStorageBuffersPerShaderStage" => u32_limit!(max_storage_buffers_per_shader_stage),
-            "maxStorageTexturesPerShaderStage" => {
+            "maxStorageBuffersPerShaderStage"
+            | "maxStorageBuffersInVertexStage"
+            | "maxStorageBuffersInFragmentStage" => {
+                u32_limit!(max_storage_buffers_per_shader_stage)
+            }
+            "maxStorageTexturesPerShaderStage"
+            | "maxStorageTexturesInVertexStage"
+            | "maxStorageTexturesInFragmentStage" => {
                 u32_limit!(max_storage_textures_per_shader_stage)
             }
             "maxUniformBuffersPerShaderStage" => u32_limit!(max_uniform_buffers_per_shader_stage),
-            "maxUniformBufferBindingSize" => limits.max_uniform_buffer_binding_size = value,
+            "maxUniformBufferBindingSize" => {
+                limits.max_uniform_buffer_binding_size = value.min(JS_MAX_SAFE_INTEGER)
+            }
             "maxStorageBufferBindingSize" => limits.max_storage_buffer_binding_size = value,
             "minUniformBufferOffsetAlignment" => {
                 u32_limit!(min_uniform_buffer_offset_alignment)
@@ -434,10 +441,7 @@ impl GPU {
             && feature_level != "core"
             && feature_level != "compatibility"
         {
-            return Err(type_error(
-                &ctx,
-                format!("invalid GPU featureLevel {feature_level}"),
-            ));
+            return Ok(Value::new_null(ctx));
         }
         let force_fallback_adapter = options
             .as_ref()
@@ -456,6 +460,12 @@ impl GPU {
             .await
             .ok()
         {
+            Some(adapter)
+                if force_fallback_adapter
+                    && adapter.get_info().device_type == wgpu::DeviceType::Cpu =>
+            {
+                Ok(Value::new_null(ctx))
+            }
             Some(adapter) => {
                 Class::instance(ctx.clone(), GPUAdapter::from_inner(adapter))?.into_js(&ctx)
             }
@@ -617,6 +627,7 @@ impl GPUAdapter {
             inner:  queue,
             label:  Rc::new(RefCell::new(queue_label)),
         })?;
+        let (lost, resolve, _reject) = ctx.promise()?;
         Ok(GPUDevice {
             adapter_info: GPUAdapterInfo {
                 inner: self.inner.get_info(),
@@ -625,6 +636,8 @@ impl GPUAdapter {
             device,
             label: Rc::new(RefCell::new(label)),
             errors,
+            lost,
+            lost_resolve: Rc::new(RefCell::new(Some(resolve))),
             queue,
         })
     }
@@ -664,20 +677,46 @@ impl GPUAdapterInfo {
     pub fn is_fallback_adapter(&self) -> bool { self.inner.device_type == wgpu::DeviceType::Cpu }
 }
 
-#[derive(Clone, Trace, JsLifetime)]
+#[derive(Clone, JsLifetime)]
 #[rquickjs::class(rename = "GPUDevice")]
 pub struct GPUDevice<'js> {
-    #[qjs(skip_trace)]
     adapter_info: GPUAdapterInfo,
-    #[qjs(skip_trace)]
     destroyed:    Rc<Cell<bool>>,
-    #[qjs(skip_trace)]
     device:       wgpu::Device,
-    #[qjs(skip_trace)]
     errors:       Arc<Mutex<ErrorRouter>>,
-    #[qjs(skip_trace)]
     label:        Rc<RefCell<String>>,
+    lost:         Promise<'js>,
+    lost_resolve: Rc<RefCell<Option<Function<'js>>>>,
     queue:        Class<'js, GPUQueue>,
+}
+
+impl<'js> Trace<'js> for GPUDevice<'js> {
+    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) {
+        self.lost.trace(tracer);
+        self.queue.trace(tracer);
+        if let Ok(resolve) = self.lost_resolve.try_borrow()
+            && let Some(resolve) = resolve.as_ref()
+        {
+            resolve.trace(tracer);
+        }
+    }
+}
+
+enum OwnedBinding {
+    Buffer {
+        binding: u32,
+        buffer:  wgpu::Buffer,
+        offset:  u64,
+        size:    Option<NonZeroU64>,
+    },
+    View {
+        binding: u32,
+        view:    wgpu::TextureView,
+    },
+    Sampler {
+        binding: u32,
+        sampler: wgpu::Sampler,
+    },
 }
 
 impl GPUDevice<'_> {
@@ -717,10 +756,42 @@ impl<'js> GPUDevice<'js> {
     #[qjs(get)]
     pub fn queue(&self) -> Class<'js, GPUQueue> { self.queue.clone() }
 
-    pub fn destroy(&self) {
+    #[qjs(get)]
+    pub fn lost(&self) -> Promise<'js> { self.lost.clone() }
+
+    pub fn destroy(&self, ctx: Ctx<'js>) -> Result<()> {
         if !self.destroyed.replace(true) {
             self.device.destroy();
+            if let Some(resolve) = self.lost_resolve.borrow_mut().take() {
+                let info = Class::instance(ctx.clone(), GPUDeviceLostInfo {
+                    reason:  "destroyed",
+                    message: "GPUDevice.destroy() was called".into(),
+                })?;
+                resolve.call::<_, ()>((info,))?;
+            }
         }
+        Ok(())
+    }
+
+    pub fn create_texture(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>,
+    ) -> Result<texture::GPUTexture> {
+        self.ensure_alive(&ctx)?;
+        texture::GPUTexture::from_descriptor(&self.device, descriptor, &ctx)
+    }
+
+    pub fn create_sampler(
+        &self, descriptor: Opt<Option<Object<'js>>>, ctx: Ctx<'js>,
+    ) -> Result<texture::GPUSampler> {
+        self.ensure_alive(&ctx)?;
+        texture::create_sampler(&self.device, descriptor, &ctx)
+    }
+
+    pub fn create_query_set(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>,
+    ) -> Result<query::GPUQuerySet> {
+        self.ensure_alive(&ctx)?;
+        query::GPUQuerySet::from_descriptor(&self.device, descriptor, &ctx)
     }
 
     pub fn create_buffer(&self, descriptor: Object<'js>, ctx: Ctx<'js>) -> Result<GPUBuffer> {
@@ -806,41 +877,11 @@ impl<'js> GPUDevice<'js> {
             if entry.get::<_, Option<JsU32>>("count")?.is_some() {
                 return Err(type_error(&ctx, "binding arrays are not implemented"));
             }
-            let buffer: Option<Object> = entry.get("buffer")?;
-            let Some(buffer) = buffer else {
-                return Err(type_error(
-                    &ctx,
-                    "only buffer bind group layout entries are implemented",
-                ));
-            };
-            let ty = match buffer
-                .get::<_, Option<String>>("type")?
-                .as_deref()
-                .unwrap_or("uniform")
-            {
-                "uniform" => wgpu::BufferBindingType::Uniform,
-                "storage" => wgpu::BufferBindingType::Storage { read_only: false },
-                "read-only-storage" => wgpu::BufferBindingType::Storage { read_only: true },
-                value => {
-                    return Err(type_error(
-                        &ctx,
-                        format!("invalid GPUBufferBindingType {value}"),
-                    ));
-                }
-            };
-            let min_binding_size = buffer
-                .get::<_, Option<JsU64>>("minBindingSize")?
-                .and_then(|value| NonZeroU64::new(value.0));
+            let ty = bind_group_layout_type(&entry, &ctx)?;
             native.push(wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility,
-                ty: wgpu::BindingType::Buffer {
-                    ty,
-                    has_dynamic_offset: buffer
-                        .get::<_, Option<bool>>("hasDynamicOffset")?
-                        .unwrap_or_default(),
-                    min_binding_size,
-                },
+                ty,
                 count: None,
             });
         }
@@ -892,7 +933,23 @@ impl<'js> GPUDevice<'js> {
         for entry in entries.iter::<Object>() {
             let entry = entry?;
             let binding = entry.get::<_, JsU32>("binding")?.0;
-            let resource: Object = entry.get("resource")?;
+            let resource: Value = entry.get("resource")?;
+            if let Ok(view) = Class::<texture::GPUTextureView>::from_js(&ctx, resource.clone()) {
+                resources.push(OwnedBinding::View {
+                    binding,
+                    view: view.borrow().inner.clone(),
+                });
+                continue;
+            }
+            if let Ok(sampler) = Class::<texture::GPUSampler>::from_js(&ctx, resource.clone()) {
+                resources.push(OwnedBinding::Sampler {
+                    binding,
+                    sampler: sampler.borrow().inner.clone(),
+                });
+                continue;
+            }
+            let resource = Object::from_js(&ctx, resource)
+                .map_err(|_error| type_error(&ctx, "bind group resource is not a GPU binding"))?;
             let buffer = class_value::<GPUBuffer>(&resource, "buffer", &ctx)?;
             let buffer = buffer.borrow();
             buffer.ensure_usable(&ctx)?;
@@ -911,18 +968,44 @@ impl<'js> GPUDevice<'js> {
             if offset > buffer.size || end > buffer.size {
                 return Err(operation_error(&ctx, "buffer binding is out of bounds"));
             }
-            resources.push((binding, buffer.inner.clone(), offset, size));
+            resources.push(OwnedBinding::Buffer {
+                binding,
+                buffer: buffer.inner.clone(),
+                offset,
+                size,
+            });
         }
         let native = resources
             .iter()
-            .map(|(binding, buffer, offset, size)| {
-                wgpu::BindGroupEntry {
-                    binding:  *binding,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            .map(|resource| {
+                match resource {
+                    OwnedBinding::Buffer {
+                        binding,
                         buffer,
-                        offset: *offset,
-                        size: *size,
-                    }),
+                        offset,
+                        size,
+                    } => {
+                        wgpu::BindGroupEntry {
+                            binding:  *binding,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer,
+                                offset: *offset,
+                                size: *size,
+                            }),
+                        }
+                    }
+                    OwnedBinding::View { binding, view } => {
+                        wgpu::BindGroupEntry {
+                            binding:  *binding,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        }
+                    }
+                    OwnedBinding::Sampler { binding, sampler } => {
+                        wgpu::BindGroupEntry {
+                            binding:  *binding,
+                            resource: wgpu::BindingResource::Sampler(sampler),
+                        }
+                    }
                 }
             })
             .collect::<Vec<_>>();
@@ -951,6 +1034,30 @@ impl<'js> GPUDevice<'js> {
         self, descriptor: Object<'js>, ctx: Ctx<'js>,
     ) -> Result<GPUComputePipeline> {
         self.create_compute_pipeline(descriptor, ctx)
+    }
+
+    pub fn create_render_pipeline(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>,
+    ) -> Result<render::GPURenderPipeline> {
+        self.ensure_alive(&ctx)?;
+        render::create_pipeline(&self.device, descriptor, &ctx)
+    }
+
+    #[expect(
+        clippy::unused_async,
+        reason = "WebGPU requires a Promise-returning variant"
+    )]
+    pub async fn create_render_pipeline_async(
+        self, descriptor: Object<'js>, ctx: Ctx<'js>,
+    ) -> Result<render::GPURenderPipeline> {
+        self.create_render_pipeline(descriptor, ctx)
+    }
+
+    pub fn create_render_bundle_encoder(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>,
+    ) -> Result<render::GPURenderBundleEncoder> {
+        self.ensure_alive(&ctx)?;
+        render::new_bundle_encoder(&self.device, descriptor, &ctx)
     }
 
     pub fn create_command_encoder(
@@ -1063,11 +1170,11 @@ fn create_compute_pipeline<'js>(
         .inner
         .clone();
     let entry_point = compute.get::<_, Option<String>>("entryPoint")?;
-    if let Some(constants) = compute.get::<_, Option<Object>>("constants")?
-        && !constants.is_empty()
-    {
-        return Err(type_error(ctx, "compute constants are not implemented"));
-    }
+    let constants = format::pipeline_constants(compute.get("constants")?, ctx)?;
+    let constant_pairs = constants
+        .iter()
+        .map(|(name, value)| (name.as_str(), *value))
+        .collect::<Vec<_>>();
     Ok(GPUComputePipeline {
         inner: device
             .device
@@ -1076,11 +1183,135 @@ fn create_compute_pipeline<'js>(
                 layout:              layout.as_ref(),
                 module:              &module,
                 entry_point:         entry_point.as_deref(),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants:                        &constant_pairs,
+                    zero_initialize_workgroup_memory: true,
+                },
                 cache:               None,
             }),
         label: Rc::new(RefCell::new(label)),
     })
+}
+
+fn bind_group_layout_type(entry: &Object<'_>, ctx: &Ctx<'_>) -> Result<wgpu::BindingType> {
+    if let Some(buffer) = entry.get::<_, Option<Object>>("buffer")? {
+        let ty = match buffer
+            .get::<_, Option<String>>("type")?
+            .as_deref()
+            .unwrap_or("uniform")
+        {
+            "uniform" => wgpu::BufferBindingType::Uniform,
+            "storage" => wgpu::BufferBindingType::Storage { read_only: false },
+            "read-only-storage" => wgpu::BufferBindingType::Storage { read_only: true },
+            value => {
+                return Err(type_error(
+                    ctx,
+                    format!("invalid GPUBufferBindingType {value}"),
+                ));
+            }
+        };
+        return Ok(wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: buffer
+                .get::<_, Option<bool>>("hasDynamicOffset")?
+                .unwrap_or_default(),
+            min_binding_size: buffer
+                .get::<_, Option<JsU64>>("minBindingSize")?
+                .and_then(|value| NonZeroU64::new(value.0)),
+        });
+    }
+    if let Some(sampler) = entry.get::<_, Option<Object>>("sampler")? {
+        let name = sampler
+            .get::<_, Option<String>>("type")?
+            .unwrap_or_else(|| "filtering".into());
+        return Ok(wgpu::BindingType::Sampler(format::sampler_binding_type(
+            &name, ctx,
+        )?));
+    }
+    if let Some(texture) = entry.get::<_, Option<Object>>("texture")? {
+        return Ok(wgpu::BindingType::Texture {
+            sample_type:    format::sample_type(
+                texture.get::<_, Option<String>>("sampleType")?.as_deref(),
+                ctx,
+            )?,
+            view_dimension: format::view_dimension_or(
+                texture
+                    .get::<_, Option<String>>("viewDimension")?
+                    .as_deref(),
+                wgpu::TextureViewDimension::D2,
+                ctx,
+            )?,
+            multisampled:   texture
+                .get::<_, Option<bool>>("multisampled")?
+                .unwrap_or_default(),
+        });
+    }
+    if let Some(storage) = entry.get::<_, Option<Object>>("storageTexture")? {
+        return Ok(wgpu::BindingType::StorageTexture {
+            access:         format::storage_access(
+                storage.get::<_, Option<String>>("access")?.as_deref(),
+                ctx,
+            )?,
+            format:         format::texture_format(&storage.get::<_, String>("format")?, ctx)?,
+            view_dimension: format::view_dimension_or(
+                storage
+                    .get::<_, Option<String>>("viewDimension")?
+                    .as_deref(),
+                wgpu::TextureViewDimension::D2,
+                ctx,
+            )?,
+        });
+    }
+    if entry.get::<_, Option<Object>>("externalTexture")?.is_some() {
+        return Err(type_error(ctx, "GPUExternalTexture is not implemented"));
+    }
+    Err(type_error(
+        ctx,
+        "bind group layout entry must specify buffer, sampler, texture, or storageTexture",
+    ))
+}
+
+pub(crate) fn dynamic_offsets<'js>(
+    ctx: &Ctx<'js>, offsets: Opt<Value<'js>>, start: Opt<Option<JsU64>>, length: Opt<Option<JsU64>>,
+) -> Result<Vec<u32>> {
+    let Some(value) = offsets.0 else {
+        return Ok(Vec::new());
+    };
+    if value.is_undefined() || value.is_null() {
+        return Ok(Vec::new());
+    }
+    if let Ok(array) = Array::from_js(ctx, value.clone()) {
+        return array
+            .iter::<JsU32>()
+            .map(|value| Ok(value?.0))
+            .collect::<Result<Vec<_>>>();
+    }
+    let bytes = BufferSource::from_js(ctx, value)?.into_bytes();
+    if !bytes.len().is_multiple_of(4) {
+        return Err(type_error(
+            ctx,
+            "dynamic offsets must be a multiple of 4 bytes",
+        ));
+    }
+    let values = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
+        .collect::<Vec<_>>();
+    let start = usize::try_from(start.0.flatten().map_or(0, |value| value.0))
+        .map_err(|_error| type_error(ctx, "dynamicOffsetsDataStart is too large"))?;
+    let count = match length.0.flatten() {
+        Some(value) => {
+            usize::try_from(value.0)
+                .map_err(|_error| type_error(ctx, "dynamicOffsetsDataLength is too large"))?
+        }
+        None => values.len().saturating_sub(start),
+    };
+    values
+        .get(start..start.saturating_add(count))
+        .map(<[u32]>::to_vec)
+        .ok_or_else(|| type_error(ctx, "dynamic offset window is out of bounds"))
 }
 
 #[derive(Clone, Copy)]
@@ -1109,17 +1340,17 @@ enum BufferMapState {
 #[rquickjs::class(rename = "GPUBuffer")]
 pub struct GPUBuffer {
     #[qjs(skip_trace)]
-    device: wgpu::Device,
+    device:           wgpu::Device,
     #[qjs(skip_trace)]
-    inner:  wgpu::Buffer,
+    pub(crate) inner: wgpu::Buffer,
     #[qjs(skip_trace)]
-    label:  Rc<RefCell<String>>,
+    label:            Rc<RefCell<String>>,
     #[qjs(skip_trace)]
-    size:   u64,
+    pub(crate) size:  u64,
     #[qjs(skip_trace)]
-    state:  Rc<RefCell<BufferMapState>>,
+    state:            Rc<RefCell<BufferMapState>>,
     #[qjs(skip_trace)]
-    usage:  wgpu::BufferUsages,
+    usage:            wgpu::BufferUsages,
 }
 
 impl GPUBuffer {
@@ -1168,7 +1399,7 @@ impl GPUBuffer {
     }
 
     pub async fn map_async(
-        self, mode: JsU32, offset: Opt<JsU64>, size: Opt<JsU64>, ctx: Ctx<'_>,
+        self, mode: JsU32, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'_>,
     ) -> Result<()> {
         self.ensure_unmapped(&ctx)?;
         let kind = match mode.0 {
@@ -1187,9 +1418,10 @@ impl GPUBuffer {
                 ));
             }
         };
-        let offset = offset.0.map_or(0, |value| value.0);
+        let offset = offset.0.flatten().map_or(0, |value| value.0);
         let size = size
             .0
+            .flatten()
             .map_or_else(|| self.size.saturating_sub(offset), |value| value.0);
         let end = offset
             .checked_add(size)
@@ -1244,9 +1476,9 @@ impl GPUBuffer {
     }
 
     pub fn get_mapped_range<'js>(
-        &self, offset: Opt<JsU64>, size: Opt<JsU64>, ctx: Ctx<'js>,
+        &self, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<ArrayBuffer<'js>> {
-        let offset = offset.0.map_or(0, |value| value.0);
+        let offset = offset.0.flatten().map_or(0, |value| value.0);
         let mut state = self.state.borrow_mut();
         let BufferMapState::Mapped {
             range: mapped,
@@ -1258,6 +1490,7 @@ impl GPUBuffer {
         };
         let size = size
             .0
+            .flatten()
             .map_or_else(|| mapped.end.saturating_sub(offset), |value| value.0);
         let end = offset
             .checked_add(size)
@@ -1360,7 +1593,7 @@ impl GPUQueue {
 
     pub fn write_buffer<'js>(
         &self, buffer: Class<'js, GPUBuffer>, buffer_offset: JsU64, data: Value<'js>,
-        data_offset: Opt<JsU64>, size: Opt<JsU64>, ctx: Ctx<'js>,
+        data_offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow();
         buffer.ensure_unmapped(&ctx)?;
@@ -1377,10 +1610,11 @@ impl GPUQueue {
         let bytes = BufferSource::from_js(&ctx, data)?.into_bytes();
         let start = data_offset
             .0
+            .flatten()
             .map_or(0, |value| value.0)
             .checked_mul(element_size)
             .ok_or_else(|| operation_error(&ctx, "dataOffset overflows"))?;
-        let length = match size.0 {
+        let length = match size.0.flatten() {
             Some(value) => {
                 value
                     .0
@@ -1413,6 +1647,29 @@ impl GPUQueue {
             .ok_or_else(|| operation_error(&ctx, "data range is out of bounds"))?;
         self.inner
             .write_buffer(&buffer.inner, buffer_offset.0, data);
+        Ok(())
+    }
+
+    pub fn write_texture<'js>(
+        &self, destination: Object<'js>, data: Value<'js>, data_layout: Object<'js>,
+        size: Value<'js>, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let (texture, mip_level, origin, aspect) = texture::texel_copy_texture(destination, &ctx)?;
+        let layout = texture::texel_copy_layout(&data_layout)?;
+        let size = format::extent3d(size, &ctx)?;
+        let bytes = BufferSource::from_js(&ctx, data)?.into_bytes();
+        let texture = texture.borrow();
+        self.inner.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture.inner,
+                mip_level,
+                origin,
+                aspect,
+            },
+            &bytes,
+            layout,
+            size,
+        );
         Ok(())
     }
 
@@ -1494,9 +1751,9 @@ fn typed_array_element_size(ctx: &Ctx<'_>, value: &Value<'_>) -> Result<u64> {
 #[rquickjs::class(rename = "GPUShaderModule")]
 pub struct GPUShaderModule {
     #[qjs(skip_trace)]
-    inner: wgpu::ShaderModule,
+    pub(crate) inner: wgpu::ShaderModule,
     #[qjs(skip_trace)]
-    label: Rc<RefCell<String>>,
+    label:            Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -1546,9 +1803,9 @@ macro_rules! labeled_resource {
         #[rquickjs::class(rename = $js_name)]
         pub struct $name {
             #[qjs(skip_trace)]
-            inner: $inner,
+            pub(crate) inner: $inner,
             #[qjs(skip_trace)]
-            label: Rc<RefCell<String>>,
+            pub(crate) label: Rc<RefCell<String>>,
         }
 
         #[rquickjs::methods]
@@ -1601,9 +1858,9 @@ impl GPUComputePipeline {
     }
 }
 
-struct EncoderState {
-    encoder:     Option<wgpu::CommandEncoder>,
-    open_passes: usize,
+pub(crate) struct EncoderState {
+    pub(crate) encoder:     Option<wgpu::CommandEncoder>,
+    pub(crate) open_passes: usize,
 }
 
 #[derive(Clone, Trace, JsLifetime)]
@@ -1645,9 +1902,8 @@ impl GPUCommandEncoder {
     pub fn begin_compute_pass<'js>(
         &self, descriptor: Opt<Option<Object<'js>>>, ctx: Ctx<'js>,
     ) -> Result<GPUComputePassEncoder> {
+        let descriptor = descriptor.0.flatten();
         let label = descriptor
-            .0
-            .flatten()
             .as_ref()
             .map(crate::label)
             .transpose()?
@@ -1663,10 +1919,34 @@ impl GPUCommandEncoder {
             .encoder
             .as_mut()
             .ok_or_else(|| invalid_state(&ctx, "GPUCommandEncoder is already finished"))?;
+        let timestamp_query;
+        let timestamp_writes = match descriptor
+            .as_ref()
+            .map(|object| object.get::<_, Option<Object>>("timestampWrites"))
+            .transpose()?
+            .flatten()
+        {
+            Some(writes) => {
+                timestamp_query = class_value::<query::GPUQuerySet>(&writes, "querySet", &ctx)?
+                    .borrow()
+                    .inner
+                    .clone();
+                Some(wgpu::ComputePassTimestampWrites {
+                    query_set:                     &timestamp_query,
+                    beginning_of_pass_write_index: writes
+                        .get::<_, Option<JsU32>>("beginningOfPassWriteIndex")?
+                        .map(|value| value.0),
+                    end_of_pass_write_index:       writes
+                        .get::<_, Option<JsU32>>("endOfPassWriteIndex")?
+                        .map(|value| value.0),
+                })
+            }
+            None => None,
+        };
         let pass = encoder
             .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label:            (!label.is_empty()).then_some(label.as_str()),
-                timestamp_writes: None,
+                label: (!label.is_empty()).then_some(label.as_str()),
+                timestamp_writes,
             })
             .forget_lifetime();
         state.open_passes = 1;
@@ -1680,10 +1960,57 @@ impl GPUCommandEncoder {
         })
     }
 
+    pub fn begin_render_pass<'js>(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>,
+    ) -> Result<render::GPURenderPassEncoder> {
+        let mut state = self.state.borrow_mut();
+        if state.open_passes != 0 {
+            return Err(invalid_state(
+                &ctx,
+                "GPUCommandEncoder already has an open pass",
+            ));
+        }
+        let encoder = state
+            .encoder
+            .as_mut()
+            .ok_or_else(|| invalid_state(&ctx, "GPUCommandEncoder is already finished"))?;
+        let (label, pass) = render::begin_render_pass(encoder, descriptor, &ctx)?;
+        state.open_passes = 1;
+        drop(state);
+        Ok(render::GPURenderPassEncoder::new(
+            label,
+            self.state.clone(),
+            pass,
+        ))
+    }
+
     pub fn copy_buffer_to_buffer<'js>(
-        &self, source: Class<'js, GPUBuffer>, source_offset: JsU64,
-        destination: Class<'js, GPUBuffer>, destination_offset: JsU64, size: JsU64, ctx: Ctx<'js>,
+        &self, source: Class<'js, GPUBuffer>, source_offset_or_destination: Value<'js>,
+        destination_or_size: Opt<Value<'js>>, destination_offset: Opt<Option<JsU64>>,
+        size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
+        let (source_offset, destination, destination_offset, size) = if let Ok(destination) =
+            Class::<GPUBuffer>::from_js(&ctx, source_offset_or_destination.clone())
+        {
+            let size = destination_or_size
+                .0
+                .filter(|value| !value.type_of().is_void())
+                .map(|value| JsU64::from_js(&ctx, value))
+                .transpose()?;
+            (0, destination, 0, size)
+        } else {
+            let source_offset = JsU64::from_js(&ctx, source_offset_or_destination)?;
+            let destination = destination_or_size
+                .0
+                .ok_or_else(|| type_error(&ctx, "copyBufferToBuffer destination is required"))?;
+            let destination = Class::<GPUBuffer>::from_js(&ctx, destination)?;
+            (
+                source_offset.0,
+                destination,
+                destination_offset.0.flatten().map_or(0, |value| value.0),
+                size.0.flatten(),
+            )
+        };
         let source = source.borrow();
         let destination = destination.borrow();
         source.ensure_unmapped(&ctx)?;
@@ -1696,49 +2023,146 @@ impl GPUCommandEncoder {
                 "copy buffers have incompatible usage",
             ));
         }
-        if !source_offset.0.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-            || !destination_offset
-                .0
-                .is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-            || !size.0.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+        let size = size.map(|value| value.0);
+        if !source_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+            || !destination_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
+            || size.is_some_and(|size| !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT))
         {
             return Err(operation_error(
                 &ctx,
                 "copy offsets and size must be multiples of 4",
             ));
         }
-        if source_offset
-            .0
-            .checked_add(size.0)
-            .is_none_or(|end| end > source.size)
-            || destination_offset
-                .0
-                .checked_add(size.0)
-                .is_none_or(|end| end > destination.size)
+        if let Some(size) = size
+            && (source_offset
+                .checked_add(size)
+                .is_none_or(|end| end > source.size)
+                || destination_offset
+                    .checked_add(size)
+                    .is_none_or(|end| end > destination.size))
         {
             return Err(operation_error(&ctx, "copy range is out of bounds"));
         }
         self.with_encoder(&ctx, |encoder| {
             encoder.copy_buffer_to_buffer(
                 &source.inner,
-                source_offset.0,
+                source_offset,
+                &destination.inner,
+                destination_offset,
+                size,
+            );
+        })
+    }
+
+    pub fn copy_buffer_to_texture<'js>(
+        &self, source: Object<'js>, destination: Object<'js>, copy_size: Value<'js>, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let (buffer, layout) = texture::texel_copy_buffer(source, &ctx)?;
+        let (texture, mip_level, origin, aspect) = texture::texel_copy_texture(destination, &ctx)?;
+        let size = format::extent3d(copy_size, &ctx)?;
+        let buffer = buffer.borrow();
+        let texture = texture.borrow();
+        buffer.ensure_unmapped(&ctx)?;
+        self.with_encoder(&ctx, |encoder| {
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer.inner,
+                    layout,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture.inner,
+                    mip_level,
+                    origin,
+                    aspect,
+                },
+                size,
+            );
+        })
+    }
+
+    pub fn copy_texture_to_buffer<'js>(
+        &self, source: Object<'js>, destination: Object<'js>, copy_size: Value<'js>, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let (texture, mip_level, origin, aspect) = texture::texel_copy_texture(source, &ctx)?;
+        let (buffer, layout) = texture::texel_copy_buffer(destination, &ctx)?;
+        let size = format::extent3d(copy_size, &ctx)?;
+        let buffer = buffer.borrow();
+        let texture = texture.borrow();
+        buffer.ensure_unmapped(&ctx)?;
+        self.with_encoder(&ctx, |encoder| {
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture.inner,
+                    mip_level,
+                    origin,
+                    aspect,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer.inner,
+                    layout,
+                },
+                size,
+            );
+        })
+    }
+
+    pub fn copy_texture_to_texture<'js>(
+        &self, source: Object<'js>, destination: Object<'js>, copy_size: Value<'js>, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let (source_texture, source_mip, source_origin, source_aspect) =
+            texture::texel_copy_texture(source, &ctx)?;
+        let (destination_texture, destination_mip, destination_origin, destination_aspect) =
+            texture::texel_copy_texture(destination, &ctx)?;
+        let size = format::extent3d(copy_size, &ctx)?;
+        let source_texture = source_texture.borrow();
+        let destination_texture = destination_texture.borrow();
+        self.with_encoder(&ctx, |encoder| {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &source_texture.inner,
+                    mip_level: source_mip,
+                    origin:    source_origin,
+                    aspect:    source_aspect,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &destination_texture.inner,
+                    mip_level: destination_mip,
+                    origin:    destination_origin,
+                    aspect:    destination_aspect,
+                },
+                size,
+            );
+        })
+    }
+
+    pub fn resolve_query_set<'js>(
+        &self, query_set: Class<'js, query::GPUQuerySet>, first_query: JsU32, query_count: JsU32,
+        destination: Class<'js, GPUBuffer>, destination_offset: JsU64, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let query_set = query_set.borrow();
+        let destination = destination.borrow();
+        destination.ensure_unmapped(&ctx)?;
+        self.with_encoder(&ctx, |encoder| {
+            encoder.resolve_query_set(
+                &query_set.inner,
+                first_query.0..first_query.0 + query_count.0,
                 &destination.inner,
                 destination_offset.0,
-                size.0,
             );
         })
     }
 
     pub fn clear_buffer<'js>(
-        &self, buffer: Class<'js, GPUBuffer>, offset: Opt<JsU64>, size: Opt<JsU64>, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer>, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>,
+        ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow();
         buffer.ensure_unmapped(&ctx)?;
         if !buffer.usage.contains(wgpu::BufferUsages::COPY_DST) {
             return Err(operation_error(&ctx, "buffer does not have COPY_DST usage"));
         }
-        let offset = offset.0.map_or(0, |value| value.0);
-        let size = size.0.map(|value| value.0);
+        let offset = offset.0.flatten().map_or(0, |value| value.0);
+        let size = size.0.flatten().map(|value| value.0);
         if !offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
             || size.is_some_and(|size| !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT))
             || size
@@ -1851,28 +2275,39 @@ impl GPUComputePassEncoder {
     }
 
     pub fn set_bind_group<'js>(
-        &self, index: JsU32, bind_group: Class<'js, GPUBindGroup>, dynamic_offsets: Opt<Vec<u32>>,
+        &self, index: JsU32, bind_group: Option<Class<'js, GPUBindGroup>>,
+        dynamic_offsets: Opt<Value<'js>>, start: Opt<Option<JsU64>>, length: Opt<Option<JsU64>>,
         ctx: Ctx<'js>,
     ) -> Result<()> {
-        let bind_group = bind_group.borrow();
+        let offsets = crate::dynamic_offsets(&ctx, dynamic_offsets, start, length)?;
+        let bind_group = bind_group.as_ref().map(|group| group.borrow());
         self.with_pass(&ctx, |pass| {
             pass.set_bind_group(
                 index.0,
-                &bind_group.inner,
-                dynamic_offsets.0.as_deref().unwrap_or(&[]),
+                bind_group.as_ref().map(|group| &group.inner),
+                &offsets,
             );
         })
     }
 
     pub fn dispatch_workgroups(
-        &self, x: JsU32, y: Opt<JsU32>, z: Opt<JsU32>, ctx: Ctx<'_>,
+        &self, x: JsU32, y: Opt<Option<JsU32>>, z: Opt<Option<JsU32>>, ctx: Ctx<'_>,
     ) -> Result<()> {
         self.with_pass(&ctx, |pass| {
             pass.dispatch_workgroups(
                 x.0,
-                y.0.map_or(1, |value| value.0),
-                z.0.map_or(1, |value| value.0),
+                y.0.flatten().map_or(1, |value| value.0),
+                z.0.flatten().map_or(1, |value| value.0),
             );
+        })
+    }
+
+    pub fn dispatch_workgroups_indirect<'js>(
+        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let buffer = buffer.borrow();
+        self.with_pass(&ctx, |pass| {
+            pass.dispatch_workgroups_indirect(&buffer.inner, offset.0)
         })
     }
 
@@ -1919,6 +2354,34 @@ impl GPUCommandBuffer {
 
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
+}
+
+#[derive(Clone, Trace, JsLifetime)]
+#[rquickjs::class(rename = "GPUError")]
+pub struct GPUError {
+    #[qjs(get, enumerable, skip_trace)]
+    message: String,
+}
+
+#[rquickjs::methods]
+impl GPUError {
+    #[qjs(constructor)]
+    pub const fn new(message: String) -> Self { Self { message } }
+}
+
+#[derive(Clone, Trace, JsLifetime)]
+#[rquickjs::class(rename = "GPUDeviceLostInfo")]
+pub struct GPUDeviceLostInfo {
+    #[qjs(get, enumerable, skip_trace)]
+    reason:  &'static str,
+    #[qjs(get, enumerable, skip_trace)]
+    message: String,
+}
+
+#[rquickjs::methods]
+impl GPUDeviceLostInfo {
+    #[qjs(constructor)]
+    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 }
 
 #[derive(Clone, Trace, JsLifetime)]
@@ -2007,16 +2470,45 @@ fn install_classes(globals: &Object<'_>) -> Result<()> {
     globals.install_constructor::<GPUComputePassEncoder>(0)?;
     globals.install_constructor::<GPUComputePipeline>(0)?;
     globals.install_constructor::<GPUDevice>(0)?;
+    globals.install_constructor::<GPUDeviceLostInfo>(0)?;
+    globals.install_constructor::<GPUError>(1)?;
     globals.install_constructor::<GPUInternalError>(1)?;
     globals.install_constructor::<GPUOutOfMemoryError>(1)?;
     globals.install_constructor::<GPUPipelineLayout>(0)?;
+    globals.install_constructor::<query::GPUQuerySet>(0)?;
     globals.install_constructor::<GPUQueue>(0)?;
+    globals.install_constructor::<render::GPURenderBundle>(0)?;
+    globals.install_constructor::<render::GPURenderBundleEncoder>(0)?;
+    globals.install_constructor::<render::GPURenderPassEncoder>(0)?;
+    globals.install_constructor::<render::GPURenderPipeline>(0)?;
+    globals.install_constructor::<texture::GPUSampler>(0)?;
     globals.install_constructor::<GPUShaderModule>(0)?;
+    globals.install_constructor::<texture::GPUTexture>(0)?;
+    globals.install_constructor::<texture::GPUTextureView>(0)?;
     globals.install_constructor::<GPUValidationError>(1)?;
+    den_util::inherit::<GPUValidationError, GPUError>(globals.ctx())?;
+    den_util::inherit::<GPUOutOfMemoryError, GPUError>(globals.ctx())?;
+    den_util::inherit::<GPUInternalError, GPUError>(globals.ctx())?;
+    inherit_global_prototype::<GPUDevice<'_>>(globals.ctx(), "EventTarget")?;
     Ok(())
 }
 
-const GLOBAL_CLASSES: [&str; 17] = [
+fn inherit_global_prototype<'js, T: rquickjs::class::JsClass<'js>>(
+    ctx: &Ctx<'js>, name: &str,
+) -> Result<()> {
+    let Ok(constructor) = ctx.globals().get::<_, Function>(name) else {
+        return Ok(());
+    };
+    let Ok(super_proto) = constructor.get::<_, Object>("prototype") else {
+        return Ok(());
+    };
+    if let Some(sub) = Class::<T>::prototype(ctx)? {
+        sub.set_prototype(Some(&super_proto))?;
+    }
+    Ok(())
+}
+
+const GLOBAL_CLASSES: [&str; 27] = [
     "GPU",
     "GPUAdapter",
     "GPUAdapterInfo",
@@ -2028,11 +2520,21 @@ const GLOBAL_CLASSES: [&str; 17] = [
     "GPUComputePassEncoder",
     "GPUComputePipeline",
     "GPUDevice",
+    "GPUDeviceLostInfo",
+    "GPUError",
     "GPUInternalError",
     "GPUOutOfMemoryError",
     "GPUPipelineLayout",
+    "GPUQuerySet",
     "GPUQueue",
+    "GPURenderBundle",
+    "GPURenderBundleEncoder",
+    "GPURenderPassEncoder",
+    "GPURenderPipeline",
+    "GPUSampler",
     "GPUShaderModule",
+    "GPUTexture",
+    "GPUTextureView",
     "GPUValidationError",
 ];
 
@@ -2047,8 +2549,13 @@ pub mod webgpu {
     pub use super::{
         GPU, GPUAdapter, GPUAdapterInfo, GPUBindGroup, GPUBindGroupLayout, GPUBuffer,
         GPUCommandBuffer, GPUCommandEncoder, GPUComputePassEncoder, GPUComputePipeline, GPUDevice,
-        GPUInternalError, GPUOutOfMemoryError, GPUPipelineLayout, GPUQueue, GPUShaderModule,
-        GPUValidationError,
+        GPUDeviceLostInfo, GPUError, GPUInternalError, GPUOutOfMemoryError, GPUPipelineLayout,
+        GPUQueue, GPUShaderModule, GPUValidationError,
+        query::GPUQuerySet,
+        render::{
+            GPURenderBundle, GPURenderBundleEncoder, GPURenderPassEncoder, GPURenderPipeline,
+        },
+        texture::{GPUSampler, GPUTexture, GPUTextureView},
     };
 
     #[qjs(declare)]
@@ -2057,6 +2564,8 @@ pub mod webgpu {
         declarations.declare("GPUBufferUsage")?;
         declarations.declare("GPUMapMode")?;
         declarations.declare("GPUShaderStage")?;
+        declarations.declare("GPUTextureUsage")?;
+        declarations.declare("GPUColorWrite")?;
         for name in super::GLOBAL_CLASSES {
             declarations.declare(name)?;
         }
@@ -2105,9 +2614,36 @@ pub mod webgpu {
         for name in GLOBAL_CLASSES {
             exports.export(name, globals.get::<_, Value>(name)?)?;
         }
+        let texture_usage = constants(ctx, &[
+            ("COPY_SRC", wgpu::TextureUsages::COPY_SRC.bits()),
+            ("COPY_DST", wgpu::TextureUsages::COPY_DST.bits()),
+            (
+                "TEXTURE_BINDING",
+                wgpu::TextureUsages::TEXTURE_BINDING.bits(),
+            ),
+            (
+                "STORAGE_BINDING",
+                wgpu::TextureUsages::STORAGE_BINDING.bits(),
+            ),
+            (
+                "RENDER_ATTACHMENT",
+                wgpu::TextureUsages::RENDER_ATTACHMENT.bits(),
+            ),
+        ])?;
+        let color_write = constants(ctx, &[
+            ("RED", 0x1),
+            ("GREEN", 0x2),
+            ("BLUE", 0x4),
+            ("ALPHA", 0x8),
+            ("ALL", 0xf),
+        ])?;
+        exports.export("GPUTextureUsage", texture_usage.clone())?;
+        exports.export("GPUColorWrite", color_write.clone())?;
         globals.set("GPUBufferUsage", buffer_usage)?;
         globals.set("GPUMapMode", map_mode)?;
         globals.set("GPUShaderStage", shader_stage)?;
+        globals.set("GPUTextureUsage", texture_usage)?;
+        globals.set("GPUColorWrite", color_write)?;
         if let Ok(navigator) = globals.get::<_, Object>("navigator") {
             navigator.set("gpu", gpu)?;
         } else {
