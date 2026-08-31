@@ -725,13 +725,16 @@ clap.workspace = true
 clap_complete.workspace = true
 color-eyre = { workspace = true, default-features = false }
 console-subscriber = { workspace = true, optional = true }
+den-config.workspace = true
 den-core = { workspace = true, default-features = false }
+den-package-store = { workspace = true, optional = true }
 den-util.workspace = true
 # Feature carrier: compile out dependency DEBUG/TRACE records in release builds.
 log.workspace = true
 mimalloc = { workspace = true, optional = true }
 rquickjs.workspace = true
 rustyline = { workspace = true, default-features = false, features = ["derive"] }
+serde_json.workspace = true
 surrealkv.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"] }
@@ -758,7 +761,7 @@ ring = ["den-core/ring"]
 typescript = ["den-core/typescript"]
 react = ["den-core/react"]
 transpile = ["den-core/transpile"]
-package-store = ["den-core/package-store"]
+package-store = ["den-core/package-store", "dep:den-package-store"]
 
 tokio-console = ["dep:console-subscriber"]
 

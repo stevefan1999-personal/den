@@ -44,13 +44,17 @@ Made during the Easter holiday of 2023.
   `EventTarget` and the event classes, `structuredClone` with transfer, and `reportError` — one OS
   thread and one QuickJS runtime per worker, with the spec's error chain and lifetime rules
 - Everything above is a cargo feature, so you can compile most of it away
-- Host-side policy values (not yet enforced by builtin operations) and bounded
-  engines, plus a SeaORM-managed SQLite content-addressed package store using
+- Discovered `den.json`/`den.jsonc` (or `--config`) wires import maps, root
+  preloads, policy metadata, and stack/heap budgets into the engine. Import
+  maps, policy metadata, and budgets are inherited by workers. Builds with the
+  `package-store` feature also inherit pre-hydrated package dependencies.
+  Builtin operations do not enforce policy metadata yet. The package store is a
+  SeaORM-managed SQLite content-addressed cache using
   Resolvo for deterministic flat dependency solving. Solved root/dependency
   edges stay importer-scoped; SeaORM migrations, exact schema validation, and
-  finite hydration budgets protect the store boundary. Hosts can hydrate an
-  immutable package-module snapshot into `EngineBuilder`; registry fetching,
-  lockfiles, and package commands are not wired into the CLI yet.
+  finite hydration budgets protect the store boundary. Registry fetching,
+  lockfiles, and package commands remain separate from runtime loading.
+  Unsupported runtime controls are rejected rather than silently ignored.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together. Closed
 research remains available in Git history.

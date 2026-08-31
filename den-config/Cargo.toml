@@ -11,6 +11,7 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
+den-capabilities.workspace = true
 jsonc-parser = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true

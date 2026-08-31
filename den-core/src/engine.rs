@@ -289,6 +289,7 @@ impl Engine {
         let argv = settings.argv.clone();
         #[cfg(feature = "package-store")]
         let package_modules = settings.package_modules.clone();
+        let import_map = settings.import_map.clone();
         let policy = settings.policy;
 
         {
@@ -392,6 +393,9 @@ impl Engine {
                 den_util::install_buffer_source_intrinsics(&ctx)?;
                 Self::store_userdata(&ctx, EvalSequence::default())?;
                 Self::store_userdata(&ctx, policy)?;
+                if let Some(import_map) = import_map {
+                    Self::store_userdata(&ctx, import_map)?;
+                }
                 #[cfg(feature = "stdlib-process")]
                 Self::store_userdata(&ctx, den_stdlib_process::ProcessArgs(argv))?;
 
