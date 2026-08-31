@@ -6,6 +6,8 @@
 // TypeScript side of that — EventTarget, an async iterator of timer ticks,
 // and a ReadableStream drained with for-await.
 
+export {};
+
 async function* ticks(ms: number, count: number): AsyncGenerator<number> {
   for (let i = 0; i < count; i++) {
     await new Promise<void>((resolve) => {
