@@ -4,12 +4,12 @@ use std::sync::Arc;
 
 use either::Either;
 use rquickjs::{
-    Ctx, Exception, IntoJs, JsLifetime, Object, Result, Value,
+    Ctx, Exception, IntoJs as _, JsLifetime, Object, Result, Value,
     class::{Class, Trace},
     function::Opt,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncRead, AsyncReadExt as _},
     process::Command,
     sync::Mutex,
 };
@@ -268,6 +268,7 @@ impl Child {
                 code
             }
         };
+        drop(slot);
         Ok(ExitStatus { code })
     }
 

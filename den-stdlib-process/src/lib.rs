@@ -5,10 +5,11 @@
 
 pub mod env;
 pub mod lookup;
-pub mod signal;
-pub mod spawn;
-
+#[path = "signal.rs"] pub mod process_signal;
+#[path = "spawn.rs"] pub mod process_spawn;
 use either::Either;
+pub use process_signal as signal;
+pub use process_spawn as spawn;
 use rquickjs::{
     Ctx, Exception, Function, Object, Result, Value, class::Class, function::Opt, object::Accessor,
 };
@@ -87,7 +88,7 @@ pub fn cwd(ctx: Ctx<'_>) -> Result<String> {
         .map_err(|error| Exception::throw_internal(&ctx, &error.to_string()))?
         .into_os_string()
         .into_string()
-        .map_err(|_| Exception::throw_internal(&ctx, "cwd is not valid UTF-8"))
+        .map_err(|_path| Exception::throw_internal(&ctx, "cwd is not valid UTF-8"))
 }
 
 #[rquickjs::function]

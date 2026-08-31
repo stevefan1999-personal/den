@@ -2,7 +2,7 @@
 //! environment.
 
 use rquickjs::{
-    Ctx, FromJs, Function, IntoJs, Object, Proxy, Result, Value,
+    Ctx, FromJs as _, Function, IntoJs as _, Object, Proxy, Result, Value,
     atom::PredefinedAtom,
     prelude::*,
     proxy::{ProxyHandler, ProxyProperty, ProxyReceiver, ProxyTarget},

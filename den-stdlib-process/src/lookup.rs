@@ -37,12 +37,12 @@ pub async fn host<'js>(
         })
         .collect::<Vec<_>>();
 
-    if addrs.is_empty() {
+    let Some(first) = addrs.first().copied() else {
         return Err(Exception::throw_internal(
             &ctx,
             &format!("ENOTFOUND {host}"),
         ));
-    }
+    };
 
     if all {
         let list = rquickjs::Array::new(ctx.clone())?;
@@ -51,7 +51,7 @@ pub async fn host<'js>(
         }
         Ok(list.into_value())
     } else {
-        addr_value(&ctx, addrs[0])
+        addr_value(&ctx, first)
     }
 }
 
