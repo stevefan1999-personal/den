@@ -13,9 +13,12 @@
 #   url/
 #   fetch/
 #   FileAPI/
+#   streams/
+#   xhr/         resource handlers used by fetch tests
+#   tools/{serve,wptserve,manifest,metadata,gitignore,third_party}/
 # After `git submodule update --init --depth 1 vendor/wpt`:
 #   git -C vendor/wpt sparse-checkout init --cone
-#   git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI
+#   git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI streams xhr tools/serve tools/wptserve tools/manifest tools/metadata tools/gitignore tools/third_party
 [submodule "vendor/wpt"]
 	path = vendor/wpt
 	url = https://github.com/web-platform-tests/wpt.git

@@ -9,10 +9,18 @@ on:
     paths:
       - "den-core/tests/wpt.rs"
       - "den-core/tests/wpt_adapter.js"
+      - "den-core/tests/wpt_bootstrap.js"
+      - "den-core/tests/wpt-serve.json"
       - "den-core/Cargo.toml"
+      - "den-core/src/**"
+      - "den-stdlib-*/Cargo.toml"
+      - "den-stdlib-*/src/**"
+      - "den-util/Cargo.toml"
+      - "den-util/src/**"
       - ".gitmodules"
       - ".github/workflows/wpt.yml"
       - "vendor/wpt"
+      - "Cargo.toml"
       - "Cargo.lock"
 
 jobs:
@@ -25,5 +33,39 @@ jobs:
         run: |
           git submodule update --init --depth 1 --filter=blob:none vendor/wpt
           git -C vendor/wpt sparse-checkout init --cone
-          git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI
-      - run: cargo nextest run --profile official -p den-core --test wpt --features stdlib,typescript,react,wasm,jit
+          git -C vendor/wpt sparse-checkout set resources common websockets wasm/jsapi url fetch FileAPI streams xhr tools/serve tools/wptserve tools/manifest tools/metadata tools/gitignore tools/third_party
+      - name: Run WPT with wptserve
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/wptserve.log"
+          (
+            cd vendor/wpt
+            exec setsid python3 -c 'from tools import localpaths; from tools.serve import serve; raise SystemExit(serve.main())' \
+              --config ../../den-core/tests/wpt-serve.json --no-h2
+          ) >"$log" 2>&1 &
+          pid=$!
+          cleanup() {
+            kill -TERM -- -"$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT INT TERM
+
+          ready=false
+          for _ in {1..60}; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+              break
+            fi
+            if curl --fail --silent --output /dev/null http://127.0.0.1:8000/resources/testharness.js \
+              && curl --fail --silent --output /dev/null http://127.0.0.1:8001/resources/testharness.js \
+              && python3 -c 'import socket; socket.create_connection(("127.0.0.1", 8002), 1).close()'; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != true ]]; then
+            tail -200 "$log"
+            exit 1
+          fi
+
+          cargo nextest run --profile official -p den-core --test wpt --features stdlib,typescript,react,wasm,jit,ring

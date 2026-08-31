@@ -1,0 +1,19 @@
+{
+  "browser_host": "localhost",
+  "alternate_hosts": { "alt": "127.0.0.1" },
+  "server_host": "127.0.0.1",
+  "ports": {
+    "http": [8000, 8001],
+    "http-local": [null],
+    "http-public": [null],
+    "https": [null, null],
+    "https-local": [null],
+    "https-public": [null],
+    "ws": [8002],
+    "wss": [null]
+  },
+  "check_subdomains": false,
+  "bind_address": true,
+  "ssl": { "type": "none" },
+  "logging": { "level": "warning" }
+}
