@@ -1571,12 +1571,12 @@ pub fn immediate_slots_used(code: &str, entry_point: Option<&str>, stage: Shader
                 .filter(|(_handle, var)| var.space == wgpu::naga::AddressSpace::Immediate)
                 .filter(|(handle, _var)| !function[*handle].is_empty())
                 .fold(0, |used, (_handle, var)| {
-                    used | immediate_slots_bits(wgpu::naga::valid::ImmediateSlots::from_type(
+                    used | wgpu::naga::valid::ImmediateSlots::from_type(
                         &module.types[var.ty].inner,
-                        0,
                         &module.types,
                         gctx,
-                    ))
+                    )
+                    .map_or(0, immediate_slots_bits)
                 })
         })
 }

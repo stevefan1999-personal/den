@@ -183,7 +183,7 @@ wasmtime = { version = "48.0.0", default-features = false, features = [
 wasmtime-wasi = { version = "48.0.0", default-features = false, features = ["p1"] }
 wast = "257.0.1"
 wat = "1.257.1"
-wgpu = { version = "30.0.1", default-features = false, features = [
+wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "c5ab27023ac8c085b9b21fa7e4c18b1e5a701277", default-features = false, features = [
     "dx12",
     "gles",
     "metal",

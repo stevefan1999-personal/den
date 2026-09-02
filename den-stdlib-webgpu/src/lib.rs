@@ -940,6 +940,7 @@ impl<'js> GPUAdapter<'js> {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::default(),
+            default_queue: wgpu::QueueDescriptor { label: None },
         };
         let (device, queue) = self
             .inner

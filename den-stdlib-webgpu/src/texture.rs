@@ -487,6 +487,7 @@ impl GPUTexture {
                 mip_level_count,
                 base_array_layer,
                 array_layer_count,
+                swizzle: wgpu::TextureComponentSwizzle::default(),
             };
             crate::catch_gpu(&self.errors, || self.inner.create_view(&view_desc)).map_or_else(
                 || {
