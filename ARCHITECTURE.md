@@ -11,6 +11,7 @@ den                              CLI, REPL, signals and tracing
     ├── den-capabilities         host policy values and attenuation
     ├── den-transpiler-oxc       optional TypeScript and JSX lowering
     ├── den-stdlib-assert        den:assert
+    ├── den-stdlib-canvas        ImageData, ImageBitmap (`den:canvas`)
     ├── den-stdlib-console       console
     ├── den-stdlib-core          atob, btoa and gc
     ├── den-stdlib-crypto        Web Crypto
@@ -188,6 +189,11 @@ produce synthetic modules; other types fail loading.
 - [`den:webgpu`](den-stdlib-webgpu/src/lib.rs) is a headless WebGPU slice. It
   installs `navigator.gpu` and the GPU constructors as globals. Canvas,
   surfaces and Deno's BYOW bridge are excluded.
+- [`den:canvas`](den-stdlib-canvas/src/lib.rs) is canvas phase 0: `ImageData`,
+  `ImageBitmap` and `createImageBitmap` over `ImageData` and `ImageBitmap`
+  sources. All of it is CPU pixel work on straight RGBA8, so the crate carries
+  no image codec; `Blob` sources, `OffscreenCanvas` and any rendering context
+  are excluded until there is a decoder or a context to want them.
 - `den:ffi` is denied at runtime unless the host grants the requested library
   path, even when the crate is compiled in.
 

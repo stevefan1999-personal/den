@@ -306,6 +306,8 @@ impl Engine {
             register!(
             #[cfg(feature = "stdlib-assert")]
             "den:assert" => den_stdlib_assert::js_assert,
+            #[cfg(feature = "stdlib-canvas")]
+            "den:canvas" => den_stdlib_canvas::js_canvas,
             #[cfg(feature = "stdlib-core")]
             "den:core" => den_stdlib_core::js_core,
             #[cfg(feature = "stdlib-console")]
@@ -402,6 +404,7 @@ impl Engine {
                 Self::store_userdata(&ctx, den_stdlib_process::ProcessArgs(argv))?;
 
                 #[cfg(any(
+                    feature = "stdlib-canvas",
                     feature = "stdlib-console",
                     feature = "stdlib-core",
                     feature = "stdlib-text",
@@ -427,6 +430,8 @@ impl Engine {
                 evaluate_stdlib_module!(den_stdlib_core::js_core, "den:core");
                 #[cfg(feature = "stdlib-text")]
                 evaluate_stdlib_module!(den_stdlib_text::js_text, "den:text");
+                #[cfg(feature = "stdlib-canvas")]
+                evaluate_stdlib_module!(den_stdlib_canvas::js_canvas, "den:canvas");
                 #[cfg(feature = "stdlib-timer")]
                 evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
                 #[cfg(feature = "stdlib-whatwg-fetch")]

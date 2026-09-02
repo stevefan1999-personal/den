@@ -7,6 +7,7 @@ members = [
     "den-e2e",
     "den-package-store",
     "den-stdlib-assert",
+    "den-stdlib-canvas",
     "den-stdlib-console",
     "den-stdlib-core",
     "den-stdlib-crypto",
@@ -48,6 +49,7 @@ den-config = { version = "0.4.0", path = "den-config" }
 den-core = { version = "0.4.0", path = "den-core", default-features = false }
 den-package-store = { version = "0.4.0", path = "den-package-store" }
 den-stdlib-assert = { version = "0.4.0", path = "den-stdlib-assert" }
+den-stdlib-canvas = { version = "0.4.0", path = "den-stdlib-canvas" }
 den-stdlib-console = { version = "0.4.0", path = "den-stdlib-console" }
 den-stdlib-core = { version = "0.4.0", path = "den-stdlib-core" }
 den-stdlib-crypto = { version = "0.4.0", path = "den-stdlib-crypto" }
@@ -779,6 +781,7 @@ tokio-console = ["dep:console-subscriber"]
 
 stdlib = ["den-core/stdlib", "stdlib-ffi"]
 stdlib-assert = ["den-core/stdlib-assert"]
+stdlib-canvas = ["den-core/stdlib-canvas"]
 stdlib-console = ["den-core/stdlib-console"]
 stdlib-core = ["den-core/stdlib-core"]
 stdlib-crypto = ["den-core/stdlib-crypto"]

@@ -35,6 +35,7 @@ url.workspace = true
 
 # Den specific stuff
 den-stdlib-assert = { workspace = true, optional = true }
+den-stdlib-canvas = { workspace = true, optional = true }
 den-stdlib-console = { workspace = true, optional = true }
 den-stdlib-core = { workspace = true, optional = true }
 den-stdlib-crypto = { workspace = true, optional = true }
@@ -82,6 +83,7 @@ transpile = [
 
 stdlib = [
     "stdlib-assert",
+    "stdlib-canvas",
     "stdlib-console",
     "stdlib-core",
     "stdlib-crypto",
@@ -102,6 +104,7 @@ stdlib = [
     "stdlib-worker",
 ]
 stdlib-assert = ["dep:den-stdlib-assert"]
+stdlib-canvas = ["dep:den-stdlib-canvas"]
 stdlib-console = ["dep:den-stdlib-console"]
 stdlib-core = ["dep:den-stdlib-core"]
 stdlib-crypto = ["dep:den-stdlib-crypto"]

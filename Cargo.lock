@@ -1557,6 +1557,7 @@ dependencies = [
  "den-capabilities",
  "den-package-store",
  "den-stdlib-assert",
+ "den-stdlib-canvas",
  "den-stdlib-console",
  "den-stdlib-core",
  "den-stdlib-crypto",
@@ -1622,6 +1623,17 @@ dependencies = [
  "den-core",
  "den-util",
  "insta",
+ "rquickjs",
+ "tokio",
+]
+
+[[package]]
+name = "den-stdlib-canvas"
+version = "0.4.0"
+dependencies = [
+ "color-eyre",
+ "den-core",
+ "den-util",
  "rquickjs",
  "tokio",
 ]
