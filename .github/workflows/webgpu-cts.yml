@@ -31,6 +31,6 @@ jobs:
         with:
           tool: cargo-nextest@0.9.143
       - run: git submodule update --init --depth 1 vendor/cts
-      - run: cargo nextest run --profile official -p den-stdlib-webgpu --test cts --build-jobs 2
+      - run: cargo nextest run --profile cts -p den-stdlib-webgpu --test cts --build-jobs 2
         env:
           DEN_WEBGPU_BACKEND: noop

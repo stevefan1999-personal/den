@@ -6,6 +6,11 @@ assertEquals(typeof GPUTexture, "function");
 assertEquals(typeof GPURenderPipeline, "function");
 assertEquals(typeof GPURenderBundleEncoder, "function");
 assertEquals(typeof GPUValidationError, "function");
+assertEquals(typeof GPUSupportedFeatures, "function");
+assertEquals(typeof GPUSupportedLimits, "function");
+assertEquals(typeof GPUUncapturedErrorEvent, "function");
+assertEquals(typeof GPUExternalTexture, "function");
+assertEquals(typeof GPUPipelineError, "function");
 assertEquals(GPUBufferUsage.COPY_DST, 8);
 assertEquals(GPUTextureUsage.RENDER_ATTACHMENT, 16);
 assertEquals(GPUColorWrite.ALL, 15);
@@ -18,3 +23,9 @@ const { gpu, GPUValidationError: exportedValidationError } = await import("den:w
 assert(gpu === installed);
 assert(gpu === navigator.gpu);
 assert(exportedValidationError === GPUValidationError);
+assert(GPUDevice.prototype instanceof EventTarget);
+assertEquals(Object.getPrototypeOf(GPUDevice.prototype), EventTarget.prototype);
+assertEquals(
+  GPUDevice.prototype.addEventListener,
+  EventTarget.prototype.addEventListener,
+);

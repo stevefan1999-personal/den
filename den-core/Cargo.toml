@@ -96,7 +96,7 @@ stdlib = [
     "stdlib-temporal",
     "stdlib-text",
     "stdlib-timer",
-    "stdlib-webgpu",
+#    "stdlib-webgpu",
     "stdlib-whatwg-fetch",
     "stdlib-whatwg",
     "stdlib-worker",

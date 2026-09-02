@@ -14,6 +14,7 @@ keywords.workspace = true
 test = false
 
 [dependencies]
+den-stdlib-worker = { workspace = true, default-features = false }
 den-util.workspace = true
 log.workspace = true
 rquickjs = { workspace = true, features = ["macro", "futures"] }

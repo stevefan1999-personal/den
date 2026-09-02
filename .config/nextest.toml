@@ -21,3 +21,10 @@ test-threads = "num-cpus"
 fail-fast = false
 default-filter = 'binary(spec_core) | binary(wpt) | binary(test262) | binary(cts)'
 slow-timeout = { period = "60s", terminate-after = 3 }
+
+# Serial: each spec file owns a wgpu instance. Parallel files OOM the host.
+[profile.cts]
+test-threads = 1
+fail-fast = false
+default-filter = 'binary(cts)'
+slow-timeout = { period = "120s", terminate-after = 10 }

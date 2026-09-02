@@ -895,6 +895,10 @@ impl WorkerThread {
     }
 
     #[cfg(not(feature = "transpile"))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "signature matches the transpile-feature variant"
+    )]
     fn transpile(
         source: String, _extension: &str, filename: &str,
     ) -> std::result::Result<LoadedScript, String> {

@@ -197,12 +197,20 @@ fn run_spec(relative: String) -> Result<(), Failed> {
     let cts_js = js_out_root().to_string_lossy().replace('\\', "/");
     let spec_path = spec.to_string_lossy().replace('\\', "/");
     let runner = runner_path();
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .max_blocking_threads(2)
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
+        // Hard-cap the QuickJS heap so a cartesian spec fails this test
+        // instead of OOMing the host (and killing tmux). Keep the default
+        // 256 KiB GC threshold: raising it leaves wgpu textures alive and
+        // the RSS climbs by tens of GiB. Native wgpu still has
+        // MAX_HOST_ALLOCATION; this is the JS-side counterpart.
+        const CTS_HEAP_LIMIT: usize = 512 * 1024 * 1024;
         let engine = EngineBuilder::new()
+            .heap_limit(CTS_HEAP_LIMIT)
             .argv(vec![
                 "den".into(),
                 runner.display().to_string(),
