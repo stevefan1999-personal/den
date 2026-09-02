@@ -111,6 +111,40 @@ fn array_value<'js>(object: &Object<'js>, key: &str, ctx: &Ctx<'js>) -> Result<A
         .map_err(|_error| type_error(ctx, format!("{key} must be an array")))
 }
 
+/// A wgpu handle that JS can only label and hand back. The Rust name is the
+/// WebGPU interface name, so rquickjs needs no rename.
+macro_rules! opaque_handle {
+    ($($name:ident($handle:ty)),+ $(,)?) => { $(
+        #[derive(Clone, Trace, JsLifetime)]
+        #[rquickjs::class]
+        pub struct $name {
+            #[qjs(skip_trace)]
+            pub(crate) inner: $handle,
+            #[qjs(skip_trace)]
+            pub(crate) label: Rc<RefCell<String>>,
+        }
+
+        #[rquickjs::methods]
+        impl $name {
+            #[qjs(constructor)]
+            pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
+
+            #[qjs(get, configurable)]
+            pub fn label(&self) -> String { self.label.borrow().clone() }
+
+            #[qjs(set, rename = "label", configurable)]
+            pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
+        }
+    )+ };
+}
+pub(crate) use opaque_handle;
+
+opaque_handle!(
+    GPUBindGroup(wgpu::BindGroup),
+    GPUBindGroupLayout(wgpu::BindGroupLayout),
+    GPUPipelineLayout(wgpu::PipelineLayout),
+);
+
 fn parse_backends() -> wgpu::Backends {
     std::env::var("DEN_WEBGPU_BACKEND").map_or_else(
         |_error| wgpu::Backends::all(),
@@ -2128,67 +2162,6 @@ impl GPUShaderModule {
     }
 }
 
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUBindGroupLayout")]
-pub struct GPUBindGroupLayout {
-    #[qjs(skip_trace)]
-    pub(crate) inner: wgpu::BindGroupLayout,
-    #[qjs(skip_trace)]
-    label:            Rc<RefCell<String>>,
-}
-
-#[rquickjs::methods]
-impl GPUBindGroupLayout {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-
-    #[qjs(get)]
-    pub fn label(&self) -> String { self.label.borrow().clone() }
-
-    #[qjs(set, rename = "label")]
-    pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUPipelineLayout")]
-pub struct GPUPipelineLayout {
-    #[qjs(skip_trace)]
-    pub(crate) inner: wgpu::PipelineLayout,
-    #[qjs(skip_trace)]
-    label:            Rc<RefCell<String>>,
-}
-
-#[rquickjs::methods]
-impl GPUPipelineLayout {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-
-    #[qjs(get)]
-    pub fn label(&self) -> String { self.label.borrow().clone() }
-
-    #[qjs(set, rename = "label")]
-    pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
-}
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUBindGroup")]
-pub struct GPUBindGroup {
-    #[qjs(skip_trace)]
-    pub(crate) inner: wgpu::BindGroup,
-    #[qjs(skip_trace)]
-    label:            Rc<RefCell<String>>,
-}
-
-#[rquickjs::methods]
-impl GPUBindGroup {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-
-    #[qjs(get)]
-    pub fn label(&self) -> String { self.label.borrow().clone() }
-
-    #[qjs(set, rename = "label")]
-    pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
-}
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUComputePipeline")]
 pub struct GPUComputePipeline<'js> {

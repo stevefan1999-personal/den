@@ -270,26 +270,7 @@ impl<'js> GPURenderPassEncoder<'js> {
     }
 }
 
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPURenderBundle")]
-pub struct GPURenderBundle {
-    #[qjs(skip_trace)]
-    inner: wgpu::RenderBundle,
-    #[qjs(skip_trace)]
-    label: Rc<RefCell<String>>,
-}
-
-#[rquickjs::methods]
-impl GPURenderBundle {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-
-    #[qjs(get)]
-    pub fn label(&self) -> String { self.label.borrow().clone() }
-
-    #[qjs(set, rename = "label")]
-    pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
-}
+crate::opaque_handle!(GPURenderBundle(wgpu::RenderBundle));
 
 /// Handles whose borrows `extend_borrow` stretched to `'static`.
 #[expect(dead_code, reason = "held only to outlive the encoder")]

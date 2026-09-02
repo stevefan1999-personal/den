@@ -186,47 +186,7 @@ impl<'js> GPUTexture<'js> {
     pub fn destroy(&self) { self.inner.destroy(); }
 }
 
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUTextureView")]
-pub struct GPUTextureView {
-    #[qjs(skip_trace)]
-    pub(crate) inner: wgpu::TextureView,
-    #[qjs(skip_trace)]
-    pub(crate) label: Rc<RefCell<String>>,
-}
-
-#[rquickjs::methods]
-impl GPUTextureView {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-
-    #[qjs(get, configurable)]
-    pub fn label(&self) -> String { self.label.borrow().clone() }
-
-    #[qjs(set, rename = "label", configurable)]
-    pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUSampler")]
-pub struct GPUSampler {
-    #[qjs(skip_trace)]
-    pub(crate) inner: wgpu::Sampler,
-    #[qjs(skip_trace)]
-    pub(crate) label: Rc<RefCell<String>>,
-}
-
-#[rquickjs::methods]
-impl GPUSampler {
-    #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-
-    #[qjs(get, configurable)]
-    pub fn label(&self) -> String { self.label.borrow().clone() }
-
-    #[qjs(set, rename = "label", configurable)]
-    pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
-}
+crate::opaque_handle!(GPUSampler(wgpu::Sampler), GPUTextureView(wgpu::TextureView),);
 
 pub fn create_sampler<'js>(
     device: &wgpu::Device, descriptor: Opt<Option<Object<'js>>>, ctx: &Ctx<'js>,
