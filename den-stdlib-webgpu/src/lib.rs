@@ -355,95 +355,6 @@ pub(crate) fn data_window<'js>(
         .ok_or_else(|| operation_error(ctx, "data range is out of bounds"))
 }
 
-fn apply_required_limits<'js>(
-    ctx: &Ctx<'js>, object: Option<Object<'js>>, limits: &mut wgpu::Limits,
-) -> Result<()> {
-    let Some(object) = object else {
-        return Ok(());
-    };
-    for property in object.props::<String, Value>() {
-        let (name, value) = property?;
-        if value.is_null() || value.is_undefined() {
-            continue;
-        }
-        let value = JsU64::from_js(ctx, value)?.0;
-        macro_rules! u32_limit {
-            ($field:ident) => {
-                limits.$field = value.try_into().map_err(|_| {
-                    operation_error(ctx, format!("required limit {name} is too large"))
-                })?
-            };
-        }
-        match name.as_str() {
-            "maxTextureDimension1D" => u32_limit!(max_texture_dimension_1d),
-            "maxTextureDimension2D" => u32_limit!(max_texture_dimension_2d),
-            "maxTextureDimension3D" => u32_limit!(max_texture_dimension_3d),
-            "maxTextureArrayLayers" => u32_limit!(max_texture_array_layers),
-            "maxBindGroups" => u32_limit!(max_bind_groups),
-            "maxBindGroupsPlusVertexBuffers" => u32_limit!(max_bind_groups_plus_vertex_buffers),
-            "maxBindingsPerBindGroup" => u32_limit!(max_bindings_per_bind_group),
-            "maxDynamicUniformBuffersPerPipelineLayout" => {
-                u32_limit!(max_dynamic_uniform_buffers_per_pipeline_layout)
-            }
-            "maxDynamicStorageBuffersPerPipelineLayout" => {
-                u32_limit!(max_dynamic_storage_buffers_per_pipeline_layout)
-            }
-            "maxSampledTexturesPerShaderStage" => {
-                u32_limit!(max_sampled_textures_per_shader_stage)
-            }
-            "maxSamplersPerShaderStage" => u32_limit!(max_samplers_per_shader_stage),
-            "maxStorageBuffersPerShaderStage"
-            | "maxStorageBuffersInVertexStage"
-            | "maxStorageBuffersInFragmentStage" => {
-                u32_limit!(max_storage_buffers_per_shader_stage)
-            }
-            "maxStorageTexturesPerShaderStage"
-            | "maxStorageTexturesInVertexStage"
-            | "maxStorageTexturesInFragmentStage" => {
-                u32_limit!(max_storage_textures_per_shader_stage)
-            }
-            "maxUniformBuffersPerShaderStage" => u32_limit!(max_uniform_buffers_per_shader_stage),
-            "maxUniformBufferBindingSize" => {
-                limits.max_uniform_buffer_binding_size = value.min(JS_MAX_SAFE_INTEGER)
-            }
-            "maxStorageBufferBindingSize" => limits.max_storage_buffer_binding_size = value,
-            "minUniformBufferOffsetAlignment" => {
-                u32_limit!(min_uniform_buffer_offset_alignment)
-            }
-            "minStorageBufferOffsetAlignment" => {
-                u32_limit!(min_storage_buffer_offset_alignment)
-            }
-            "maxVertexBuffers" => u32_limit!(max_vertex_buffers),
-            "maxBufferSize" => limits.max_buffer_size = value,
-            "maxVertexAttributes" => u32_limit!(max_vertex_attributes),
-            "maxVertexBufferArrayStride" => u32_limit!(max_vertex_buffer_array_stride),
-            "maxInterStageShaderVariables" => u32_limit!(max_inter_stage_shader_variables),
-            "maxColorAttachments" => u32_limit!(max_color_attachments),
-            "maxColorAttachmentBytesPerSample" => {
-                u32_limit!(max_color_attachment_bytes_per_sample)
-            }
-            "maxComputeWorkgroupStorageSize" => u32_limit!(max_compute_workgroup_storage_size),
-            "maxComputeInvocationsPerWorkgroup" => {
-                u32_limit!(max_compute_invocations_per_workgroup)
-            }
-            "maxComputeWorkgroupSizeX" => u32_limit!(max_compute_workgroup_size_x),
-            "maxComputeWorkgroupSizeY" => u32_limit!(max_compute_workgroup_size_y),
-            "maxComputeWorkgroupSizeZ" => u32_limit!(max_compute_workgroup_size_z),
-            "maxComputeWorkgroupsPerDimension" => {
-                u32_limit!(max_compute_workgroups_per_dimension)
-            }
-            "maxImmediateSize" => u32_limit!(max_immediate_size),
-            _ => {
-                return Err(operation_error(
-                    ctx,
-                    format!("unknown required limit {name}"),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GPUErrorKind {
     Internal,
@@ -774,7 +685,7 @@ impl<'js> GPUAdapter<'js> {
             .map(|object| object.get::<_, Option<Object>>("requiredLimits"))
             .transpose()?
             .flatten();
-        apply_required_limits(&ctx, limits, &mut required_limits)?;
+        GPUSupportedLimits::apply(&ctx, limits, &mut required_limits)?;
         // WebGPU ignores a request below the spec default for a maximum limit;
         // whether the adapter can meet the rest is wgpu's answer, not den's.
         let required_limits = required_limits.or_better_values_from(&wgpu::Limits::default());

@@ -1,13 +1,13 @@
 use std::{cell::RefCell, rc::Rc};
 
 use rquickjs::{
-    Array, Class, Ctx, Function, IntoJs as _, JsLifetime, Result, Value,
+    Array, Class, Ctx, FromJs as _, Function, IntoJs as _, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{Opt, This},
 };
 
-use crate::{JS_MAX_SAFE_INTEGER, illegal_constructor};
+use crate::{JS_MAX_SAFE_INTEGER, JsU64, illegal_constructor, operation_error};
 
 macro_rules! setlike {
     ($name:ident, $js:literal) => {
@@ -130,8 +130,14 @@ impl GPUSupportedLimits {
     pub const fn inner(&self) -> &wgpu::Limits { &self.inner }
 }
 
-macro_rules! limits_getters {
-  ($($js:literal => $method:ident => $field:ident),+ $(,)?) => {
+/// One list of WebGPU limit names feeds both `GPUSupportedLimits`'s getters
+/// and the `requiredLimits` reader, so the two cannot drift apart.
+macro_rules! limits {
+  (
+    u32 { $($js:literal => $method:ident => $field:ident),+ $(,)? }
+    u64 { $($ujs:literal => $umethod:ident => $ufield:ident),+ $(,)? }
+    alias { $($ajs:literal => $amethod:ident => $afield:ident),+ $(,)? }
+  ) => {
     #[rquickjs::methods]
     impl GPUSupportedLimits {
       #[qjs(constructor)]
@@ -142,72 +148,90 @@ macro_rules! limits_getters {
         pub const fn $method(&self) -> u32 { self.inner.$field }
       )+
 
-      #[qjs(get, configurable, rename = "maxUniformBufferBindingSize")]
-      pub fn max_uniform_buffer_binding_size(&self) -> u64 {
-        self.inner.max_uniform_buffer_binding_size.min(JS_MAX_SAFE_INTEGER)
-      }
+      $(
+        #[qjs(get, configurable, rename = $ujs)]
+        pub fn $umethod(&self) -> u64 { self.inner.$ufield.min(JS_MAX_SAFE_INTEGER) }
+      )+
 
-      #[qjs(get, configurable, rename = "maxStorageBufferBindingSize")]
-      pub fn max_storage_buffer_binding_size(&self) -> u64 {
-        self.inner.max_storage_buffer_binding_size.min(JS_MAX_SAFE_INTEGER)
-      }
+      $(
+        #[qjs(get, configurable, rename = $ajs)]
+        pub const fn $amethod(&self) -> u32 { self.inner.$afield }
+      )+
+    }
 
-      #[qjs(get, configurable, rename = "maxBufferSize")]
-      pub fn max_buffer_size(&self) -> u64 { self.inner.max_buffer_size.min(JS_MAX_SAFE_INTEGER) }
-
-      #[qjs(get, configurable, rename = "maxStorageBuffersInVertexStage")]
-      pub fn max_storage_buffers_in_vertex_stage(&self) -> u32 {
-        self.inner.max_storage_buffers_per_shader_stage
-      }
-
-      #[qjs(get, configurable, rename = "maxStorageBuffersInFragmentStage")]
-      pub fn max_storage_buffers_in_fragment_stage(&self) -> u32 {
-        self.inner.max_storage_buffers_per_shader_stage
-      }
-
-      #[qjs(get, configurable, rename = "maxStorageTexturesInVertexStage")]
-      pub fn max_storage_textures_in_vertex_stage(&self) -> u32 {
-        self.inner.max_storage_textures_per_shader_stage
-      }
-
-      #[qjs(get, configurable, rename = "maxStorageTexturesInFragmentStage")]
-      pub fn max_storage_textures_in_fragment_stage(&self) -> u32 {
-        self.inner.max_storage_textures_per_shader_stage
+    impl GPUSupportedLimits {
+      /// Applies a `requiredLimits` dictionary. Anything the adapter cannot
+      /// meet is wgpu's answer at `request_device`; only an unknown name or a
+      /// value too wide for the field is den's, and the spec makes both an
+      /// `OperationError`.
+      pub fn apply<'js>(
+        ctx: &Ctx<'js>, object: Option<Object<'js>>, limits: &mut wgpu::Limits,
+      ) -> Result<()> {
+        let Some(object) = object else { return Ok(()) };
+        for property in object.props::<String, Value<'_>>() {
+          let (name, value) = property?;
+          if value.is_null() || value.is_undefined() { continue; }
+          let value = JsU64::from_js(ctx, value)?.0;
+          let narrow = || {
+            u32::try_from(value)
+              .map_err(|_error| operation_error(ctx, format!("required limit {name} is too large")))
+          };
+          match name.as_str() {
+            $($js => limits.$field = narrow()?,)+
+            $($ujs => limits.$ufield = value.min(JS_MAX_SAFE_INTEGER),)+
+            $($ajs => limits.$afield = narrow()?,)+
+            _ => return Err(operation_error(ctx, format!("unknown required limit {name}"))),
+          }
+        }
+        Ok(())
       }
     }
   };
 }
 
-limits_getters! {
-  "maxTextureDimension1D" => max_texture_dimension_1d => max_texture_dimension_1d,
-  "maxTextureDimension2D" => max_texture_dimension_2d => max_texture_dimension_2d,
-  "maxTextureDimension3D" => max_texture_dimension_3d => max_texture_dimension_3d,
-  "maxTextureArrayLayers" => max_texture_array_layers => max_texture_array_layers,
-  "maxBindGroups" => max_bind_groups => max_bind_groups,
-  "maxBindGroupsPlusVertexBuffers" => max_bind_groups_plus_vertex_buffers => max_bind_groups_plus_vertex_buffers,
-  "maxBindingsPerBindGroup" => max_bindings_per_bind_group => max_bindings_per_bind_group,
-  "maxDynamicUniformBuffersPerPipelineLayout" => max_dynamic_uniform_buffers_per_pipeline_layout => max_dynamic_uniform_buffers_per_pipeline_layout,
-  "maxDynamicStorageBuffersPerPipelineLayout" => max_dynamic_storage_buffers_per_pipeline_layout => max_dynamic_storage_buffers_per_pipeline_layout,
-  "maxSampledTexturesPerShaderStage" => max_sampled_textures_per_shader_stage => max_sampled_textures_per_shader_stage,
-  "maxSamplersPerShaderStage" => max_samplers_per_shader_stage => max_samplers_per_shader_stage,
-  "maxStorageBuffersPerShaderStage" => max_storage_buffers_per_shader_stage => max_storage_buffers_per_shader_stage,
-  "maxStorageTexturesPerShaderStage" => max_storage_textures_per_shader_stage => max_storage_textures_per_shader_stage,
-  "maxUniformBuffersPerShaderStage" => max_uniform_buffers_per_shader_stage => max_uniform_buffers_per_shader_stage,
-  "minUniformBufferOffsetAlignment" => min_uniform_buffer_offset_alignment => min_uniform_buffer_offset_alignment,
-  "minStorageBufferOffsetAlignment" => min_storage_buffer_offset_alignment => min_storage_buffer_offset_alignment,
-  "maxVertexBuffers" => max_vertex_buffers => max_vertex_buffers,
-  "maxVertexAttributes" => max_vertex_attributes => max_vertex_attributes,
-  "maxVertexBufferArrayStride" => max_vertex_buffer_array_stride => max_vertex_buffer_array_stride,
-  "maxInterStageShaderVariables" => max_inter_stage_shader_variables => max_inter_stage_shader_variables,
-  "maxColorAttachments" => max_color_attachments => max_color_attachments,
-  "maxColorAttachmentBytesPerSample" => max_color_attachment_bytes_per_sample => max_color_attachment_bytes_per_sample,
-  "maxComputeWorkgroupStorageSize" => max_compute_workgroup_storage_size => max_compute_workgroup_storage_size,
-  "maxComputeInvocationsPerWorkgroup" => max_compute_invocations_per_workgroup => max_compute_invocations_per_workgroup,
-  "maxComputeWorkgroupSizeX" => max_compute_workgroup_size_x => max_compute_workgroup_size_x,
-  "maxComputeWorkgroupSizeY" => max_compute_workgroup_size_y => max_compute_workgroup_size_y,
-  "maxComputeWorkgroupSizeZ" => max_compute_workgroup_size_z => max_compute_workgroup_size_z,
-  "maxComputeWorkgroupsPerDimension" => max_compute_workgroups_per_dimension => max_compute_workgroups_per_dimension,
-  "maxImmediateSize" => max_immediate_size => max_immediate_size,
+limits! {
+  u32 {
+    "maxTextureDimension1D" => max_texture_dimension_1d => max_texture_dimension_1d,
+    "maxTextureDimension2D" => max_texture_dimension_2d => max_texture_dimension_2d,
+    "maxTextureDimension3D" => max_texture_dimension_3d => max_texture_dimension_3d,
+    "maxTextureArrayLayers" => max_texture_array_layers => max_texture_array_layers,
+    "maxBindGroups" => max_bind_groups => max_bind_groups,
+    "maxBindGroupsPlusVertexBuffers" => max_bind_groups_plus_vertex_buffers => max_bind_groups_plus_vertex_buffers,
+    "maxBindingsPerBindGroup" => max_bindings_per_bind_group => max_bindings_per_bind_group,
+    "maxDynamicUniformBuffersPerPipelineLayout" => max_dynamic_uniform_buffers_per_pipeline_layout => max_dynamic_uniform_buffers_per_pipeline_layout,
+    "maxDynamicStorageBuffersPerPipelineLayout" => max_dynamic_storage_buffers_per_pipeline_layout => max_dynamic_storage_buffers_per_pipeline_layout,
+    "maxSampledTexturesPerShaderStage" => max_sampled_textures_per_shader_stage => max_sampled_textures_per_shader_stage,
+    "maxSamplersPerShaderStage" => max_samplers_per_shader_stage => max_samplers_per_shader_stage,
+    "maxStorageBuffersPerShaderStage" => max_storage_buffers_per_shader_stage => max_storage_buffers_per_shader_stage,
+    "maxStorageTexturesPerShaderStage" => max_storage_textures_per_shader_stage => max_storage_textures_per_shader_stage,
+    "maxUniformBuffersPerShaderStage" => max_uniform_buffers_per_shader_stage => max_uniform_buffers_per_shader_stage,
+    "minUniformBufferOffsetAlignment" => min_uniform_buffer_offset_alignment => min_uniform_buffer_offset_alignment,
+    "minStorageBufferOffsetAlignment" => min_storage_buffer_offset_alignment => min_storage_buffer_offset_alignment,
+    "maxVertexBuffers" => max_vertex_buffers => max_vertex_buffers,
+    "maxVertexAttributes" => max_vertex_attributes => max_vertex_attributes,
+    "maxVertexBufferArrayStride" => max_vertex_buffer_array_stride => max_vertex_buffer_array_stride,
+    "maxInterStageShaderVariables" => max_inter_stage_shader_variables => max_inter_stage_shader_variables,
+    "maxColorAttachments" => max_color_attachments => max_color_attachments,
+    "maxColorAttachmentBytesPerSample" => max_color_attachment_bytes_per_sample => max_color_attachment_bytes_per_sample,
+    "maxComputeWorkgroupStorageSize" => max_compute_workgroup_storage_size => max_compute_workgroup_storage_size,
+    "maxComputeInvocationsPerWorkgroup" => max_compute_invocations_per_workgroup => max_compute_invocations_per_workgroup,
+    "maxComputeWorkgroupSizeX" => max_compute_workgroup_size_x => max_compute_workgroup_size_x,
+    "maxComputeWorkgroupSizeY" => max_compute_workgroup_size_y => max_compute_workgroup_size_y,
+    "maxComputeWorkgroupSizeZ" => max_compute_workgroup_size_z => max_compute_workgroup_size_z,
+    "maxComputeWorkgroupsPerDimension" => max_compute_workgroups_per_dimension => max_compute_workgroups_per_dimension,
+    "maxImmediateSize" => max_immediate_size => max_immediate_size,
+  }
+  u64 {
+    "maxUniformBufferBindingSize" => max_uniform_buffer_binding_size => max_uniform_buffer_binding_size,
+    "maxStorageBufferBindingSize" => max_storage_buffer_binding_size => max_storage_buffer_binding_size,
+    "maxBufferSize" => max_buffer_size => max_buffer_size,
+  }
+  alias {
+    "maxStorageBuffersInVertexStage" => max_storage_buffers_in_vertex_stage => max_storage_buffers_per_shader_stage,
+    "maxStorageBuffersInFragmentStage" => max_storage_buffers_in_fragment_stage => max_storage_buffers_per_shader_stage,
+    "maxStorageTexturesInVertexStage" => max_storage_textures_in_vertex_stage => max_storage_textures_per_shader_stage,
+    "maxStorageTexturesInFragmentStage" => max_storage_textures_in_fragment_stage => max_storage_textures_per_shader_stage,
+  }
 }
 
 #[derive(Clone, Trace, JsLifetime)]
