@@ -36,7 +36,6 @@ use rquickjs::{
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Args, Opt, This},
-    object::Accessor,
 };
 
 use crate::supported::{
@@ -2827,7 +2826,6 @@ fn install_classes(globals: &Object<'_>) -> Result<()> {
     inherit_global_prototype::<GPUDevice<'_>>(globals.ctx(), "EventTarget")?;
     inherit_global_prototype::<GPUUncapturedErrorEvent>(globals.ctx(), "Event")?;
     inherit_global_prototype::<GPUPipelineError>(globals.ctx(), "DOMException")?;
-    forward_event_target_methods(globals.ctx())?;
     if let Some(proto) = Class::<GPUDevice<'_>>::prototype(globals.ctx())? {
         define_event_handler(
             globals.ctx().clone(),
@@ -2837,38 +2835,6 @@ fn install_classes(globals: &Object<'_>) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-fn forward_event_target_methods<'js>(ctx: &Ctx<'js>) -> Result<()> {
-    let Some(proto) = Class::<GPUDevice<'_>>::prototype(ctx)? else {
-        return Ok(());
-    };
-    if ctx.globals().get::<_, Function>("EventTarget").is_err() {
-        return Ok(());
-    }
-    for name in ["addEventListener", "removeEventListener", "dispatchEvent"] {
-        let get_name = name.to_owned();
-        let set_name = name.to_owned();
-        proto.prop(
-            name,
-            Accessor::new(
-                move |ctx: Ctx<'js>| -> Result<Value<'js>> {
-                    event_target_prototype(&ctx)?.get(get_name.as_str())
-                },
-                move |ctx: Ctx<'js>, value: Value<'js>| -> Result<()> {
-                    event_target_prototype(&ctx)?.set(set_name.as_str(), value)
-                },
-            )
-            .configurable(),
-        )?;
-    }
-    Ok(())
-}
-
-fn event_target_prototype<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
-    ctx.globals()
-        .get::<_, Function>("EventTarget")?
-        .get("prototype")
 }
 
 fn inherit_global_prototype<'js, T: rquickjs::class::JsClass<'js>>(
