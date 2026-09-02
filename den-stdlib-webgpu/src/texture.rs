@@ -5,7 +5,7 @@ use std::{
 
 use rquickjs::{Class, Coerced, Ctx, JsLifetime, Object, Result, class::Trace, function::Opt};
 
-use crate::{GPUDevice, JsU32, JsU64, format, illegal_constructor, label, type_error};
+use crate::{GPUDevice, JsU32, JsU64, format, illegal_constructor, label};
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUTexture")]
@@ -44,7 +44,10 @@ impl<'js> GPUTexture<'js> {
         let sample_count = descriptor
             .get::<_, Option<JsU32>>("sampleCount")?
             .map_or(1, |value| value.0);
-        let dimension = format::dimension(descriptor.get("dimension")?);
+        let dimension = format::dimension(
+            descriptor.get::<_, Option<String>>("dimension")?.as_deref(),
+            ctx,
+        )?;
         let format = format::texture_format_with_features(
             &descriptor.get::<_, String>("format")?,
             features,
@@ -169,7 +172,7 @@ impl<'js> GPUTexture<'js> {
             format,
             dimension,
             usage,
-            aspect: format::aspect(get("aspect")?),
+            aspect: format::aspect(get("aspect")?.as_deref(), &ctx)?,
             base_mip_level: get_u32("baseMipLevel")?.unwrap_or(0),
             mip_level_count: get_u32("mipLevelCount")?,
             base_array_layer: get_u32("baseArrayLayer")?.unwrap_or(0),
@@ -211,31 +214,8 @@ pub fn create_sampler<'js>(
             .transpose()?
             .flatten())
     };
-    let address = |key: &str| -> Result<wgpu::AddressMode> {
-        match get(key)?.as_deref() {
-            None | Some("clamp-to-edge") => Ok(wgpu::AddressMode::ClampToEdge),
-            Some("repeat") => Ok(wgpu::AddressMode::Repeat),
-            Some("mirror-repeat") => Ok(wgpu::AddressMode::MirrorRepeat),
-            Some(value) => Err(type_error(ctx, format!("invalid GPUAddressMode {value}"))),
-        }
-    };
-    let filter = |key: &str| -> Result<wgpu::FilterMode> {
-        match get(key)?.as_deref() {
-            None | Some("nearest") => Ok(wgpu::FilterMode::Nearest),
-            Some("linear") => Ok(wgpu::FilterMode::Linear),
-            Some(value) => Err(type_error(ctx, format!("invalid GPUFilterMode {value}"))),
-        }
-    };
-    let mipmap_filter = match get("mipmapFilter")?.as_deref() {
-        None | Some("nearest") => wgpu::MipmapFilterMode::Nearest,
-        Some("linear") => wgpu::MipmapFilterMode::Linear,
-        Some(value) => {
-            return Err(type_error(
-                ctx,
-                format!("invalid GPUMipmapFilterMode {value}"),
-            ));
-        }
-    };
+    let address = |key: &str| format::address_mode(get(key)?.as_deref(), ctx);
+    let filter = |key: &str| format::filter_mode(get(key)?.as_deref(), ctx);
     let compare = get("compare")?
         .map(|name| format::compare_function(&name, ctx))
         .transpose()?;
@@ -249,7 +229,7 @@ pub fn create_sampler<'js>(
         address_mode_w: address("addressModeW")?,
         mag_filter: filter("magFilter")?,
         min_filter: filter("minFilter")?,
-        mipmap_filter,
+        mipmap_filter: format::mipmap_filter_mode(get("mipmapFilter")?.as_deref(), ctx)?,
         lod_min_clamp: get_f64("lodMinClamp")?.unwrap_or(0.0) as f32,
         lod_max_clamp: get_f64("lodMaxClamp")?.unwrap_or(32.0) as f32,
         compare,
@@ -275,7 +255,7 @@ pub fn texel_copy_texture<'js>(
         .get::<_, Option<JsU32>>("mipLevel")?
         .map_or(0, |value| value.0);
     let origin = format::origin3d(object.get("origin")?, ctx)?;
-    let aspect = format::aspect(object.get("aspect")?);
+    let aspect = format::aspect(object.get::<_, Option<String>>("aspect")?.as_deref(), ctx)?;
     Ok((texture, mip_level, origin, aspect))
 }
 

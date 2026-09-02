@@ -191,32 +191,27 @@ pub fn color<'js>(value: Option<Value<'js>>, ctx: &Ctx<'js>) -> Result<wgpu::Col
     })
 }
 
-pub fn dimension(value: Option<String>) -> wgpu::TextureDimension {
-    match value.as_deref() {
-        Some("1d") => wgpu::TextureDimension::D1,
-        Some("3d") => wgpu::TextureDimension::D3,
-        _ => wgpu::TextureDimension::D2,
-    }
+pub fn dimension(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::TextureDimension> {
+    kebab!(
+        wgpu::TextureDimension,
+        name.unwrap_or("2d"),
+        ctx,
+        "GPUTextureDimension"
+    )
 }
 
 pub fn view_dimension(
-    value: Option<&str>, ctx: &Ctx<'_>,
+    name: Option<&str>, ctx: &Ctx<'_>,
 ) -> Result<Option<wgpu::TextureViewDimension>> {
-    match value {
-        Some("1d") => Ok(Some(wgpu::TextureViewDimension::D1)),
-        Some("2d") => Ok(Some(wgpu::TextureViewDimension::D2)),
-        Some("2d-array") => Ok(Some(wgpu::TextureViewDimension::D2Array)),
-        Some("cube") => Ok(Some(wgpu::TextureViewDimension::Cube)),
-        Some("cube-array") => Ok(Some(wgpu::TextureViewDimension::CubeArray)),
-        Some("3d") => Ok(Some(wgpu::TextureViewDimension::D3)),
-        Some(name) => {
-            Err(type_error(
-                ctx,
-                format!("invalid GPUTextureViewDimension {name}"),
-            ))
-        }
-        None => Ok(None),
-    }
+    name.map(|name| {
+        kebab!(
+            wgpu::TextureViewDimension,
+            name,
+            ctx,
+            "GPUTextureViewDimension"
+        )
+    })
+    .transpose()
 }
 
 pub fn view_dimension_or(
@@ -225,12 +220,13 @@ pub fn view_dimension_or(
     Ok(view_dimension(value, ctx)?.unwrap_or(default))
 }
 
-pub fn aspect(value: Option<String>) -> wgpu::TextureAspect {
-    match value.as_deref() {
-        Some("stencil-only") => wgpu::TextureAspect::StencilOnly,
-        Some("depth-only") => wgpu::TextureAspect::DepthOnly,
-        _ => wgpu::TextureAspect::All,
-    }
+pub fn aspect(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::TextureAspect> {
+    kebab!(
+        wgpu::TextureAspect,
+        name.unwrap_or("all"),
+        ctx,
+        "GPUTextureAspect"
+    )
 }
 
 pub fn sample_type(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::TextureSampleType> {
@@ -250,24 +246,62 @@ pub fn sample_type(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::TextureSam
 }
 
 pub fn storage_access(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::StorageTextureAccess> {
-    match name.unwrap_or("write-only") {
-        "write-only" => Ok(wgpu::StorageTextureAccess::WriteOnly),
-        "read-only" => Ok(wgpu::StorageTextureAccess::ReadOnly),
-        "read-write" => Ok(wgpu::StorageTextureAccess::ReadWrite),
-        value => {
-            Err(type_error(
-                ctx,
-                format!("invalid GPUStorageTextureAccess {value}"),
-            ))
-        }
-    }
+    kebab!(
+        wgpu::StorageTextureAccess,
+        name.unwrap_or("write-only"),
+        ctx,
+        "GPUStorageTextureAccess"
+    )
 }
 
 pub fn store_op(name: &str, ctx: &Ctx<'_>) -> Result<wgpu::StoreOp> {
-    match name {
-        "store" => Ok(wgpu::StoreOp::Store),
-        "discard" => Ok(wgpu::StoreOp::Discard),
-        value => Err(type_error(ctx, format!("invalid GPUStoreOp {value}"))),
+    kebab!(wgpu::StoreOp, name, ctx, "GPUStoreOp")
+}
+
+pub fn address_mode(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::AddressMode> {
+    kebab!(
+        wgpu::AddressMode,
+        name.unwrap_or("clamp-to-edge"),
+        ctx,
+        "GPUAddressMode"
+    )
+}
+
+pub fn filter_mode(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::FilterMode> {
+    kebab!(
+        wgpu::FilterMode,
+        name.unwrap_or("nearest"),
+        ctx,
+        "GPUFilterMode"
+    )
+}
+
+pub fn mipmap_filter_mode(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::MipmapFilterMode> {
+    kebab!(
+        wgpu::MipmapFilterMode,
+        name.unwrap_or("nearest"),
+        ctx,
+        "GPUMipmapFilterMode"
+    )
+}
+
+pub fn step_mode(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::VertexStepMode> {
+    kebab!(
+        wgpu::VertexStepMode,
+        name.unwrap_or("vertex"),
+        ctx,
+        "GPUVertexStepMode"
+    )
+}
+
+pub fn front_face(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::FrontFace> {
+    kebab!(wgpu::FrontFace, name.unwrap_or("ccw"), ctx, "GPUFrontFace")
+}
+
+pub fn cull_mode(name: Option<&str>, ctx: &Ctx<'_>) -> Result<Option<wgpu::Face>> {
+    match name.unwrap_or("none") {
+        "none" => Ok(None),
+        name => kebab!(wgpu::Face, name, ctx, "GPUCullMode").map(Some),
     }
 }
 

@@ -552,20 +552,8 @@ struct OwnedVertexBuffer {
 
 impl OwnedVertexBuffer {
     fn read<'js>(buffer: &Object<'js>, ctx: &Ctx<'js>) -> Result<Self> {
-        let step_mode = match buffer
-            .get::<_, Option<String>>("stepMode")?
-            .as_deref()
-            .unwrap_or("vertex")
-        {
-            "vertex" => wgpu::VertexStepMode::Vertex,
-            "instance" => wgpu::VertexStepMode::Instance,
-            value => {
-                return Err(type_error(
-                    ctx,
-                    format!("invalid GPUVertexStepMode {value}"),
-                ));
-            }
-        };
+        let step_mode =
+            format::step_mode(buffer.get::<_, Option<String>>("stepMode")?.as_deref(), ctx)?;
         let attributes = buffer
             .get::<_, Array>("attributes")
             .map_err(|_error| type_error(ctx, "vertex attributes must be an array"))?
@@ -694,21 +682,12 @@ fn primitive_state(object: Option<Object<'_>>, ctx: &Ctx<'_>) -> Result<wgpu::Pr
         .get::<_, Option<String>>("stripIndexFormat")?
         .map(|name| format::index_format(&name, ctx))
         .transpose()?;
-    let front_face = match object
-        .get::<_, Option<String>>("frontFace")?
-        .as_deref()
-        .unwrap_or("ccw")
-    {
-        "ccw" => wgpu::FrontFace::Ccw,
-        "cw" => wgpu::FrontFace::Cw,
-        value => return Err(type_error(ctx, format!("invalid GPUFrontFace {value}"))),
-    };
-    let cull_mode = match object.get::<_, Option<String>>("cullMode")?.as_deref() {
-        None | Some("none") => None,
-        Some("front") => Some(wgpu::Face::Front),
-        Some("back") => Some(wgpu::Face::Back),
-        Some(value) => return Err(type_error(ctx, format!("invalid GPUCullMode {value}"))),
-    };
+    let front_face = format::front_face(
+        object.get::<_, Option<String>>("frontFace")?.as_deref(),
+        ctx,
+    )?;
+    let cull_mode =
+        format::cull_mode(object.get::<_, Option<String>>("cullMode")?.as_deref(), ctx)?;
     Ok(wgpu::PrimitiveState {
         topology,
         strip_index_format,
