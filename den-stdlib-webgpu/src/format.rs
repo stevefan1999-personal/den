@@ -345,14 +345,11 @@ pub fn signed_i32(value: Option<Value<'_>>, ctx: &Ctx<'_>, default: i32) -> Resu
     let Some(number) = value.as_number() else {
         return Err(type_error(ctx, "expected a signed integer"));
     };
-    if !number.is_finite()
-        || number.fract() != 0.0
-        || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&number)
-    {
-        return Err(rquickjs::Exception::throw_range(
-            ctx,
-            "signed integer is out of range",
-        ));
+    // WebIDL `[EnforceRange] long`: the integer part is taken, and anything
+    // outside the range is a TypeError, not a RangeError.
+    let number = number.trunc();
+    if !number.is_finite() || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&number) {
+        return Err(type_error(ctx, "signed integer is out of range"));
     }
     Ok(number as i32)
 }
