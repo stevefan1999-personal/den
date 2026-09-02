@@ -59,10 +59,6 @@ pub(crate) fn operation_error(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquick
     den_util::throw_dom_exception(ctx, "OperationError", message.as_ref())
 }
 
-pub(crate) fn invalid_state(ctx: &Ctx<'_>, message: impl AsRef<str>) -> rquickjs::Error {
-    den_util::throw_dom_exception(ctx, "InvalidStateError", message.as_ref())
-}
-
 #[derive(Clone, Copy)]
 #[doc(hidden)]
 pub struct JsU32(pub(crate) u32);
@@ -804,7 +800,7 @@ impl<'js> GPUAdapter<'js> {
         }));
         let device_js = Rc::new(RefCell::new(None));
         let queue = Class::instance(ctx.clone(), GPUQueue {
-            device:    Some(device.clone()),
+            device:    device.clone(),
             device_js: device_js.clone(),
             errors:    errors.clone(),
             inner:     queue,
@@ -2023,7 +2019,7 @@ impl<'js> GPUBuffer<'js> {
 #[rquickjs::class(rename = "GPUQueue")]
 pub struct GPUQueue<'js> {
     #[qjs(skip_trace)]
-    device:    Option<wgpu::Device>,
+    device:    wgpu::Device,
     device_js: Rc<RefCell<Option<Class<'js, GPUDevice<'js>>>>>,
     #[qjs(skip_trace)]
     errors:    ErrorSink,
@@ -2117,10 +2113,7 @@ impl<'js> GPUQueue<'js> {
         self.inner.on_submitted_work_done(move || {
             let _ = sender.send(());
         });
-        let device = self
-            .device
-            .clone()
-            .ok_or_else(|| invalid_state(&ctx, "GPUQueue has no device"))?;
+        let device = self.device.clone();
         tokio::task::spawn_blocking(move || GpuPoll::until(device, receiver))
             .await
             .map_err(|error| operation_error(&ctx, error.to_string()))?
