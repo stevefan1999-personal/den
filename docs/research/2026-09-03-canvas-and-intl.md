@@ -110,6 +110,35 @@ Known ICU4X gaps: three of the six `DisplayNames` types have no data marker,
 plumbing first. `DateTimeFormat` is a shape mismatch, not an effort problem:
 ICU4X 2.x exposes semantic skeletons rather than arbitrary component bags.
 
+## Result (2026-09-03, phases 0 and 1 built)
+
+Measured on this host, not reported second-hand.
+
+The test262 harness now walks both subtrees: 7,961 files registered, up from
+4,603. After Intl phase 1 it runs 7,095 and passes 6,339. The intl402 slice
+scores 1,644 of the Temporal calendar tests that were never executed before,
+plus 150 of the 168 `Locale` files and 35 of the `Intl` namespace files.
+
+`den-stdlib-canvas` is 795 lines and added **no** dependency at all: it needs
+only `den-util` and `rquickjs`. `den-stdlib-intl` is 682 lines over
+`icu_locale`, `icu_locale_core` and `icu_calendar`.
+
+The binary cost of Intl phase 1 is **+635 KiB** on a 63 MB release binary, not
+the +4.8 MiB quoted above. That figure is for the full stable component set;
+phase 1 links only likely-subtags, alias and directionality data plus two
+calendar markers inside data `temporal_rs` already pulled in. The large number
+still applies once the formatters (`DateTimeFormat`, `NumberFormat`,
+`Collator`) arrive, so treat it as the cost of phase 2, not of Intl as such.
+
+The 756 remaining harness failures are a clean worklist rather than noise. The
+non-Temporal intl402 failures are simply "Intl is not defined" and are the
+scoreboard for later phases. The Temporal ones are real bugs found by running
+tests that had never run: eras rejected with `TypeError` where the spec wants
+`RangeError`, unknown eras silently accepted, era and month-code field
+resolution failing on boundaries in `ethiopic`, `gregory`, `japanese`, `roc`
+and `islamic-tbla`, `with()` rejecting a partial but valid field bag, and
+`toLocaleString` still ignoring its arguments.
+
 ## Proposed order
 
 1. Point the existing test262 harness at `test/intl402` and fix the feature
