@@ -1688,19 +1688,13 @@ pub struct GPUBuffer {
 }
 
 impl GPUBuffer {
-    fn reject_map<'js>(
-        &self, ctx: &Ctx<'js>, message: &str, early: bool, name: &str,
-    ) -> Result<Promise<'js>> {
+    /// A content-timeline failure: reject the promise and report the same
+    /// validation error the device timeline would have raised.
+    fn reject_map<'js>(&self, ctx: &Ctx<'js>, message: &str) -> Result<Promise<'js>> {
         self.errors.validation(message);
         let (promise, _resolve, reject) = ctx.promise()?;
-        let error: Value = den_util::construct(ctx, "DOMException", (message, name))?;
-        if early {
-            reject.call::<_, ()>((error,))?;
-        } else {
-            ctx.spawn(async move {
-                let _ = reject.call::<_, ()>((error,));
-            });
-        }
+        let error: Value = den_util::construct(ctx, "DOMException", (message, "OperationError"))?;
+        reject.call::<_, ()>((error,))?;
         Ok(promise)
     }
 }
@@ -1745,10 +1739,10 @@ impl GPUBuffer {
             )
         };
         if mapped_or_pending {
-            return self.reject_map(&ctx, "GPUBuffer is not unmapped", true, "OperationError");
+            return self.reject_map(&ctx, "GPUBuffer is not unmapped");
         }
         if destroyed {
-            return self.reject_map(&ctx, "GPUBuffer is destroyed", false, "OperationError");
+            return self.reject_map(&ctx, "GPUBuffer is destroyed");
         }
         // Whether the usage permits the mode is wgpu's call; the mode itself is
         // a content-timeline check, exactly as in deno_webgpu.
@@ -1756,12 +1750,7 @@ impl GPUBuffer {
             MAP_READ => MappingKind::Read,
             MAP_WRITE => MappingKind::Write,
             _ => {
-                return self.reject_map(
-                    &ctx,
-                    "mode must be GPUMapMode.READ or GPUMapMode.WRITE",
-                    false,
-                    "OperationError",
-                );
+                return self.reject_map(&ctx, "mode must be GPUMapMode.READ or GPUMapMode.WRITE");
             }
         };
         let buffer_size = self.inner.size();
@@ -1771,7 +1760,7 @@ impl GPUBuffer {
             .flatten()
             .map_or_else(|| buffer_size.saturating_sub(offset), |value| value.0);
         let Some(end) = offset.checked_add(size) else {
-            return self.reject_map(&ctx, "mapped range overflows", false, "OperationError");
+            return self.reject_map(&ctx, "mapped range overflows");
         };
         // `Buffer::map_async` panics on an out-of-range slice, so the bounds
         // have to be settled here before wgpu sees them.
@@ -1782,8 +1771,6 @@ impl GPUBuffer {
             return self.reject_map(
                 &ctx,
                 "mapped range must be in bounds, 8-byte aligned, and a multiple of 4",
-                false,
-                "OperationError",
             );
         }
         let (promise, resolve, reject) = ctx.promise()?;
@@ -2774,43 +2761,10 @@ fn constants<'js>(ctx: &Ctx<'js>, values: &[(&str, u32)]) -> Result<Object<'js>>
 }
 
 fn install_classes(globals: &Object<'_>) -> Result<()> {
-    use den_util::ConstructorInstaller as _;
     if globals.get::<_, Value>("GPU")?.is_function() {
         return Ok(());
     }
-    globals.install_constructor::<GPU>(0)?;
-    globals.install_constructor::<GPUAdapter>(0)?;
-    globals.install_constructor::<GPUAdapterInfo>(0)?;
-    globals.install_constructor::<GPUBindGroup>(0)?;
-    globals.install_constructor::<GPUBindGroupLayout>(0)?;
-    globals.install_constructor::<GPUBuffer>(0)?;
-    globals.install_constructor::<GPUCommandBuffer>(0)?;
-    globals.install_constructor::<GPUCommandEncoder>(0)?;
-    globals.install_constructor::<GPUComputePassEncoder>(0)?;
-    globals.install_constructor::<GPUComputePipeline>(0)?;
-    globals.install_constructor::<GPUDevice>(0)?;
-    globals.install_constructor::<GPUDeviceLostInfo>(0)?;
-    globals.install_constructor::<GPUError>(1)?;
-    globals.install_constructor::<GPUExternalTexture>(0)?;
-    globals.install_constructor::<GPUInternalError>(1)?;
-    globals.install_constructor::<GPUOutOfMemoryError>(1)?;
-    globals.install_constructor::<GPUPipelineError>(2)?;
-    globals.install_constructor::<GPUPipelineLayout>(0)?;
-    globals.install_constructor::<query::GPUQuerySet>(0)?;
-    globals.install_constructor::<GPUQueue>(0)?;
-    globals.install_constructor::<render::GPURenderBundle>(0)?;
-    globals.install_constructor::<render::GPURenderBundleEncoder>(0)?;
-    globals.install_constructor::<render::GPURenderPassEncoder>(0)?;
-    globals.install_constructor::<render::GPURenderPipeline>(0)?;
-    globals.install_constructor::<texture::GPUSampler>(0)?;
-    globals.install_constructor::<GPUShaderModule>(0)?;
-    globals.install_constructor::<GPUSupportedFeatures>(0)?;
-    globals.install_constructor::<GPUSupportedLimits>(0)?;
-    globals.install_constructor::<GPUSupportedWGSLLanguageFeatures>(0)?;
-    globals.install_constructor::<texture::GPUTexture>(0)?;
-    globals.install_constructor::<texture::GPUTextureView>(0)?;
-    globals.install_constructor::<GPUUncapturedErrorEvent>(2)?;
-    globals.install_constructor::<GPUValidationError>(1)?;
+    install_constructors(globals)?;
     den_util::inherit::<GPUValidationError, GPUError>(globals.ctx())?;
     den_util::inherit::<GPUOutOfMemoryError, GPUError>(globals.ctx())?;
     den_util::inherit::<GPUInternalError, GPUError>(globals.ctx())?;
@@ -2876,41 +2830,56 @@ fn inherit_global_prototype<'js, T: rquickjs::class::JsClass<'js>>(
     Ok(())
 }
 
-const GLOBAL_CLASSES: [&str; 33] = [
-    "GPU",
-    "GPUAdapter",
-    "GPUAdapterInfo",
-    "GPUBindGroup",
-    "GPUBindGroupLayout",
-    "GPUBuffer",
-    "GPUCommandBuffer",
-    "GPUCommandEncoder",
-    "GPUComputePassEncoder",
-    "GPUComputePipeline",
-    "GPUDevice",
-    "GPUDeviceLostInfo",
-    "GPUError",
-    "GPUExternalTexture",
-    "GPUInternalError",
-    "GPUOutOfMemoryError",
-    "GPUPipelineError",
-    "GPUPipelineLayout",
-    "GPUQuerySet",
-    "GPUQueue",
-    "GPURenderBundle",
-    "GPURenderBundleEncoder",
-    "GPURenderPassEncoder",
-    "GPURenderPipeline",
-    "GPUSampler",
-    "GPUShaderModule",
-    "GPUSupportedFeatures",
-    "GPUSupportedLimits",
-    "GPUSupportedWGSLLanguageFeatures",
-    "GPUTexture",
-    "GPUTextureView",
-    "GPUUncapturedErrorEvent",
-    "GPUValidationError",
-];
+/// Every WebGPU interface den installs, with its constructor arity. One list
+/// feeds the globals, the module declarations and the module exports, so they
+/// cannot drift apart.
+macro_rules! webgpu_interfaces {
+    ($($name:literal => $ty:ty, $arity:literal);+ $(;)?) => {
+        const GLOBAL_CLASSES: [&str; [$($name),+].len()] = [$($name),+];
+
+        fn install_constructors(globals: &Object<'_>) -> Result<()> {
+            use den_util::ConstructorInstaller as _;
+            $(globals.install_constructor::<$ty>($arity)?;)+
+            Ok(())
+        }
+    };
+}
+
+webgpu_interfaces! {
+    "GPU" => GPU, 0;
+    "GPUAdapter" => GPUAdapter, 0;
+    "GPUAdapterInfo" => GPUAdapterInfo, 0;
+    "GPUBindGroup" => GPUBindGroup, 0;
+    "GPUBindGroupLayout" => GPUBindGroupLayout, 0;
+    "GPUBuffer" => GPUBuffer, 0;
+    "GPUCommandBuffer" => GPUCommandBuffer, 0;
+    "GPUCommandEncoder" => GPUCommandEncoder, 0;
+    "GPUComputePassEncoder" => GPUComputePassEncoder, 0;
+    "GPUComputePipeline" => GPUComputePipeline, 0;
+    "GPUDevice" => GPUDevice, 0;
+    "GPUDeviceLostInfo" => GPUDeviceLostInfo, 0;
+    "GPUError" => GPUError, 1;
+    "GPUExternalTexture" => GPUExternalTexture, 0;
+    "GPUInternalError" => GPUInternalError, 1;
+    "GPUOutOfMemoryError" => GPUOutOfMemoryError, 1;
+    "GPUPipelineError" => GPUPipelineError, 2;
+    "GPUPipelineLayout" => GPUPipelineLayout, 0;
+    "GPUQuerySet" => query::GPUQuerySet, 0;
+    "GPUQueue" => GPUQueue, 0;
+    "GPURenderBundle" => render::GPURenderBundle, 0;
+    "GPURenderBundleEncoder" => render::GPURenderBundleEncoder, 0;
+    "GPURenderPassEncoder" => render::GPURenderPassEncoder, 0;
+    "GPURenderPipeline" => render::GPURenderPipeline, 0;
+    "GPUSampler" => texture::GPUSampler, 0;
+    "GPUShaderModule" => GPUShaderModule, 0;
+    "GPUSupportedFeatures" => GPUSupportedFeatures, 0;
+    "GPUSupportedLimits" => GPUSupportedLimits, 0;
+    "GPUSupportedWGSLLanguageFeatures" => GPUSupportedWGSLLanguageFeatures, 0;
+    "GPUTexture" => texture::GPUTexture, 0;
+    "GPUTextureView" => texture::GPUTextureView, 0;
+    "GPUUncapturedErrorEvent" => GPUUncapturedErrorEvent, 2;
+    "GPUValidationError" => GPUValidationError, 1;
+}
 
 #[rquickjs::module(rename_vars = "camelCase", rename_types = "PascalCase")]
 pub mod webgpu {
