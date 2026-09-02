@@ -152,7 +152,13 @@ impl<'js> ImageData<'js> {
         };
         let color_space = Self::settings_color_space(&ctx, arg(3))?;
 
-        let length = data.len();
+        // The view's own byte count, not `data.length`: that property is a
+        // configurable accessor on %TypedArray%.prototype, so script can
+        // replace it, and rquickjs asserts the result is an integer — a
+        // non-integer return panics the host. One byte per element here, so
+        // the byte length *is* the element count, and a detached buffer
+        // reports none and falls into the zero-elements check below.
+        let length = data.as_bytes().map_or(0, <[u8]>::len);
         if length == 0 {
             return Err(Exception::throw_type(
                 &ctx,

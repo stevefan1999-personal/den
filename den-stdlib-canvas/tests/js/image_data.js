@@ -56,3 +56,21 @@ assertEquals(clamped.data[1], 0);
 const descriptor = Object.getOwnPropertyDescriptor(ImageData.prototype, "width");
 assertEquals(typeof descriptor.get, "function");
 assertEquals(descriptor.enumerable, true);
+
+// `length` is a configurable accessor on %TypedArray%.prototype, so a script
+// can replace it. The constructor must size from the view itself: a lying
+// getter used to break the data.length === width * height * 4 invariant, and a
+// non-integer one used to abort the process from inside the engine binding.
+const typedArrayPrototype = Object.getPrototypeOf(Uint8ClampedArray.prototype);
+const lengthDescriptor = Object.getOwnPropertyDescriptor(typedArrayPrototype, "length");
+for (const forged of [1000000, 1.5]) {
+  Object.defineProperty(typedArrayPrototype, "length", {
+    configurable: true,
+    get: () => forged,
+  });
+  const lied = new ImageData(new Uint8ClampedArray(4), 1);
+  assertEquals(lied.width, 1);
+  assertEquals(lied.height, 1);
+}
+Object.defineProperty(typedArrayPrototype, "length", lengthDescriptor);
+assertEquals(new Uint8ClampedArray(4).length, 4);
