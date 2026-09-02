@@ -272,22 +272,12 @@ impl<'js> GPURenderPassEncoder<'js> {
 
 crate::opaque_handle!(GPURenderBundle(wgpu::RenderBundle));
 
-/// Handles whose borrows `extend_borrow` stretched to `'static`.
+/// Boxed handles the encoder was handed `&'static` references to.
 #[expect(dead_code, reason = "held only to outlive the encoder")]
 enum Retained {
-    Pipeline(wgpu::RenderPipeline),
-    Buffer(wgpu::Buffer),
+    Pipeline(Box<wgpu::RenderPipeline>),
+    Buffer(Box<wgpu::Buffer>),
 }
-
-/// `RenderBundleEncoder<'a>` demands `&'a` borrows of the pipeline and the
-/// index/indirect buffers, but trunk wgpu-core clones the resource `Arc` at
-/// call time (`command/bundle.rs`, `RenderCommand<ArcReferences>`) and never
-/// keeps the borrow. Every caller pushes a clone into `Retained` first, so the
-/// resource also outlives the encoder by construction.
-///
-/// SAFETY: `value` is alive for the duration of the call that receives the
-/// extended reference, and nothing dereferences it afterwards.
-unsafe fn extend_borrow<T>(value: &T) -> &'static T { unsafe { &*std::ptr::from_ref(value) } }
 
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderBundleEncoder")]
@@ -311,12 +301,24 @@ impl<'js> GPURenderBundleEncoder<'js> {
         crate::flush_uncaptured(&self.device, ctx)
     }
 
+    /// `RenderBundleEncoder<'a>` demands `&'a` borrows of the pipeline and the
+    /// index/indirect buffers, but trunk wgpu-core clones the resource `Arc`
+    /// at call time (`command/bundle.rs`, `RenderCommand<ArcReferences>`) and
+    /// never keeps the borrow. The handle is boxed and pushed into `retained`
+    /// first, so the reference handed out is the retained allocation itself.
+    ///
+    /// SAFETY: the box lives in `self.retained` until the encoder is dropped,
+    /// and a `Box`'s address does not move when the vec reallocates, so the
+    /// pointer stays valid for as long as the encoder can dereference it.
+    fn retain<T: 'static>(&self, value: T, wrap: fn(Box<T>) -> Retained) -> &'static T {
+        let boxed = Box::new(value);
+        let pointer = std::ptr::from_ref(&*boxed);
+        self.retained.borrow_mut().push(wrap(boxed));
+        unsafe { &*pointer }
+    }
+
     fn retain_buffer(&self, buffer: &wgpu::Buffer) -> &'static wgpu::Buffer {
-        self.retained
-            .borrow_mut()
-            .push(Retained::Buffer(buffer.clone()));
-        // SAFETY: see `extend_borrow`; the clone above outlives the encoder.
-        unsafe { extend_borrow(buffer) }
+        self.retain(buffer.clone(), Retained::Buffer)
     }
 }
 
@@ -342,12 +344,7 @@ impl<'js> GPURenderBundleEncoder<'js> {
     pub fn set_pipeline(
         &self, pipeline: Class<'js, GPURenderPipeline<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let pipeline = pipeline.borrow().inner.clone();
-        self.retained
-            .borrow_mut()
-            .push(Retained::Pipeline(pipeline.clone()));
-        // SAFETY: see `extend_borrow`; the clone above outlives the encoder.
-        let pipeline = unsafe { extend_borrow(&pipeline) };
+        let pipeline = self.retain(pipeline.borrow().inner.clone(), Retained::Pipeline);
         self.record(&ctx, |encoder| encoder.set_pipeline(pipeline))
     }
 
