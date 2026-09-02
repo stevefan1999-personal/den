@@ -924,9 +924,72 @@ fn depth_stencil_ops<'js, V: Copy>(
     Ok(Ok((!read_only).then_some(ops)))
 }
 
-pub fn begin_render_pass<'js>(
-    encoder: &mut wgpu::CommandEncoder, descriptor: &Object<'js>, ctx: &Ctx<'js>,
-) -> Result<(wgpu::RenderPass<'static>, Option<String>)> {
+/// The view plus the depth and stencil operations the safe API pairs with it.
+type OwnedDepthAttachment = (
+    wgpu::TextureView,
+    Option<wgpu::Operations<f32>>,
+    Option<wgpu::Operations<u32>>,
+);
+
+/// Everything `wgpu::RenderPassDescriptor` borrows, read out of the JS
+/// descriptor before the command encoder is borrowed: the getters below are
+/// script-visible and may re-enter the encoder.
+pub struct RenderPassPlan {
+    pub(crate) label: String,
+    colors:           Vec<Option<OwnedColorAttachment>>,
+    depth:            Option<OwnedDepthAttachment>,
+    timestamp:        Option<(wgpu::QuerySet, Option<u32>, Option<u32>)>,
+    occlusion:        Option<wgpu::QuerySet>,
+    /// A descriptor fault the safe API folds away. The pass then never opens
+    /// and the command encoder reports the error at `finish`, which is where
+    /// WebGPU puts every encoder-state error.
+    pub(crate) fault: Option<String>,
+}
+
+impl RenderPassPlan {
+    pub fn begin(&self, encoder: &mut wgpu::CommandEncoder) -> wgpu::RenderPass<'static> {
+        let color_attachments = self
+            .colors
+            .iter()
+            .map(|attachment| {
+                attachment.as_ref().map(|attachment| {
+                    wgpu::RenderPassColorAttachment {
+                        view:           &attachment.view,
+                        resolve_target: attachment.resolve.as_ref(),
+                        ops:            attachment.ops,
+                        depth_slice:    attachment.depth_slice,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label:                    (!self.label.is_empty()).then_some(self.label.as_str()),
+                color_attachments:        &color_attachments,
+                depth_stencil_attachment: self.depth.as_ref().map(|(view, depth, stencil)| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: *depth,
+                        stencil_ops: *stencil,
+                    }
+                }),
+                timestamp_writes:         self.timestamp.as_ref().map(
+                    |(query_set, beginning, end)| {
+                        wgpu::RenderPassTimestampWrites {
+                            query_set,
+                            beginning_of_pass_write_index: *beginning,
+                            end_of_pass_write_index: *end,
+                        }
+                    },
+                ),
+                occlusion_query_set:      self.occlusion.as_ref(),
+                multiview_mask:           None,
+            })
+            .forget_lifetime()
+    }
+}
+
+pub fn read_render_pass<'js>(descriptor: &Object<'js>, ctx: &Ctx<'js>) -> Result<RenderPassPlan> {
     let label = label(descriptor)?;
     let color_value = descriptor
         .get::<_, Array>("colorAttachments")
@@ -961,20 +1024,7 @@ pub fn begin_render_pass<'js>(
                 .map(|value| value.0),
         }));
     }
-    let color_attachments = owned_colors
-        .iter()
-        .map(|attachment| {
-            attachment.as_ref().map(|attachment| {
-                wgpu::RenderPassColorAttachment {
-                    view:           &attachment.view,
-                    resolve_target: attachment.resolve.as_ref(),
-                    ops:            attachment.ops,
-                    depth_slice:    attachment.depth_slice,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut deferred = None;
+    let mut fault = None;
     let owned_depth = descriptor
         .get::<_, Option<Object>>("depthStencilAttachment")?
         .map(|attachment| {
@@ -1004,43 +1054,26 @@ pub fn begin_render_pass<'js>(
             let (depth_ops, stencil_ops) = match (depth_ops, stencil_ops) {
                 (Ok(depth_ops), Ok(stencil_ops)) => (depth_ops, stencil_ops),
                 (Err(message), _) | (_, Err(message)) => {
-                    deferred = Some(message);
+                    fault = Some(message);
                     (None, None)
                 }
             };
             Ok::<_, rquickjs::Error>((view, depth_ops, stencil_ops))
         })
         .transpose()?;
-    let depth_stencil_attachment = owned_depth.as_ref().map(|(view, depth_ops, stencil_ops)| {
-        wgpu::RenderPassDepthStencilAttachment {
-            view,
-            depth_ops: *depth_ops,
-            stencil_ops: *stencil_ops,
-        }
-    });
     let timestamp = descriptor
         .get::<_, Option<Object>>("timestampWrites")?
         .map(|writes| query::timestamp_writes_from(&writes, ctx))
         .transpose()?;
-    let timestamp_writes = timestamp.as_ref().map(|(query_set, beginning, end)| {
-        wgpu::RenderPassTimestampWrites {
-            query_set,
-            beginning_of_pass_write_index: *beginning,
-            end_of_pass_write_index: *end,
-        }
-    });
     let occlusion = descriptor
         .get::<_, Option<Class<GPUQuerySet>>>("occlusionQuerySet")?
         .map(|query_set| query_set.borrow().inner.clone());
-    let pass = encoder
-        .begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: (!label.is_empty()).then_some(label.as_str()),
-            color_attachments: &color_attachments,
-            depth_stencil_attachment,
-            timestamp_writes,
-            occlusion_query_set: occlusion.as_ref(),
-            multiview_mask: None,
-        })
-        .forget_lifetime();
-    Ok((pass, deferred))
+    Ok(RenderPassPlan {
+        label,
+        colors: owned_colors,
+        depth: owned_depth,
+        timestamp,
+        occlusion,
+        fault,
+    })
 }

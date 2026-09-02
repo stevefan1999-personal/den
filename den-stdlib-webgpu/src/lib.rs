@@ -293,7 +293,9 @@ impl<T> Recorder<T> {
     }
 
     /// Ends the recorder: `finish` consumes the wgpu value (dropping a pass
-    /// ends it), then any deferred message is reported after wgpu's own.
+    /// ends it), then any deferred message is reported after wgpu's own. A
+    /// deferred message means the recorder was invalid, so what it produced is
+    /// dropped the way wgpu-core drops the output of a failed `finish`.
     pub(crate) fn end<U>(&self, errors: &ErrorSink, finish: impl FnOnce(T) -> U) -> Option<U> {
         let state = std::mem::replace(&mut *self.state.borrow_mut(), RecorderState::Ended);
         let finished = match state {
@@ -304,10 +306,13 @@ impl<T> Recorder<T> {
             }
             RecorderState::Invalid => None,
         };
-        if let Some(message) = self.deferred.borrow_mut().take() {
-            errors.validation(message);
-        }
-        finished
+        self.deferred
+            .borrow_mut()
+            .take()
+            .map_or(finished, |message| {
+                errors.validation(message);
+                None
+            })
     }
 }
 
@@ -2266,28 +2271,28 @@ impl<'js> GPUCommandEncoder<'js> {
     pub fn begin_render_pass(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>,
     ) -> Result<render::GPURenderPassEncoder<'js>> {
-        let label = crate::label(&descriptor)?;
-        let begun = self
-            .encoder
-            .map(&self.errors(), |encoder| {
-                render::begin_render_pass(encoder, &descriptor, &ctx)
-            })
-            .transpose()?;
+        // The descriptor is read before the encoder is borrowed: its getters
+        // are script-visible and may re-enter this encoder.
+        let mut plan = render::read_render_pass(&descriptor, &ctx)?;
+        let label = plan.label.clone();
+        let begun = plan.fault.take().map_or_else(
+            || {
+                self.encoder
+                    .map(&self.errors(), |encoder| plan.begin(encoder))
+            },
+            |message| {
+                self.encoder.defer(message);
+                None
+            },
+        );
         flush_uncaptured(&self.device, &ctx)?;
-        let pass = match begun {
-            Some((pass, deferred)) => {
-                let recorder = Recorder::open("GPURenderPassEncoder", pass);
-                if let Some(message) = deferred {
-                    recorder.defer(message);
-                }
-                recorder
-            }
-            None => Recorder::invalid("GPURenderPassEncoder"),
-        };
         Ok(render::GPURenderPassEncoder::new(
             self.device.clone(),
             label,
-            pass,
+            begun.map_or_else(
+                || Recorder::invalid("GPURenderPassEncoder"),
+                |pass| Recorder::open("GPURenderPassEncoder", pass),
+            ),
         ))
     }
 
