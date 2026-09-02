@@ -2,9 +2,9 @@
 //!
 //! These live apart from `Intl.Locale` on purpose: `Collator`,
 //! `DateTimeFormat`, `NumberFormat` and the rest are each defined in terms of
-//! the same four steps — coerce the option bag, read options with
-//! `GetOption`/`GetBooleanOption`/`GetNumberOption`, canonicalize the requested
-//! locales, then resolve them against what the constructor actually supports.
+//! the same steps — coerce the option bag, read options with
+//! `GetOption`/`GetBooleanOption`/`GetNumberOption`, then canonicalize the
+//! requested locales.
 
 use den_util::coerce_string;
 use icu_locale::LocaleCanonicalizer;
@@ -135,78 +135,5 @@ impl Bcp47 {
         let mut locale = Self::parse(ctx, tag)?;
         Self::canonicalize(&mut locale);
         Ok(locale)
-    }
-}
-
-/// The locales a single `Intl` constructor claims to support.
-///
-/// ICU4X's compiled data is baked into statics and is not enumerable, so no
-/// ICU4X call can answer "which locales do you carry?". Every den `Intl`
-/// constructor therefore declares its own list and answers `supportedLocalesOf`
-/// from it.
-pub struct AvailableLocales<'a>(pub &'a [&'a str]);
-
-impl AvailableLocales<'_> {
-    /// `BestAvailableLocale`: drop one trailing subtag at a time until what is
-    /// left is on the list. Matching runs over the language identifier alone,
-    /// which is `LookupMatcher`'s "remove the Unicode extension sequence" step
-    /// for free.
-    pub fn best(&self, candidate: &Locale) -> Option<String> {
-        let mut prefix = candidate.id.to_string();
-        loop {
-            if self.0.contains(&prefix.as_str()) {
-                return Some(prefix);
-            }
-            prefix.truncate(prefix.rfind('-')?);
-        }
-    }
-
-    /// `ResolveLocale`'s lookup half: the first requested locale with a best
-    /// available match, or the caller's default.
-    pub fn resolve(&self, requested: &[Locale], default: &str) -> String {
-        requested
-            .iter()
-            .find_map(|candidate| self.best(candidate))
-            .unwrap_or_else(|| default.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use icu_locale_core::{
-        Locale,
-        extensions::unicode::{Value as KeywordValue, key},
-        preferences::extensions::unicode::keywords::CalendarAlgorithm,
-    };
-
-    use super::AvailableLocales;
-
-    fn locale(tag: &str) -> Locale { tag.parse().expect("test tag parses") }
-
-    #[test]
-    fn best_available_locale_truncates_subtag_by_subtag() {
-        let available = AvailableLocales(&["en", "zh-Hant"]);
-        assert_eq!(available.best(&locale("en-US")).as_deref(), Some("en"));
-        assert_eq!(
-            available.best(&locale("zh-Hant-TW")).as_deref(),
-            Some("zh-Hant")
-        );
-        // Extensions never take part in matching.
-        assert_eq!(
-            available.best(&locale("en-US-u-ca-gregory")).as_deref(),
-            Some("en")
-        );
-        assert_eq!(available.best(&locale("de-DE")), None);
-    }
-
-    #[test]
-    fn resolve_falls_back_to_the_declared_default() {
-        let available = AvailableLocales(&["en"]);
-        assert_eq!(
-            available.resolve(&[locale("de"), locale("en-GB")], "und"),
-            "en"
-        );
-        assert_eq!(available.resolve(&[locale("de")], "und"), "und");
-        assert_eq!(available.resolve(&[], "und"), "und");
     }
 }
