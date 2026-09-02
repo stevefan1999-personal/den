@@ -324,6 +324,8 @@ impl Engine {
             "den:fs" => den_stdlib_fs::js_fs,
             #[cfg(feature = "stdlib-http")]
             "den:http" => den_stdlib_http::js_http,
+            #[cfg(feature = "stdlib-intl")]
+            "den:intl" => den_stdlib_intl::js_intl,
             #[cfg(feature = "stdlib-kv")]
             "den:kv" => den_stdlib_kv::js_kv,
             #[cfg(feature = "stdlib-ffi")]
@@ -407,6 +409,7 @@ impl Engine {
                     feature = "stdlib-canvas",
                     feature = "stdlib-console",
                     feature = "stdlib-core",
+                    feature = "stdlib-intl",
                     feature = "stdlib-text",
                     feature = "stdlib-timer",
                     feature = "stdlib-whatwg-fetch",
@@ -432,6 +435,8 @@ impl Engine {
                 evaluate_stdlib_module!(den_stdlib_text::js_text, "den:text");
                 #[cfg(feature = "stdlib-canvas")]
                 evaluate_stdlib_module!(den_stdlib_canvas::js_canvas, "den:canvas");
+                #[cfg(feature = "stdlib-intl")]
+                evaluate_stdlib_module!(den_stdlib_intl::js_intl, "den:intl");
                 #[cfg(feature = "stdlib-timer")]
                 evaluate_stdlib_module!(den_stdlib_timer::js_timer, "den:timer");
                 #[cfg(feature = "stdlib-whatwg-fetch")]

@@ -18,6 +18,7 @@ den                              CLI, REPL, signals and tracing
     ├── den-stdlib-ffi           den:ffi, capability-gated
     ├── den-stdlib-fs            den:fs
     ├── den-stdlib-http          den:http, cleartext HTTP/1 and HTTP/2
+    ├── den-stdlib-intl          Intl over ICU4X (`den:intl`)
     ├── den-stdlib-kv            den:kv over SurrealKV
     ├── den-stdlib-networking    TCP, UDP, Unix, TLS and WebSocket transport
     ├── den-stdlib-path          lexical paths
@@ -194,6 +195,14 @@ produce synthetic modules; other types fail loading.
   sources. All of it is CPU pixel work on straight RGBA8, so the crate carries
   no image codec; `Blob` sources, `OffscreenCanvas` and any rendering context
   are excluded until there is a decoder or a context to want them.
+- [`den:intl`](den-stdlib-intl/src/lib.rs) is ECMA-402 phase 1: the `Intl`
+  namespace, `Intl.getCanonicalLocales` and `Intl.Locale`, over ICU4X's
+  likely-subtags, alias, week and calendar-preference data. The constructors
+  that need formatting data — `Collator`, `DateTimeFormat`, `NumberFormat`,
+  `PluralRules`, `ListFormat`, `RelativeTimeFormat`, `Segmenter`,
+  `DisplayNames`, `DurationFormat` — and `Intl.supportedValuesOf` are absent
+  rather than stubbed, and quickjs-ng's own `toLocaleString` and
+  `localeCompare` are left alone.
 - `den:ffi` is denied at runtime unless the host grants the requested library
   path, even when the crate is compiled in.
 

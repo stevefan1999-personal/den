@@ -42,6 +42,7 @@ den-stdlib-crypto = { workspace = true, optional = true }
 den-stdlib-ffi = { workspace = true, optional = true }
 den-stdlib-fs = { workspace = true, optional = true }
 den-stdlib-http = { workspace = true, optional = true }
+den-stdlib-intl = { workspace = true, optional = true }
 den-stdlib-kv = { workspace = true, optional = true }
 den-stdlib-networking = { workspace = true, optional = true }
 den-stdlib-path = { workspace = true, optional = true }
@@ -90,6 +91,7 @@ stdlib = [
     "stdlib-ffi",
     "stdlib-fs",
     "stdlib-http",
+    "stdlib-intl",
     "stdlib-kv",
     "stdlib-networking",
     "stdlib-path",
@@ -114,6 +116,7 @@ stdlib-http = [
     "dep:den-stdlib-http",
     "stdlib-whatwg-fetch",
 ]
+stdlib-intl = ["dep:den-stdlib-intl"]
 stdlib-kv = ["dep:den-stdlib-kv"]
 stdlib-networking = ["dep:den-stdlib-networking"]
 stdlib-path = ["dep:den-stdlib-path"]

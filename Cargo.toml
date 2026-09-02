@@ -14,6 +14,7 @@ members = [
     "den-stdlib-ffi",
     "den-stdlib-fs",
     "den-stdlib-http",
+    "den-stdlib-intl",
     "den-stdlib-kv",
     "den-stdlib-networking",
     "den-stdlib-path",
@@ -56,6 +57,7 @@ den-stdlib-crypto = { version = "0.4.0", path = "den-stdlib-crypto" }
 den-stdlib-ffi = { version = "0.4.0", path = "den-stdlib-ffi" }
 den-stdlib-fs = { version = "0.4.0", path = "den-stdlib-fs" }
 den-stdlib-http = { version = "0.4.0", path = "den-stdlib-http", default-features = false }
+den-stdlib-intl = { version = "0.4.0", path = "den-stdlib-intl" }
 den-stdlib-kv = { version = "0.4.0", path = "den-stdlib-kv" }
 den-stdlib-networking = { version = "0.4.0", path = "den-stdlib-networking", default-features = false }
 den-stdlib-path = { version = "0.4.0", path = "den-stdlib-path" }
@@ -99,6 +101,9 @@ futures = "0.3.34"
 http = "1.5.0"
 http-body-util = "0.1.2"
 httpdate = "1.0.3"
+icu_calendar = { version = "2.3.0", default-features = false }
+icu_locale = "2.3.0"
+icu_locale_core = "2.3.0"
 hyper = "1.11.0"
 hyper-util = "0.1.20"
 import_map = "0.25.0"
@@ -788,6 +793,7 @@ stdlib-crypto = ["den-core/stdlib-crypto"]
 stdlib-ffi = ["den-core/stdlib-ffi"]
 stdlib-fs = ["den-core/stdlib-fs"]
 stdlib-http = ["den-core/stdlib-http"]
+stdlib-intl = ["den-core/stdlib-intl"]
 stdlib-kv = ["den-core/stdlib-kv"]
 stdlib-networking = ["den-core/stdlib-networking"]
 stdlib-path = ["den-core/stdlib-path"]

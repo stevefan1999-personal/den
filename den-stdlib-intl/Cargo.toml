@@ -1,0 +1,26 @@
+[package]
+name = "den-stdlib-intl"
+description = "ECMA-402 Intl for den, backed by ICU4X"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[dependencies]
+den-util.workspace = true
+icu_calendar = { workspace = true, features = ["compiled_data"] }
+icu_locale = { workspace = true, features = ["compiled_data"] }
+icu_locale_core.workspace = true
+rquickjs = { workspace = true, features = ["macro"] }
+
+[dev-dependencies]
+color-eyre.workspace = true
+den-core = { workspace = true, features = ["stdlib"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
