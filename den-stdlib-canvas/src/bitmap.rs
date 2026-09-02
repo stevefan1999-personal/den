@@ -440,12 +440,15 @@ impl BitmapOptions {
         })
     }
 
+    /// `ImageBitmapOptions` declares both extents `[EnforceRange] unsigned
+    /// long`. Only `undefined` is an absent member: null converts to 0 and
+    /// then trips the empty-resize-target check below.
     fn size<'js>(ctx: &Ctx<'js>, options: &Object<'js>, key: &str) -> Result<Option<u32>> {
-        options
-            .get::<_, Option<Value<'js>>>(key)?
-            .filter(|given| !given.is_undefined())
-            .map(|given| WebIdl::unsigned_long(ctx, given))
-            .transpose()
+        let value = options.get::<_, Value<'js>>(key)?;
+        if value.is_undefined() {
+            return Ok(None);
+        }
+        WebIdl::enforced_unsigned_long(ctx, value, key).map(Some)
     }
 
     fn reject_empty_resize(&self, ctx: &Ctx<'_>) -> Result<()> {

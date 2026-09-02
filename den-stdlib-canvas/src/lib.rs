@@ -35,6 +35,20 @@ impl WebIdl {
         })
     }
 
+    /// `[EnforceRange] unsigned long`: where the plain conversion wraps, this
+    /// one refuses. NaN and both infinities fail the same bounds test that an
+    /// out-of-range magnitude does.
+    fn enforced_unsigned_long<'js>(ctx: &Ctx<'js>, value: Value<'js>, what: &str) -> Result<u32> {
+        let number = Coerced::<f64>::from_js(ctx, value)?.0.trunc();
+        if !(0.0..=f64::from(u32::MAX)).contains(&number) {
+            return Err(Exception::throw_type(
+                ctx,
+                &format!("{what} is out of range for an unsigned long"),
+            ));
+        }
+        Ok(number as u32)
+    }
+
     /// `long`: the same conversion reinterpreted as two's complement.
     fn long<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<i32> {
         Self::unsigned_long(ctx, value).map(|value| value as i32)

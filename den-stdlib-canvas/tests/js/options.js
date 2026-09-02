@@ -90,3 +90,13 @@ await assertRejects(() => createImageBitmap(source, "options"), TypeError);
 for (const key of ["imageOrientation", "premultiplyAlpha", "colorSpaceConversion", "resizeQuality"]) {
   await assertRejects(() => createImageBitmap(source, { [key]: null }), TypeError);
 }
+
+// resizeWidth and resizeHeight are [EnforceRange] unsigned long, so an
+// out-of-range value is a TypeError instead of wrapping modulo 2^32.
+for (const key of ["resizeWidth", "resizeHeight"]) {
+  for (const bad of [-1, 2 ** 32, 2 ** 32 + 2, Infinity, NaN]) {
+    await assertRejects(() => createImageBitmap(source, { [key]: bad }), TypeError);
+  }
+  // null is present, converts to 0, and is therefore an empty resize target.
+  await assertRejects(() => createImageBitmap(source, { [key]: null }), DOMException);
+}
