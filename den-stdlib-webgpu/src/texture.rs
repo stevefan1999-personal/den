@@ -489,15 +489,7 @@ impl GPUTexture {
                 array_layer_count,
                 swizzle: wgpu::TextureComponentSwizzle::default(),
             };
-            crate::catch_gpu(&self.errors, || self.inner.create_view(&view_desc)).map_or_else(
-                || {
-                    (
-                        self.fallbacks.view(self.samples, self.usage, self.format),
-                        true,
-                    )
-                },
-                |inner| (inner, false),
-            )
+            (self.inner.create_view(&view_desc), false)
         };
         Ok(GPUTextureView {
             inner,
@@ -831,19 +823,17 @@ impl GPUTexture {
             {
                 native_view_formats.push(tex_format);
             }
-            crate::catch_gpu(errors, || {
-                device.create_texture(&wgpu::TextureDescriptor {
-                    label: (!label.is_empty()).then_some(label.as_str()),
-                    size,
-                    mip_level_count: mip_levels,
-                    sample_count: if msaa_ok { 4 } else { 1 },
-                    dimension,
-                    format: tex_format,
-                    usage,
-                    view_formats: &native_view_formats,
-                })
-            })
-            .map_or_else(|| (fallbacks.sampled.clone(), true), |inner| (inner, false))
+            let inner = device.create_texture(&wgpu::TextureDescriptor {
+                label: (!label.is_empty()).then_some(label.as_str()),
+                size,
+                mip_level_count: mip_levels,
+                sample_count: if msaa_ok { 4 } else { 1 },
+                dimension,
+                format: tex_format,
+                usage,
+                view_formats: &native_view_formats,
+            });
+            (inner, false)
         };
         Ok(Self {
             destroyed: Rc::new(Cell::new(false)),
@@ -1030,8 +1020,7 @@ pub fn create_sampler<'js>(
             border_color: None,
         }
     };
-    let inner = crate::catch_gpu(errors, || device.create_sampler(&sampler_descriptor))
-        .unwrap_or_else(|| device.create_sampler(&wgpu::SamplerDescriptor::default()));
+    let inner = device.create_sampler(&sampler_descriptor);
     Ok(GPUSampler {
         inner,
         invalid,

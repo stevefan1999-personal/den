@@ -2180,43 +2180,32 @@ pub fn create_pipeline<'js>(
     }
     let bgls = crate::bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
     device.errors.push(crate::GPUErrorKind::Validation);
-    let (inner, gpu_failed) = crate::catch_gpu(&device.errors, || {
-        let pipeline = device
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: (!label.is_empty()).then_some(label.as_str()),
-                layout: layout.as_ref(),
-                vertex: wgpu::VertexState {
-                    module:              &vertex_module,
-                    entry_point:         vertex_entry.as_deref(),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants:                        &vertex_constant_pairs,
-                        zero_initialize_workgroup_memory: true,
-                    },
-                    buffers:             &vertex_buffers,
+    let inner = device
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: (!label.is_empty()).then_some(label.as_str()),
+            layout: layout.as_ref(),
+            vertex: wgpu::VertexState {
+                module:              &vertex_module,
+                entry_point:         vertex_entry.as_deref(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants:                        &vertex_constant_pairs,
+                    zero_initialize_workgroup_memory: true,
                 },
-                primitive,
-                depth_stencil,
-                multisample,
-                fragment,
-                multiview_mask: None,
-                cache: None,
-            });
-        let _ = device.device.poll(wgpu::PollType::wait_indefinitely());
-        pipeline
-    })
-    .map_or_else(
-        || (device.fallbacks.render_pipeline.clone(), true),
-        |inner| (inner, false),
-    );
-    let scoped = device.errors.pop();
-    if let Some(error) = scoped.as_ref() {
-        device.errors.capture(crate::GPUErrorData {
-            kind:    crate::GPUErrorKind::Validation,
-            message: error.message.clone(),
+                buffers:             &vertex_buffers,
+            },
+            primitive,
+            depth_stencil,
+            multisample,
+            fragment,
+            multiview_mask: None,
+            cache: None,
         });
+    let scoped = device.errors.pop().unwrap_or_default();
+    let invalid = scoped.is_some();
+    if let Some(error) = scoped {
+        device.errors.capture(error);
     }
-    let invalid = gpu_failed || scoped.is_some();
     Ok((
         GPURenderPipeline {
             inner,

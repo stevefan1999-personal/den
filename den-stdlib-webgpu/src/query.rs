@@ -87,19 +87,10 @@ impl GPUQuerySet {
                 count: 1,
             })
         } else {
-            crate::catch_gpu(errors, || {
-                device.create_query_set(&wgpu::QuerySetDescriptor {
-                    label: (!label.is_empty()).then_some(label.as_str()),
-                    ty,
-                    count: gpu_count,
-                })
-            })
-            .unwrap_or_else(|| {
-                device.create_query_set(&wgpu::QuerySetDescriptor {
-                    label: None,
-                    ty:    wgpu::QueryType::Occlusion,
-                    count: 1,
-                })
+            device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: (!label.is_empty()).then_some(label.as_str()),
+                ty,
+                count: gpu_count,
             })
         };
         Ok(Self {

@@ -573,35 +573,34 @@ pub(crate) struct GPUErrorData {
     pub(crate) message: String,
 }
 
-struct ErrorScopeState {
-    error:  Option<GPUErrorData>,
-    filter: GPUErrorKind,
+struct ErrorScope {
+    filter:      GPUErrorKind,
+    first_error: Option<GPUErrorData>,
 }
 
+/// den's own error-scope stack. wgpu's scopes are never pushed: with none
+/// active, every wgpu error reaches `on_uncaptured_error` synchronously on
+/// the calling thread, so routing it here keeps the WebGPU semantics exact.
 #[derive(Default)]
 struct ErrorRouter {
-    scopes:     Vec<ErrorScopeState>,
+    scopes:     Vec<ErrorScope>,
     uncaptured: Vec<GPUErrorData>,
-    suppress:   bool,
 }
 
 impl ErrorRouter {
     fn capture(&mut self, error: GPUErrorData) {
-        if let Some(scope) = self
+        let scope = self
             .scopes
             .iter_mut()
             .rev()
-            .find(|scope| scope.filter == error.kind)
-        {
-            if scope.error.is_none() {
-                scope.error = Some(error);
+            .find(|scope| scope.filter == error.kind);
+        match scope {
+            Some(scope) => {
+                scope.first_error.get_or_insert(error);
             }
-        } else if !self.suppress {
-            self.uncaptured.push(error);
+            None => self.uncaptured.push(error),
         }
     }
-
-    fn take_uncaptured(&mut self) -> Vec<GPUErrorData> { std::mem::take(&mut self.uncaptured) }
 }
 
 #[derive(Clone, Default)]
@@ -616,6 +615,8 @@ impl ErrorSink {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Content-timeline validation errors the safe `wgpu` crate cannot
+    /// produce (double finish, ops after end) take the same route as wgpu's.
     pub(crate) fn validation(&self, message: impl Into<String>) {
         self.capture(GPUErrorData {
             kind:    GPUErrorKind::Validation,
@@ -632,45 +633,31 @@ impl ErrorSink {
 
     pub(crate) fn capture(&self, error: GPUErrorData) { self.lock().capture(error); }
 
-    fn take_uncaptured(&self) -> Vec<GPUErrorData> { self.lock().take_uncaptured() }
+    fn take_uncaptured(&self) -> Vec<GPUErrorData> { std::mem::take(&mut self.lock().uncaptured) }
 
     pub(crate) fn push(&self, filter: GPUErrorKind) {
-        self.lock().scopes.push(ErrorScopeState {
-            error: None,
+        self.lock().scopes.push(ErrorScope {
             filter,
+            first_error: None,
         });
     }
 
-    pub(crate) fn pop(&self) -> Option<GPUErrorData> { self.lock().scopes.pop()?.error }
-
-    fn set_suppress(&self, suppress: bool) { self.lock().suppress = suppress; }
-
-    pub(crate) fn scope_has_error(&self) -> bool {
+    pub(crate) fn pop(&self) -> std::result::Result<Option<GPUErrorData>, ScopeStackEmpty> {
         self.lock()
             .scopes
-            .last()
-            .is_some_and(|scope| scope.error.is_some())
+            .pop()
+            .map(|scope| scope.first_error)
+            .ok_or(ScopeStackEmpty)
     }
 }
 
+pub(crate) struct ScopeStackEmpty;
+
 fn flush_uncaptured<'js>(device: &Class<'js, GPUDevice<'js>>, ctx: &Ctx<'js>) -> Result<()> {
-    let pending = {
-        let errors = device.borrow().errors.clone();
-        let pending = errors.take_uncaptured();
-        let mut router = errors.lock();
-        if router.scopes.is_empty() {
-            pending
-        } else {
-            for error in pending {
-                router.capture(error);
-            }
-            router.take_uncaptured()
-        }
-    };
-    for error in pending {
-        dispatch_uncaptured_error(device, ctx, error)?;
-    }
-    Ok(())
+    let pending = device.borrow().errors.take_uncaptured();
+    pending
+        .into_iter()
+        .try_for_each(|error| dispatch_uncaptured_error(device, ctx, error))
 }
 
 fn flushed<'js, T>(
@@ -1133,15 +1120,7 @@ impl<'js> GPUDevice<'js> {
             usage:              gpu_usage,
             mapped_at_creation: gpu_mapped,
         };
-        let inner = catch_gpu(&self.errors, || self.device.create_buffer(&descriptor))
-            .unwrap_or_else(|| {
-                self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label:              None,
-                    size:               4,
-                    usage:              wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            });
+        let inner = self.device.create_buffer(&descriptor);
         Ok(GPUBuffer {
             device: self.device.clone(),
             errors: self.errors.clone(),
@@ -1199,15 +1178,9 @@ impl<'js> GPUDevice<'js> {
             source: wgpu::ShaderSource::Wgsl(code.to_string().into()),
         };
         self.errors.push(GPUErrorKind::Validation);
-        let (inner, gpu_failed) = catch_gpu(&self.errors, || {
-            self.device.create_shader_module(module_descriptor)
-        })
-        .map_or_else(
-            || (self.fallbacks.shader_module.clone(), true),
-            |inner| (inner, false),
-        );
-        let scoped = self.errors.pop();
-        let invalid = gpu_failed || scoped.is_some();
+        let inner = self.device.create_shader_module(module_descriptor);
+        let scoped = self.errors.pop().unwrap_or_default();
+        let invalid = scoped.is_some();
         if let Some(error) = scoped {
             self.errors.capture(error);
         }
@@ -1270,14 +1243,11 @@ impl<'js> GPUDevice<'js> {
         let inner = if skip_bgl {
             self.fallbacks.bind_group_layout.clone()
         } else {
-            catch_gpu(&self.errors, || {
-                self.device
-                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label:   (!label.is_empty()).then_some(label.as_str()),
-                        entries: &native,
-                    })
-            })
-            .unwrap_or_else(|| self.fallbacks.bind_group_layout.clone())
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label:   (!label.is_empty()).then_some(label.as_str()),
+                    entries: &native,
+                })
         };
         Ok(GPUBindGroupLayout {
             inner,
@@ -1328,22 +1298,13 @@ impl<'js> GPUDevice<'js> {
             unaligned || too_large
         };
         let gpu_immediate = if invalid { 0 } else { immediate_size };
-        let inner = catch_gpu(&self.errors, || {
-            self.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label:              (!label.is_empty()).then_some(label.as_str()),
-                    bind_group_layouts: &borrowed,
-                    immediate_size:     gpu_immediate,
-                })
-        })
-        .unwrap_or_else(|| {
-            self.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label:              None,
-                    bind_group_layouts: &[],
-                    immediate_size:     0,
-                })
-        });
+        let inner = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label:              (!label.is_empty()).then_some(label.as_str()),
+                bind_group_layouts: &borrowed,
+                immediate_size:     gpu_immediate,
+            });
         Ok(GPUPipelineLayout {
             inner,
             device_id: self.id,
@@ -1634,26 +1595,12 @@ impl<'js> GPUDevice<'js> {
         {
             self.fallbacks.bind_group.clone()
         } else {
-            catch_gpu(&self.errors, || {
-                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label:   (!label.is_empty()).then_some(label.as_str()),
-                    layout:  &layout,
-                    entries: &native,
-                })
-            })
-            .unwrap_or_else(|| {
-                invalid = true;
-                self.fallbacks.bind_group.clone()
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:   (!label.is_empty()).then_some(label.as_str()),
+                layout:  &layout,
+                entries: &native,
             })
         };
-        let delayed = self.errors.take_uncaptured();
-        if !delayed.is_empty() {
-            invalid = true;
-            for error in delayed {
-                self.errors.capture(error);
-            }
-        }
-        invalid |= self.errors.scope_has_error();
         let fingerprints = layout_entries
             .iter()
             .map(|entry| {
@@ -1741,16 +1688,6 @@ fn record_attachment_liveness<'js>(
         used.push(attachment_destroyed(&depth, "view", ctx)?);
     }
     Ok(())
-}
-
-pub(crate) fn catch_gpu<T>(sink: &ErrorSink, operation: impl FnOnce() -> T) -> Option<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
-        Ok(value) => Some(value),
-        Err(payload) => {
-            sink.validation(panic_message(payload.as_ref()));
-            None
-        }
-    }
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -1902,16 +1839,8 @@ impl<'js> GPUDevice<'js> {
     pub fn create_compute_pipeline(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<GPUComputePipeline> {
-        self.errors.set_suppress(false);
         flushed(&this, &ctx, {
-            let (pipeline, mut invalid) = create_compute_pipeline(self, descriptor, &ctx)?;
-            let delayed = self.errors.take_uncaptured();
-            if !delayed.is_empty() {
-                invalid = true;
-                for error in delayed {
-                    self.errors.capture(error);
-                }
-            }
+            let (pipeline, invalid) = create_compute_pipeline(self, descriptor, &ctx)?;
             if invalid {
                 self.errors.validation("invalid compute pipeline");
             }
@@ -1919,78 +1848,32 @@ impl<'js> GPUDevice<'js> {
         })
     }
 
-    pub async fn create_compute_pipeline_async(
-        self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<GPUComputePipeline> {
-        self.errors.set_suppress(true);
-        let (pipeline, mut invalid) = create_compute_pipeline(&self, descriptor, &ctx)?;
-        let delayed = self.errors.take_uncaptured();
-        if !delayed.is_empty() {
-            invalid = true;
-        }
-        if invalid {
-            if !self.is_destroyed() {
-                tokio::task::yield_now().await;
-            }
-            self.errors.set_suppress(false);
-            let _ = self.errors.take_uncaptured();
-            if self.is_destroyed() {
-                return flushed(&this, &ctx, Ok(pipeline));
-            }
-            return Err(pipeline_error(&ctx, "invalid compute pipeline"));
-        }
-        self.errors.set_suppress(false);
-        flushed(&this, &ctx, Ok(pipeline))
+    pub fn create_compute_pipeline_async(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
+    ) -> Result<Promise<'js>> {
+        Self::settle_pipeline(&this, &ctx, || {
+            create_compute_pipeline(self, descriptor, &ctx)
+        })
     }
 
     pub fn create_render_pipeline(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<render::GPURenderPipeline> {
-        self.errors.set_suppress(false);
         flushed(&this, &ctx, {
-            let (pipeline, mut invalid) = render::create_pipeline(self, descriptor, &ctx)?;
-            let delayed = self.errors.take_uncaptured();
+            let (pipeline, invalid) = render::create_pipeline(self, descriptor, &ctx)?;
             if invalid {
-                for error in delayed {
-                    self.errors.capture(error);
-                }
-                self.errors.validation("invalid render pipeline");
-            } else if !pipeline.dummy() && !delayed.is_empty() {
-                invalid = true;
-                for error in delayed {
-                    self.errors.capture(error);
-                }
                 self.errors.validation("invalid render pipeline");
             }
-            let _ = invalid;
             Ok(pipeline)
         })
     }
 
-    pub async fn create_render_pipeline_async(
-        self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<render::GPURenderPipeline> {
-        self.errors.set_suppress(true);
-        let (pipeline, mut invalid) = render::create_pipeline(&self, descriptor, &ctx)?;
-        let delayed = self.errors.take_uncaptured();
-        if invalid {
-            // already invalid
-        } else if !pipeline.dummy() && !delayed.is_empty() {
-            invalid = true;
-        }
-        if invalid {
-            if !self.is_destroyed() {
-                tokio::task::yield_now().await;
-            }
-            self.errors.set_suppress(false);
-            let _ = self.errors.take_uncaptured();
-            if self.is_destroyed() {
-                return flushed(&this, &ctx, Ok(pipeline));
-            }
-            return Err(pipeline_error(&ctx, "invalid render pipeline"));
-        }
-        self.errors.set_suppress(false);
-        flushed(&this, &ctx, Ok(pipeline))
+    pub fn create_render_pipeline_async(
+        &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
+    ) -> Result<Promise<'js>> {
+        Self::settle_pipeline(&this, &ctx, || {
+            render::create_pipeline(self, descriptor, &ctx)
+        })
     }
 
     pub fn create_render_bundle_encoder(
@@ -2063,22 +1946,20 @@ impl<'js> GPUDevice<'js> {
             "internal" => GPUErrorKind::Internal,
             _ => return Err(type_error(&ctx, format!("invalid GPUErrorFilter {filter}"))),
         };
-        self.errors.lock().scopes.push(ErrorScopeState {
-            error: None,
-            filter,
-        });
+        self.errors.push(filter);
         Ok(())
     }
 
-    pub fn pop_error_scope(&self, ctx: Ctx<'js>) -> Result<Promise<'js>> {
+    pub fn pop_error_scope(
+        &self, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
+    ) -> Result<Promise<'js>> {
         let (promise, resolve, reject) = ctx.promise()?;
         if self.is_destroyed() {
             resolve.call::<_, ()>((Value::new_null(ctx.clone()),))?;
             return Ok(promise);
         }
-        let scope = self.errors.lock().scopes.pop();
-        match scope {
-            None => {
+        match self.errors.pop() {
+            Err(ScopeStackEmpty) => {
                 let error: Value = den_util::construct(
                     &ctx,
                     "DOMException",
@@ -2086,15 +1967,35 @@ impl<'js> GPUDevice<'js> {
                 )?;
                 reject.call::<_, ()>((error,))?;
             }
-            Some(ErrorScopeState { error: None, .. }) => {
-                resolve.call::<_, ()>((Value::new_null(ctx.clone()),))?;
-            }
-            Some(ErrorScopeState {
-                error: Some(error), ..
-            }) => {
-                resolve.call::<_, ()>((gpu_error_value(&ctx, error)?,))?;
-            }
+            Ok(None) => resolve.call::<_, ()>((Value::new_null(ctx.clone()),))?,
+            Ok(Some(error)) => resolve.call::<_, ()>((gpu_error_value(&ctx, error)?,))?,
         }
+        flush_uncaptured(&this.0, &ctx)?;
+        Ok(promise)
+    }
+}
+
+impl<'js> GPUDevice<'js> {
+    /// Runs `create` under a private validation scope and settles `promise`
+    /// like deno's `*_or_error` path: a captured error becomes the
+    /// `GPUPipelineError` rejection and never reaches script-visible scopes.
+    fn settle_pipeline<T: rquickjs::class::JsClass<'js> + 'js>(
+        this: &This<Class<'js, Self>>, ctx: &Ctx<'js>, create: impl FnOnce() -> Result<(T, bool)>,
+    ) -> Result<Promise<'js>> {
+        let errors = this.0.borrow().errors.clone();
+        errors.push(GPUErrorKind::Validation);
+        let created = create();
+        let captured = errors.pop().unwrap_or_default();
+        let (pipeline, invalid) = created?;
+        let (promise, resolve, reject) = ctx.promise()?;
+        match captured
+            .map(|error| error.message)
+            .or_else(|| invalid.then(|| "pipeline validation failed".to_owned()))
+        {
+            Some(message) => reject.call::<_, ()>((pipeline_error(ctx, &message)?,))?,
+            None => resolve.call::<_, ()>((Class::instance(ctx.clone(), pipeline)?,))?,
+        }
+        flush_uncaptured(&this.0, ctx)?;
         Ok(promise)
     }
 }
@@ -2192,35 +2093,24 @@ fn create_compute_pipeline<'js>(
     }
     let bgls = bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
     device.errors.push(GPUErrorKind::Validation);
-    let (inner, gpu_failed) = catch_gpu(&device.errors, || {
-        let pipeline = device
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label:               (!label.is_empty()).then_some(label.as_str()),
-                layout:              layout.as_ref(),
-                module:              &module,
-                entry_point:         entry_point.as_deref(),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants:                        &constant_pairs,
-                    zero_initialize_workgroup_memory: true,
-                },
-                cache:               None,
-            });
-        let _ = device.device.poll(wgpu::PollType::wait_indefinitely());
-        pipeline
-    })
-    .map_or_else(
-        || (device.fallbacks.compute_pipeline.clone(), true),
-        |inner| (inner, false),
-    );
-    let scoped = device.errors.pop();
-    if let Some(error) = scoped.as_ref() {
-        device.errors.capture(GPUErrorData {
-            kind:    GPUErrorKind::Validation,
-            message: error.message.clone(),
+    let inner = device
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:               (!label.is_empty()).then_some(label.as_str()),
+            layout:              layout.as_ref(),
+            module:              &module,
+            entry_point:         entry_point.as_deref(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants:                        &constant_pairs,
+                zero_initialize_workgroup_memory: true,
+            },
+            cache:               None,
         });
+    let scoped = device.errors.pop().unwrap_or_default();
+    let invalid = scoped.is_some();
+    if let Some(error) = scoped {
+        device.errors.capture(error);
     }
-    let invalid = gpu_failed || scoped.is_some();
     Ok((
         GPUComputePipeline {
             inner,
@@ -4739,20 +4629,11 @@ impl GPUPipelineError {
     }
 }
 
-fn pipeline_error(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
-    let Ok(ctor) = ctx.globals().get::<_, Constructor>("GPUPipelineError") else {
-        return type_error(ctx, message);
-    };
-    let Ok(init) = Object::new(ctx.clone()) else {
-        return type_error(ctx, message);
-    };
-    if init.set("reason", "validation").is_err() {
-        return type_error(ctx, message);
-    }
-    match ctor.construct::<_, Value>((message, init)) {
-        Ok(error) => ctx.throw(error),
-        Err(error) => error,
-    }
+fn pipeline_error<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
+    let ctor: Constructor = ctx.globals().get("GPUPipelineError")?;
+    let init = Object::new(ctx.clone())?;
+    init.set("reason", "validation")?;
+    ctor.construct((message, init))
 }
 
 fn gpu_error_value<'js>(ctx: &Ctx<'js>, error: GPUErrorData) -> Result<Value<'js>> {
