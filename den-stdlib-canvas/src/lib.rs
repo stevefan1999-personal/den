@@ -101,11 +101,11 @@ impl ColorSpace {
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct ImageData<'js> {
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     data:        TypedArray<'js, U8Clamped>,
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     width:       u32,
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     height:      u32,
     #[qjs(skip_trace)]
     color_space: ColorSpace,
@@ -200,7 +200,7 @@ impl<'js> ImageData<'js> {
         })
     }
 
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     pub const fn color_space(&self) -> &'static str { self.color_space.name() }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]

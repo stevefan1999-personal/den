@@ -52,10 +52,14 @@ clamped.data[1] = -20;
 assertEquals(clamped.data[0], 255);
 assertEquals(clamped.data[1], 0);
 
-// Accessors live on the prototype and are enumerable, per WebIDL.
-const descriptor = Object.getOwnPropertyDescriptor(ImageData.prototype, "width");
-assertEquals(typeof descriptor.get, "function");
-assertEquals(descriptor.enumerable, true);
+// Accessors live on the prototype and are enumerable and configurable, which
+// is what WebIDL requires of every interface attribute.
+for (const attribute of ["data", "width", "height", "colorSpace"]) {
+  const descriptor = Object.getOwnPropertyDescriptor(ImageData.prototype, attribute);
+  assertEquals(typeof descriptor.get, "function");
+  assertEquals(descriptor.enumerable, true);
+  assertEquals(descriptor.configurable, true);
+}
 
 // `length` is a configurable accessor on %TypedArray%.prototype, so a script
 // can replace it. The constructor must size from the view itself: a lying

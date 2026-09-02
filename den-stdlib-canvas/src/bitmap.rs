@@ -21,9 +21,9 @@ use crate::{CHANNELS, ImageData, WebIdl};
 pub struct ImageBitmap {
     #[qjs(skip_trace)]
     pixels:        Vec<u8>,
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     width:         u32,
-    #[qjs(get, enumerable)]
+    #[qjs(get, enumerable, configurable)]
     height:        u32,
     #[qjs(skip_trace)]
     premultiplied: bool,

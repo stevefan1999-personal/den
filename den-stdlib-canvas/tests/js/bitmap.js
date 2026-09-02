@@ -19,6 +19,13 @@ assertEquals(bitmap.height, 2);
 assertEquals(Object.prototype.toString.call(bitmap), "[object ImageBitmap]");
 assertEquals(read(bitmap), Array.from(source.data));
 
+// WebIDL interface attributes are enumerable and configurable.
+for (const attribute of ["width", "height"]) {
+  const descriptor = Object.getOwnPropertyDescriptor(ImageBitmap.prototype, attribute);
+  assertEquals(descriptor.enumerable, true);
+  assertEquals(descriptor.configurable, true);
+}
+
 // An ImageBitmap is itself a source, and copying it is lossless.
 const copy = await createImageBitmap(bitmap);
 assertEquals(read(copy), Array.from(source.data));
