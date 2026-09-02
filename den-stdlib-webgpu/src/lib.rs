@@ -649,10 +649,7 @@ impl<'js> GPUAdapter<'js> {
     fn from_inner(ctx: &Ctx<'js>, inner: wgpu::Adapter) -> Result<Self> {
         Ok(Self {
             features: GPUSupportedFeatures::from_features(ctx, inner.features())?,
-            limits: GPUSupportedLimits::from_limits(
-                ctx,
-                GPUSupportedLimits::grant_defaults(inner.limits()),
-            )?,
+            limits: GPUSupportedLimits::from_limits(ctx, inner.limits())?,
             info: Class::instance(ctx.clone(), GPUAdapterInfo {
                 inner: inner.get_info(),
             })?,
@@ -717,9 +714,6 @@ impl<'js> GPUAdapter<'js> {
                 "requiredFeatures contains a native-only wgpu feature",
             ));
         }
-        if self.inner.features().contains(wgpu::Features::IMMEDIATES) {
-            required_features |= wgpu::Features::IMMEDIATES;
-        }
         if !self.inner.features().contains(required_features) {
             return Err(type_error(
                 &ctx,
@@ -733,25 +727,13 @@ impl<'js> GPUAdapter<'js> {
             .transpose()?
             .flatten();
         apply_required_limits(&ctx, limits, &mut required_limits)?;
-        if required_features.contains(wgpu::Features::IMMEDIATES)
-            && required_limits.max_immediate_size == 0
-        {
-            required_limits.max_immediate_size = self.inner.limits().max_immediate_size.max(16);
-        }
-        let adapter_native = self.inner.limits();
-        let adapter_reported = GPUSupportedLimits::grant_defaults(adapter_native.clone());
-        if !required_limits.check_limits(&adapter_reported) {
-            return Err(operation_error(
-                &ctx,
-                "requiredLimits exceed the adapter's supported limits",
-            ));
-        }
-        let granted = GPUSupportedLimits::grant_defaults(required_limits);
-        let wgpu_limits = granted.clone().or_worse_values_from(&adapter_native);
+        // WebGPU ignores a request below the spec default for a maximum limit;
+        // whether the adapter can meet the rest is wgpu's answer, not den's.
+        let required_limits = required_limits.or_better_values_from(&wgpu::Limits::default());
         let request = wgpu::DeviceDescriptor {
             label: (!label.is_empty()).then_some(label.as_str()),
             required_features,
-            required_limits: wgpu_limits,
+            required_limits,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::default(),
@@ -777,7 +759,7 @@ impl<'js> GPUAdapter<'js> {
         })?;
         let (lost, resolve, _reject) = ctx.promise()?;
         let features = GPUSupportedFeatures::from_features(&ctx, device.features())?;
-        let limits = GPUSupportedLimits::from_limits(&ctx, granted)?;
+        let limits = GPUSupportedLimits::from_limits(&ctx, device.limits())?;
         let gpu_device = Class::instance(ctx.clone(), GPUDevice {
             adapter_info: self.info.clone(),
             buffer_states: Rc::new(RefCell::new(Vec::new())),

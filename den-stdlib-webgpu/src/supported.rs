@@ -128,13 +128,6 @@ impl GPUSupportedLimits {
     }
 
     pub const fn inner(&self) -> &wgpu::Limits { &self.inner }
-
-    /// WebGPU ignores a request (or adapter report) below the spec default
-    /// for a maximum limit. wgpu's Vulkan backend reports 15 inter-stage
-    /// variables because it subtracts `@builtin(position)`; core default is 16.
-    pub fn grant_defaults(limits: wgpu::Limits) -> wgpu::Limits {
-        limits.or_better_values_from(&wgpu::Limits::default())
-    }
 }
 
 macro_rules! limits_getters {
