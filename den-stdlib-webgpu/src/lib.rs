@@ -22,7 +22,10 @@ use std::{
     num::NonZeroU64,
     ops::Range,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use den_stdlib_worker::events::define_event_handler;
@@ -42,8 +45,6 @@ use crate::supported::{
 
 const MAP_READ: u32 = 1;
 const MAP_WRITE: u32 = 2;
-const WEBGPU_BUFFER_USAGE_MASK: u32 = 0x03ff;
-pub(crate) const MAX_HOST_ALLOCATION: u64 = 0x8000_0000;
 pub(crate) const JS_MAX_SAFE_INTEGER: u64 = 0x001F_FFFF_FFFF_FFFF;
 
 pub(crate) fn illegal_constructor<T>(ctx: &Ctx<'_>) -> Result<T> {
@@ -458,13 +459,6 @@ impl ErrorSink {
         });
     }
 
-    pub(crate) fn out_of_memory(&self, message: impl Into<String>) {
-        self.capture(GPUErrorData {
-            kind:    GPUErrorKind::OutOfMemory,
-            message: message.into(),
-        });
-    }
-
     pub(crate) fn capture(&self, error: GPUErrorData) { self.lock().capture(error); }
 
     fn take_uncaptured(&self) -> Vec<GPUErrorData> { std::mem::take(&mut self.lock().uncaptured) }
@@ -786,6 +780,7 @@ impl<'js> GPUAdapter<'js> {
         let limits = GPUSupportedLimits::from_limits(&ctx, granted)?;
         let gpu_device = Class::instance(ctx.clone(), GPUDevice {
             adapter_info: self.info.clone(),
+            buffer_states: Rc::new(RefCell::new(Vec::new())),
             destroyed: Rc::new(Cell::new(false)),
             device,
             errors,
@@ -839,6 +834,9 @@ impl GPUAdapterInfo {
 #[rquickjs::class(rename = "GPUDevice")]
 pub struct GPUDevice<'js> {
     adapter_info:      Class<'js, GPUAdapterInfo>,
+    /// Mapping state of every buffer created here, weakly so that a collected
+    /// `GPUBuffer` drops out; `destroy` walks it to detach mapped ranges.
+    buffer_states:     Rc<RefCell<Vec<std::rc::Weak<RefCell<BufferMapState>>>>>,
     destroyed:         Rc<Cell<bool>>,
     pub(crate) device: wgpu::Device,
     pub(crate) errors: ErrorSink,
@@ -888,9 +886,10 @@ impl<'js> GPUDevice<'js> {
     fn create_buffer_inner(&self, descriptor: Object<'js>, ctx: &Ctx<'js>) -> Result<GPUBuffer> {
         let label = label(&descriptor)?;
         let size = descriptor.get::<_, JsU64>("size")?.0;
-        let usage_bits = descriptor.get::<_, JsU32>("usage")?.0;
-        let extra_usage = usage_bits & !WEBGPU_BUFFER_USAGE_MASK != 0;
-        let usage = wgpu::BufferUsages::from_bits_truncate(usage_bits & WEBGPU_BUFFER_USAGE_MASK);
+        // Unknown usage bits reach wgpu untruncated so that it, not den,
+        // reports them; it validates the size, the map/copy combinations and
+        // the alignment too.
+        let usage = wgpu::BufferUsages::from_bits_retain(descriptor.get::<_, JsU32>("usage")?.0);
         let mapped_at_creation = descriptor
             .get::<_, Option<bool>>("mappedAtCreation")?
             .unwrap_or_default();
@@ -900,75 +899,34 @@ impl<'js> GPUDevice<'js> {
                 "mappedAtCreation buffer size must be a multiple of 4",
             ));
         }
-        let map_read_ok = wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST;
-        let map_write_ok = wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC;
-        let mut invalid = extra_usage || usage.is_empty();
-        if extra_usage {
-            self.errors
-                .validation("usage contains flags outside GPUBufferUsage");
-        }
-        if usage.is_empty() && !extra_usage {
-            self.errors.validation("usage must not be zero");
-        }
-        if usage.contains(wgpu::BufferUsages::MAP_READ) && !map_read_ok.contains(usage) {
-            self.errors
-                .validation("MAP_READ may only be combined with COPY_DST");
-            invalid = true;
-        }
-        if usage.contains(wgpu::BufferUsages::MAP_WRITE) && !map_write_ok.contains(usage) {
-            self.errors
-                .validation("MAP_WRITE may only be combined with COPY_SRC");
-            invalid = true;
-        }
-        if size > self.device.limits().max_buffer_size {
-            self.errors.validation("buffer size exceeds maxBufferSize");
-            invalid = true;
-        }
-        let over_budget = size > MAX_HOST_ALLOCATION;
-        if !invalid && over_budget {
-            self.errors
-                .out_of_memory("buffer allocation exceeds the host budget");
-        }
-        let gpu_size = if invalid || over_budget { 4 } else { size };
-        let gpu_usage = if invalid {
-            wgpu::BufferUsages::COPY_DST
+        let inner = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: (!label.is_empty()).then_some(label.as_str()),
+            size,
+            usage,
+            mapped_at_creation,
+        });
+        // A buffer whose creation failed is still mapped on the content
+        // timeline, but wgpu holds no memory for it. Probing here (the getter
+        // reports no error to the device) records which kind this is.
+        let native_map = mapped_at_creation && inner.get_mapped_range(0..size).is_ok();
+        let state = Rc::new(RefCell::new(if mapped_at_creation {
+            BufferMapState::Mapped {
+                kind:  MappingKind::Write,
+                range: 0..size,
+                views: Vec::new(),
+            }
         } else {
-            usage
-        };
-        let gpu_mapped = mapped_at_creation && !invalid && !over_budget && size > 0;
-        // Invalid mappedAtCreation buffers are still mapped in JS; the content
-        // process must not wait for GPU validation.
-        let js_mapped = mapped_at_creation && !over_budget;
-        let host_map =
-            (js_mapped && !gpu_mapped).then(|| vec![0_u8; usize::try_from(size).unwrap_or(0)]);
-        let descriptor = wgpu::BufferDescriptor {
-            label:              (!label.is_empty()).then_some(label.as_str()),
-            size:               gpu_size,
-            usage:              gpu_usage,
-            mapped_at_creation: gpu_mapped,
-        };
-        let inner = self.device.create_buffer(&descriptor);
+            BufferMapState::Unmapped
+        }));
+        self.buffer_states.borrow_mut().push(Rc::downgrade(&state));
         Ok(GPUBuffer {
             device: self.device.clone(),
             errors: self.errors.clone(),
-            host_map: Rc::new(RefCell::new(host_map)),
             inner,
-            invalid,
             label: Rc::new(RefCell::new(label)),
-            map_abort: Rc::new(Cell::new(false)),
             map_gen: Rc::new(Cell::new(0)),
-            native_mapped: Rc::new(Cell::new(gpu_mapped)),
-            size,
-            state: Rc::new(RefCell::new(if js_mapped {
-                BufferMapState::Mapped {
-                    kind:  MappingKind::Write,
-                    range: 0..size,
-                    views: Vec::new(),
-                }
-            } else {
-                BufferMapState::Unmapped
-            })),
-            usage,
+            native_map: Rc::new(Cell::new(native_map)),
+            state,
         })
     }
 
@@ -1210,6 +1168,20 @@ impl<'js> GPUDevice<'js> {
 
     pub fn destroy(&self, ctx: Ctx<'js>) -> Result<()> {
         if !self.destroyed.replace(true) {
+            // Destroying the device unmaps every buffer on it, so the
+            // ArrayBuffers handed to JS have to be detached here too.
+            for state in self.buffer_states.borrow_mut().drain(..) {
+                let Some(state) = state.upgrade() else {
+                    continue;
+                };
+                if let BufferMapState::Mapped { views, .. } =
+                    std::mem::replace(&mut *state.borrow_mut(), BufferMapState::Destroyed)
+                {
+                    for view in views {
+                        view.buffer.restore(&ctx)?.detach();
+                    }
+                }
+            }
             self.device.destroy();
             if let Some(resolve) = self.lost_resolve.borrow_mut().take() {
                 let info = Class::instance(ctx.clone(), GPUDeviceLostInfo {
@@ -1683,25 +1655,20 @@ pub struct GPUBuffer {
     #[qjs(skip_trace)]
     errors:           ErrorSink,
     #[qjs(skip_trace)]
-    host_map:         Rc<RefCell<Option<Vec<u8>>>>,
-    #[qjs(skip_trace)]
     pub(crate) inner: wgpu::Buffer,
     #[qjs(skip_trace)]
-    invalid:          bool,
-    #[qjs(skip_trace)]
     label:            Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    map_abort:        Rc<Cell<bool>>,
+    /// Bumped by every `mapAsync`, `unmap` and `destroy` so that a waiter for
+    /// a superseded map rejects with `AbortError` instead of resolving over
+    /// the state a later call installed.
     #[qjs(skip_trace)]
     map_gen:          Rc<Cell<u64>>,
+    /// Whether wgpu, and not just the content timeline, holds a mapping. They
+    /// disagree for a buffer whose creation failed with `mappedAtCreation`.
     #[qjs(skip_trace)]
-    native_mapped:    Rc<Cell<bool>>,
-    #[qjs(skip_trace)]
-    pub(crate) size:  u64,
+    native_map:       Rc<Cell<bool>>,
     #[qjs(skip_trace)]
     pub(crate) state: Rc<RefCell<BufferMapState>>,
-    #[qjs(skip_trace)]
-    usage:            wgpu::BufferUsages,
 }
 
 impl GPUBuffer {
@@ -1720,39 +1687,6 @@ impl GPUBuffer {
         }
         Ok(promise)
     }
-
-    fn reject_map_pending<'js>(&self, ctx: &Ctx<'js>, message: &str) -> Result<Promise<'js>> {
-        self.errors.validation(message);
-        self.map_abort.set(false);
-        let generation = self.map_gen.get().wrapping_add(1);
-        self.map_gen.set(generation);
-        *self.state.borrow_mut() = BufferMapState::Pending;
-        let (promise, _resolve, reject) = ctx.promise()?;
-        let abort = self.map_abort.clone();
-        let map_gen = self.map_gen.clone();
-        let state = self.state.clone();
-        let message = message.to_owned();
-        let spawn_ctx = ctx.clone();
-        ctx.spawn(async move {
-            tokio::task::yield_now().await;
-            let superseded = map_gen.get() != generation;
-            let aborted = abort.get() || superseded;
-            if !superseded && matches!(*state.borrow(), BufferMapState::Pending) {
-                *state.borrow_mut() = BufferMapState::Unmapped;
-            }
-            let name = if aborted {
-                "AbortError"
-            } else {
-                "OperationError"
-            };
-            if let Ok(error) =
-                den_util::construct::<_, Value>(&spawn_ctx, "DOMException", (message, name))
-            {
-                let _ = reject.call::<_, ()>((error,));
-            }
-        });
-        Ok(promise)
-    }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -1767,10 +1701,10 @@ impl GPUBuffer {
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
     #[qjs(get, configurable)]
-    pub const fn size(&self) -> u64 { self.size }
+    pub fn size(&self) -> u64 { self.inner.size() }
 
     #[qjs(get, configurable)]
-    pub const fn usage(&self) -> u32 { self.usage.bits() }
+    pub fn usage(&self) -> u32 { self.inner.usage().bits() }
 
     #[qjs(get, configurable)]
     pub fn map_state(&self) -> &'static str {
@@ -1800,29 +1734,34 @@ impl GPUBuffer {
         if destroyed {
             return self.reject_map(&ctx, "GPUBuffer is destroyed", false, "OperationError");
         }
-        if self.invalid {
-            return self.reject_map_pending(&ctx, "GPUBuffer is invalid");
-        }
+        // Whether the usage permits the mode is wgpu's call; the mode itself is
+        // a content-timeline check, exactly as in deno_webgpu.
         let kind = match mode.0 {
-            MAP_READ if self.usage.contains(wgpu::BufferUsages::MAP_READ) => MappingKind::Read,
-            MAP_WRITE if self.usage.contains(wgpu::BufferUsages::MAP_WRITE) => MappingKind::Write,
-            MAP_READ | MAP_WRITE => {
-                return self.reject_map_pending(&ctx, "buffer usage does not permit this map mode");
-            }
+            MAP_READ => MappingKind::Read,
+            MAP_WRITE => MappingKind::Write,
             _ => {
-                return self
-                    .reject_map_pending(&ctx, "mode must be GPUMapMode.READ or GPUMapMode.WRITE");
+                return self.reject_map(
+                    &ctx,
+                    "mode must be GPUMapMode.READ or GPUMapMode.WRITE",
+                    false,
+                    "OperationError",
+                );
             }
         };
+        let buffer_size = self.inner.size();
         let offset = offset.0.flatten().map_or(0, |value| value.0);
         let size = size
             .0
             .flatten()
-            .map_or_else(|| self.size.saturating_sub(offset), |value| value.0);
+            .map_or_else(|| buffer_size.saturating_sub(offset), |value| value.0);
         let Some(end) = offset.checked_add(size) else {
             return self.reject_map(&ctx, "mapped range overflows", false, "OperationError");
         };
-        if !offset.is_multiple_of(wgpu::MAP_ALIGNMENT) || !size.is_multiple_of(4) || end > self.size
+        // `Buffer::map_async` panics on an out-of-range slice, so the bounds
+        // have to be settled here before wgpu sees them.
+        if !offset.is_multiple_of(wgpu::MAP_ALIGNMENT)
+            || !size.is_multiple_of(4)
+            || end > buffer_size
         {
             return self.reject_map(
                 &ctx,
@@ -1832,20 +1771,12 @@ impl GPUBuffer {
             );
         }
         let (promise, resolve, reject) = ctx.promise()?;
-        if size == 0 {
-            *self.state.borrow_mut() = BufferMapState::Mapped {
-                kind,
-                range: offset..end,
-                views: Vec::new(),
-            };
-            resolve.call::<_, ()>(())?;
-            return Ok(promise);
-        }
         *self.state.borrow_mut() = BufferMapState::Pending;
         let generation = self.map_gen.get().wrapping_add(1);
         self.map_gen.set(generation);
-        self.native_mapped.set(true);
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let refused = Arc::new(AtomicBool::new(false));
+        let refused_callback = refused.clone();
         self.inner.map_async(
             match kind {
                 MappingKind::Read => wgpu::MapMode::Read,
@@ -1853,9 +1784,13 @@ impl GPUBuffer {
             },
             offset..end,
             move |result| {
+                refused_callback.store(result.is_err(), Ordering::Relaxed);
                 let _ = sender.send(result);
             },
         );
+        // wgpu runs the callback inline only when it refuses the map outright;
+        // then nothing is mapped and `unmap` must not ask it to undo one.
+        self.native_map.set(!refused.load(Ordering::Relaxed));
         let device = self.device.clone();
         let map_gen = self.map_gen.clone();
         let state = self.state;
@@ -1922,7 +1857,7 @@ impl GPUBuffer {
         let size = size
             .0
             .flatten()
-            .map_or_else(|| self.size.saturating_sub(offset), |value| value.0);
+            .map_or_else(|| self.inner.size().saturating_sub(offset), |value| value.0);
         let end = offset
             .checked_add(size)
             .ok_or_else(|| operation_error(&ctx, "mapped range overflows"))?;
@@ -1951,21 +1886,21 @@ impl GPUBuffer {
             });
             return Ok(buffer);
         }
-        let buffer = if let Some(host) = self.host_map.borrow().as_ref() {
-            let start = usize::try_from(range.start)
-                .map_err(|_error| operation_error(&ctx, "mapped range is too large"))?;
-            let end = usize::try_from(range.end)
-                .map_err(|_error| operation_error(&ctx, "mapped range is too large"))?;
-            let bytes = host
-                .get(start..end)
-                .ok_or_else(|| operation_error(&ctx, "mapped range is out of bounds"))?;
-            ArrayBuffer::new_copy(ctx.clone(), bytes)?
-        } else {
+        // Never alias wgpu's memory into JS: the view is copied out here and
+        // copied back in `unmap`. Without a wgpu mapping the content timeline
+        // still owes JS a zeroed range of the requested size.
+        let buffer = if self.native_map.get() {
             let native = self
                 .inner
                 .get_mapped_range(range.clone())
                 .map_err(|error| operation_error(&ctx, error.to_string()))?;
-            ArrayBuffer::new_copy(ctx.clone(), native.as_ref())?
+            let buffer = ArrayBuffer::new_copy(ctx.clone(), native.as_ref())?;
+            drop(native);
+            buffer
+        } else {
+            let length = usize::try_from(size)
+                .map_err(|_error| operation_error(&ctx, "mapped range is too large"))?;
+            ArrayBuffer::new_copy(ctx.clone(), vec![0_u8; length])?
         };
         views.push(MappedView {
             buffer: Persistent::save(&ctx, buffer.clone()),
@@ -1975,62 +1910,44 @@ impl GPUBuffer {
     }
 
     pub fn unmap(&self, ctx: Ctx<'_>) -> Result<()> {
-        let state = std::mem::replace(&mut *self.state.borrow_mut(), BufferMapState::Unmapped);
-        match state {
-            BufferMapState::Mapped { kind, views, .. } => {
-                let host = self.host_map.borrow_mut().take();
-                for view in views {
-                    let mut array = view.buffer.restore(&ctx)?;
-                    if host.is_none()
-                        && matches!(kind, MappingKind::Write)
-                        && let Some(bytes) = array.as_bytes().map(<[u8]>::to_vec)
-                    {
-                        self.inner
-                            .get_mapped_range_mut(view.range)
-                            .map_err(|error| operation_error(&ctx, error.to_string()))?
-                            .copy_from_slice(&bytes);
-                    }
-                    array.detach();
-                }
-                if host.is_none() {
-                    self.inner.unmap();
-                    self.native_mapped.set(false);
-                }
-                Ok(())
-            }
-            BufferMapState::Pending => {
-                self.map_abort.set(true);
-                self.map_gen.set(self.map_gen.get().wrapping_add(1));
-                if self.native_mapped.get() {
-                    self.inner.unmap();
-                    self.native_mapped.set(false);
-                }
-                Ok(())
-            }
-            BufferMapState::Unmapped => Ok(()),
-            BufferMapState::Destroyed => {
-                *self.state.borrow_mut() = BufferMapState::Destroyed;
-                Ok(())
-            }
-        }
-    }
-
-    pub fn destroy(&self, ctx: Ctx<'_>) -> Result<()> {
-        if matches!(*self.state.borrow(), BufferMapState::Destroyed) {
-            return Ok(());
-        }
-        let state = std::mem::replace(&mut *self.state.borrow_mut(), BufferMapState::Destroyed);
-        if matches!(state, BufferMapState::Pending) {
-            self.map_abort.set(true);
-            self.map_gen.set(self.map_gen.get().wrapping_add(1));
-        }
-        if let BufferMapState::Mapped { views, .. } = state {
+        let destroyed = matches!(*self.state.borrow(), BufferMapState::Destroyed);
+        let previous = std::mem::replace(&mut *self.state.borrow_mut(), BufferMapState::Unmapped);
+        if let BufferMapState::Mapped { kind, views, .. } = previous {
             for view in views {
                 let mut array = view.buffer.restore(&ctx)?;
+                let written = (matches!(kind, MappingKind::Write) && self.native_map.get())
+                    .then(|| array.as_bytes().map(<[u8]>::to_vec))
+                    .flatten()
+                    .filter(|bytes| !bytes.is_empty());
+                if let Some(bytes) = written {
+                    self.inner
+                        .get_mapped_range_mut(view.range)
+                        .map_err(|error| operation_error(&ctx, error.to_string()))?
+                        .copy_from_slice(&bytes);
+                }
                 array.detach();
             }
         }
-        self.host_map.borrow_mut().take();
+        // A pending map is cancelled by the generation bump.
+        self.map_gen.set(self.map_gen.get().wrapping_add(1));
+        if self.native_map.replace(false) {
+            self.inner.unmap();
+        }
+        if destroyed {
+            *self.state.borrow_mut() = BufferMapState::Destroyed;
+        }
+        Ok(())
+    }
+
+    pub fn destroy(&self, ctx: Ctx<'_>) -> Result<()> {
+        let previous = std::mem::replace(&mut *self.state.borrow_mut(), BufferMapState::Destroyed);
+        if let BufferMapState::Mapped { views, .. } = previous {
+            for view in views {
+                view.buffer.restore(&ctx)?.detach();
+            }
+        }
+        self.map_gen.set(self.map_gen.get().wrapping_add(1));
+        self.native_map.set(false);
         self.inner.destroy();
         Ok(())
     }
@@ -2085,21 +2002,6 @@ impl<'js> GPUQueue<'js> {
         data_offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow();
-        if matches!(*buffer.state.borrow(), BufferMapState::Destroyed) {
-            self.errors.validation("GPUBuffer is destroyed");
-            return self.flush(&ctx);
-        }
-        if !matches!(*buffer.state.borrow(), BufferMapState::Unmapped) {
-            self.errors.validation("GPUBuffer is mapped");
-        }
-        if !buffer.usage.contains(wgpu::BufferUsages::COPY_DST) {
-            self.errors
-                .validation("buffer does not have COPY_DST usage");
-        }
-        if !buffer_offset.0.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) {
-            self.errors
-                .validation("bufferOffset must be a multiple of 4");
-        }
         let element_size = typed_array_element_size(&ctx, &data)?;
         let bytes = BufferSource::from_js(&ctx, data)?.into_bytes();
         let start = data_offset
@@ -2120,24 +2022,14 @@ impl<'js> GPUQueue<'js> {
         let end = start
             .checked_add(length)
             .ok_or_else(|| operation_error(&ctx, "data range overflows"))?;
-        if end > bytes.len() as u64 || !length.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) {
-            return Err(operation_error(
-                &ctx,
-                "data range must be in bounds and a multiple of 4 bytes",
-            ));
-        }
-        if buffer_offset
-            .0
-            .checked_add(length)
-            .is_none_or(|end| end > buffer.size)
-        {
-            self.errors
-                .validation("destination buffer range is out of bounds");
-            return self.flush(&ctx);
-        }
-        let Some(data) = bytes.get(start as usize..end as usize) else {
-            self.errors.validation("data range is out of bounds");
-            return self.flush(&ctx);
+        // The data range is the only content-timeline check; the destination
+        // range, usage and map state are wgpu's to validate.
+        let Some(data) = usize::try_from(start)
+            .ok()
+            .zip(usize::try_from(end).ok())
+            .and_then(|(start, end)| bytes.get(start..end))
+        else {
+            return Err(operation_error(&ctx, "data range is out of bounds"));
         };
         self.inner
             .write_buffer(&buffer.inner, buffer_offset.0, data);
