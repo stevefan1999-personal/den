@@ -335,6 +335,15 @@ pub(crate) fn data_window<'js>(
         }
         None => (bytes.len() as u64).saturating_sub(start),
     };
+    // Both destinations copy in 4-byte units (`COPY_BUFFER_ALIGNMENT` and
+    // `IMMEDIATE_DATA_ALIGNMENT`), and the spec makes that a content-timeline
+    // check rather than a validation error.
+    if !length.is_multiple_of(4) {
+        return Err(operation_error(
+            ctx,
+            "data size in bytes is not a multiple of 4",
+        ));
+    }
     let end = start
         .checked_add(length)
         .ok_or_else(|| operation_error(ctx, "data range overflows"))?;
