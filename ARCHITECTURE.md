@@ -98,10 +98,41 @@ APIs extend worker-owned event classes. WebGPU is evaluated after workers so
 `den:webgpu` is a native rquickjs slice of WebGPU (adapter, device, buffers,
 textures, samplers, query sets, WGSL compute and render pipelines, bind groups,
 command encoding, mapping and error scopes). Canvas, surfaces and Deno's BYOW
-window-handle bridge are out of scope: den has no host-owned surface. The
-public `wgpu` crate owns validation; mapped buffers are copy-in/copy-out
-`ArrayBuffer`s detached on `unmap`. `DEN_WEBGPU_BACKEND` (or
-`DENO_WEBGPU_BACKEND`) selects backends; `noop` is the hermetic test backend.
+window-handle bridge are out of scope: den has no host-owned surface.
+
+The crate is a thin wrapper over the safe `wgpu` crate, shaped after
+[deno_webgpu](https://github.com/gfx-rs/wgpu/tree/trunk/deno_webgpu). wgpu and
+wgpu-core own every device-timeline validation; den performs only the
+content-timeline checks the specification places in the binding layer, which
+are the WebIDL coercions, the `TypeError`s for feature-gated formats and
+malformed dictionaries, the `RangeError` for a `mappedAtCreation` size that is
+not a multiple of four, and the `OperationError`s for `mapAsync`,
+`getMappedRange` and the `writeBuffer` / `setImmediates` data windows. Objects
+whose creation failed are kept and used exactly like valid ones: wgpu registers
+an invalid handle and reports a validation error on every later use, so den has
+no fallback or dummy resources.
+
+Errors reach script through one scope stack in the crate. den never pushes a
+wgpu error scope; the `on_uncaptured_error` handler, installed before any
+resource exists on the device, routes each error to the innermost matching
+`pushErrorScope`, and anything uncaptured is dispatched as a
+`GPUUncapturedErrorEvent` after the JS call returns. Mapped buffers are
+copy-in/copy-out `ArrayBuffer`s detached on `unmap`; `ArrayBuffer::new` is
+never used because it double-frees under this rquickjs fork.
+
+wgpu is pinned to a trunk revision rather than the 30.0.1 release. That release
+panics through `handle_error_fatal` when `RenderBundleEncoder::finish` fails,
+resolves render-bundle commands from ids that the JS garbage collector may
+already have freed, and ships a naga `ImmediateSlots::from_range` shift
+overflow. Trunk fixes all three: bundle commands hold `Arc` references taken at
+call time, which is why den can record bundles natively while retaining the
+handles it passes for the encoder's lifetime.
+
+Two behaviours are limited by the safe wgpu API rather than by den.
+`RenderBundleEncoder` exposes no debug-group methods even though wgpu-core
+records and validates them, so the bundle debug methods are inert. And
+`set_vertex_buffer` panics on a zero-length slice, so a zero-size vertex
+binding unbinds the slot instead of binding an empty range.
 
 Official WebGPU CTS files live in [`vendor/cts`](vendor/cts) (`src/webgpu/**/*.spec.ts`).
 The harness is [`den-stdlib-webgpu/tests/cts.rs`](den-stdlib-webgpu/tests/cts.rs):
@@ -109,178 +140,11 @@ one nextest test per official spec file, sources never rewritten. TypeScript is
 transpiled into `target/cts-js/`. Canvas/DOM/worker suites are registered then
 `#[ignore]`d with a skip reason, matching the other official suites. Run CTS
 with `cargo nextest run --profile cts` so spec files execute one at a time:
-each file owns a wgpu instance, and AllFeaturesMaxLimits cases would otherwise
-allocate adapter-max textures in parallel and OOM the host. Allocations above
-a 2 GiB host budget become `GPUOutOfMemoryError` without asking the driver for
-the full size. `createTexture` preflights WebGPU validation (MSAA vs
-`STORAGE_BINDING`, size limits, mip counts, format/dimension) and never passes
-an invalid descriptor to wgpu: Vulkan SIGSEGVs on combos such as sampleCount 4
-plus `STORAGE_BINDING` instead of returning `GPUValidationError`. Invalid or
-over-budget textures become a 1×1 `rgba8unorm` dummy; the JS `GPUTexture`
-still reports the requested descriptor. Invalid (`is_dummy`) textures, views and
-buffers inject `GPUValidationError` on `createView` / `createBindGroup`. Destroyed
-objects stay valid JS handles: those calls must not emit validation (CTS
-`resource_state` / `createView.texture_state` only wrap `invalid`), so bind-group
-creation substitutes a live dummy wgpu resource instead of the destroyed handle.
-Each `GPUDevice` owns one shared fallback sampled/MSAA/storage texture, one
-uniform/storage buffer, one empty bind group, one dummy shader module, and one
-dummy compute/render pipeline. Invalid GPUTextures and invalid pipelines clone
-those handles; `destroy()` on a dummy must not call `inner.destroy()`. Per-object
-dummies made `createBindGroup` RSS climb by tens of GiB.
-The CTS runner allocates one `Logger` per case, sets
-`maxSubcasesInFlight` to 1, and replaces the pooled device every 16 cases.
-It hides the suite's `gc()` (CTS cadence retains too much) and instead
-calls the runtime `gc()` after every case so QuickJS drops GPUBindGroup
-and bundle objects; without that drain, `setBindGroup` cartesian
-render-bundle cases SIGSEGV in `free_object`. The harness also sets a
-512 MiB QuickJS heap
-limit so a cartesian spec fails that test instead of OOMing the host. Do not
-raise the GC threshold: native wgpu textures live until JS GC, and a 32 MiB
-threshold let RSS climb by tens of GiB during `createBindGroup`.
-CTS defaults to 100 in-flight subcases; that cartesian fan-out retained
-every `createTexture` subcase and SIGSEGV'd QuickJS `free_object`. Explicit
-`gc()` plus thousands of `GPUTexture` class instances asserted in
-`free_zero_refcount`. Never batch `createTexture` / `createView` with other
-specs: those files alone can pin gigabytes of dummy textures.
-Native `setPipeline` / `setVertexBuffer` / `draw` run only for a live
-(non-dummy) pipeline that needs no bind groups and no immediate data:
-wgpu `set_bind_group` of `GPUBindGroup.inner` corrupts QuickJS, and
-`RenderBundleEncoder::finish` fatals on a worker thread if the native
-encoder is invalid. Valid bundles record those commands in software and
-replay them onto the render pass at `executeBundles` so pass scissor,
-stencil reference and viewport apply (bundles have no setters for those).
-Software still injects bind-group / immediate /
-occlusion-query validation (`beginOcclusionQuery` without a queryset,
-wrong type, OOB index, nesting, duplicate index, unbalanced end).
-Native occlusion begin/end run only when the pass has a live occlusion
-queryset. Destroyed query sets stay encode-valid and fail at submit.
-A command encoder encodes at most 256 native compute/render passes:
-radv rejects a command stream with tens of thousands of timestamp
-passes (`timestampQuery` 65536). Extra passes stay software-valid.
-Pipeline creation preflights WGSL entry points, pipeline-overridable
-constants, bind-group layout vs shader binding class (including texture
-sample type/dimension and storage-texture access), render-pipeline
-state that naga/wgpu would reject after the JS call (`@builtin(frag_depth)`
-without a depth aspect, depth bias on non-triangle topology, strip index
-format, unclipped depth, vertex-buffer limits, inter-stage locations),
-and skips wgpu when the descriptor is already invalid: delayed
-`on_uncaptured_error` from naga/wgpu otherwise leaks after the JS call
-returns. Auto-layout pipelines whose WGSL uses `texture_storage_` skip
-wgpu create (and skip native bind-group-layout synthesis): wgpu leftover
-`create_bind_group_layout` for `read_write` non-r32 formats and vertex
-writable storage otherwise fires after the JS call. wgpu 30 has no `Snorm10_10_10_2`; `snorm10-10-10-2` maps to the
-packed unorm layout of the same size so CTS validation does not TypeError. Constant record keys
-are read as JS strings (NUL-preserving); rquickjs `Atom::to_string`
-truncates at embedded NUL and would treat `'c0\0'` as `c0`. `@id(N)
-override name` is keyed only by `N`, not `name`. NaN/Inf constant values
-throw `TypeError`. `beginComputePass` / `beginRenderPass` timestampWrites
-that use an invalid query set, a non-timestamp query, a mismatched device,
-or an OOB/duplicate index mark the encoder invalid and omit the writes
-from the native pass; the `GPUValidationError` is injected at
-`encoder.finish()`, which is what CTS wraps. Beginning a second pass
-while one is open also marks the encoder invalid and returns a dummy pass
-without calling wgpu. Ending a pass after the parent encoder is finished
-must not `Drop` the native pass (that double-ends and leftover-errors).
-`clearBuffer` records mapping liveness and injects usage/range errors at
-`finish()`, destroyed buffers at `queue.submit()`. `setPipeline` with an
-invalid or device-mismatched pipeline, `dispatchWorkgroups` over the
-per-dimension limit, and `dispatchWorkgroupsIndirect` with an invalid
-buffer/usage/offset mark the encoder invalid and skip wgpu; destroyed
-indirect buffers fail at `queue.submit()`. The same skip-and-inject-at-finish
-pattern applies to `setVertexBuffer` / `setIndexBuffer` (slot, usage,
-alignment, range, device mismatch) and `copyTextureToTexture` (invalid
-at finish, destroyed at submit). Indexed draws that overflow `u32` or
-exceed the bound index range skip wgpu. `drawIndirect` /
-`drawIndexedIndirect` are software-validated and skip native wgpu:
-wgpu 30 panics `Cannot get non-existent resource RenderPipelineId`
-on a worker thread when a pipeline handle is already gone, which
-leaves extra JS error scopes. No-op fragment shaders (`@fragment fn main() {}`)
-skip wgpu pipeline creation for the same reason (CTS `createNoOpRenderPipeline`).
-`GPURenderBundleEncoder` never records native commands (`with_encoder` is
-a no-op). wgpu 30 `RenderBundleEncoder::finish` calls `handle_error_fatal`
-on a worker thread, so finish drops the native encoder without calling
-wgpu finish. `executeBundles` software-checks device, color formats,
-depth format, sample count, and depth/stencil readonly, then skips native
-wgpu. Per-case runtime `gc()` is required so bundle/bind-group JS objects
-are actually dropped. Do not restore CTS `gc()` between subcases: that
-SIGSEGVs QuickJS `free_zero_refcount` across encoding specs. `draw.spec.ts`
-still asserts `free_zero_refcount` during the first cartesian case
-(`unused_buffer_bound`); isolate it and never batch it.
-`setBindGroup` software-validates invalid/device-mismatched groups,
-`index >= maxBindGroups`, and dynamic offsets at encode time (count,
-alignment, and `bind.offset + dynamicOffset + bindingSize <= buffer.size`).
-Dynamic-offset windows live in a thread-local table keyed by the
-fingerprint buffer pointer so `GPUBindGroup`'s JS-class layout stays
-the empirically safe field set. Extra fields, `Rc<[T]>`, nested extras,
-and large inline arrays on that class corrupt QuickJS (`free_object`).
-Native wgpu `set_bind_group` is never called. Destroyed resources are tracked for
-`queue.submit()`, and at draw/dispatch checks
-pipeline layout compatibility (empty groups ignored; auto layouts only
-match bind groups from the same auto pipeline; explicit layouts compare
-entries including visibility). Vertex-buffer OOB is CPU-validated for
-`draw` and instance-step `drawIndexed`. `setImmediates` throws
-`OperationError` for out-of-bounds or unaligned content bytes and
-injects range errors at encode. Draw/dispatch software-checks that every
-4-byte slot of each statically used `var<immediate>` (whole struct, not
-just the accessed member) was written; `executeBundles` clears the filled
-mask. Native draw/dispatch is skipped whenever the pipeline uses
-immediates, even after software `setImmediates` fills every slot, so
-wgpu leftover "missing immediate ranges" cannot fire. Filled slots
-must not mark the encoder invalid: CTS
-`pipeline_immediate:required_slots_set` expects a valid compute pass
-when every required slot was written. Pipeline layout vs shader binding
-types are checked only for resources statically used by that pipeline
-stage (naga global use on the matching entry point). A shared module
-with compute+vertex+fragment entries must not invalidate the vertex
-stage for fragment-only bindings. An unused `@group` declaration does
-not invalidate `create*Pipeline`. Color-target formats that require an
-unenabled feature are a WebIDL `TypeError`, not `GPUValidationError`.
-`createView({ usage })` must be a subset of the texture's usage.
-Buffer↔texture copies validate mapped buffers at encode, destroyed
-buffers at submit, and skip native wgpu for invalid/destroyed/mapped
-handles. Invalid `create*PipelineAsync` yields once, then resolves
-with a dummy if the device was lost in the meantime (CTS device_lost).
-`GPURenderBundleEncoder.finish` on an already-finished encoder injects
-validation and returns a dummy bundle; it must not throw
-`InvalidStateError` (CTS device_lost double-finish).
-Auto-layout bind groups include only naga-statically-used resources.
-Render/compute passes track bind-group texture subresource usage
-(via the bind-group TLS extras table, not extra JS-class fields) by
-kind (attachment / sampled / storage) and aspect. Depth-stencil
-attachments record depth and stencil separately so a read-only aspect
-may share a subresource with a sampled bind group of that aspect.
-wgpu 30 still records `DEPTH_STENCIL_WRITE` unless both aspects are
-read-only, so native `setBindGroup` is skipped when that leftover
-would fire even if the sampled aspect is spec-valid. Overlapping
-read+write, attachment+storage, or compute storage write+write
-aliasing still invalidate the encoder at pass end.
-`GPUAdapter`/`GPUDevice` limits grant at least the WebGPU core defaults
-(`Limits::or_better_values_from`): wgpu's Vulkan backend reports 15
-`maxInterStageShaderVariables` after subtracting `@builtin(position)`,
-while core default is 16. Native wgpu is capped to the adapter and
-skipped when a pipeline is valid at the granted limit but over wgpu's
-native inter-stage count. WGSL `texture_external` is valid at
-shader and pipeline creation: skip wgpu (naga has no external textures)
-and return a live dummy, without injecting. Local CTS runs should kill
-the spec process if RSS exceeds 20 GiB so the host OOM killer cannot
-take the whole tmux session.
-`createView` passes wgpu `format: None` when the JS descriptor omits
-`format`, so depth/stencil `aspect: "depth-only"` / `"stencil-only"`
-views resolve to wgpu's aspect-specific format. Passing the combined
-texture format with a single aspect leftover-errors
-(`Depth24PlusStencil8` is not an aspect-specific view format).
-Pipeline-overridable constants without defaults are required only for
-the entry point that uses them: a shared vertex+fragment module may
-leave fragment-only overrides out of `vertex.constants`.
-Fragment builtin / color-IO preflight is entry-point-specific so a
-module that also contains `@builtin(sample_mask)` outputs does not
-dummy an alpha-to-coverage pipeline that uses a different entry.
-Attachment `view` / `resolveTarget` accept `GPUTexture` or
-`GPUTextureView` (WebGPU allows both). Timestamp query sets without
-the `timestamp-query` feature throw `TypeError`. naga 30 panics on
-immediate structs larger than 64 4-byte slots (`1 << lo` overflow);
-those shaders skip native wgpu and size-check in software.
-Transient textures keep `viewFormats` empty.
+each file owns a wgpu instance, and running the whole tree in parallel exhausts
+host memory. Measure against
+[`cts_runner/test.lst`](https://github.com/gfx-rs/wgpu/blob/trunk/cts_runner/test.lst)
+on a real adapter; the `noop` backend performs no copies and cannot run
+indirect draws, so it is a smoke test, not conformance parity.
 
 The loader chain is:
 
