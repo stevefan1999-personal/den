@@ -9,7 +9,7 @@ use rquickjs::{
     prelude::{Rest, This},
 };
 
-use crate::{CHANNELS, ColorSpace, ImageData, WebIdl};
+use crate::{CHANNELS, ImageData, WebIdl};
 
 /// `ImageBitmap`: an immutable straight-or-premultiplied RGBA8 rectangle.
 ///
@@ -26,8 +26,6 @@ pub struct ImageBitmap {
     #[qjs(get, enumerable)]
     height:        u32,
     #[qjs(skip_trace)]
-    color_space:   ColorSpace,
-    #[qjs(skip_trace)]
     premultiplied: bool,
 }
 
@@ -42,7 +40,7 @@ impl ImageBitmap {
 
     /// Detach the bitmap. The spec then reports zero for both dimensions, so
     /// dropping the pixels is all it takes.
-    pub fn close(&mut self) { *self = Self::straight(Vec::new(), 0, 0, ColorSpace::Srgb); }
+    pub fn close(&mut self) { *self = Self::straight(Vec::new(), 0, 0); }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
     pub const fn to_string_tag() -> &'static str { "ImageBitmap" }
@@ -56,14 +54,11 @@ impl ImageBitmap {
     /// `Symbol.for("Deno_bitmapData")`.
     pub const BITMAP_DATA: &'static str = "den.bitmapData";
 
-    pub(crate) const fn straight(
-        pixels: Vec<u8>, width: u32, height: u32, color_space: ColorSpace,
-    ) -> Self {
+    pub(crate) const fn straight(pixels: Vec<u8>, width: u32, height: u32) -> Self {
         Self {
             pixels,
             width,
             height,
-            color_space,
             premultiplied: false,
         }
     }
@@ -174,7 +169,6 @@ impl ImageBitmap {
                 .cropped(ctx, left, top, width, height)?
                 .resized(ctx, output_width, output_height, options.quality)?
                 .flipped(options.flip_y)
-                .converted(options.convert_to_srgb)
                 .with_alpha(options.premultiply_alpha),
         )
     }
@@ -344,20 +338,6 @@ impl ImageBitmap {
         Self { pixels, ..self }
     }
 
-    /// `colorSpaceConversion: "default"` means "give me sRGB". With no codec
-    /// there is no embedded ICC profile to honour, but an `ImageData` can
-    /// still declare display-p3, and that is one real matrix away from sRGB.
-    fn converted(mut self, to_srgb: bool) -> Self {
-        if !to_srgb || self.color_space == ColorSpace::Srgb {
-            return self;
-        }
-        for [red, green, blue, _] in self.pixels.as_chunks_mut::<CHANNELS>().0 {
-            [*red, *green, *blue] = self.color_space.encode_as_srgb([*red, *green, *blue]);
-        }
-        self.color_space = ColorSpace::Srgb;
-        self
-    }
-
     fn with_alpha(mut self, request: PremultiplyAlpha) -> Self {
         let premultiplied = match request {
             PremultiplyAlpha::Default => self.premultiplied,
@@ -404,7 +384,6 @@ enum PremultiplyAlpha {
 struct BitmapOptions {
     flip_y:            bool,
     premultiply_alpha: PremultiplyAlpha,
-    convert_to_srgb:   bool,
     resize_width:      Option<u32>,
     resize_height:     Option<u32>,
     quality:           ResizeQuality,
@@ -413,6 +392,16 @@ struct BitmapOptions {
 impl BitmapOptions {
     fn parse<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
         let options = WebIdl::dictionary(ctx, value, "createImageBitmap options")?;
+        // Without a codec there is no embedded colour profile to honour, so
+        // `colorSpaceConversion` is only validated: an unlisted value is still
+        // a TypeError, but neither listed value moves a pixel.
+        WebIdl::enumerated(
+            ctx,
+            &options,
+            "colorSpaceConversion",
+            &[("default", ()), ("none", ())],
+            (),
+        )?;
         Ok(Self {
             // "none" is the HTML spec's current spelling of "from-image";
             // Deno still rejects it.
@@ -433,13 +422,6 @@ impl BitmapOptions {
                     ("none", PremultiplyAlpha::None),
                 ],
                 PremultiplyAlpha::Default,
-            )?,
-            convert_to_srgb:   WebIdl::enumerated(
-                ctx,
-                &options,
-                "colorSpaceConversion",
-                &[("default", true), ("none", false)],
-                true,
             )?,
             resize_width:      Self::size(ctx, &options, "resizeWidth")?,
             resize_height:     Self::size(ctx, &options, "resizeHeight")?,

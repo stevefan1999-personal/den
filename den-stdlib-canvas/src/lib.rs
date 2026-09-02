@@ -75,9 +75,8 @@ impl WebIdl {
 }
 
 /// The `PredefinedColorSpace` members den can represent.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy)]
 pub enum ColorSpace {
-    #[default]
     Srgb,
     DisplayP3,
 }
@@ -85,64 +84,12 @@ pub enum ColorSpace {
 impl ColorSpace {
     const CHOICES: [(&'static str, Self); 2] =
         [("srgb", Self::Srgb), ("display-p3", Self::DisplayP3)];
-    /// Display P3 to sRGB in linear light. Both spaces share the sRGB transfer
-    /// function, so only the primaries differ and one matrix covers it.
-    const DISPLAY_P3_TO_SRGB: [[f64; 3]; 3] = [
-        [1.224_940_176_280_575_6, -0.224_940_176_280_575_6, 0.0],
-        [-0.042_056_954_789_627_8, 1.042_056_954_789_628, 0.0],
-        [
-            -0.019_637_554_781_998_8,
-            -0.078_636_077_217_415_4,
-            1.098_273_631_999_414_4,
-        ],
-    ];
-    const TRANSFER_EXPONENT: f64 = 2.4;
-    const TRANSFER_OFFSET: f64 = 0.055;
-    const TRANSFER_SLOPE: f64 = 12.92;
-    const TRANSFER_THRESHOLD: f64 = 0.040_45;
 
     const fn name(self) -> &'static str {
         match self {
             Self::Srgb => "srgb",
             Self::DisplayP3 => "display-p3",
         }
-    }
-
-    fn to_linear(value: f64) -> f64 {
-        if value <= Self::TRANSFER_THRESHOLD {
-            value / Self::TRANSFER_SLOPE
-        } else {
-            ((value + Self::TRANSFER_OFFSET) / (1.0 + Self::TRANSFER_OFFSET))
-                .powf(Self::TRANSFER_EXPONENT)
-        }
-    }
-
-    fn to_encoded(value: f64) -> f64 {
-        if value <= Self::TRANSFER_THRESHOLD / Self::TRANSFER_SLOPE {
-            value * Self::TRANSFER_SLOPE
-        } else {
-            (1.0 + Self::TRANSFER_OFFSET).mul_add(
-                value.powf(Self::TRANSFER_EXPONENT.recip()),
-                -Self::TRANSFER_OFFSET,
-            )
-        }
-    }
-
-    /// Convert one encoded RGB triple from `self` into encoded sRGB.
-    fn encode_as_srgb(self, rgb: [u8; 3]) -> [u8; 3] {
-        if self == Self::Srgb {
-            return rgb;
-        }
-        let full = f64::from(u8::MAX);
-        let linear = rgb.map(|channel| Self::to_linear(f64::from(channel) / full));
-        Self::DISPLAY_P3_TO_SRGB.map(|row| {
-            let mixed: f64 = row
-                .iter()
-                .zip(linear)
-                .map(|(weight, channel)| weight * channel)
-                .sum();
-            (Self::to_encoded(mixed.clamp(0.0, 1.0)) * full).round() as u8
-        })
     }
 }
 
@@ -305,9 +252,9 @@ impl<'js> ImageData<'js> {
     /// Straight RGBA8 copy of the pixels, or `None` once the backing buffer
     /// has been detached.
     fn snapshot(&self) -> Option<bitmap::ImageBitmap> {
-        self.data.as_bytes().map(|bytes| {
-            bitmap::ImageBitmap::straight(bytes.to_vec(), self.width, self.height, self.color_space)
-        })
+        self.data
+            .as_bytes()
+            .map(|bytes| bitmap::ImageBitmap::straight(bytes.to_vec(), self.width, self.height))
     }
 }
 
