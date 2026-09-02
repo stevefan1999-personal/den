@@ -8,7 +8,11 @@
 
 use den_util::coerce_string;
 use icu_locale::LocaleCanonicalizer;
-use icu_locale_core::Locale;
+use icu_locale_core::{
+    Locale,
+    extensions::unicode::{Value as KeywordValue, key},
+    preferences::extensions::unicode::keywords::CalendarAlgorithm,
+};
 use rquickjs::{Coerced, Ctx, Exception, FromJs as _, Object, Result, Value, prelude::Opt};
 
 /// An `Intl` option bag, read the way ECMA-402 reads one.
@@ -105,7 +109,26 @@ impl Bcp47 {
     }
 
     /// `CanonicalizeUnicodeLocaleId`, in place.
-    pub fn canonicalize(locale: &mut Locale) { Self::CANONICALIZER.canonicalize(locale); }
+    ///
+    /// ICU4X's canonicalizer rewrites the language identifier but leaves the
+    /// CLDR bcp47 *type* aliases alone; those live in the typed keyword enums,
+    /// so a `ca` value is round-tripped through one to turn `islamicc` into
+    /// `islamic-civil`.
+    ///
+    /// ponytail: `ca` is the only key whose aliases ICU4X models. `ks`, `ms`,
+    /// `tz` and the `yes`/`true` spelling still canonicalize to themselves;
+    /// they need CLDR's own alias table, not a widening of this call.
+    pub fn canonicalize(locale: &mut Locale) {
+        Self::CANONICALIZER.canonicalize(locale);
+        let keywords = &mut locale.extensions.unicode.keywords;
+        let calendar = keywords
+            .get(&key!("ca"))
+            .and_then(|value| CalendarAlgorithm::try_from(value).ok())
+            .map(KeywordValue::from);
+        if let Some(calendar) = calendar {
+            keywords.set(key!("ca"), calendar);
+        }
+    }
 
     /// `CanonicalizeUnicodeLocaleId(IsStructurallyValidLanguageTag(tag))`.
     pub fn canonical(ctx: &Ctx<'_>, tag: &str) -> Result<Locale> {
@@ -150,7 +173,11 @@ impl AvailableLocales<'_> {
 
 #[cfg(test)]
 mod tests {
-    use icu_locale_core::Locale;
+    use icu_locale_core::{
+        Locale,
+        extensions::unicode::{Value as KeywordValue, key},
+        preferences::extensions::unicode::keywords::CalendarAlgorithm,
+    };
 
     use super::AvailableLocales;
 

@@ -12,6 +12,10 @@ assertStrictEquals(new Intl.Locale("en").getTextInfo().direction, "ltr");
 assertEquals(new Intl.Locale("en-u-fw-wed").getWeekInfo().firstDay, 3);
 assertEquals(new Intl.Locale("th").getCalendars(), ["buddhist"]);
 
+// The CLDR `ca` type aliases ICU4X models, applied on canonicalization.
+assertStrictEquals(new Intl.Locale("en", { calendar: "islamicc" }).calendar, "islamic-civil");
+assertStrictEquals(new Intl.Locale("en-u-ca-ethiopic-amete-alem").calendar, "ethioaa");
+
 // An option value is a `unicode_type`, so three to eight alphanumerics.
 assertThrows(() => new Intl.Locale("en", { calendar: "ab" }), RangeError);
 assertThrows(() => new Intl.Locale("en", { calendar: "abcdefghi" }), RangeError);
