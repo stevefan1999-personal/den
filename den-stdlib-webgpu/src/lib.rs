@@ -1949,9 +1949,17 @@ impl<'js> GPUBuffer<'js> {
             drop(native);
             buffer
         } else {
+            // A buffer whose creation failed still reports its requested size,
+            // so the length here is script-chosen: reserve fallibly rather
+            // than let `alloc_zeroed` abort the process.
             let length = usize::try_from(size)
                 .map_err(|_error| operation_error(&ctx, "mapped range is too large"))?;
-            ArrayBuffer::new_copy(ctx.clone(), vec![0_u8; length])?
+            let mut zeroed = Vec::new();
+            zeroed
+                .try_reserve_exact(length)
+                .map_err(|_error| operation_error(&ctx, "mapped range is too large"))?;
+            zeroed.resize(length, 0_u8);
+            ArrayBuffer::new_copy(ctx.clone(), zeroed)?
         };
         views.push(MappedView {
             buffer: Persistent::save(&ctx, buffer.clone()),
