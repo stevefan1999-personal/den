@@ -375,7 +375,7 @@ fn apply_required_limits<'js>(
         macro_rules! u32_limit {
             ($field:ident) => {
                 limits.$field = value.try_into().map_err(|_| {
-                    Exception::throw_range(ctx, &format!("required limit {name} is too large"))
+                    operation_error(ctx, format!("required limit {name} is too large"))
                 })?
             };
         }
@@ -438,7 +438,12 @@ fn apply_required_limits<'js>(
                 u32_limit!(max_compute_workgroups_per_dimension)
             }
             "maxImmediateSize" => u32_limit!(max_immediate_size),
-            _ => return Err(type_error(ctx, format!("unknown required limit {name}"))),
+            _ => {
+                return Err(operation_error(
+                    ctx,
+                    format!("unknown required limit {name}"),
+                ));
+            }
         }
     }
     Ok(())
