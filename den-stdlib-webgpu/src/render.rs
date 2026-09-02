@@ -5,20 +5,12 @@ use rquickjs::{
 };
 
 use crate::{
-    ErrorSink, GPUBindGroup, GPUBindGroupLayout, GPUBuffer, GPUDevice, GPUPipelineLayout,
-    GPUShaderModule, JsU32, JsU64, Recorder, buffer_slice, format, illegal_constructor, label,
+    ErrorSink, GPUBindGroup, GPUBindGroupLayout, GPUBuffer, GPUDevice, JsU32, JsU64,
+    ProgrammableStage, Recorder, buffer_slice, format, illegal_constructor, label,
     query::{self, GPUQuerySet},
     texture::{GPUTexture, GPUTextureView},
     type_error,
 };
-
-struct RenderPipelineInfo {
-    dummy:           bool,
-    layout_groups:   crate::PipelineLayoutGroups,
-    empty_bgl:       wgpu::BindGroupLayout,
-    bgls:            Rc<[wgpu::BindGroupLayout]>,
-    max_bind_groups: u32,
-}
 
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderPipeline")]
@@ -26,8 +18,6 @@ pub struct GPURenderPipeline<'js> {
     device:           Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
     pub(crate) inner: wgpu::RenderPipeline,
-    #[qjs(skip_trace)]
-    info:             Rc<RenderPipelineInfo>,
     #[qjs(skip_trace)]
     pub(crate) label: Rc<RefCell<String>>,
 }
@@ -43,35 +33,12 @@ impl<'js> GPURenderPipeline<'js> {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
-    pub(crate) fn dummy(&self) -> bool { self.info.dummy }
-
     pub fn get_bind_group_layout(&self, index: JsU32, ctx: Ctx<'js>) -> Result<GPUBindGroupLayout> {
-        if index.0 >= self.info.max_bind_groups {
-            self.device
-                .borrow()
-                .errors
-                .validation("bind group layout index is out of range");
-        }
-        let entries = self
-            .info
-            .layout_groups
-            .get(index.0 as usize)
-            .cloned()
-            .unwrap_or_else(|| Rc::from(Vec::new()));
-        let inner = if !self.info.dummy && !entries.is_empty() {
-            self.inner.get_bind_group_layout(index.0)
-        } else {
-            self.info
-                .bgls
-                .get(index.0 as usize)
-                .cloned()
-                .unwrap_or_else(|| self.info.empty_bgl.clone())
-        };
+        let inner = self.inner.get_bind_group_layout(index.0);
         crate::flush_uncaptured(&self.device, &ctx)?;
         Ok(GPUBindGroupLayout {
             inner,
             label: Rc::new(RefCell::new(String::new())),
-            entries,
         })
     }
 }
@@ -594,414 +561,142 @@ pub fn new_bundle_encoder<'js>(
     })
 }
 
-pub fn create_pipeline<'js>(
-    device_class: &Class<'js, GPUDevice<'js>>, descriptor: Object<'js>, ctx: &Ctx<'js>,
-) -> Result<(GPURenderPipeline<'js>, bool)> {
-    let device = device_class.borrow();
-    let label = label(&descriptor)?;
-    let layout_value: Value = descriptor.get("layout")?;
-    let (layout, layout_id, layout_groups, layout_immediate) = if layout_value.is_undefined()
-        || layout_value
-            .as_string()
-            .map(rquickjs::String::to_string)
-            .transpose()?
+/// `GPUVertexBufferLayout` with the attribute storage wgpu's descriptor
+/// borrows.
+struct OwnedVertexBuffer {
+    array_stride: u64,
+    step_mode:    wgpu::VertexStepMode,
+    attributes:   Vec<wgpu::VertexAttribute>,
+}
+
+impl OwnedVertexBuffer {
+    fn read<'js>(buffer: &Object<'js>, ctx: &Ctx<'js>) -> Result<Self> {
+        let step_mode = match buffer
+            .get::<_, Option<String>>("stepMode")?
             .as_deref()
-            == Some("auto")
-    {
-        (
-            None,
-            device.id,
-            None,
-            device.device.limits().max_immediate_size,
-        )
-    } else {
-        let layout_js = Class::<GPUPipelineLayout>::from_js(ctx, layout_value)?;
-        let layout = layout_js.borrow();
-        (
-            Some(layout.inner.clone()),
-            layout.device_id,
-            Some(layout.groups.clone()),
-            layout.immediate_size,
-        )
-    };
-    let vertex: Object = descriptor.get("vertex")?;
-    let vertex_js = crate::class_value::<GPUShaderModule>(&vertex, "module", ctx)?;
-    let vertex_invalid = vertex_js.borrow().invalid;
-    let vertex_code = vertex_js.borrow().code.clone();
-    let vertex_id = vertex_js.borrow().device_id;
-    let vertex_module = vertex_js.borrow().inner.clone();
-    let vertex_entry = vertex.get::<_, Option<String>>("entryPoint")?;
-    let vertex_constants = format::pipeline_constants(vertex.get("constants")?, ctx)?;
-    let vertex_constant_pairs = vertex_constants
-        .iter()
-        .map(|(name, value)| (name.as_str(), *value))
-        .collect::<Vec<_>>();
-    let buffers_value: Option<Array> = vertex.get("buffers")?;
-    let mut owned_buffers = Vec::new();
-    if let Some(buffers) = buffers_value {
-        for buffer in buffers.iter::<Option<Object>>() {
-            let Some(buffer) = buffer? else {
-                owned_buffers.push(None);
-                continue;
-            };
-            let array_stride = buffer.get::<_, JsU64>("arrayStride")?.0;
-            let step_mode = match buffer
-                .get::<_, Option<String>>("stepMode")?
-                .as_deref()
-                .unwrap_or("vertex")
-            {
-                "vertex" => wgpu::VertexStepMode::Vertex,
-                "instance" => wgpu::VertexStepMode::Instance,
-                value => {
-                    return Err(type_error(
-                        ctx,
-                        format!("invalid GPUVertexStepMode {value}"),
-                    ));
-                }
-            };
-            let attributes = buffer
-                .get::<_, Array>("attributes")
-                .map_err(|_error| type_error(ctx, "vertex attributes must be an array"))?;
-            let mut native_attributes = Vec::with_capacity(attributes.len());
-            for attribute in attributes.iter::<Object>() {
+            .unwrap_or("vertex")
+        {
+            "vertex" => wgpu::VertexStepMode::Vertex,
+            "instance" => wgpu::VertexStepMode::Instance,
+            value => {
+                return Err(type_error(
+                    ctx,
+                    format!("invalid GPUVertexStepMode {value}"),
+                ));
+            }
+        };
+        let attributes = buffer
+            .get::<_, Array>("attributes")
+            .map_err(|_error| type_error(ctx, "vertex attributes must be an array"))?
+            .iter::<Object>()
+            .map(|attribute| {
                 let attribute = attribute?;
-                native_attributes.push(wgpu::VertexAttribute {
+                Ok(wgpu::VertexAttribute {
                     format:          format::vertex_format(
                         &attribute.get::<_, String>("format")?,
                         ctx,
                     )?,
                     offset:          attribute.get::<_, JsU64>("offset")?.0,
                     shader_location: attribute.get::<_, JsU32>("shaderLocation")?.0,
-                });
-            }
-            owned_buffers.push(Some((array_stride, step_mode, native_attributes)));
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            array_stride: buffer.get::<_, JsU64>("arrayStride")?.0,
+            step_mode,
+            attributes,
+        })
+    }
+
+    fn layout(&self) -> wgpu::VertexBufferLayout<'_> {
+        wgpu::VertexBufferLayout {
+            array_stride: self.array_stride,
+            step_mode:    self.step_mode,
+            attributes:   &self.attributes,
         }
     }
+}
+
+pub fn create_pipeline<'js>(
+    device_class: &Class<'js, GPUDevice<'js>>, descriptor: Object<'js>, ctx: &Ctx<'js>,
+) -> Result<GPURenderPipeline<'js>> {
+    let label = label(&descriptor)?;
+    let layout = crate::pipeline_layout(&descriptor, ctx)?;
+    let vertex: Object = descriptor.get("vertex")?;
+    let vertex_stage = ProgrammableStage::read(&vertex, ctx)?;
+    let vertex_constants = vertex_stage.constant_pairs();
+    let owned_buffers = vertex
+        .get::<_, Option<Array>>("buffers")?
+        .map(|buffers| {
+            buffers
+                .iter::<Option<Object>>()
+                .map(|buffer| {
+                    buffer?
+                        .map(|buffer| OwnedVertexBuffer::read(&buffer, ctx))
+                        .transpose()
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
     let vertex_buffers = owned_buffers
         .iter()
-        .map(|buffer| {
-            buffer.as_ref().map(|(stride, step, attributes)| {
-                wgpu::VertexBufferLayout {
-                    array_stride: *stride,
-                    step_mode:    *step,
-                    attributes:   attributes.as_slice(),
-                }
-            })
-        })
+        .map(|buffer| buffer.as_ref().map(OwnedVertexBuffer::layout))
         .collect::<Vec<_>>();
-    let primitive = primitive_state(descriptor.get("primitive")?, ctx)?;
-    let depth_stencil = depth_stencil_state(descriptor.get("depthStencil")?, ctx)?;
-    let multisample = multisample_state(descriptor.get("multisample")?, ctx)?;
     let fragment_object: Option<Object> = descriptor.get("fragment")?;
-    let fragment_js;
-    let fragment_module;
-    let fragment_entry;
-    let fragment_constants;
-    let fragment_constant_pairs;
-    let fragment_targets;
-    let mut fragment_invalid = false;
-    let mut fragment_id = device.id;
-    let mut fragment_code = None;
-    let mut write_mask_invalid = false;
-    let fragment = if let Some(fragment) = fragment_object {
-        fragment_js = crate::class_value::<GPUShaderModule>(&fragment, "module", ctx)?;
-        fragment_invalid = fragment_js.borrow().invalid;
-        fragment_code = Some(fragment_js.borrow().code.clone());
-        fragment_id = fragment_js.borrow().device_id;
-        fragment_module = fragment_js.borrow().inner.clone();
-        fragment_entry = fragment.get::<_, Option<String>>("entryPoint")?;
-        fragment_constants = format::pipeline_constants(fragment.get("constants")?, ctx)?;
-        fragment_constant_pairs = fragment_constants
-            .iter()
-            .map(|(name, value)| (name.as_str(), *value))
-            .collect::<Vec<_>>();
-        let targets = fragment
-            .get::<_, Array>("targets")
-            .map_err(|_error| type_error(ctx, "fragment targets must be an array"))?;
-        let mut native_targets = Vec::with_capacity(targets.len());
-        for target in targets.iter::<Option<Object>>() {
-            let (state, mask_invalid) = color_target(target?, ctx)?;
-            write_mask_invalid |= mask_invalid;
-            native_targets.push(state);
-        }
-        fragment_targets = native_targets;
-        Some(wgpu::FragmentState {
-            module:              &fragment_module,
-            entry_point:         fragment_entry.as_deref(),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants:                        &fragment_constant_pairs,
-                zero_initialize_workgroup_memory: true,
-            },
+    let fragment_stage = fragment_object
+        .as_ref()
+        .map(|fragment| ProgrammableStage::read(fragment, ctx))
+        .transpose()?;
+    let fragment_constants = fragment_stage
+        .as_ref()
+        .map(ProgrammableStage::constant_pairs)
+        .unwrap_or_default();
+    let fragment_targets = fragment_object
+        .as_ref()
+        .map(|fragment| {
+            fragment
+                .get::<_, Array>("targets")
+                .map_err(|_error| type_error(ctx, "fragment targets must be an array"))?
+                .iter::<Option<Object>>()
+                .map(|target| color_target(target?, ctx))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let fragment = fragment_stage.as_ref().map(|stage| {
+        wgpu::FragmentState {
+            module:              &stage.module,
+            entry_point:         stage.entry_point.as_deref(),
+            compilation_options: ProgrammableStage::compilation_options(&fragment_constants),
             targets:             &fragment_targets,
-        })
-    } else {
-        fragment_entry = None;
-        fragment_constants = Vec::new();
-        fragment_targets = Vec::new();
-        None
-    };
-    let vertex_stage_invalid = format::render_stage_invalid(
-        &vertex_code,
-        format::ShaderStage::Vertex,
-        vertex_entry.as_deref(),
-        &vertex_constants,
-    );
-    let fragment_stage_invalid = fragment_code.as_deref().is_some_and(|code| {
-        format::render_stage_invalid(
-            code,
-            format::ShaderStage::Fragment,
-            fragment_entry.as_deref(),
-            &fragment_constants,
-        )
-    });
-    let mismatched = vertex_id != device.id || layout_id != device.id || fragment_id != device.id;
-    let no_target = fragment_targets.iter().all(Option::is_none) && depth_stencil.is_none();
-    let depth_format_invalid = depth_stencil.as_ref().is_some_and(|state| {
-        !state.format.has_depth_aspect() && !state.format.has_stencil_aspect()
-    });
-    let color_format_invalid = fragment_targets.iter().any(|target| {
-        target.as_ref().is_some_and(|state| {
-            state.format.has_depth_aspect() || state.format.has_stencil_aspect()
-        })
-    });
-    let sample_invalid = !matches!(multisample.count, 1 | 4);
-    let depth_stencil_invalid = depth_stencil.as_ref().is_some_and(depth_stencil_invalid);
-    let features = device.device.features();
-    if let Some(state) = depth_stencil.as_ref()
-        && !features.contains(state.format.required_features())
-    {
-        return Err(type_error(
-            ctx,
-            "depth stencil format requires missing features",
-        ));
-    }
-    if fragment_targets
-        .iter()
-        .flatten()
-        .any(|state| !features.contains(state.format.required_features()))
-    {
-        return Err(type_error(
-            ctx,
-            "color target format requires missing features",
-        ));
-    }
-    let limits = device.reported_limits();
-    let native_limits = device.device.limits();
-    let blend_invalid = fragment_targets.iter().any(|target| {
-        target
-            .as_ref()
-            .is_some_and(|state| color_target_invalid(state, features))
-    });
-    let storage_invalid = format::storage_texture_access_unsupported(&vertex_code, features)
-        || fragment_code
-            .as_deref()
-            .is_some_and(|code| format::storage_texture_access_unsupported(code, features));
-    let frag_depth_invalid = fragment_code
-        .as_deref()
-        .is_some_and(|code| format::writes_frag_depth(code, fragment_entry.as_deref()))
-        && depth_stencil
-            .as_ref()
-            .is_none_or(|state| !state.format.has_depth_aspect());
-    let depth_bias_invalid = depth_stencil.as_ref().is_some_and(|state| {
-        let biased =
-            state.bias.constant != 0 || state.bias.slope_scale != 0.0 || state.bias.clamp != 0.0;
-        biased
-            && !matches!(
-                primitive.topology,
-                wgpu::PrimitiveTopology::TriangleList | wgpu::PrimitiveTopology::TriangleStrip
-            )
-    });
-    let strip_index_invalid = primitive.strip_index_format.is_some()
-        && !matches!(
-            primitive.topology,
-            wgpu::PrimitiveTopology::LineStrip | wgpu::PrimitiveTopology::TriangleStrip
-        );
-    let unclipped_invalid =
-        primitive.unclipped_depth && !features.contains(wgpu::Features::DEPTH_CLIP_CONTROL);
-    let a2c_count_invalid = multisample.alpha_to_coverage_enabled && multisample.count != 4;
-    let sample_mask_a2c = multisample.alpha_to_coverage_enabled
-        && fragment_code
-            .as_deref()
-            .is_some_and(|code| format::writes_sample_mask(code, fragment_entry.as_deref()));
-    let dual_src_invalid = format::writes_blend_src(fragment_code.as_deref().unwrap_or(""))
-        && !features.contains(wgpu::Features::DUAL_SOURCE_BLENDING);
-    let too_many_targets = fragment_targets.len() as u32 > limits.max_color_attachments;
-    let color_bytes_invalid = color_bytes_per_sample_invalid(
-        &fragment_targets,
-        limits.max_color_attachment_bytes_per_sample,
-    );
-    let vertex_buffers_invalid = vertex_buffers_invalid(&owned_buffers, &limits);
-    let vertex_attrs: Vec<(u32, wgpu::VertexFormat)> = owned_buffers
-        .iter()
-        .flatten()
-        .flat_map(|(_stride, _step, attributes)| {
-            attributes
-                .iter()
-                .map(|attribute| (attribute.shader_location, attribute.format))
-        })
-        .collect();
-    let vertex_io_invalid = format::vertex_inputs_invalid(&vertex_code, &vertex_attrs);
-    let inter_stage_invalid = format::inter_stage_invalid(
-        &vertex_code,
-        fragment_code.as_deref(),
-        limits.max_inter_stage_shader_variables,
-        primitive.topology == wgpu::PrimitiveTopology::PointList,
-        fragment_entry.as_deref(),
-    );
-    let skip_native_inter_stage = !inter_stage_invalid
-        && native_limits.max_inter_stage_shader_variables < limits.max_inter_stage_shader_variables
-        && format::inter_stage_invalid(
-            &vertex_code,
-            fragment_code.as_deref(),
-            native_limits.max_inter_stage_shader_variables,
-            primitive.topology == wgpu::PrimitiveTopology::PointList,
-            fragment_entry.as_deref(),
-        );
-    let naga_interp_skip = format::inter_stage_naga_skip(
-        &vertex_code,
-        fragment_code.as_deref(),
-        fragment_entry.as_deref(),
-    );
-    let fragment_io_invalid = fragment_code.as_deref().is_some_and(|code| {
-        format::fragment_color_io_invalid(
-            code,
-            &fragment_targets,
-            features,
-            fragment_entry.as_deref(),
-        )
-    });
-    let layout_mismatch = layout_groups.as_deref().is_some_and(|groups| {
-        crate::layout_shader_mismatch(&vertex_code, groups, wgpu::ShaderStages::VERTEX)
-            || fragment_code.as_deref().is_some_and(|code| {
-                crate::layout_shader_mismatch(code, groups, wgpu::ShaderStages::FRAGMENT)
-            })
-    });
-    let integer_filter = layout_groups
-        .as_deref()
-        .is_some_and(crate::layout_filtering_nonfilterable);
-    let stored_groups = layout_groups.unwrap_or_else(|| {
-        crate::auto_layout_groups(&[
-            (wgpu::ShaderStages::VERTEX, vertex_code.as_ref()),
-            (
-                wgpu::ShaderStages::FRAGMENT,
-                fragment_code.as_deref().unwrap_or(""),
-            ),
-        ])
-    });
-    let immediate_unusable = format::naga_immediate_unusable(&vertex_code)
-        || fragment_code
-            .as_deref()
-            .is_some_and(format::naga_immediate_unusable);
-    let clip_unfeatured = vertex_code.contains("clip_distances")
-        && !features.contains(wgpu::Features::CLIP_DISTANCES);
-    let immediate_over = format::immediate_byte_size(&vertex_code) > layout_immediate
-        || fragment_code
-            .as_deref()
-            .is_some_and(|code| format::immediate_byte_size(code) > layout_immediate);
-    let invalid = vertex_invalid
-        || fragment_invalid
-        || mismatched
-        || vertex_stage_invalid
-        || fragment_stage_invalid
-        || no_target
-        || depth_format_invalid
-        || color_format_invalid
-        || sample_invalid
-        || depth_stencil_invalid
-        || blend_invalid
-        || storage_invalid
-        || frag_depth_invalid
-        || depth_bias_invalid
-        || strip_index_invalid
-        || unclipped_invalid
-        || a2c_count_invalid
-        || sample_mask_a2c
-        || dual_src_invalid
-        || too_many_targets
-        || color_bytes_invalid
-        || write_mask_invalid
-        || vertex_buffers_invalid
-        || vertex_io_invalid
-        || inter_stage_invalid
-        || fragment_io_invalid
-        || layout_mismatch
-        || clip_unfeatured
-        || immediate_unusable
-        || immediate_over
-        || integer_filter;
-    let has_external = format::uses_external_texture(&vertex_code)
-        || fragment_code
-            .as_deref()
-            .is_some_and(format::uses_external_texture);
-    let no_frag_out = fragment_code
-        .as_deref()
-        .is_some_and(|code| format::fragment_has_no_color_outputs(code, fragment_entry.as_deref()));
-    let empty_bgl = device.fallbacks.bind_group_layout.clone();
-    let skip_storage = vertex_code.contains("texture_storage_")
-        || fragment_code
-            .as_deref()
-            .is_some_and(|code| code.contains("texture_storage_"));
-    let skip_immediate = vertex_code.contains("var<immediate")
-        || fragment_code
-            .as_deref()
-            .is_some_and(|code| code.contains("var<immediate"));
-    let bgls = crate::bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
-    let max_bind_groups = device.reported_limits().max_bind_groups;
-    let make = |inner: wgpu::RenderPipeline, dummy: bool| {
-        GPURenderPipeline {
-            device: device_class.clone(),
-            inner,
-            info: Rc::new(RenderPipelineInfo {
-                dummy,
-                layout_groups: stored_groups.clone(),
-                empty_bgl: empty_bgl.clone(),
-                bgls: bgls.clone(),
-                max_bind_groups,
-            }),
-            label: Rc::new(RefCell::new(label.clone())),
         }
-    };
-    if invalid
-        || has_external
-        || naga_interp_skip
-        || no_frag_out
-        || skip_storage
-        || skip_immediate
-        || skip_native_inter_stage
-    {
-        return Ok((
-            make(device.fallbacks.render_pipeline.clone(), true),
-            invalid,
-        ));
-    }
-    device.errors.push(crate::GPUErrorKind::Validation);
-    let inner = device
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: (!label.is_empty()).then_some(label.as_str()),
-            layout: layout.as_ref(),
-            vertex: wgpu::VertexState {
-                module:              &vertex_module,
-                entry_point:         vertex_entry.as_deref(),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants:                        &vertex_constant_pairs,
-                    zero_initialize_workgroup_memory: true,
+    });
+    let inner =
+        device_class
+            .borrow()
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: (!label.is_empty()).then_some(label.as_str()),
+                layout: layout.as_ref(),
+                vertex: wgpu::VertexState {
+                    module:              &vertex_stage.module,
+                    entry_point:         vertex_stage.entry_point.as_deref(),
+                    compilation_options: ProgrammableStage::compilation_options(&vertex_constants),
+                    buffers:             &vertex_buffers,
                 },
-                buffers:             &vertex_buffers,
-            },
-            primitive,
-            depth_stencil,
-            multisample,
-            fragment,
-            multiview_mask: None,
-            cache: None,
-        });
-    let scoped = device.errors.pop().unwrap_or_default();
-    let invalid = scoped.is_some();
-    if let Some(error) = scoped {
-        device.errors.capture(error);
-    }
-    Ok((make(inner, invalid), invalid))
+                primitive: primitive_state(descriptor.get("primitive")?, ctx)?,
+                depth_stencil: depth_stencil_state(descriptor.get("depthStencil")?, ctx)?,
+                multisample: multisample_state(descriptor.get("multisample")?)?,
+                fragment,
+                multiview_mask: None,
+                cache: None,
+            });
+    Ok(GPURenderPipeline {
+        device: device_class.clone(),
+        inner,
+        label: Rc::new(RefCell::new(label)),
+    })
 }
 
 fn primitive_state(object: Option<Object<'_>>, ctx: &Ctx<'_>) -> Result<wgpu::PrimitiveState> {
@@ -1046,7 +741,7 @@ fn primitive_state(object: Option<Object<'_>>, ctx: &Ctx<'_>) -> Result<wgpu::Pr
     })
 }
 
-fn multisample_state(object: Option<Object<'_>>, _ctx: &Ctx<'_>) -> Result<wgpu::MultisampleState> {
+fn multisample_state(object: Option<Object<'_>>) -> Result<wgpu::MultisampleState> {
     let Some(object) = object else {
         return Ok(wgpu::MultisampleState::default());
     };
@@ -1063,33 +758,6 @@ fn multisample_state(object: Option<Object<'_>>, _ctx: &Ctx<'_>) -> Result<wgpu:
             .get::<_, Option<bool>>("alphaToCoverageEnabled")?
             .unwrap_or_default(),
     })
-}
-
-fn depth_stencil_invalid(state: &wgpu::DepthStencilState) -> bool {
-    let has_depth = state.format.has_depth_aspect();
-    let has_stencil = state.format.has_stencil_aspect();
-    if !has_depth && !has_stencil {
-        return true;
-    }
-    let depth_write = state.depth_write_enabled == Some(true);
-    let depth_test = state
-        .depth_compare
-        .is_some_and(|compare| compare != wgpu::CompareFunction::Always);
-    if (depth_write || depth_test) && !has_depth {
-        return true;
-    }
-    if has_depth && state.depth_write_enabled.is_none() {
-        return true;
-    }
-    let stencil_default = state.stencil.front == wgpu::StencilFaceState::default()
-        && state.stencil.back == wgpu::StencilFaceState::default();
-    if !stencil_default && !has_stencil {
-        return true;
-    }
-    if has_depth && (depth_write || !stencil_default) && state.depth_compare.is_none() {
-        return true;
-    }
-    false
 }
 
 fn depth_stencil_state(
@@ -1160,9 +828,9 @@ fn depth_stencil_state(
 
 fn color_target(
     object: Option<Object<'_>>, ctx: &Ctx<'_>,
-) -> Result<(Option<wgpu::ColorTargetState>, bool)> {
+) -> Result<Option<wgpu::ColorTargetState>> {
     let Some(object) = object else {
-        return Ok((None, false));
+        return Ok(None);
     };
     let blend = object
         .get::<_, Option<Object>>("blend")?
@@ -1198,106 +866,18 @@ fn color_target(
             })
         })
         .transpose()?;
-    let write_bits = object
+    // Unknown write-mask bits are a device-timeline validation error, so
+    // they are retained for wgpu to reject (deno does the same).
+    let write_mask = object
         .get::<_, Option<JsU32>>("writeMask")?
-        .map_or(0xf, |value| value.0);
-    let mask_invalid = write_bits & !0xf != 0;
-    Ok((
-        Some(wgpu::ColorTargetState {
-            format: format::texture_format(&object.get::<_, String>("format")?, ctx)?,
-            blend,
-            write_mask: wgpu::ColorWrites::from_bits_truncate(write_bits & 0xf),
-        }),
-        mask_invalid,
-    ))
-}
-
-fn color_target_invalid(state: &wgpu::ColorTargetState, features: wgpu::Features) -> bool {
-    let format_features = state.format.guaranteed_format_features(features);
-    let not_renderable = !format_features
-        .allowed_usages
-        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
-    let blend_bad = state.blend.as_ref().is_some_and(|blend| {
-        !format_features
-            .flags
-            .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
-            || blend_component_invalid(&blend.color, features)
-            || blend_component_invalid(&blend.alpha, features)
-    });
-    not_renderable || blend_bad
-}
-
-fn blend_component_invalid(component: &wgpu::BlendComponent, features: wgpu::Features) -> bool {
-    let dual = is_dual_source(component.src_factor) || is_dual_source(component.dst_factor);
-    let dual_without_feature = dual && !features.contains(wgpu::Features::DUAL_SOURCE_BLENDING);
-    let min_max = matches!(
-        component.operation,
-        wgpu::BlendOperation::Min | wgpu::BlendOperation::Max
-    ) && (component.src_factor != wgpu::BlendFactor::One
-        || component.dst_factor != wgpu::BlendFactor::One);
-    dual_without_feature || min_max
-}
-
-const fn is_dual_source(factor: wgpu::BlendFactor) -> bool {
-    matches!(
-        factor,
-        wgpu::BlendFactor::Src1
-            | wgpu::BlendFactor::OneMinusSrc1
-            | wgpu::BlendFactor::Src1Alpha
-            | wgpu::BlendFactor::OneMinusSrc1Alpha
-    )
-}
-
-fn color_bytes_per_sample_invalid(targets: &[Option<wgpu::ColorTargetState>], limit: u32) -> bool {
-    let mut total = 0_u32;
-    targets.iter().flatten().any(|state| {
-        let Some(cost) = state.format.target_pixel_byte_cost() else {
-            return true;
-        };
-        let Some(alignment) = state.format.target_component_alignment() else {
-            return true;
-        };
-        total = total.next_multiple_of(alignment).saturating_add(cost);
-        total > limit
-    })
-}
-
-fn vertex_buffers_invalid(
-    buffers: &[Option<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)>],
-    limits: &wgpu::Limits,
-) -> bool {
-    if buffers.len() as u32 > limits.max_vertex_buffers {
-        return true;
-    }
-    let stride_invalid = buffers.iter().flatten().any(|(stride, _step, attributes)| {
-        *stride > u64::from(limits.max_vertex_buffer_array_stride)
-            || *stride % 4 != 0
-            || attributes.iter().any(|attribute| {
-                let size = attribute.format.size();
-                let contain = if *stride == 0 {
-                    u64::from(limits.max_vertex_buffer_array_stride)
-                } else {
-                    *stride
-                };
-                attribute.shader_location >= limits.max_vertex_attributes
-                    || attribute.offset % size.min(4) != 0
-                    || attribute.offset.saturating_add(size) > contain
-            })
-    });
-    if stride_invalid {
-        return true;
-    }
-    let mut locations: Vec<u32> = buffers
-        .iter()
-        .flatten()
-        .flat_map(|(_stride, _step, attributes)| {
-            attributes.iter().map(|attribute| attribute.shader_location)
-        })
-        .collect();
-    let attr_count = locations.len();
-    locations.sort_unstable();
-    locations.dedup();
-    attr_count as u32 > limits.max_vertex_attributes || locations.len() != attr_count
+        .map_or(wgpu::ColorWrites::ALL, |value| {
+            wgpu::ColorWrites::from_bits_retain(value.0)
+        });
+    Ok(Some(wgpu::ColorTargetState {
+        format: format::texture_format(&object.get::<_, String>("format")?, ctx)?,
+        blend,
+        write_mask,
+    }))
 }
 
 fn texture_or_view<'js>(value: Value<'js>, ctx: &Ctx<'js>, key: &str) -> Result<wgpu::TextureView> {

@@ -7,77 +7,6 @@ use rquickjs::{Class, Coerced, Ctx, JsLifetime, Object, Result, class::Trace, fu
 
 use crate::{GPUDevice, JsU32, JsU64, format, illegal_constructor, label, type_error};
 
-/// Placeholder wgpu handles for pipelines den still refuses to create.
-pub struct FallbackResources {
-    pub bind_group_layout: wgpu::BindGroupLayout,
-    pub shader_module:     wgpu::ShaderModule,
-    pub compute_pipeline:  wgpu::ComputePipeline,
-    pub render_pipeline:   wgpu::RenderPipeline,
-}
-
-impl FallbackResources {
-    pub(crate) fn new(device: &wgpu::Device) -> Self {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   None,
-            entries: &[],
-        });
-        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  None,
-            source: wgpu::ShaderSource::Wgsl("@compute @workgroup_size(1) fn main() {}".into()),
-        });
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               None,
-            layout:              None,
-            module:              &shader_module,
-            entry_point:         Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache:               None,
-        });
-        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  None,
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(
-                    "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }\n",
-                    "@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }\n",
-                )
-                .into(),
-            ),
-        });
-        let color = wgpu::ColorTargetState {
-            format:     wgpu::TextureFormat::Rgba8Unorm,
-            blend:      None,
-            write_mask: wgpu::ColorWrites::ALL,
-        };
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:          None,
-            layout:         None,
-            vertex:         wgpu::VertexState {
-                module:              &render_shader,
-                entry_point:         Some("vs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers:             &[],
-            },
-            primitive:      wgpu::PrimitiveState::default(),
-            depth_stencil:  None,
-            multisample:    wgpu::MultisampleState::default(),
-            fragment:       Some(wgpu::FragmentState {
-                module:              &render_shader,
-                entry_point:         Some("fs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets:             &[Some(color)],
-            }),
-            multiview_mask: None,
-            cache:          None,
-        });
-        Self {
-            bind_group_layout,
-            shader_module,
-            compute_pipeline,
-            render_pipeline,
-        }
-    }
-}
-
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUTexture")]
 pub struct GPUTexture<'js> {
@@ -90,8 +19,6 @@ pub struct GPUTexture<'js> {
     default_view:     OnceCell<wgpu::TextureView>,
     #[qjs(skip_trace)]
     label:            RefCell<String>,
-    #[qjs(skip_trace)]
-    format:           wgpu::TextureFormat,
 }
 
 impl<'js> GPUTexture<'js> {
@@ -148,7 +75,6 @@ impl<'js> GPUTexture<'js> {
             inner,
             default_view: OnceCell::new(),
             label: RefCell::new(label),
-            format,
         })
     }
 }
@@ -190,7 +116,7 @@ impl<'js> GPUTexture<'js> {
 
     #[qjs(get, configurable)]
     pub fn format(&self) -> String {
-        serde_json::to_string(&self.format)
+        serde_json::to_string(&self.inner.format())
             .unwrap_or_else(|_error| "\"unknown\"".into())
             .trim_matches('"')
             .to_owned()

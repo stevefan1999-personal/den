@@ -22,10 +22,7 @@ use std::{
     num::NonZeroU64,
     ops::Range,
     rc::Rc,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use den_stdlib_worker::events::define_event_handler;
@@ -42,8 +39,6 @@ use rquickjs::{
 use crate::supported::{
     GPUExternalTexture, GPUSupportedFeatures, GPUSupportedLimits, GPUSupportedWGSLLanguageFeatures,
 };
-
-static DEVICE_IDS: AtomicU64 = AtomicU64::new(1);
 
 const MAP_READ: u32 = 1;
 const MAP_WRITE: u32 = 2;
@@ -314,77 +309,6 @@ pub(crate) fn immediates_bytes<'js>(
         .get(start as usize..end as usize)
         .unwrap_or(&[])
         .to_vec())
-}
-
-pub(crate) type PipelineLayoutGroups = Rc<[Rc<[wgpu::BindGroupLayoutEntry]>]>;
-
-fn naga_stage_for_visibility(visibility: wgpu::ShaderStages) -> Option<wgpu::naga::ShaderStage> {
-    if visibility == wgpu::ShaderStages::COMPUTE {
-        Some(wgpu::naga::ShaderStage::Compute)
-    } else if visibility == wgpu::ShaderStages::VERTEX {
-        Some(wgpu::naga::ShaderStage::Vertex)
-    } else if visibility == wgpu::ShaderStages::FRAGMENT {
-        Some(wgpu::naga::ShaderStage::Fragment)
-    } else {
-        None
-    }
-}
-
-pub(crate) fn auto_layout_groups(stages: &[(wgpu::ShaderStages, &str)]) -> PipelineLayoutGroups {
-    let mut groups: Vec<Vec<wgpu::BindGroupLayoutEntry>> = Vec::new();
-    for &(visibility, code) in stages {
-        let used = naga_stage_for_visibility(visibility)
-            .and_then(|stage| format::statically_used_bindings(code, stage));
-        let mins = format::shader_buffer_min_sizes(code);
-        for binding in format::parse_shader_bindings(code) {
-            if used.as_ref().is_some_and(|used| {
-                !used
-                    .iter()
-                    .any(|(group, slot)| *group == binding.group && *slot == binding.binding)
-            }) {
-                continue;
-            }
-            let group = binding.group as usize;
-            if groups.len() <= group {
-                groups.resize_with(group + 1, Vec::new);
-            }
-            let mut ty = format::binding_type(binding.class);
-            if let wgpu::BindingType::Buffer {
-                min_binding_size, ..
-            } = &mut ty
-            {
-                let min = mins
-                    .iter()
-                    .find(|(shader_group, shader_binding, _min)| {
-                        *shader_group == binding.group && *shader_binding == binding.binding
-                    })
-                    .map_or(0, |(_group, _binding, min)| *min);
-                *min_binding_size = NonZeroU64::new(min);
-            }
-            let Some(group_entries) = groups.get_mut(group) else {
-                continue;
-            };
-            if let Some(existing) = group_entries
-                .iter_mut()
-                .find(|entry| entry.binding == binding.binding)
-            {
-                existing.visibility |= visibility;
-            } else {
-                group_entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: binding.binding,
-                    visibility,
-                    ty,
-                    count: None,
-                });
-            }
-        }
-    }
-    Rc::from(
-        groups
-            .into_iter()
-            .map(Rc::<[wgpu::BindGroupLayoutEntry]>::from)
-            .collect::<Vec<_>>(),
-    )
 }
 
 fn apply_required_limits<'js>(
@@ -860,14 +784,11 @@ impl<'js> GPUAdapter<'js> {
         let (lost, resolve, _reject) = ctx.promise()?;
         let features = GPUSupportedFeatures::from_features(&ctx, device.features())?;
         let limits = GPUSupportedLimits::from_limits(&ctx, granted)?;
-        let fallbacks = Rc::new(texture::FallbackResources::new(&device));
         let gpu_device = Class::instance(ctx.clone(), GPUDevice {
             adapter_info: self.info.clone(),
             destroyed: Rc::new(Cell::new(false)),
             device,
-            id: DEVICE_IDS.fetch_add(1, Ordering::Relaxed),
             errors,
-            fallbacks,
             features,
             label: Rc::new(RefCell::new(label)),
             limits,
@@ -917,18 +838,16 @@ impl GPUAdapterInfo {
 #[derive(Clone, JsLifetime)]
 #[rquickjs::class(rename = "GPUDevice")]
 pub struct GPUDevice<'js> {
-    adapter_info:         Class<'js, GPUAdapterInfo>,
-    destroyed:            Rc<Cell<bool>>,
-    pub(crate) device:    wgpu::Device,
-    pub(crate) id:        u64,
-    pub(crate) errors:    ErrorSink,
-    pub(crate) fallbacks: Rc<texture::FallbackResources>,
-    features:             Class<'js, GPUSupportedFeatures>,
-    label:                Rc<RefCell<String>>,
-    limits:               Class<'js, GPUSupportedLimits>,
-    lost:                 Promise<'js>,
-    lost_resolve:         Rc<RefCell<Option<Function<'js>>>>,
-    queue:                Class<'js, GPUQueue<'js>>,
+    adapter_info:      Class<'js, GPUAdapterInfo>,
+    destroyed:         Rc<Cell<bool>>,
+    pub(crate) device: wgpu::Device,
+    pub(crate) errors: ErrorSink,
+    features:          Class<'js, GPUSupportedFeatures>,
+    label:             Rc<RefCell<String>>,
+    limits:            Class<'js, GPUSupportedLimits>,
+    lost:              Promise<'js>,
+    lost_resolve:      Rc<RefCell<Option<Function<'js>>>>,
+    queue:             Class<'js, GPUQueue<'js>>,
 }
 
 impl<'js> Trace<'js> for GPUDevice<'js> {
@@ -965,8 +884,6 @@ enum OwnedBinding {
 
 impl<'js> GPUDevice<'js> {
     fn is_destroyed(&self) -> bool { self.destroyed.get() }
-
-    pub(crate) fn reported_limits(&self) -> wgpu::Limits { self.limits.borrow().inner().clone() }
 
     fn create_buffer_inner(&self, descriptor: Object<'js>, ctx: &Ctx<'js>) -> Result<GPUBuffer> {
         let label = label(&descriptor)?;
@@ -1055,48 +972,17 @@ impl<'js> GPUDevice<'js> {
         })
     }
 
-    fn create_shader_module_inner(
-        &self, descriptor: Object<'js>, _ctx: &Ctx<'js>,
-    ) -> Result<GPUShaderModule> {
+    fn create_shader_module_inner(&self, descriptor: Object<'js>) -> Result<GPUShaderModule> {
         let label = label(&descriptor)?;
         let code: String = descriptor.get("code")?;
-        let code = Rc::<str>::from(code);
-        if format::uses_external_texture(&code) {
-            return Ok(GPUShaderModule {
-                inner: self.fallbacks.shader_module.clone(),
-                invalid: false,
-                code,
-                device_id: self.id,
-                label: Rc::new(RefCell::new(label)),
+        let inner = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label:  (!label.is_empty()).then_some(label.as_str()),
+                source: wgpu::ShaderSource::Wgsl(code.into()),
             });
-        }
-        if code.contains("var<immediate") {
-            let over = format::naga_immediate_unusable(&code)
-                || format::immediate_byte_size(&code) > self.device.limits().max_immediate_size;
-            return Ok(GPUShaderModule {
-                inner: self.fallbacks.shader_module.clone(),
-                invalid: over,
-                code,
-                device_id: self.id,
-                label: Rc::new(RefCell::new(label)),
-            });
-        }
-        let module_descriptor = wgpu::ShaderModuleDescriptor {
-            label:  (!label.is_empty()).then_some(label.as_str()),
-            source: wgpu::ShaderSource::Wgsl(code.to_string().into()),
-        };
-        self.errors.push(GPUErrorKind::Validation);
-        let inner = self.device.create_shader_module(module_descriptor);
-        let scoped = self.errors.pop().unwrap_or_default();
-        let invalid = scoped.is_some();
-        if let Some(error) = scoped {
-            self.errors.capture(error);
-        }
         Ok(GPUShaderModule {
             inner,
-            invalid,
-            code,
-            device_id: self.id,
             label: Rc::new(RefCell::new(label)),
         })
     }
@@ -1105,60 +991,32 @@ impl<'js> GPUDevice<'js> {
         &self, descriptor: Object<'js>, ctx: &Ctx<'js>,
     ) -> Result<GPUBindGroupLayout> {
         let label = label(&descriptor)?;
-        let entries = array_value(&descriptor, "entries", ctx)?;
-        let mut native = Vec::with_capacity(entries.len());
-        for entry in entries.iter::<Object>() {
-            let entry = entry?;
-            let binding = entry.get::<_, JsU32>("binding")?.0;
-            let visibility_bits = entry.get::<_, JsU32>("visibility")?.0;
-            if visibility_bits
-                & !(wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE).bits()
-                != 0
-            {
-                self.errors
-                    .validation("visibility contains flags outside GPUShaderStage");
-            }
-            let visibility = wgpu::ShaderStages::from_bits_truncate(
-                visibility_bits
-                    & (wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE).bits(),
-            );
-            if entry.get::<_, Option<JsU32>>("count")?.is_some() {
-                self.errors.validation("binding arrays are not implemented");
-            }
-            let ty = bind_group_layout_type(&entry, ctx)?;
-            if let wgpu::BindingType::StorageTexture { format, .. } = ty
-                && !self.device.features().contains(format.required_features())
-            {
-                return Err(type_error(
-                    ctx,
-                    "storage texture format requires missing features",
-                ));
-            }
-            native.push(wgpu::BindGroupLayoutEntry {
-                binding,
-                visibility,
-                ty,
-                count: None,
-            });
-        }
-        let skip_bgl = skip_native_bgl(&native, self.device.features());
-        if skip_bgl {
-            self.errors
-                .validation("bind group layout is invalid for this device");
-        }
-        let inner = if skip_bgl {
-            self.fallbacks.bind_group_layout.clone()
-        } else {
-            self.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label:   (!label.is_empty()).then_some(label.as_str()),
-                    entries: &native,
+        let entries = array_value(&descriptor, "entries", ctx)?
+            .iter::<Object>()
+            .map(|entry| {
+                let entry = entry?;
+                // `GPUShaderStageFlags` is a WebIDL typedef; unknown bits are a
+                // conversion failure, like deno's converter.
+                let visibility =
+                    wgpu::ShaderStages::from_bits(entry.get::<_, JsU32>("visibility")?.0)
+                        .ok_or_else(|| type_error(ctx, "shader stage is not valid"))?;
+                Ok(wgpu::BindGroupLayoutEntry {
+                    binding: entry.get::<_, JsU32>("binding")?.0,
+                    visibility,
+                    ty: bind_group_layout_type(&entry, ctx)?,
+                    count: None,
                 })
-        };
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let inner = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label:   (!label.is_empty()).then_some(label.as_str()),
+                entries: &entries,
+            });
         Ok(GPUBindGroupLayout {
             inner,
             label: Rc::new(RefCell::new(label)),
-            entries: Rc::from(native),
         })
     }
 
@@ -1166,53 +1024,22 @@ impl<'js> GPUDevice<'js> {
         &self, descriptor: Object<'js>, ctx: &Ctx<'js>,
     ) -> Result<GPUPipelineLayout> {
         let label = label(&descriptor)?;
-        let layouts = array_value(&descriptor, "bindGroupLayouts", ctx)?;
-        let mut inners = Vec::new();
-        let mut groups = Vec::new();
-        for layout in layouts.iter::<Option<Class<GPUBindGroupLayout>>>() {
-            if let Some(layout) = layout? {
-                let layout = layout.borrow();
-                inners.push(Some(layout.inner.clone()));
-                groups.push(layout.entries.clone());
-            } else {
-                inners.push(None);
-                groups.push(Rc::from(Vec::new()));
-            }
-        }
-        let borrowed = inners
-            .iter()
-            .map(|layout| layout.as_ref())
-            .collect::<Vec<_>>();
-        let immediate_size = descriptor
-            .get::<_, Option<JsU32>>("immediateSize")?
-            .map_or(0, |value| value.0);
-        let max_immediate = self.device.limits().max_immediate_size;
-        let invalid = {
-            let unaligned = !immediate_size.is_multiple_of(4);
-            if unaligned {
-                self.errors
-                    .validation("immediateSize must be a multiple of 4");
-            }
-            let too_large = immediate_size > max_immediate;
-            if too_large {
-                self.errors
-                    .validation("immediateSize exceeds maxImmediateSize");
-            }
-            unaligned || too_large
-        };
-        let gpu_immediate = if invalid { 0 } else { immediate_size };
+        let layouts = array_value(&descriptor, "bindGroupLayouts", ctx)?
+            .iter::<Option<Class<GPUBindGroupLayout>>>()
+            .map(|layout| Ok(layout?.map(|layout| layout.borrow().inner.clone())))
+            .collect::<Result<Vec<_>>>()?;
+        let borrowed = layouts.iter().map(Option::as_ref).collect::<Vec<_>>();
         let inner = self
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:              (!label.is_empty()).then_some(label.as_str()),
                 bind_group_layouts: &borrowed,
-                immediate_size:     gpu_immediate,
+                immediate_size:     descriptor
+                    .get::<_, Option<JsU32>>("immediateSize")?
+                    .map_or(0, |value| value.0),
             });
         Ok(GPUPipelineLayout {
             inner,
-            device_id: self.id,
-            groups: Rc::from(groups),
-            immediate_size,
             label: Rc::new(RefCell::new(label)),
         })
     }
@@ -1443,11 +1270,7 @@ impl<'js> GPUDevice<'js> {
     pub fn create_shader_module(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<GPUShaderModule> {
-        flushed(
-            &this,
-            &ctx,
-            self.create_shader_module_inner(descriptor, &ctx),
-        )
+        flushed(&this, &ctx, self.create_shader_module_inner(descriptor))
     }
 
     pub fn create_bind_group_layout(
@@ -1479,13 +1302,11 @@ impl<'js> GPUDevice<'js> {
     pub fn create_compute_pipeline(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<GPUComputePipeline<'js>> {
-        flushed(&this, &ctx, {
-            let (pipeline, invalid) = create_compute_pipeline(&this.0, descriptor, &ctx)?;
-            if invalid {
-                self.errors.validation("invalid compute pipeline");
-            }
-            Ok(pipeline)
-        })
+        flushed(
+            &this,
+            &ctx,
+            create_compute_pipeline(&this.0, descriptor, &ctx),
+        )
     }
 
     pub fn create_compute_pipeline_async(
@@ -1499,13 +1320,11 @@ impl<'js> GPUDevice<'js> {
     pub fn create_render_pipeline(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<render::GPURenderPipeline<'js>> {
-        flushed(&this, &ctx, {
-            let (pipeline, invalid) = render::create_pipeline(&this.0, descriptor, &ctx)?;
-            if invalid {
-                self.errors.validation("invalid render pipeline");
-            }
-            Ok(pipeline)
-        })
+        flushed(
+            &this,
+            &ctx,
+            render::create_pipeline(&this.0, descriptor, &ctx),
+        )
     }
 
     pub fn create_render_pipeline_async(
@@ -1597,19 +1416,16 @@ impl<'js> GPUDevice<'js> {
     /// `GPUPipelineError` rejection and never reaches script-visible scopes.
     fn settle_pipeline<T: rquickjs::class::JsClass<'js> + 'js>(
         this: &This<Class<'js, Self>>, ctx: &Ctx<'js>,
-        create: impl FnOnce(&Class<'js, Self>) -> Result<(T, bool)>,
+        create: impl FnOnce(&Class<'js, Self>) -> Result<T>,
     ) -> Result<Promise<'js>> {
         let errors = this.0.borrow().errors.clone();
         errors.push(GPUErrorKind::Validation);
         let created = create(&this.0);
         let captured = errors.pop().unwrap_or_default();
-        let (pipeline, invalid) = created?;
+        let pipeline = created?;
         let (promise, resolve, reject) = ctx.promise()?;
-        match captured
-            .map(|error| error.message)
-            .or_else(|| invalid.then(|| "pipeline validation failed".to_owned()))
-        {
-            Some(message) => reject.call::<_, ()>((pipeline_error(ctx, &message)?,))?,
+        match captured {
+            Some(error) => reject.call::<_, ()>((pipeline_error(ctx, &error.message)?,))?,
             None => resolve.call::<_, ()>((Class::instance(ctx.clone(), pipeline)?,))?,
         }
         flush_uncaptured(&this.0, ctx)?;
@@ -1617,195 +1433,89 @@ impl<'js> GPUDevice<'js> {
     }
 }
 
+/// `layout` undefined or `'auto'` is wgpu's `None`; wgpu derives the layout
+/// from the shader and validates everything else.
+pub(crate) fn pipeline_layout<'js>(
+    descriptor: &Object<'js>, ctx: &Ctx<'js>,
+) -> Result<Option<wgpu::PipelineLayout>> {
+    let layout: Value = descriptor.get("layout")?;
+    let auto = layout
+        .as_string()
+        .map(rquickjs::String::to_string)
+        .transpose()?
+        .as_deref()
+        == Some("auto");
+    if layout.is_undefined() || auto {
+        return Ok(None);
+    }
+    Ok(Some(
+        Class::<GPUPipelineLayout>::from_js(ctx, layout)?
+            .borrow()
+            .inner
+            .clone(),
+    ))
+}
+
+/// `GPUProgrammableStage`: the module handle plus the owned strings wgpu's
+/// borrowed descriptors point into.
+pub(crate) struct ProgrammableStage {
+    pub(crate) module:      wgpu::ShaderModule,
+    pub(crate) entry_point: Option<String>,
+    constants:              Vec<(String, f64)>,
+}
+
+impl ProgrammableStage {
+    pub(crate) fn read<'js>(object: &Object<'js>, ctx: &Ctx<'js>) -> Result<Self> {
+        Ok(Self {
+            module:      class_value::<GPUShaderModule>(object, "module", ctx)?
+                .borrow()
+                .inner
+                .clone(),
+            entry_point: object.get("entryPoint")?,
+            constants:   format::pipeline_constants(object.get("constants")?, ctx)?,
+        })
+    }
+
+    pub(crate) fn constant_pairs(&self) -> Vec<(&str, f64)> {
+        self.constants
+            .iter()
+            .map(|(name, value)| (name.as_str(), *value))
+            .collect()
+    }
+
+    pub(crate) fn compilation_options<'a>(
+        constants: &'a [(&'a str, f64)],
+    ) -> wgpu::PipelineCompilationOptions<'a> {
+        wgpu::PipelineCompilationOptions {
+            constants,
+            zero_initialize_workgroup_memory: true,
+        }
+    }
+}
+
 fn create_compute_pipeline<'js>(
     device_class: &Class<'js, GPUDevice<'js>>, descriptor: Object<'js>, ctx: &Ctx<'js>,
-) -> Result<(GPUComputePipeline<'js>, bool)> {
-    let device = device_class.borrow();
+) -> Result<GPUComputePipeline<'js>> {
     let label = label(&descriptor)?;
-    let layout_value: Value = descriptor.get("layout")?;
-    let (layout, layout_id, layout_groups, layout_immediate) = if layout_value.is_undefined()
-        || layout_value
-            .as_string()
-            .map(rquickjs::String::to_string)
-            .transpose()?
-            .as_deref()
-            == Some("auto")
-    {
-        (
-            None,
-            device.id,
-            None,
-            device.device.limits().max_immediate_size,
-        )
-    } else {
-        let layout_js = Class::<GPUPipelineLayout>::from_js(ctx, layout_value)?;
-        let layout = layout_js.borrow();
-        (
-            Some(layout.inner.clone()),
-            layout.device_id,
-            Some(layout.groups.clone()),
-            layout.immediate_size,
-        )
-    };
-    let compute: Object = descriptor.get("compute")?;
-    let module_js = class_value::<GPUShaderModule>(&compute, "module", ctx)?;
-    let module_invalid = module_js.borrow().invalid;
-    let code = module_js.borrow().code.clone();
-    let module_id = module_js.borrow().device_id;
-    let limits = device.reported_limits();
-    let mismatched = module_id != device.id || layout_id != device.id;
-    let module = module_js.borrow().inner.clone();
-    let entry_point = compute.get::<_, Option<String>>("entryPoint")?;
-    let constants = format::pipeline_constants(compute.get("constants")?, ctx)?;
-    let constant_pairs = constants
-        .iter()
-        .map(|(name, value)| (name.as_str(), *value))
-        .collect::<Vec<_>>();
-    let integer_filter = layout_groups
-        .as_ref()
-        .is_some_and(|groups| layout_filtering_nonfilterable(groups));
-    let shader_invalid =
-        format::compute_shader_invalid(&code, entry_point.as_deref(), &constants, &limits)
-            || format::storage_texture_access_unsupported(&code, device.device.features())
-            || format::naga_immediate_unusable(&code)
-            || format::immediate_byte_size(&code) > layout_immediate
-            || integer_filter;
-    let layout_mismatch = layout_groups
-        .as_ref()
-        .is_some_and(|groups| layout_shader_mismatch(&code, groups, wgpu::ShaderStages::COMPUTE));
-    let invalid = module_invalid || mismatched || shader_invalid || layout_mismatch;
-    let stored_groups = layout_groups
-        .unwrap_or_else(|| auto_layout_groups(&[(wgpu::ShaderStages::COMPUTE, code.as_ref())]));
-    let empty_bgl = device.fallbacks.bind_group_layout.clone();
-    let skip_immediate = code.contains("var<immediate");
-    let skip_storage = code.contains("texture_storage_");
-    let bgls = bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
-    let make = |inner: wgpu::ComputePipeline, invalid: bool| {
-        GPUComputePipeline {
-            device: device_class.clone(),
-            inner,
-            invalid,
-            layout_groups: stored_groups.clone(),
-            empty_bgl: empty_bgl.clone(),
-            bgls: bgls.clone(),
-            max_bind_groups: limits.max_bind_groups,
-            label: Rc::new(RefCell::new(label.clone())),
-        }
-    };
-    if invalid || format::uses_external_texture(&code) || skip_storage || skip_immediate {
-        return Ok((
-            make(device.fallbacks.compute_pipeline.clone(), invalid),
-            invalid,
-        ));
-    }
-    device.errors.push(GPUErrorKind::Validation);
-    let inner = device
-        .device
-        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:               (!label.is_empty()).then_some(label.as_str()),
-            layout:              layout.as_ref(),
-            module:              &module,
-            entry_point:         entry_point.as_deref(),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants:                        &constant_pairs,
-                zero_initialize_workgroup_memory: true,
-            },
-            cache:               None,
-        });
-    let scoped = device.errors.pop().unwrap_or_default();
-    let invalid = scoped.is_some();
-    if let Some(error) = scoped {
-        device.errors.capture(error);
-    }
-    Ok((make(inner, invalid), invalid))
-}
-pub(crate) fn layout_shader_mismatch(
-    code: &str, groups: &[Rc<[wgpu::BindGroupLayoutEntry]>], stage: wgpu::ShaderStages,
-) -> bool {
-    let naga_stage = if stage == wgpu::ShaderStages::COMPUTE {
-        Some(wgpu::naga::ShaderStage::Compute)
-    } else if stage == wgpu::ShaderStages::VERTEX {
-        Some(wgpu::naga::ShaderStage::Vertex)
-    } else if stage == wgpu::ShaderStages::FRAGMENT {
-        Some(wgpu::naga::ShaderStage::Fragment)
-    } else {
-        None
-    };
-    let used = naga_stage.and_then(|stage| format::statically_used_bindings(code, stage));
-    format::parse_shader_bindings(code).iter().any(|binding| {
-        if used.as_ref().is_some_and(|used| {
-            !used
-                .iter()
-                .any(|(group, slot)| *group == binding.group && *slot == binding.binding)
-        }) {
-            return false;
-        }
-        let Some(group) = groups.get(binding.group as usize) else {
-            return true;
-        };
-        let Some(entry) = group.iter().find(|entry| entry.binding == binding.binding) else {
-            return true;
-        };
-        !entry.visibility.contains(stage) || !format::shader_binding_matches(binding, entry.ty)
-    })
-}
-
-pub(crate) fn layout_filtering_nonfilterable(groups: &[Rc<[wgpu::BindGroupLayoutEntry]>]) -> bool {
-    let filtering = groups.iter().any(|group| {
-        group.iter().any(|entry| {
-            matches!(
-                entry.ty,
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
-            )
-        })
-    });
-    let nonfilterable = groups.iter().any(|group| {
-        group.iter().any(|entry| {
-            matches!(entry.ty, wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false }
-                    | wgpu::TextureSampleType::Sint
-                    | wgpu::TextureSampleType::Uint
-                    | wgpu::TextureSampleType::Depth,
-                ..
-            })
-        })
-    });
-    filtering && nonfilterable
-}
-
-fn skip_native_bgl(entries: &[wgpu::BindGroupLayoutEntry], features: wgpu::Features) -> bool {
-    entries.iter().any(|entry| {
-        let vertex = entry.visibility.contains(wgpu::ShaderStages::VERTEX);
-        match entry.ty {
-            wgpu::BindingType::StorageTexture { access, format, .. } => {
-                let flags = format.guaranteed_format_features(features).flags;
-                let unsupported = match access {
-                    wgpu::StorageTextureAccess::WriteOnly => {
-                        !flags.contains(wgpu::TextureFormatFeatureFlags::STORAGE_WRITE_ONLY)
-                    }
-                    wgpu::StorageTextureAccess::ReadOnly => {
-                        !flags.contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_ONLY)
-                    }
-                    wgpu::StorageTextureAccess::ReadWrite => {
-                        !flags.contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_WRITE)
-                    }
-                    wgpu::StorageTextureAccess::Atomic => {
-                        !flags.contains(wgpu::TextureFormatFeatureFlags::STORAGE_ATOMIC)
-                    }
-                };
-                let writable = !matches!(access, wgpu::StorageTextureAccess::ReadOnly);
-                let vertex_writable = writable
-                    && vertex
-                    && !features.contains(wgpu::Features::VERTEX_WRITABLE_STORAGE);
-                unsupported || vertex_writable
-            }
-            wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                multisampled: true,
-                ..
-            } => true,
-            _ => false,
-        }
+    let layout = pipeline_layout(&descriptor, ctx)?;
+    let stage = ProgrammableStage::read(&descriptor.get("compute")?, ctx)?;
+    let constants = stage.constant_pairs();
+    let inner =
+        device_class
+            .borrow()
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label:               (!label.is_empty()).then_some(label.as_str()),
+                layout:              layout.as_ref(),
+                module:              &stage.module,
+                entry_point:         stage.entry_point.as_deref(),
+                compilation_options: ProgrammableStage::compilation_options(&constants),
+                cache:               None,
+            });
+    Ok(GPUComputePipeline {
+        device: device_class.clone(),
+        inner,
+        label: Rc::new(RefCell::new(label)),
     })
 }
 
@@ -2527,15 +2237,9 @@ fn typed_array_element_size(ctx: &Ctx<'_>, value: &Value<'_>) -> Result<u64> {
 #[rquickjs::class(rename = "GPUShaderModule")]
 pub struct GPUShaderModule {
     #[qjs(skip_trace)]
-    pub(crate) inner:     wgpu::ShaderModule,
+    pub(crate) inner: wgpu::ShaderModule,
     #[qjs(skip_trace)]
-    pub(crate) invalid:   bool,
-    #[qjs(skip_trace)]
-    pub(crate) code:      Rc<str>,
-    #[qjs(skip_trace)]
-    pub(crate) device_id: u64,
-    #[qjs(skip_trace)]
-    label:                Rc<RefCell<String>>,
+    label:            Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -2583,11 +2287,9 @@ impl GPUShaderModule {
 #[rquickjs::class(rename = "GPUBindGroupLayout")]
 pub struct GPUBindGroupLayout {
     #[qjs(skip_trace)]
-    pub(crate) inner:   wgpu::BindGroupLayout,
+    pub(crate) inner: wgpu::BindGroupLayout,
     #[qjs(skip_trace)]
-    pub(crate) label:   Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    pub(crate) entries: Rc<[wgpu::BindGroupLayoutEntry]>,
+    label:            Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods]
@@ -2606,15 +2308,9 @@ impl GPUBindGroupLayout {
 #[rquickjs::class(rename = "GPUPipelineLayout")]
 pub struct GPUPipelineLayout {
     #[qjs(skip_trace)]
-    pub(crate) inner:          wgpu::PipelineLayout,
+    pub(crate) inner: wgpu::PipelineLayout,
     #[qjs(skip_trace)]
-    pub(crate) device_id:      u64,
-    #[qjs(skip_trace)]
-    pub(crate) groups:         PipelineLayoutGroups,
-    #[qjs(skip_trace)]
-    pub(crate) immediate_size: u32,
-    #[qjs(skip_trace)]
-    pub(crate) label:          Rc<RefCell<String>>,
+    label:            Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods]
@@ -2648,45 +2344,14 @@ impl GPUBindGroup {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 }
-pub(crate) fn bind_group_layouts_from_groups(
-    device: &wgpu::Device, groups: &PipelineLayoutGroups, empty: &wgpu::BindGroupLayout,
-) -> Rc<[wgpu::BindGroupLayout]> {
-    let features = device.features();
-    Rc::from(
-        groups
-            .iter()
-            .map(|entries| {
-                if entries.is_empty() || skip_native_bgl(entries, features) {
-                    empty.clone()
-                } else {
-                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: None,
-                        entries,
-                    })
-                }
-            })
-            .collect::<Vec<_>>(),
-    )
-}
-
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUComputePipeline")]
 pub struct GPUComputePipeline<'js> {
-    device:          Class<'js, GPUDevice<'js>>,
+    device: Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
-    inner:           wgpu::ComputePipeline,
+    inner:  wgpu::ComputePipeline,
     #[qjs(skip_trace)]
-    invalid:         bool,
-    #[qjs(skip_trace)]
-    layout_groups:   PipelineLayoutGroups,
-    #[qjs(skip_trace)]
-    empty_bgl:       wgpu::BindGroupLayout,
-    #[qjs(skip_trace)]
-    bgls:            Rc<[wgpu::BindGroupLayout]>,
-    #[qjs(skip_trace)]
-    max_bind_groups: u32,
-    #[qjs(skip_trace)]
-    label:           Rc<RefCell<String>>,
+    label:  Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -2701,30 +2366,11 @@ impl<'js> GPUComputePipeline<'js> {
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
     pub fn get_bind_group_layout(&self, index: JsU32, ctx: Ctx<'js>) -> Result<GPUBindGroupLayout> {
-        if index.0 >= self.max_bind_groups {
-            self.device
-                .borrow()
-                .errors
-                .validation("bind group layout index is out of range");
-        }
-        let entries = self
-            .layout_groups
-            .get(index.0 as usize)
-            .cloned()
-            .unwrap_or_else(|| Rc::from(Vec::new()));
-        let inner = if !self.invalid && !entries.is_empty() {
-            self.inner.get_bind_group_layout(index.0)
-        } else {
-            self.bgls
-                .get(index.0 as usize)
-                .cloned()
-                .unwrap_or_else(|| self.empty_bgl.clone())
-        };
+        let inner = self.inner.get_bind_group_layout(index.0);
         flush_uncaptured(&self.device, &ctx)?;
         Ok(GPUBindGroupLayout {
             inner,
             label: Rc::new(RefCell::new(String::new())),
-            entries,
         })
     }
 }
