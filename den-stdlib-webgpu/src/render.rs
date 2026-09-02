@@ -265,7 +265,7 @@ impl<'js> GPURenderPassEncoder<'js> {
         &self, offset: JsU32, data: Value<'js>, data_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let bytes = crate::immediates_bytes(data, data_offset, size, &ctx)?;
+        let bytes = crate::data_window(data, data_offset, size, &ctx)?;
         self.record(&ctx, |pass| pass.set_immediates(offset.0, &bytes))
     }
 }
@@ -473,7 +473,7 @@ impl<'js> GPURenderBundleEncoder<'js> {
         &self, offset: JsU32, data: Value<'js>, data_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let bytes = crate::immediates_bytes(data, data_offset, size, &ctx)?;
+        let bytes = crate::data_window(data, data_offset, size, &ctx)?;
         self.record(&ctx, |encoder| encoder.set_immediates(offset.0, &bytes))
     }
 

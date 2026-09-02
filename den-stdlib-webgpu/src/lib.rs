@@ -277,7 +277,11 @@ impl<T> Recorder<T> {
     }
 }
 
-pub(crate) fn immediates_bytes<'js>(
+/// `writeBuffer` and `setImmediates` both take `(data, dataOffset, size)`
+/// counted in typed-array elements, and both owe JS an `OperationError` when
+/// that window leaves the source (deno_webgpu's `get_data_slice`). Everything
+/// about the destination is wgpu's to validate.
+pub(crate) fn data_window<'js>(
     data: Value<'js>, data_offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: &Ctx<'js>,
 ) -> Result<Vec<u8>> {
     let element_size = typed_array_element_size(ctx, &data)?;
@@ -300,16 +304,12 @@ pub(crate) fn immediates_bytes<'js>(
     let end = start
         .checked_add(length)
         .ok_or_else(|| operation_error(ctx, "data range overflows"))?;
-    if end > bytes.len() as u64 || !length.is_multiple_of(4) {
-        return Err(operation_error(
-            ctx,
-            "immediate data range must be in bounds and a multiple of 4 bytes",
-        ));
-    }
-    Ok(bytes
-        .get(start as usize..end as usize)
-        .unwrap_or(&[])
-        .to_vec())
+    usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(start, end)| bytes.get(start..end))
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| operation_error(ctx, "data range is out of bounds"))
 }
 
 fn apply_required_limits<'js>(
@@ -1983,38 +1983,9 @@ impl<'js> GPUQueue<'js> {
         &self, buffer: Class<'js, GPUBuffer>, buffer_offset: JsU64, data: Value<'js>,
         data_offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let buffer = buffer.borrow();
-        let element_size = typed_array_element_size(&ctx, &data)?;
-        let bytes = BufferSource::from_js(&ctx, data)?.into_bytes();
-        let start = data_offset
-            .0
-            .flatten()
-            .map_or(0, |value| value.0)
-            .checked_mul(element_size)
-            .ok_or_else(|| operation_error(&ctx, "dataOffset overflows"))?;
-        let length = match size.0.flatten() {
-            Some(value) => {
-                value
-                    .0
-                    .checked_mul(element_size)
-                    .ok_or_else(|| operation_error(&ctx, "size overflows"))?
-            }
-            None => (bytes.len() as u64).saturating_sub(start),
-        };
-        let end = start
-            .checked_add(length)
-            .ok_or_else(|| operation_error(&ctx, "data range overflows"))?;
-        // The data range is the only content-timeline check; the destination
-        // range, usage and map state are wgpu's to validate.
-        let Some(data) = usize::try_from(start)
-            .ok()
-            .zip(usize::try_from(end).ok())
-            .and_then(|(start, end)| bytes.get(start..end))
-        else {
-            return Err(operation_error(&ctx, "data range is out of bounds"));
-        };
+        let data = data_window(data, data_offset, size, &ctx)?;
         self.inner
-            .write_buffer(&buffer.inner, buffer_offset.0, data);
+            .write_buffer(&buffer.borrow().inner, buffer_offset.0, &data);
         self.flush(&ctx)
     }
 
@@ -2607,7 +2578,7 @@ impl<'js> GPUComputePassEncoder<'js> {
         &self, offset: JsU32, data: Value<'js>, data_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let bytes = immediates_bytes(data, data_offset, size, &ctx)?;
+        let bytes = data_window(data, data_offset, size, &ctx)?;
         self.record(&ctx, |pass| pass.set_immediates(offset.0, &bytes))
     }
 
