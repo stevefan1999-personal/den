@@ -2,9 +2,8 @@
 //!
 //! These live apart from `Intl.Locale` on purpose: `Collator`,
 //! `DateTimeFormat`, `NumberFormat` and the rest are each defined in terms of
-//! the same steps — coerce the option bag, read options with
-//! `GetOption`/`GetBooleanOption`/`GetNumberOption`, then canonicalize the
-//! requested locales.
+//! the same steps — coerce the option bag, read options with `GetOption` and
+//! `GetBooleanOption`, then canonicalize the requested locales.
 
 use den_util::coerce_string;
 use icu_locale::LocaleCanonicalizer;
@@ -62,23 +61,6 @@ impl<'js> Options<'js> {
         self.raw(property)?
             .map(|value| Coerced::<bool>::from_js(ctx, value).map(|value| value.0))
             .transpose()
-    }
-
-    /// `GetNumberOption(options, property, minimum, maximum, fallback)`:
-    /// out-of-range and non-numeric values are a RangeError, not a clamp.
-    pub fn number(&self, property: &str, minimum: f64, maximum: f64, fallback: f64) -> Result<f64> {
-        let ctx = self.bag.ctx();
-        let Some(value) = self.raw(property)? else {
-            return Ok(fallback);
-        };
-        let value = Coerced::<f64>::from_js(ctx, value)?.0;
-        if value.is_nan() || value < minimum || value > maximum {
-            return Err(Exception::throw_range(
-                ctx,
-                &format!("{value} is out of range for {property}"),
-            ));
-        }
-        Ok(value.floor())
     }
 
     /// `Get(options, property)`, with `undefined` reported as absence.
