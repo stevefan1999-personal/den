@@ -295,8 +295,11 @@ pub fn texel_copy_layout(object: &Object<'_>) -> Result<wgpu::TexelCopyBufferLay
 
 pub fn texel_copy_buffer<'js>(
     object: Object<'js>, ctx: &Ctx<'js>,
-) -> Result<(Class<'js, crate::GPUBuffer>, wgpu::TexelCopyBufferLayout)> {
-    let buffer = crate::class_value::<crate::GPUBuffer>(&object, "buffer", ctx)?;
+) -> Result<(
+    Class<'js, crate::GPUBuffer<'js>>,
+    wgpu::TexelCopyBufferLayout,
+)> {
+    let buffer = crate::class_value::<crate::GPUBuffer<'js>>(&object, "buffer", ctx)?;
     let layout = texel_copy_layout(&object)?;
     Ok((buffer, layout))
 }

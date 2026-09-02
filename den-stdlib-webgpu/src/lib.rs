@@ -913,7 +913,9 @@ enum OwnedBinding {
 impl<'js> GPUDevice<'js> {
     fn is_destroyed(&self) -> bool { self.destroyed.get() }
 
-    fn create_buffer_inner(&self, descriptor: Object<'js>, ctx: &Ctx<'js>) -> Result<GPUBuffer> {
+    fn create_buffer_inner(
+        &self, device: &Class<'js, Self>, descriptor: Object<'js>, ctx: &Ctx<'js>,
+    ) -> Result<GPUBuffer<'js>> {
         let label = label(&descriptor)?;
         let size = descriptor.get::<_, JsU64>("size")?.0;
         // Unknown usage bits reach wgpu untruncated so that it, not den,
@@ -950,8 +952,7 @@ impl<'js> GPUDevice<'js> {
         }));
         self.buffer_states.borrow_mut().push(Rc::downgrade(&state));
         Ok(GPUBuffer {
-            device: self.device.clone(),
-            errors: self.errors.clone(),
+            device: device.clone(),
             inner,
             label: Rc::new(RefCell::new(label)),
             map_gen: Rc::new(Cell::new(0)),
@@ -1053,7 +1054,7 @@ impl<'js> GPUDevice<'js> {
                     .validation("GPUExternalTexture bindings are not supported");
                 continue;
             }
-            if let Ok(buffer) = Class::<GPUBuffer>::from_js(ctx, resource.clone()) {
+            if let Ok(buffer) = Class::<GPUBuffer<'js>>::from_js(ctx, resource.clone()) {
                 resources.push(OwnedBinding::Buffer {
                     binding,
                     buffer: buffer.borrow().inner.clone(),
@@ -1085,7 +1086,7 @@ impl<'js> GPUDevice<'js> {
             }
             let resource = Object::from_js(ctx, resource)
                 .map_err(|_error| type_error(ctx, "bind group resource is not a GPU binding"))?;
-            let buffer = class_value::<GPUBuffer>(&resource, "buffer", ctx)?
+            let buffer = class_value::<GPUBuffer<'js>>(&resource, "buffer", ctx)?
                 .borrow()
                 .inner
                 .clone();
@@ -1256,8 +1257,12 @@ impl<'js> GPUDevice<'js> {
 
     pub fn create_buffer(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<GPUBuffer> {
-        flushed(&this, &ctx, self.create_buffer_inner(descriptor, &ctx))
+    ) -> Result<GPUBuffer<'js>> {
+        flushed(
+            &this,
+            &ctx,
+            self.create_buffer_inner(&this, descriptor, &ctx),
+        )
     }
 
     pub fn import_external_texture(
@@ -1679,11 +1684,11 @@ pub(crate) enum BufferMapState {
 
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUBuffer")]
-pub struct GPUBuffer {
-    #[qjs(skip_trace)]
-    device:           wgpu::Device,
-    #[qjs(skip_trace)]
-    errors:           ErrorSink,
+pub struct GPUBuffer<'js> {
+    /// The owning device, so that every buffer method can dispatch the
+    /// uncaptured errors its wgpu call produced instead of leaving them to be
+    /// misattributed to a later, unrelated call.
+    device:           Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
     pub(crate) inner: wgpu::Buffer,
     #[qjs(skip_trace)]
@@ -1701,20 +1706,46 @@ pub struct GPUBuffer {
     pub(crate) state: Rc<RefCell<BufferMapState>>,
 }
 
-impl GPUBuffer {
-    /// A content-timeline failure: reject the promise and report the same
-    /// validation error the device timeline would have raised.
-    fn reject_map<'js>(&self, ctx: &Ctx<'js>, message: &str) -> Result<Promise<'js>> {
-        self.errors.validation(message);
+impl<'js> GPUBuffer<'js> {
+    fn errors(&self) -> ErrorSink { self.device.borrow().errors.clone() }
+
+    fn flush(&self, ctx: &Ctx<'js>) -> Result<()> { flush_uncaptured(&self.device, ctx) }
+
+    /// The `[[mapping]]`-state failures WebGPU rejects before `mapAsync`
+    /// returns (`earlyRejection: true` in the CTS mapping suite).
+    fn reject_now(&self, ctx: &Ctx<'js>, message: &str) -> Result<Promise<'js>> {
+        self.errors().validation(message);
         let (promise, _resolve, reject) = ctx.promise()?;
         let error: Value = den_util::construct(ctx, "DOMException", (message, "OperationError"))?;
         reject.call::<_, ()>((error,))?;
+        self.flush(ctx)?;
+        Ok(promise)
+    }
+
+    /// Every other `mapAsync` failure belongs to the device timeline: the
+    /// validation error is raised now but the promise stays pending until a
+    /// later microtask, which is what `earlyRejection: false` asserts.
+    fn reject_later(&self, ctx: &Ctx<'js>, message: &'static str) -> Result<Promise<'js>> {
+        self.errors().validation(message);
+        let (promise, _resolve, reject) = ctx.promise()?;
+        let spawn_ctx = ctx.clone();
+        ctx.spawn(async move {
+            tokio::task::yield_now().await;
+            if let Ok(error) = den_util::construct::<_, Value>(
+                &spawn_ctx,
+                "DOMException",
+                (message, "OperationError"),
+            ) {
+                let _ = reject.call::<_, ()>((error,));
+            }
+        });
+        self.flush(ctx)?;
         Ok(promise)
     }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl GPUBuffer {
+impl<'js> GPUBuffer<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
@@ -1740,8 +1771,8 @@ impl GPUBuffer {
     }
 
     pub fn map_async(
-        self, mode: JsU32, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'_>,
-    ) -> Result<Promise<'_>> {
+        self, mode: JsU32, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
+    ) -> Result<Promise<'js>> {
         let (mapped_or_pending, destroyed) = {
             let state = self.state.borrow();
             (
@@ -1753,10 +1784,10 @@ impl GPUBuffer {
             )
         };
         if mapped_or_pending {
-            return self.reject_map(&ctx, "GPUBuffer is not unmapped");
+            return self.reject_now(&ctx, "GPUBuffer is not unmapped");
         }
         if destroyed {
-            return self.reject_map(&ctx, "GPUBuffer is destroyed");
+            return self.reject_later(&ctx, "GPUBuffer is destroyed");
         }
         // Whether the usage permits the mode is wgpu's call; the mode itself is
         // a content-timeline check, exactly as in deno_webgpu.
@@ -1764,7 +1795,7 @@ impl GPUBuffer {
             MAP_READ => MappingKind::Read,
             MAP_WRITE => MappingKind::Write,
             _ => {
-                return self.reject_map(&ctx, "mode must be GPUMapMode.READ or GPUMapMode.WRITE");
+                return self.reject_later(&ctx, "mode must be GPUMapMode.READ or GPUMapMode.WRITE");
             }
         };
         let buffer_size = self.inner.size();
@@ -1774,7 +1805,7 @@ impl GPUBuffer {
             .flatten()
             .map_or_else(|| buffer_size.saturating_sub(offset), |value| value.0);
         let Some(end) = offset.checked_add(size) else {
-            return self.reject_map(&ctx, "mapped range overflows");
+            return self.reject_later(&ctx, "mapped range overflows");
         };
         // `Buffer::map_async` panics on an out-of-range slice, so the bounds
         // have to be settled here before wgpu sees them.
@@ -1782,7 +1813,7 @@ impl GPUBuffer {
             || !size.is_multiple_of(4)
             || end > buffer_size
         {
-            return self.reject_map(
+            return self.reject_later(
                 &ctx,
                 "mapped range must be in bounds, 8-byte aligned, and a multiple of 4",
             );
@@ -1808,7 +1839,9 @@ impl GPUBuffer {
         // wgpu runs the callback inline only when it refuses the map outright;
         // then nothing is mapped and `unmap` must not ask it to undo one.
         self.native_map.set(!refused.load(Ordering::Relaxed));
-        let device = self.device.clone();
+        self.flush(&ctx)?;
+        let device = self.device.borrow().device.clone();
+        let device_js = self.device.clone();
         let map_gen = self.map_gen.clone();
         let state = self.state;
         let spawn_ctx = ctx.clone();
@@ -1854,11 +1887,12 @@ impl GPUBuffer {
                     }
                 }
             }
+            let _ = flush_uncaptured(&device_js, &spawn_ctx);
         });
         Ok(promise)
     }
 
-    pub fn get_mapped_range<'js>(
+    pub fn get_mapped_range(
         &self, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<ArrayBuffer<'js>> {
         let offset = offset.0.flatten().map_or(0, |value| value.0);
@@ -1923,10 +1957,12 @@ impl GPUBuffer {
             buffer: Persistent::save(&ctx, buffer.clone()),
             range,
         });
+        drop(state);
+        self.flush(&ctx)?;
         Ok(buffer)
     }
 
-    pub fn unmap(&self, ctx: Ctx<'_>) -> Result<()> {
+    pub fn unmap(&self, ctx: Ctx<'js>) -> Result<()> {
         let destroyed = matches!(*self.state.borrow(), BufferMapState::Destroyed);
         let previous = std::mem::replace(&mut *self.state.borrow_mut(), BufferMapState::Unmapped);
         if let BufferMapState::Mapped { kind, views, .. } = previous {
@@ -1953,10 +1989,10 @@ impl GPUBuffer {
         if destroyed {
             *self.state.borrow_mut() = BufferMapState::Destroyed;
         }
-        Ok(())
+        self.flush(&ctx)
     }
 
-    pub fn destroy(&self, ctx: Ctx<'_>) -> Result<()> {
+    pub fn destroy(&self, ctx: Ctx<'js>) -> Result<()> {
         let previous = std::mem::replace(&mut *self.state.borrow_mut(), BufferMapState::Destroyed);
         if let BufferMapState::Mapped { views, .. } = previous {
             for view in views {
@@ -1966,7 +2002,7 @@ impl GPUBuffer {
         self.map_gen.set(self.map_gen.get().wrapping_add(1));
         self.native_map.set(false);
         self.inner.destroy();
-        Ok(())
+        self.flush(&ctx)
     }
 }
 
@@ -2015,7 +2051,7 @@ impl<'js> GPUQueue<'js> {
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
     pub fn write_buffer(
-        &self, buffer: Class<'js, GPUBuffer>, buffer_offset: JsU64, data: Value<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, buffer_offset: JsU64, data: Value<'js>,
         data_offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let data = data_window(data, data_offset, size, &ctx)?;
@@ -2297,14 +2333,14 @@ impl<'js> GPUCommandEncoder<'js> {
     }
 
     pub fn copy_buffer_to_buffer(
-        &self, source: Class<'js, GPUBuffer>, source_offset_or_destination: Value<'js>,
+        &self, source: Class<'js, GPUBuffer<'js>>, source_offset_or_destination: Value<'js>,
         destination_or_size: Opt<Value<'js>>, destination_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         // WebGPU overloads: (source, destination, size?) and
         // (source, sourceOffset, destination, destinationOffset, size?).
         let (source_offset, destination, destination_offset, size) = if let Ok(destination) =
-            Class::<GPUBuffer>::from_js(&ctx, source_offset_or_destination.clone())
+            Class::<GPUBuffer<'js>>::from_js(&ctx, source_offset_or_destination.clone())
         {
             let size = destination_or_size
                 .0
@@ -2317,7 +2353,7 @@ impl<'js> GPUCommandEncoder<'js> {
             let destination = destination_or_size
                 .0
                 .ok_or_else(|| type_error(&ctx, "copyBufferToBuffer destination is required"))?;
-            let destination = Class::<GPUBuffer>::from_js(&ctx, destination)?;
+            let destination = Class::<GPUBuffer<'js>>::from_js(&ctx, destination)?;
             (
                 source_offset.0,
                 destination,
@@ -2419,7 +2455,7 @@ impl<'js> GPUCommandEncoder<'js> {
 
     pub fn resolve_query_set(
         &self, query_set: Class<'js, query::GPUQuerySet>, first_query: JsU32, query_count: JsU32,
-        destination: Class<'js, GPUBuffer>, destination_offset: JsU64, ctx: Ctx<'js>,
+        destination: Class<'js, GPUBuffer<'js>>, destination_offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
         let query_set = query_set.borrow().inner.clone();
         let destination = destination.borrow().inner.clone();
@@ -2439,8 +2475,8 @@ impl<'js> GPUCommandEncoder<'js> {
     }
 
     pub fn clear_buffer(
-        &self, buffer: Class<'js, GPUBuffer>, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>,
-        ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, offset: Opt<Option<JsU64>>,
+        size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow().inner.clone();
         let offset = offset.0.flatten().map_or(0, |value| value.0);
@@ -2540,7 +2576,7 @@ impl<'js> GPUComputePassEncoder<'js> {
     }
 
     pub fn dispatch_workgroups_indirect(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow().inner.clone();
         self.record(&ctx, |pass| {

@@ -105,7 +105,7 @@ impl<'js> GPURenderPassEncoder<'js> {
     }
 
     pub fn set_vertex_buffer(
-        &self, slot: JsU32, buffer: Option<Class<'js, GPUBuffer>>, offset: Opt<Option<JsU64>>,
+        &self, slot: JsU32, buffer: Option<Class<'js, GPUBuffer<'js>>>, offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.map(|buffer| buffer.borrow().inner.clone());
@@ -126,8 +126,8 @@ impl<'js> GPURenderPassEncoder<'js> {
     }
 
     pub fn set_index_buffer(
-        &self, buffer: Class<'js, GPUBuffer>, index_format: String, offset: Opt<Option<JsU64>>,
-        size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, index_format: String,
+        offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let format = format::index_format(&index_format, &ctx)?;
         let buffer = buffer.borrow().inner.clone();
@@ -176,14 +176,14 @@ impl<'js> GPURenderPassEncoder<'js> {
     }
 
     pub fn draw_indirect(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow().inner.clone();
         self.record(&ctx, |pass| pass.draw_indirect(&buffer, offset.0))
     }
 
     pub fn draw_indexed_indirect(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.borrow().inner.clone();
         self.record(&ctx, |pass| pass.draw_indexed_indirect(&buffer, offset.0))
@@ -364,7 +364,7 @@ impl<'js> GPURenderBundleEncoder<'js> {
     }
 
     pub fn set_vertex_buffer(
-        &self, slot: JsU32, buffer: Option<Class<'js, GPUBuffer>>, offset: Opt<Option<JsU64>>,
+        &self, slot: JsU32, buffer: Option<Class<'js, GPUBuffer<'js>>>, offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = buffer.map(|buffer| buffer.borrow().inner.clone());
@@ -385,8 +385,8 @@ impl<'js> GPURenderBundleEncoder<'js> {
     }
 
     pub fn set_index_buffer(
-        &self, buffer: Class<'js, GPUBuffer>, index_format: String, offset: Opt<Option<JsU64>>,
-        size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, index_format: String,
+        offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let format = format::index_format(&index_format, &ctx)?;
         let buffer = self.retain_buffer(&buffer.borrow().inner);
@@ -435,14 +435,14 @@ impl<'js> GPURenderBundleEncoder<'js> {
     }
 
     pub fn draw_indirect(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = self.retain_buffer(&buffer.borrow().inner);
         self.record(&ctx, |encoder| encoder.draw_indirect(buffer, offset.0))
     }
 
     pub fn draw_indexed_indirect(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+        &self, buffer: Class<'js, GPUBuffer<'js>>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
         let buffer = self.retain_buffer(&buffer.borrow().inner);
         self.record(&ctx, |encoder| {
