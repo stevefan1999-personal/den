@@ -53,12 +53,18 @@ impl WebIdl {
 
     /// An enumeration member: absent takes the default, an unlisted string is
     /// a TypeError.
-    fn enumerated<T: Copy>(
-        ctx: &Ctx<'_>, options: &Object<'_>, key: &str, choices: &[(&str, T)], default: T,
+    ///
+    /// Only `undefined` counts as absent. `null` is a present member, and
+    /// WebIDL runs ToString over it first, so it arrives as `"null"` and is
+    /// rejected like any other unlisted value.
+    fn enumerated<'js, T: Copy>(
+        ctx: &Ctx<'js>, options: &Object<'js>, key: &str, choices: &[(&str, T)], default: T,
     ) -> Result<T> {
-        let Some(Coerced(name)) = options.get::<_, Option<Coerced<String>>>(key)? else {
+        let value = options.get::<_, Value<'js>>(key)?;
+        if value.is_undefined() {
             return Ok(default);
-        };
+        }
+        let name = den_util::coerce_string(ctx, value)?;
         choices
             .iter()
             .find(|(candidate, _)| *candidate == name)

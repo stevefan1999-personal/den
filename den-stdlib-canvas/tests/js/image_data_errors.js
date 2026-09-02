@@ -37,3 +37,7 @@ assertThrowsDom(() => new ImageData(new Float64Array(16), 4), "IndexSizeError");
 
 // The constructor is not callable without `new`.
 assertThrows(() => ImageData(1, 1), TypeError);
+
+// `null` is a *present* dictionary member: WebIDL's enum conversion runs
+// ToString over it, so it arrives as "null" and is not a member.
+assertThrows(() => new ImageData(1, 1, { colorSpace: null }), TypeError);

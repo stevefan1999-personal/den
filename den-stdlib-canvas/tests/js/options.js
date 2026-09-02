@@ -84,3 +84,9 @@ await assertRejects(() => createImageBitmap(source, { colorSpaceConversion: "srg
 
 // A non-object options argument is not a dictionary.
 await assertRejects(() => createImageBitmap(source, "options"), TypeError);
+
+// `null` is a present member, not an absent one: ToString makes it "null",
+// which is a member of no enumeration here.
+for (const key of ["imageOrientation", "premultiplyAlpha", "colorSpaceConversion", "resizeQuality"]) {
+  await assertRejects(() => createImageBitmap(source, { [key]: null }), TypeError);
+}
