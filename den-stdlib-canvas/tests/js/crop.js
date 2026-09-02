@@ -34,6 +34,8 @@ assertEquals(read(away), [...clear, ...clear, ...clear, ...clear]);
 const backwards = await createImageBitmap(source, 2, 2, -2, -2);
 assertEquals(read(backwards), Array.from(source.data));
 
-// An empty source rectangle is a RangeError.
+// An empty source rectangle is a RangeError, and the algorithm reports it
+// before it ever looks at the source, per the spec's step order.
 await assertRejects(() => createImageBitmap(source, 0, 0, 0, 2), RangeError);
 await assertRejects(() => createImageBitmap(source, 0, 0, 2, 0), RangeError);
+await assertRejects(() => createImageBitmap(null, 0, 0, 0, 2), RangeError);

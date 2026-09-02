@@ -25,6 +25,16 @@ assertStrictEquals(derived.data, pixels);
 // new ImageData(data, sw, sh) accepts a matching height.
 assertEquals(new ImageData(pixels, 3, 2).height, 2);
 
+// A view onto part of a larger buffer keeps its own window.
+const shared = new ArrayBuffer(3 * 4);
+const window = new Uint8ClampedArray(shared, 4, 4);
+window.set([9, 8, 7, 6]);
+const windowed = new ImageData(window, 1);
+assertEquals(windowed.width, 1);
+assertEquals(windowed.height, 1);
+assertStrictEquals(windowed.data, window);
+assertEquals(windowed.data.byteOffset, 4);
+
 // Settings ride along on either overload.
 assertEquals(new ImageData(1, 1, { colorSpace: "display-p3" }).colorSpace, "display-p3");
 assertEquals(

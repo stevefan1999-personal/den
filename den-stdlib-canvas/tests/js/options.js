@@ -42,9 +42,11 @@ assertEquals(
   amber,
 );
 
-// An empty resize target is an InvalidStateError, not a silent no-op.
+// An empty resize target is an InvalidStateError, not a silent no-op, and it
+// too is reported before the source type is examined.
 await assertRejects(() => createImageBitmap(source, { resizeWidth: 0 }), DOMException);
 await assertRejects(() => createImageBitmap(source, { resizeHeight: 0 }), DOMException);
+await assertRejects(() => createImageBitmap(null, { resizeWidth: 0 }), DOMException);
 
 // imageOrientation. "none" is the HTML spec's current spelling of
 // "from-image"; den accepts both where Deno rejects "none".

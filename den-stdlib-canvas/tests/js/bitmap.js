@@ -34,6 +34,19 @@ assertEquals(copy.width, 0);
 // A detached bitmap is no longer a usable source.
 await assertRejects(() => createImageBitmap(copy), DOMException);
 
+// The pixels read back are the view's window, not the whole buffer.
+const shared = new Uint8ClampedArray(3 * 4);
+shared.set([9, 8, 7, 6], 4);
+const windowed = await createImageBitmap(
+  new ImageData(new Uint8ClampedArray(shared.buffer, 4, 4), 1),
+);
+assertEquals(read(windowed), [9, 8, 7, 6]);
+
+// An ImageData whose buffer has been transferred away has no pixels to read.
+const transferred = new ImageData(1, 1);
+transferred.data.buffer.transfer();
+await assertRejects(() => createImageBitmap(transferred), DOMException);
+
 // The interface is exposed but not constructible.
 assertThrows(() => new ImageBitmap(), TypeError);
 assertEquals(typeof ImageBitmap, "function");

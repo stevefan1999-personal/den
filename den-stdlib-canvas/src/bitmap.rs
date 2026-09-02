@@ -131,30 +131,43 @@ impl ImageBitmap {
                 .cloned()
                 .unwrap_or_else(|| Value::new_undefined(ctx.clone()))
         };
+        // Argument conversion first, left to right, then the algorithm's own
+        // checks in order: empty source rectangle, empty resize target, and
+        // only then whether the source is a type phase 0 can read.
+        let rectangle = cropping
+            .then(|| {
+                Ok::<_, Error>([
+                    i64::from(WebIdl::long(ctx, arg(1))?),
+                    i64::from(WebIdl::long(ctx, arg(2))?),
+                    i64::from(WebIdl::long(ctx, arg(3))?),
+                    i64::from(WebIdl::long(ctx, arg(4))?),
+                ])
+            })
+            .transpose()?;
         let options = BitmapOptions::parse(ctx, arg(if cropping { 5 } else { 1 }))?;
+        if let Some([_, _, across, down]) = rectangle
+            && (across == 0 || down == 0)
+        {
+            return Err(Exception::throw_range(
+                ctx,
+                "createImageBitmap source rectangle is empty",
+            ));
+        }
+        options.reject_empty_resize(ctx)?;
         let source = Self::source(ctx, arg(0))?;
-        let (left, top, width, height) = if cropping {
-            let left = i64::from(WebIdl::long(ctx, arg(1))?);
-            let top = i64::from(WebIdl::long(ctx, arg(2))?);
-            let across = i64::from(WebIdl::long(ctx, arg(3))?);
-            let down = i64::from(WebIdl::long(ctx, arg(4))?);
-            if across == 0 || down == 0 {
-                return Err(Exception::throw_range(
-                    ctx,
-                    "createImageBitmap source rectangle is empty",
-                ));
-            }
-            // A negative extent means the rectangle grows the other way.
-            (
-                left.min(left + across),
-                top.min(top + down),
-                across.unsigned_abs() as u32,
-                down.unsigned_abs() as u32,
-            )
-        } else {
-            (0, 0, source.width, source.height)
-        };
-        let (output_width, output_height) = options.output_size(width, height, ctx)?;
+        // A negative extent means the rectangle grows the other way.
+        let (left, top, width, height) = rectangle.map_or(
+            (0, 0, source.width, source.height),
+            |[left, top, across, down]| {
+                (
+                    left.min(left + across),
+                    top.min(top + down),
+                    across.unsigned_abs() as u32,
+                    down.unsigned_abs() as u32,
+                )
+            },
+        );
+        let (output_width, output_height) = options.output_size(width, height);
         Class::instance(
             ctx.clone(),
             source
@@ -453,9 +466,7 @@ impl BitmapOptions {
             .transpose()
     }
 
-    /// One given dimension fixes the other by aspect ratio; neither keeps the
-    /// cropped size.
-    fn output_size(&self, width: u32, height: u32, ctx: &Ctx<'_>) -> Result<(u32, u32)> {
+    fn reject_empty_resize(&self, ctx: &Ctx<'_>) -> Result<()> {
         if self.resize_width == Some(0) || self.resize_height == Some(0) {
             return Err(den_util::throw_dom_exception(
                 ctx,
@@ -463,14 +474,20 @@ impl BitmapOptions {
                 "createImageBitmap resize target is empty",
             ));
         }
+        Ok(())
+    }
+
+    /// One given dimension fixes the other by aspect ratio; neither keeps the
+    /// cropped size.
+    fn output_size(&self, width: u32, height: u32) -> (u32, u32) {
         let scaled = |extent: u32, from: u32, to: u32| {
             (u64::from(extent) * u64::from(to)).div_ceil(u64::from(from)) as u32
         };
-        Ok(match (self.resize_width, self.resize_height) {
+        match (self.resize_width, self.resize_height) {
             (Some(across), Some(down)) => (across, down),
             (Some(across), None) => (across, scaled(height, width, across)),
             (None, Some(down)) => (scaled(width, height, down), down),
             (None, None) => (width, height),
-        })
+        }
     }
 }
