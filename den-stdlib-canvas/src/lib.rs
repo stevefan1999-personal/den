@@ -9,8 +9,8 @@
 pub mod bitmap;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, TypedArray, U8Clamped, Value,
-    atom::PredefinedAtom, class::Trace, prelude::*,
+    Coerced, Ctx, Error, Exception, FromJs as _, JsLifetime, Object, Result, TypedArray, U8Clamped,
+    Value, atom::PredefinedAtom, class::Trace, prelude::*,
 };
 
 pub use crate::js_canvas_module as js_canvas;
@@ -159,40 +159,35 @@ impl<'js> ImageData<'js> {
         // the byte length *is* the element count, and a detached buffer
         // reports none and falls into the zero-elements check below.
         let length = data.as_bytes().map_or(0, <[u8]>::len);
+        // HTML reports each of these as a DOMException rather than as a plain
+        // ECMAScript error: a bad buffer is an "InvalidStateError", a bad
+        // dimension an "IndexSizeError".
+        let buffer_fault =
+            |message: &str| den_util::throw_dom_exception(&ctx, "InvalidStateError", message);
         if length == 0 {
-            return Err(Exception::throw_type(
-                &ctx,
-                "ImageData source data has zero elements",
-            ));
+            return Err(buffer_fault("ImageData source data has zero elements"));
         }
         if !length.is_multiple_of(CHANNELS) {
-            return Err(Exception::throw_type(
-                &ctx,
+            return Err(buffer_fault(
                 "ImageData source data length is not a multiple of 4",
             ));
         }
         if width == 0 {
-            return Err(Exception::throw_range(
-                &ctx,
-                "ImageData source width is zero",
-            ));
+            return Err(Self::bad_dimension(&ctx, "ImageData source width is zero"));
         }
         if height == Some(0) {
-            return Err(Exception::throw_range(
-                &ctx,
-                "ImageData source height is zero",
-            ));
+            return Err(Self::bad_dimension(&ctx, "ImageData source height is zero"));
         }
         let pixels = length.div_euclid(CHANNELS);
         if !pixels.is_multiple_of(width as usize) {
-            return Err(Exception::throw_range(
+            return Err(Self::bad_dimension(
                 &ctx,
                 "ImageData source data length is not a multiple of (4 * width)",
             ));
         }
         let derived = pixels.div_euclid(width as usize) as u32;
         if height.is_some_and(|given| given != derived) {
-            return Err(Exception::throw_range(
+            return Err(Self::bad_dimension(
                 &ctx,
                 "ImageData source data length is not equal to (4 * width * height)",
             ));
@@ -224,18 +219,18 @@ impl<'js> ImageData<'js> {
         )
     }
 
+    /// An "IndexSizeError" DOMException: how HTML reports every dimension
+    /// fault in either `ImageData` overload.
+    fn bad_dimension(ctx: &Ctx<'_>, message: &str) -> Error {
+        den_util::throw_dom_exception(ctx, "IndexSizeError", message)
+    }
+
     fn allocated(ctx: &Ctx<'js>, width: u32, height: u32, color_space: ColorSpace) -> Result<Self> {
         if width == 0 {
-            return Err(Exception::throw_range(
-                ctx,
-                "ImageData source width is zero",
-            ));
+            return Err(Self::bad_dimension(ctx, "ImageData source width is zero"));
         }
         if height == 0 {
-            return Err(Exception::throw_range(
-                ctx,
-                "ImageData source height is zero",
-            ));
+            return Err(Self::bad_dimension(ctx, "ImageData source height is zero"));
         }
         let length = (width as usize)
             .checked_mul(height as usize)
