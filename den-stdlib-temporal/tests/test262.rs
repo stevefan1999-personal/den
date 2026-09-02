@@ -117,6 +117,10 @@ const SUPPORTED_FEATURES: &[&str] = &[
     // A calendar feature (eras and non-ISO month codes), not an Intl object:
     // 1556 intl402 files carry it and run fine without any Intl constructor.
     "Intl.Era-monthcode",
+    // Intl phase 1: the namespace, `getCanonicalLocales` and `Intl.Locale`
+    // (including its locale-info accessors) are installed by den-stdlib-intl.
+    "Intl.Locale",
+    "Intl.Locale-info",
 ];
 
 fn should_skip(meta: &Frontmatter) -> Option<&'static str> {
