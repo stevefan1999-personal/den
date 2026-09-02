@@ -46,22 +46,27 @@ impl<'js> GPURenderPipeline<'js> {
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderPassEncoder")]
 pub struct GPURenderPassEncoder<'js> {
-    device: Class<'js, GPUDevice<'js>>,
+    device:  Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
-    label:  RefCell<String>,
+    label:   RefCell<String>,
     #[qjs(skip_trace)]
-    pass:   Recorder<wgpu::RenderPass<'static>>,
+    pass:    Recorder<wgpu::RenderPass<'static>>,
+    /// The parent command encoder, which a pass command the safe API cannot
+    /// forward has to invalidate; WebGPU reports that at its `finish`.
+    #[qjs(skip_trace)]
+    encoder: Rc<Recorder<wgpu::CommandEncoder>>,
 }
 
 impl<'js> GPURenderPassEncoder<'js> {
     pub(crate) fn new(
         device: Class<'js, GPUDevice<'js>>, label: String,
-        pass: Recorder<wgpu::RenderPass<'static>>,
+        pass: Recorder<wgpu::RenderPass<'static>>, encoder: Rc<Recorder<wgpu::CommandEncoder>>,
     ) -> Self {
         Self {
             device,
             label: RefCell::new(label),
             pass,
+            encoder,
         }
     }
 
@@ -120,7 +125,7 @@ impl<'js> GPURenderPassEncoder<'js> {
                     pass.set_vertex_buffer(slot.0, Option::<wgpu::BufferSlice<'_>>::None);
                 }
                 Some(Ok(Some(slice))) => pass.set_vertex_buffer(slot.0, slice),
-                Some(Err(message)) => self.pass.defer(message),
+                Some(Err(message)) => self.encoder.defer(message),
             }
         })
     }
@@ -137,7 +142,7 @@ impl<'js> GPURenderPassEncoder<'js> {
             match buffer_slice(&buffer, offset, size) {
                 Ok(Some(slice)) => pass.set_index_buffer(slice, format),
                 Ok(None) => {}
-                Err(message) => self.pass.defer(message),
+                Err(message) => self.encoder.defer(message),
             }
         })
     }

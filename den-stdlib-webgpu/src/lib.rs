@@ -1284,7 +1284,7 @@ impl<'js> GPUDevice<'js> {
             Ok(GPUCommandEncoder {
                 device:  this.0.clone(),
                 label:   RefCell::new(label),
-                encoder: Recorder::open("GPUCommandEncoder", encoder),
+                encoder: Rc::new(Recorder::open("GPUCommandEncoder", encoder)),
             }),
         )
     }
@@ -2152,8 +2152,11 @@ pub struct GPUCommandEncoder<'js> {
     device:  Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
     label:   RefCell<String>,
+    /// Shared with the render passes it opens: a pass command the safe API
+    /// cannot forward invalidates the encoder, and WebGPU reports that at
+    /// `finish`.
     #[qjs(skip_trace)]
-    encoder: Recorder<wgpu::CommandEncoder>,
+    encoder: Rc<Recorder<wgpu::CommandEncoder>>,
 }
 
 impl<'js> GPUCommandEncoder<'js> {
@@ -2245,6 +2248,7 @@ impl<'js> GPUCommandEncoder<'js> {
                 || Recorder::invalid("GPURenderPassEncoder"),
                 |pass| Recorder::open("GPURenderPassEncoder", pass),
             ),
+            self.encoder.clone(),
         ))
     }
 
