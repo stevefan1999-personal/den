@@ -6,81 +6,24 @@ use rquickjs::{
 
 use crate::{
     ErrorSink, GPUBindGroup, GPUBindGroupLayout, GPUBuffer, GPUDevice, GPUPipelineLayout,
-    GPUShaderModule, JsU32, JsU64, format, illegal_constructor, label,
+    GPUShaderModule, JsU32, JsU64, Recorder, buffer_slice, format, illegal_constructor, label,
     query::{self, GPUQuerySet},
     texture::{GPUTexture, GPUTextureView},
     type_error,
 };
 
-const DRAW_INDIRECT_BYTES: u64 = 16;
-const DRAW_INDEXED_INDIRECT_BYTES: u64 = 20;
-
-fn set_vertex_bound(bounds: &mut Vec<Option<u64>>, slot: usize, value: Option<u64>) {
-    if bounds.len() <= slot {
-        bounds.resize(slot + 1, None);
-    }
-    if let Some(bound) = bounds.get_mut(slot) {
-        *bound = value;
-    }
-}
-
-#[derive(Clone, Copy)]
-struct VertexLayout {
-    pub array_stride: u64,
-    pub step_mode:    wgpu::VertexStepMode,
-    pub last_stride:  u64,
-}
-
-fn vertex_required_bytes(layout: &VertexLayout, count: u32) -> u64 {
-    if count == 0 {
-        0
-    } else if layout.array_stride == 0 {
-        layout.last_stride
-    } else {
-        u64::from(count - 1)
-            .saturating_mul(layout.array_stride)
-            .saturating_add(layout.last_stride)
-    }
-}
-
-fn vertex_buffers_oob(
-    layouts: &[Option<VertexLayout>], bounds: &[Option<u64>], vertex_end: u32, instance_end: u32,
-    indexed: bool,
-) -> bool {
-    layouts.iter().enumerate().any(|(slot, layout)| {
-        let Some(layout) = layout else {
-            return false;
-        };
-        let count = match layout.step_mode {
-            wgpu::VertexStepMode::Vertex if indexed && layout.array_stride != 0 => return false,
-            wgpu::VertexStepMode::Vertex => vertex_end,
-            wgpu::VertexStepMode::Instance => instance_end,
-        };
-        let bound = bounds.get(slot).copied().flatten().unwrap_or(0);
-        bound < vertex_required_bytes(layout, count)
-    })
-}
-
 struct RenderPipelineInfo {
-    invalid:            bool,
-    device_id:          u64,
-    is_strip:           bool,
-    strip_index_format: Option<wgpu::IndexFormat>,
-    dummy:              bool,
-    layout_groups:      crate::PipelineLayoutGroups,
-    auto_layout:        bool,
-    auto_layout_id:     u64,
-    empty_bgl:          wgpu::BindGroupLayout,
-    bgls:               Rc<[wgpu::BindGroupLayout]>,
-    errors:             crate::ErrorSink,
-    max_bind_groups:    u32,
-    immediate_slots:    u64,
-    vertex_layouts:     Rc<[Option<VertexLayout>]>,
+    dummy:           bool,
+    layout_groups:   crate::PipelineLayoutGroups,
+    empty_bgl:       wgpu::BindGroupLayout,
+    bgls:            Rc<[wgpu::BindGroupLayout]>,
+    max_bind_groups: u32,
 }
 
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderPipeline")]
-pub struct GPURenderPipeline {
+pub struct GPURenderPipeline<'js> {
+    device:           Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
     pub(crate) inner: wgpu::RenderPipeline,
     #[qjs(skip_trace)]
@@ -90,7 +33,7 @@ pub struct GPURenderPipeline {
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl GPURenderPipeline {
+impl<'js> GPURenderPipeline<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
@@ -102,9 +45,10 @@ impl GPURenderPipeline {
 
     pub(crate) fn dummy(&self) -> bool { self.info.dummy }
 
-    pub fn get_bind_group_layout(&self, index: JsU32) -> GPUBindGroupLayout {
+    pub fn get_bind_group_layout(&self, index: JsU32, ctx: Ctx<'js>) -> Result<GPUBindGroupLayout> {
         if index.0 >= self.info.max_bind_groups {
-            self.info
+            self.device
+                .borrow()
                 .errors
                 .validation("bind group layout index is out of range");
         }
@@ -123,234 +67,49 @@ impl GPURenderPipeline {
                 .cloned()
                 .unwrap_or_else(|| self.info.empty_bgl.clone())
         };
-        GPUBindGroupLayout {
+        crate::flush_uncaptured(&self.device, &ctx)?;
+        Ok(GPUBindGroupLayout {
             inner,
             label: Rc::new(RefCell::new(String::new())),
-            kinds: crate::kinds_from_entries(&entries),
             entries,
-            auto: self.info.auto_layout,
-            auto_layout_id: self.info.auto_layout_id,
-        }
+        })
     }
 }
 
-struct RenderPassState {
-    parent:             Rc<RefCell<crate::EncoderState>>,
-    open:               bool,
-    pass:               Option<wgpu::RenderPass<'static>>,
-    index_count:        Option<u64>,
-    index_format:       Option<wgpu::IndexFormat>,
-    index_native:       bool,
-    is_strip:           bool,
-    strip_index_format: Option<wgpu::IndexFormat>,
-    pipeline_bound:     bool,
-    native_pipeline:    bool,
-    depth_read_only:    Option<bool>,
-    stencil_read_only:  Option<bool>,
-    color_formats:      Rc<[Option<wgpu::TextureFormat>]>,
-    depth_format:       Option<wgpu::TextureFormat>,
-    sample_count:       u32,
-    occlusion_native:   bool,
-    occlusion_count:    u32,
-    occlusion_open:     bool,
-    occlusion_used:     Vec<u32>,
-    attachment_uses:    Vec<crate::TextureUse>,
-    bound_groups:       crate::BindGroupSet,
-    pipeline_groups:    crate::PipelineLayoutGroups,
-    pipeline_auto:      bool,
-    pipeline_auto_id:   u64,
-    vertex_layouts:     Rc<[Option<VertexLayout>]>,
-    vertex_bounds:      Vec<Option<u64>>,
-    immediate_required: u64,
-    immediate_filled:   u64,
-}
-
-impl RenderPassState {
-    fn end(&mut self) -> bool {
-        if !self.open {
-            return false;
-        }
-        self.open = false;
-        let pass = self.pass.take();
-        let mut parent = self.parent.borrow_mut();
-        if let Some(pass) = pass {
-            if parent.encoder.is_none() {
-                let _pass = std::mem::ManuallyDrop::new(pass);
-            } else {
-                drop(pass);
-            }
-        }
-        parent.open_passes = parent.open_passes.saturating_sub(1);
-        true
-    }
-}
-
-impl Drop for RenderPassState {
-    fn drop(&mut self) { self.end(); }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderPassEncoder")]
-pub struct GPURenderPassEncoder {
+pub struct GPURenderPassEncoder<'js> {
+    device: Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
-    errors: ErrorSink,
+    label:  RefCell<String>,
     #[qjs(skip_trace)]
-    label:  Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    state:  Rc<RefCell<RenderPassState>>,
+    pass:   Recorder<wgpu::RenderPass<'static>>,
 }
 
-impl GPURenderPassEncoder {
-    fn mark_invalid(&self) { self.state.borrow_mut().parent.borrow_mut().invalid = true; }
-
-    fn skip_native_draw(&self) -> bool {
-        let (mismatch, missing, skip) = {
-            let state = self.state.borrow();
-            let mismatch = !state.pipeline_bound
-                || crate::pipeline_bind_groups_mismatch(
-                    &state.pipeline_groups,
-                    state.pipeline_auto,
-                    state.pipeline_auto_id,
-                    &state.bound_groups,
-                );
-            let skip = !state.native_pipeline
-                || state.immediate_required != 0
-                || state.parent.borrow().invalid;
-            (
-                mismatch,
-                crate::immediates_unfilled(state.immediate_required, state.immediate_filled),
-                skip,
-            )
-        };
-        if mismatch || missing {
-            self.mark_invalid();
-            true
-        } else {
-            skip
-        }
-    }
-
-    fn draw_vertex_oob(&self, vertex_end: u32, instance_end: u32, indexed: bool) -> bool {
-        let state = self.state.borrow();
-        vertex_buffers_oob(
-            &state.vertex_layouts,
-            &state.vertex_bounds,
-            vertex_end,
-            instance_end,
-            indexed,
-        )
-    }
-
-    fn ensure_open(&self) -> bool {
-        if self.state.borrow().open {
-            true
-        } else {
-            self.errors
-                .validation("GPURenderPassEncoder is already ended");
-            false
-        }
-    }
-
+impl<'js> GPURenderPassEncoder<'js> {
     pub(crate) fn new(
-        parent: Rc<RefCell<crate::EncoderState>>, errors: ErrorSink, begun: BegunRenderPass,
+        device: Class<'js, GPUDevice<'js>>, label: String,
+        pass: Recorder<wgpu::RenderPass<'static>>,
     ) -> Self {
         Self {
-            errors,
-            label: Rc::new(RefCell::new(begun.label)),
-            state: Rc::new(RefCell::new(RenderPassState {
-                parent,
-                open: true,
-                pass: begun.pass,
-                index_count: None,
-                index_format: None,
-                index_native: false,
-                is_strip: false,
-                strip_index_format: None,
-                pipeline_bound: false,
-                native_pipeline: false,
-                depth_read_only: begun.depth_read_only,
-                stencil_read_only: begun.stencil_read_only,
-                color_formats: begun.color_formats,
-                depth_format: begun.depth_format,
-                sample_count: begun.sample_count,
-                occlusion_native: begun.occlusion_native,
-                occlusion_count: begun.occlusion_count,
-                occlusion_open: false,
-                occlusion_used: Vec::new(),
-                attachment_uses: begun.attachment_uses,
-                bound_groups: crate::BindGroupSet::default(),
-                pipeline_groups: crate::empty_layout_groups(),
-                pipeline_auto: false,
-                pipeline_auto_id: 0,
-                vertex_layouts: Rc::from(Vec::new()),
-                vertex_bounds: Vec::new(),
-                immediate_required: 0,
-                immediate_filled: 0,
-            })),
+            device,
+            label: RefCell::new(label),
+            pass,
         }
     }
 
-    pub(crate) fn finished(
-        label: String, parent: Rc<RefCell<crate::EncoderState>>, errors: ErrorSink,
-    ) -> Self {
-        Self {
-            errors,
-            label: Rc::new(RefCell::new(label)),
-            state: Rc::new(RefCell::new(RenderPassState {
-                parent,
-                open: false,
-                pass: None,
-                index_count: None,
-                index_format: None,
-                index_native: false,
-                is_strip: false,
-                strip_index_format: None,
-                pipeline_bound: false,
-                native_pipeline: false,
-                depth_read_only: None,
-                stencil_read_only: None,
-                color_formats: Rc::from(Vec::new()),
-                depth_format: None,
-                sample_count: 1,
-                occlusion_native: false,
-                occlusion_count: 0,
-                occlusion_open: false,
-                occlusion_used: Vec::new(),
-                attachment_uses: Vec::new(),
-                bound_groups: crate::BindGroupSet::default(),
-                pipeline_groups: crate::empty_layout_groups(),
-                pipeline_auto: false,
-                pipeline_auto_id: 0,
-                vertex_layouts: Rc::from(Vec::new()),
-                vertex_bounds: Vec::new(),
-                immediate_required: 0,
-                immediate_filled: 0,
-            })),
-        }
-    }
+    fn errors(&self) -> ErrorSink { self.device.borrow().errors.clone() }
 
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "JS methods return Result; keep one helper shape"
-    )]
-    fn with_pass<T: Default>(
-        &self, ctx: &Ctx<'_>, operation: impl FnOnce(&mut wgpu::RenderPass<'static>) -> T,
-    ) -> Result<T> {
-        let _ = ctx;
-        if !self.ensure_open() {
-            return Ok(T::default());
-        }
-        Ok(self
-            .state
-            .borrow_mut()
-            .pass
-            .as_mut()
-            .map_or_else(T::default, operation))
+    fn record(
+        &self, ctx: &Ctx<'js>, operation: impl FnOnce(&mut wgpu::RenderPass<'static>),
+    ) -> Result<()> {
+        self.pass.record(&self.errors(), operation);
+        crate::flush_uncaptured(&self.device, ctx)
     }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl GPURenderPassEncoder {
+impl<'js> GPURenderPassEncoder<'js> {
     #[qjs(constructor)]
     pub fn new_illegal(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
@@ -360,358 +119,107 @@ impl GPURenderPassEncoder {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
-    pub fn set_pipeline<'js>(
-        &self, pipeline: Class<'js, GPURenderPipeline>, ctx: Ctx<'js>,
+    pub fn set_pipeline(
+        &self, pipeline: Class<'js, GPURenderPipeline<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let pipeline = pipeline.borrow();
-        let device_id = self.state.borrow().parent.borrow().device_id;
-        if pipeline.info.invalid || pipeline.info.device_id != device_id {
-            self.mark_invalid();
-            return Ok(());
-        }
-        let native = !pipeline.info.dummy;
-        let inner = native.then(|| pipeline.inner.clone());
-        {
-            let mut state = self.state.borrow_mut();
-            state.is_strip = pipeline.info.is_strip;
-            state.strip_index_format = pipeline.info.strip_index_format;
-            state.pipeline_bound = true;
-            state.pipeline_groups = pipeline.info.layout_groups.clone();
-            state.pipeline_auto = pipeline.info.auto_layout;
-            state.pipeline_auto_id = pipeline.info.auto_layout_id;
-            state.vertex_layouts = pipeline.info.vertex_layouts.clone();
-            state.immediate_required = pipeline.info.immediate_slots;
-            state.native_pipeline = native;
-        }
-        drop(pipeline);
-        if let Some(inner) = inner {
-            self.with_pass(&ctx, |pass| pass.set_pipeline(&inner))?;
-        }
-        Ok(())
+        self.record(&ctx, |pass| pass.set_pipeline(&pipeline.borrow().inner))
     }
 
-    pub fn set_bind_group<'js>(
+    pub fn set_bind_group(
         &self, index: JsU32, bind_group: Option<Class<'js, GPUBindGroup>>,
         dynamic_offsets: Opt<Value<'js>>, start: Opt<Option<JsU64>>, length: Opt<Option<JsU64>>,
         ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let offsets = crate::dynamic_offsets(&ctx, dynamic_offsets, start, length)?;
-        let native = bind_group.as_ref().and_then(|group| {
-            let group = group.borrow();
-            (!group.invalid).then(|| group.inner.clone())
-        });
-        let bind_group = bind_group.as_ref().map(|group| group.borrow());
-        let parent = self.state.borrow().parent.clone();
-        let (device_id, max_bind_groups) = {
-            let parent = parent.borrow();
-            (parent.device_id, parent.max_bind_groups)
-        };
-        let applied = {
-            let mut state = self.state.borrow_mut();
-            state.bound_groups.apply(
-                index.0,
-                bind_group.as_deref(),
-                &offsets,
-                device_id,
-                max_bind_groups,
-            )
-        };
-        {
-            let mut parent = parent.borrow_mut();
-            parent.used_destroyed.extend(applied.used_destroyed);
-            parent.used_mapped.extend(applied.used_mapped);
-        }
-        if applied.invalid {
-            self.mark_invalid();
-            return Ok(());
-        }
-        let skip_native = {
-            let state = self.state.borrow();
-            let extras = bind_group.as_ref().map_or_else(
-                || std::rc::Rc::from(Vec::new()),
-                |group| crate::bind_group_texture_uses(group),
-            );
-            crate::skip_native_texture_bind(&state.attachment_uses, &extras)
-        };
-        drop(bind_group);
-        if skip_native {
-            return Ok(());
-        }
-        self.with_pass(&ctx, |pass| {
-            pass.set_bind_group(index.0, native.as_ref(), &offsets);
+        let group = bind_group.map(|group| group.borrow().inner.clone());
+        self.record(&ctx, |pass| {
+            pass.set_bind_group(index.0, group.as_ref(), &offsets);
         })
     }
 
-    pub fn set_vertex_buffer<'js>(
+    pub fn set_vertex_buffer(
         &self, slot: JsU32, buffer: Option<Class<'js, GPUBuffer>>, offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let Some(buffer) = buffer else {
-            set_vertex_bound(
-                &mut self.state.borrow_mut().vertex_bounds,
-                slot.0 as usize,
-                None,
-            );
-            return self.with_pass(&ctx, |pass| {
-                pass.set_vertex_buffer(slot.0, Option::<wgpu::BufferSlice<'_>>::None);
-            });
-        };
-        let buffer = buffer.borrow();
+        let buffer = buffer.map(|buffer| buffer.borrow().inner.clone());
         let offset = offset.0.flatten().map_or(0, |value| value.0);
-        let parent = self.state.borrow().parent.clone();
-        let (device_id, max_vertex_buffers) = {
-            let parent = parent.borrow();
-            (parent.device_id, parent.max_vertex_buffers)
-        };
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset,
-            size.0.flatten().map(|value| value.0),
-            wgpu::BufferUsages::VERTEX,
-            4,
-            device_id,
-            slot.0 >= max_vertex_buffers,
-        );
-        parent.borrow_mut().used_mapped.push(buffer.state.clone());
-        if bind.invalid {
-            parent.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        let Some((start, end)) = bind.slice else {
-            set_vertex_bound(
-                &mut self.state.borrow_mut().vertex_bounds,
-                slot.0 as usize,
-                Some(0),
-            );
-            return Ok(());
-        };
-        set_vertex_bound(
-            &mut self.state.borrow_mut().vertex_bounds,
-            slot.0 as usize,
-            Some(end.saturating_sub(start)),
-        );
-        let inner = buffer.inner.clone();
-        drop(buffer);
-        self.with_pass(&ctx, |pass| {
-            pass.set_vertex_buffer(slot.0, static_slice(&inner, start, end));
+        let size = size.0.flatten().map(|value| value.0);
+        self.record(&ctx, |pass| {
+            match buffer
+                .as_ref()
+                .map(|buffer| buffer_slice(buffer, offset, size))
+            {
+                None | Some(Ok(None)) => {
+                    pass.set_vertex_buffer(slot.0, Option::<wgpu::BufferSlice<'_>>::None);
+                }
+                Some(Ok(Some(slice))) => pass.set_vertex_buffer(slot.0, slice),
+                Some(Err(message)) => self.pass.defer(message),
+            }
         })
     }
 
-    pub fn set_index_buffer<'js>(
+    pub fn set_index_buffer(
         &self, buffer: Class<'js, GPUBuffer>, index_format: String, offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let format = format::index_format(&index_format, &ctx)?;
-        let stride = match format {
-            wgpu::IndexFormat::Uint16 => 2,
-            wgpu::IndexFormat::Uint32 => 4,
-        };
-        let buffer = buffer.borrow();
+        let buffer = buffer.borrow().inner.clone();
         let offset = offset.0.flatten().map_or(0, |value| value.0);
-        let parent = self.state.borrow().parent.clone();
-        let device_id = parent.borrow().device_id;
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset,
-            size.0.flatten().map(|value| value.0),
-            wgpu::BufferUsages::INDEX,
-            stride,
-            device_id,
-            false,
-        );
-        parent.borrow_mut().used_mapped.push(buffer.state.clone());
-        if bind.invalid {
-            parent.borrow_mut().invalid = true;
-            let mut state = self.state.borrow_mut();
-            state.index_count = Some(0);
-            state.index_format = Some(format);
-            state.index_native = false;
-            return Ok(());
-        }
-        self.state.borrow_mut().index_format = Some(format);
-        let Some((start, end)) = bind.slice else {
-            let mut state = self.state.borrow_mut();
-            state.index_count = Some(0);
-            state.index_native = false;
-            return Ok(());
-        };
-        {
-            let mut state = self.state.borrow_mut();
-            state.index_count = Some(index_count(end - start, stride));
-            state.index_native = true;
-        }
-        let inner = buffer.inner.clone();
-        drop(buffer);
-        self.with_pass(&ctx, |pass| {
-            pass.set_index_buffer(static_slice(&inner, start, end), format);
+        let size = size.0.flatten().map(|value| value.0);
+        self.record(&ctx, |pass| {
+            match buffer_slice(&buffer, offset, size) {
+                Ok(Some(slice)) => pass.set_index_buffer(slice, format),
+                Ok(None) => {}
+                Err(message) => self.pass.defer(message),
+            }
         })
     }
 
     pub fn draw(
         &self, vertex_count: JsU32, instance_count: Opt<Option<JsU32>>,
-        first_vertex: Opt<Option<JsU32>>, first_instance: Opt<Option<JsU32>>, ctx: Ctx<'_>,
+        first_vertex: Opt<Option<JsU32>>, first_instance: Opt<Option<JsU32>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let first_vertex = first_vertex.0.flatten().map_or(0, |value| value.0);
         let instance_count = instance_count.0.flatten().map_or(1, |value| value.0);
         let first_instance = first_instance.0.flatten().map_or(0, |value| value.0);
-        let Some(vertex_end) = first_vertex.checked_add(vertex_count.0) else {
-            self.mark_invalid();
-            return Ok(());
-        };
-        let Some(instance_end) = first_instance.checked_add(instance_count) else {
-            self.mark_invalid();
-            return Ok(());
-        };
-        if self.draw_vertex_oob(vertex_end, instance_end, false) {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if self.skip_native_draw() {
-            return Ok(());
-        }
-        self.with_pass(&ctx, |pass| {
-            pass.draw(first_vertex..vertex_end, first_instance..instance_end);
+        self.record(&ctx, |pass| {
+            pass.draw(
+                first_vertex..first_vertex.saturating_add(vertex_count.0),
+                first_instance..first_instance.saturating_add(instance_count),
+            );
         })
     }
 
     pub fn draw_indexed(
         &self, index_count: JsU32, instance_count: Opt<Option<JsU32>>,
-        first_index: Opt<Option<JsU32>>, base_vertex: Opt<Value<'_>>,
-        first_instance: Opt<Option<JsU32>>, ctx: Ctx<'_>,
+        first_index: Opt<Option<JsU32>>, base_vertex: Opt<Value<'js>>,
+        first_instance: Opt<Option<JsU32>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let first_index = first_index.0.flatten().map_or(0, |value| value.0);
         let instance_count = instance_count.0.flatten().map_or(1, |value| value.0);
         let first_instance = first_instance.0.flatten().map_or(0, |value| value.0);
         let base_vertex = format::signed_i32(base_vertex.0, &ctx, 0)?;
-        let Some(index_end) = first_index.checked_add(index_count.0) else {
-            self.mark_invalid();
-            return Ok(());
-        };
-        let Some(instance_end) = first_instance.checked_add(instance_count) else {
-            self.mark_invalid();
-            return Ok(());
-        };
-        let (available, strip_mismatch) = {
-            let state = self.state.borrow();
-            (
-                state.index_count.unwrap_or(0),
-                state.is_strip && state.strip_index_format != state.index_format,
-            )
-        };
-        if u64::from(index_end) > available || strip_mismatch {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if self.draw_vertex_oob(index_count.0.min(1), instance_end, true) {
-            self.mark_invalid();
-            return Ok(());
-        }
-        // Zero-sized index buffers never get a native binding; wgpu leftover
-        // "Index buffer must be set" if we still issue drawIndexed.
-        if self.skip_native_draw() || !self.state.borrow().index_native || index_count.0 == 0 {
-            return Ok(());
-        }
-        self.with_pass(&ctx, |pass| {
+        self.record(&ctx, |pass| {
             pass.draw_indexed(
-                first_index..index_end,
+                first_index..first_index.saturating_add(index_count.0),
                 base_vertex,
-                first_instance..instance_end,
+                first_instance..first_instance.saturating_add(instance_count),
             );
         })
     }
 
-    pub fn draw_indirect<'js>(
+    pub fn draw_indirect(
         &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let buffer = buffer.borrow();
-        let parent = self.state.borrow().parent.clone();
-        let device_id = parent.borrow().device_id;
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset.0,
-            Some(DRAW_INDIRECT_BYTES),
-            wgpu::BufferUsages::INDIRECT,
-            4,
-            device_id,
-            false,
-        );
-        parent.borrow_mut().used_mapped.push(buffer.state.clone());
-        if bind.invalid {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if self.skip_native_draw() {
-            return Ok(());
-        }
-        let inner = buffer.inner.clone();
-        let offset = offset.0;
-        drop(buffer);
-        self.with_pass(&ctx, |pass| {
-            pass.draw_indirect(&inner, offset);
-        })
+        let buffer = buffer.borrow().inner.clone();
+        self.record(&ctx, |pass| pass.draw_indirect(&buffer, offset.0))
     }
 
-    pub fn draw_indexed_indirect<'js>(
+    pub fn draw_indexed_indirect(
         &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let buffer = buffer.borrow();
-        let parent = self.state.borrow().parent.clone();
-        let device_id = parent.borrow().device_id;
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset.0,
-            Some(DRAW_INDEXED_INDIRECT_BYTES),
-            wgpu::BufferUsages::INDIRECT,
-            4,
-            device_id,
-            false,
-        );
-        parent.borrow_mut().used_mapped.push(buffer.state.clone());
-        if bind.invalid {
-            self.mark_invalid();
-            return Ok(());
-        }
-        let strip_mismatch = {
-            let state = self.state.borrow();
-            state.is_strip && state.strip_index_format != state.index_format
-        };
-        if strip_mismatch {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if self.skip_native_draw() || !self.state.borrow().index_native {
-            return Ok(());
-        }
-        let inner = buffer.inner.clone();
-        let offset = offset.0;
-        drop(buffer);
-        self.with_pass(&ctx, |pass| {
-            pass.draw_indexed_indirect(&inner, offset);
-        })
+        let buffer = buffer.borrow().inner.clone();
+        self.record(&ctx, |pass| pass.draw_indexed_indirect(&buffer, offset.0))
     }
 
     #[expect(
@@ -720,9 +228,9 @@ impl GPURenderPassEncoder {
     )]
     pub fn set_viewport(
         &self, x: f64, y: f64, width: f64, height: f64, min_depth: f64, max_depth: f64,
-        ctx: Ctx<'_>,
+        ctx: Ctx<'js>,
     ) -> Result<()> {
-        self.with_pass(&ctx, |pass| {
+        self.record(&ctx, |pass| {
             pass.set_viewport(
                 x as f32,
                 y as f32,
@@ -735,258 +243,71 @@ impl GPURenderPassEncoder {
     }
 
     pub fn set_scissor_rect(
-        &self, x: JsU32, y: JsU32, width: JsU32, height: JsU32, ctx: Ctx<'_>,
+        &self, x: JsU32, y: JsU32, width: JsU32, height: JsU32, ctx: Ctx<'js>,
     ) -> Result<()> {
-        self.with_pass(&ctx, |pass| {
+        self.record(&ctx, |pass| {
             pass.set_scissor_rect(x.0, y.0, width.0, height.0);
         })
     }
 
-    pub fn set_blend_constant<'js>(&self, color: Value<'js>, ctx: Ctx<'js>) -> Result<()> {
+    pub fn set_blend_constant(&self, color: Value<'js>, ctx: Ctx<'js>) -> Result<()> {
         let color = format::color(Some(color), &ctx)?;
-        self.with_pass(&ctx, |pass| pass.set_blend_constant(color))
+        self.record(&ctx, |pass| pass.set_blend_constant(color))
     }
 
-    pub fn set_stencil_reference(&self, reference: JsU32, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, |pass| pass.set_stencil_reference(reference.0))
+    pub fn set_stencil_reference(&self, reference: JsU32, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, |pass| pass.set_stencil_reference(reference.0))
     }
 
-    pub fn begin_occlusion_query(&self, query_index: JsU32, ctx: Ctx<'_>) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let query_index = query_index.0;
-        let (out_of_range, nested, duplicate, native) = {
-            let mut state = self.state.borrow_mut();
-            let out_of_range = query_index >= state.occlusion_count;
-            let nested = state.occlusion_open;
-            let duplicate = state.occlusion_used.contains(&query_index);
-            if !out_of_range && !nested && !duplicate {
-                state.occlusion_open = true;
-                state.occlusion_used.push(query_index);
-            }
-            (out_of_range, nested, duplicate, state.occlusion_native)
-        };
-        if out_of_range || nested || duplicate {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if !native {
-            let _ = ctx;
-            return Ok(());
-        }
-        self.with_pass(&ctx, |pass| pass.begin_occlusion_query(query_index))
+    pub fn begin_occlusion_query(&self, query_index: JsU32, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, |pass| pass.begin_occlusion_query(query_index.0))
     }
 
-    pub fn end_occlusion_query(&self, ctx: Ctx<'_>) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let (was_open, native) = {
-            let mut state = self.state.borrow_mut();
-            let was_open = state.occlusion_open;
-            state.occlusion_open = false;
-            (was_open, state.occlusion_native)
-        };
-        if !was_open {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if !native {
-            let _ = ctx;
-            return Ok(());
-        }
-        self.with_pass(&ctx, wgpu::RenderPass::end_occlusion_query)
+    pub fn end_occlusion_query(&self, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, wgpu::RenderPass::end_occlusion_query)
     }
 
-    pub fn execute_bundles<'js>(&self, bundles: Array<'js>, ctx: Ctx<'js>) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let mut used_mapped = Vec::new();
-        let mut used_destroyed = Vec::new();
-        let mut mismatch = false;
-        let mut replays = Vec::new();
-        let (pass_depth, pass_stencil, pass_colors, pass_depth_format, pass_samples, device_id) = {
-            let state = self.state.borrow();
-            (
-                state.depth_read_only,
-                state.stencil_read_only,
-                state.color_formats.clone(),
-                state.depth_format,
-                state.sample_count,
-                state.parent.borrow().device_id,
-            )
-        };
-        for bundle in bundles.iter::<Class<GPURenderBundle>>() {
-            let bundle = bundle?;
-            let bundle = bundle.borrow();
-            let info = &bundle.info;
-            used_mapped.extend(info.used_mapped.iter().cloned());
-            used_destroyed.extend(info.used_destroyed.iter().cloned());
-            mismatch |= info.device_id != device_id
-                || info.color_formats.as_ref() != pass_colors.as_ref()
-                || info.depth_format != pass_depth_format
-                || info.sample_count != pass_samples
-                || bundle_pass_readonly_mismatch(
-                    pass_depth,
-                    pass_stencil,
-                    info.depth_read_only,
-                    info.stencil_read_only,
-                );
-            replays.push(info.commands.clone());
-        }
-        {
-            let parent = self.state.borrow().parent.clone();
-            let mut parent = parent.borrow_mut();
-            parent.used_mapped.extend(used_mapped);
-            parent.used_destroyed.extend(used_destroyed);
-        }
-        if mismatch {
-            self.mark_invalid();
-        }
-        self.state.borrow_mut().immediate_filled = 0;
-        let parent_invalid = self.state.borrow().parent.borrow().invalid;
-        if !mismatch && !parent_invalid {
-            self.with_pass(&ctx, |pass| {
-                for commands in &replays {
-                    for command in commands.iter() {
-                        command.replay(pass);
-                    }
-                }
-            })?;
-        }
-        Ok(())
+    pub fn execute_bundles(&self, bundles: Array<'js>, ctx: Ctx<'js>) -> Result<()> {
+        let bundles = bundles
+            .iter::<Class<GPURenderBundle>>()
+            .map(|bundle| Ok(bundle?.borrow().inner.clone()))
+            .collect::<Result<Vec<_>>>()?;
+        self.record(&ctx, |pass| pass.execute_bundles(bundles.iter()))
     }
 
-    pub fn end(&self, ctx: Ctx<'_>) -> Result<()> {
-        let _ = ctx;
-        if self.state.borrow().occlusion_open {
-            self.mark_invalid();
-        }
-        {
-            let state = self.state.borrow();
-            let mut uses = state.attachment_uses.clone();
-            uses.extend(
-                state
-                    .bound_groups
-                    .slots
-                    .iter()
-                    .filter_map(Option::as_ref)
-                    .flat_map(|slot| slot.textures.iter().copied()),
-            );
-            if crate::texture_uses_conflict(&uses, false) {
-                drop(state);
-                self.mark_invalid();
-            }
-        }
-        if !self.state.borrow_mut().end() {
-            self.errors
-                .validation("GPURenderPassEncoder is already ended");
-        }
-        Ok(())
+    pub fn end(&self, ctx: Ctx<'js>) -> Result<()> {
+        // Dropping the pass ends it; wgpu validates the recorded commands
+        // here and reports through the sink.
+        self.pass.end(&self.errors(), drop);
+        crate::flush_uncaptured(&self.device, &ctx)
     }
 
-    pub fn push_debug_group(&self, value: String, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, |pass| pass.push_debug_group(&value))
+    pub fn push_debug_group(&self, value: String, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, |pass| pass.push_debug_group(&value))
     }
 
-    pub fn pop_debug_group(&self, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, wgpu::RenderPass::pop_debug_group)
+    pub fn pop_debug_group(&self, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, wgpu::RenderPass::pop_debug_group)
     }
 
-    pub fn insert_debug_marker(&self, value: String, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, |pass| pass.insert_debug_marker(&value))
+    pub fn insert_debug_marker(&self, value: String, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, |pass| pass.insert_debug_marker(&value))
     }
 
-    pub fn set_immediates<'js>(
+    pub fn set_immediates(
         &self, offset: JsU32, data: Value<'js>, data_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let bytes = crate::immediates_bytes(data, data_offset, size, &ctx)?;
-        let max = self.state.borrow().parent.borrow().max_immediate_size;
-        if crate::immediates_range_invalid(offset.0, bytes.len(), max) {
-            self.mark_invalid();
-        } else {
-            let slots = crate::immediate_slots_from_range(offset.0, bytes.len());
-            self.state.borrow_mut().immediate_filled |= slots;
-        }
-        Ok(())
+        self.record(&ctx, |pass| pass.set_immediates(offset.0, &bytes))
     }
-}
-
-fn bundle_pass_readonly_mismatch(
-    pass_depth: Option<bool>, pass_stencil: Option<bool>, bundle_depth: Option<bool>,
-    bundle_stencil: Option<bool>,
-) -> bool {
-    let depth = match (pass_depth, bundle_depth) {
-        (Some(pass), Some(bundle)) => pass && bundle != pass,
-        _ => false,
-    };
-    let stencil = match (pass_stencil, bundle_stencil) {
-        (Some(pass), Some(bundle)) => pass && bundle != pass,
-        _ => false,
-    };
-    depth || stencil
-}
-
-enum BundleCmd {
-    SetPipeline(wgpu::RenderPipeline),
-    SetVertexBuffer {
-        slot:   u32,
-        buffer: wgpu::Buffer,
-        start:  u64,
-        end:    u64,
-    },
-    UnsetVertexBuffer {
-        slot: u32,
-    },
-    SetIndexBuffer {
-        buffer: wgpu::Buffer,
-        format: wgpu::IndexFormat,
-        start:  u64,
-        end:    u64,
-    },
-    Draw {
-        first_vertex:   u32,
-        vertex_end:     u32,
-        first_instance: u32,
-        instance_end:   u32,
-    },
-    DrawIndexed {
-        first_index:    u32,
-        index_end:      u32,
-        base_vertex:    i32,
-        first_instance: u32,
-        instance_end:   u32,
-    },
-    SetBindGroup {
-        index:   u32,
-        group:   Option<wgpu::BindGroup>,
-        offsets: Vec<u32>,
-    },
-}
-
-struct BundleInfo {
-    used_mapped:       Rc<[Rc<RefCell<crate::BufferMapState>>]>,
-    used_destroyed:    Rc<[Rc<std::cell::Cell<bool>>]>,
-    device_id:         u64,
-    color_formats:     Rc<[Option<wgpu::TextureFormat>]>,
-    depth_format:      Option<wgpu::TextureFormat>,
-    sample_count:      u32,
-    depth_read_only:   Option<bool>,
-    stencil_read_only: Option<bool>,
-    commands:          Rc<[BundleCmd]>,
 }
 
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderBundle")]
 pub struct GPURenderBundle {
     #[qjs(skip_trace)]
-    info:  Rc<BundleInfo>,
+    inner: wgpu::RenderBundle,
     #[qjs(skip_trace)]
     label: Rc<RefCell<String>>,
 }
@@ -1003,161 +324,56 @@ impl GPURenderBundle {
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 }
 
-struct BundleEncoderState {
-    encoder:            Option<wgpu::RenderBundleEncoder<'static>>,
-    open:               bool,
-    debug_groups:       usize,
-    invalid:            bool,
-    device_id:          u64,
-    max_vertex_buffers: u32,
-    max_immediate_size: u32,
-    max_bind_groups:    u32,
-    index_count:        Option<u64>,
-    index_format:       Option<wgpu::IndexFormat>,
-    is_strip:           bool,
-    strip_index_format: Option<wgpu::IndexFormat>,
-    used_mapped:        Vec<Rc<RefCell<crate::BufferMapState>>>,
-    used_destroyed:     Vec<Rc<std::cell::Cell<bool>>>,
-    color_formats:      Rc<[Option<wgpu::TextureFormat>]>,
-    depth_format:       Option<wgpu::TextureFormat>,
-    sample_count:       u32,
-    depth_read_only:    Option<bool>,
-    stencil_read_only:  Option<bool>,
-    pipeline_bound:     bool,
-    native_pipeline:    bool,
-    bound_groups:       crate::BindGroupSet,
-    pipeline_groups:    crate::PipelineLayoutGroups,
-    pipeline_auto:      bool,
-    pipeline_auto_id:   u64,
-    vertex_layouts:     Rc<[Option<VertexLayout>]>,
-    vertex_bounds:      Vec<Option<u64>>,
-    immediate_required: u64,
-    immediate_filled:   u64,
-    commands:           Vec<BundleCmd>,
+/// Handles whose borrows `extend_borrow` stretched to `'static`.
+#[expect(dead_code, reason = "held only to outlive the encoder")]
+enum Retained {
+    Pipeline(wgpu::RenderPipeline),
+    Buffer(wgpu::Buffer),
 }
 
-#[derive(Clone, Trace, JsLifetime)]
+/// `RenderBundleEncoder<'a>` demands `&'a` borrows of the pipeline and the
+/// index/indirect buffers, but trunk wgpu-core clones the resource `Arc` at
+/// call time (`command/bundle.rs`, `RenderCommand<ArcReferences>`) and never
+/// keeps the borrow. Every caller pushes a clone into `Retained` first, so the
+/// resource also outlives the encoder by construction.
+///
+/// SAFETY: `value` is alive for the duration of the call that receives the
+/// extended reference, and nothing dereferences it afterwards.
+unsafe fn extend_borrow<T>(value: &T) -> &'static T { unsafe { &*std::ptr::from_ref(value) } }
+
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderBundleEncoder")]
-pub struct GPURenderBundleEncoder {
+pub struct GPURenderBundleEncoder<'js> {
+    device:   Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
-    errors: ErrorSink,
+    label:    RefCell<String>,
     #[qjs(skip_trace)]
-    label:  Rc<RefCell<String>>,
+    encoder:  Recorder<wgpu::RenderBundleEncoder<'static>>,
     #[qjs(skip_trace)]
-    state:  Rc<RefCell<BundleEncoderState>>,
+    retained: RefCell<Vec<Retained>>,
 }
 
-impl GPURenderBundleEncoder {
-    fn ensure_open(&self) -> bool {
-        if self.state.borrow().open {
-            true
-        } else {
-            self.errors
-                .validation("GPURenderBundleEncoder is already finished");
-            false
-        }
+impl<'js> GPURenderBundleEncoder<'js> {
+    fn errors(&self) -> ErrorSink { self.device.borrow().errors.clone() }
+
+    fn record(
+        &self, ctx: &Ctx<'js>, operation: impl FnOnce(&mut wgpu::RenderBundleEncoder<'static>),
+    ) -> Result<()> {
+        self.encoder.record(&self.errors(), operation);
+        crate::flush_uncaptured(&self.device, ctx)
     }
 
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "JS methods return Result; keep one helper shape"
-    )]
-    fn with_encoder<T: Default>(
-        &self, ctx: &Ctx<'_>, operation: impl FnOnce(&mut wgpu::RenderBundleEncoder<'static>) -> T,
-    ) -> Result<T> {
-        let _ = (ctx, operation);
-        if !self.ensure_open() {
-            return Ok(T::default());
-        }
-        Ok(T::default())
-    }
-
-    fn skip_native_bundle_draw(&self) -> bool {
-        let state = self.state.borrow();
-        !state.native_pipeline || state.immediate_required != 0 || state.invalid
-    }
-
-    fn draw_invalid(&self, vertex_end: u32, instance_end: u32, indexed: bool) -> bool {
-        let state = self.state.borrow();
-        if !state.pipeline_bound {
-            return true;
-        }
-        crate::pipeline_bind_groups_mismatch(
-            &state.pipeline_groups,
-            state.pipeline_auto,
-            state.pipeline_auto_id,
-            &state.bound_groups,
-        ) || vertex_buffers_oob(
-            &state.vertex_layouts,
-            &state.vertex_bounds,
-            vertex_end,
-            instance_end,
-            indexed,
-        ) || crate::immediates_unfilled(state.immediate_required, state.immediate_filled)
-    }
-}
-
-fn index_count(bytes: u64, stride: u64) -> u64 {
-    match stride {
-        4 => bytes >> 2,
-        _ => bytes >> 1,
-    }
-}
-
-fn static_slice(buffer: &wgpu::Buffer, offset: u64, end: u64) -> wgpu::BufferSlice<'static> {
-    // SAFETY: same as `static_ref`; the slice is consumed by the encoder call.
-    unsafe { std::mem::transmute(buffer.slice(offset..end)) }
-}
-
-impl BundleCmd {
-    fn replay(&self, pass: &mut wgpu::RenderPass<'_>) {
-        match self {
-            Self::SetPipeline(pipeline) => pass.set_pipeline(pipeline),
-            Self::SetVertexBuffer {
-                slot,
-                buffer,
-                start,
-                end,
-            } => pass.set_vertex_buffer(*slot, static_slice(buffer, *start, *end)),
-            Self::UnsetVertexBuffer { slot } => {
-                pass.set_vertex_buffer(*slot, Option::<wgpu::BufferSlice<'_>>::None);
-            }
-            Self::SetIndexBuffer {
-                buffer,
-                format,
-                start,
-                end,
-            } => pass.set_index_buffer(static_slice(buffer, *start, *end), *format),
-            Self::Draw {
-                first_vertex,
-                vertex_end,
-                first_instance,
-                instance_end,
-            } => pass.draw(*first_vertex..*vertex_end, *first_instance..*instance_end),
-            Self::DrawIndexed {
-                first_index,
-                index_end,
-                base_vertex,
-                first_instance,
-                instance_end,
-            } => {
-                pass.draw_indexed(
-                    *first_index..*index_end,
-                    *base_vertex,
-                    *first_instance..*instance_end,
-                );
-            }
-            Self::SetBindGroup {
-                index,
-                group,
-                offsets,
-            } => pass.set_bind_group(*index, group.as_ref(), offsets),
-        }
+    fn retain_buffer(&self, buffer: &wgpu::Buffer) -> &'static wgpu::Buffer {
+        self.retained
+            .borrow_mut()
+            .push(Retained::Buffer(buffer.clone()));
+        // SAFETY: see `extend_borrow`; the clone above outlives the encoder.
+        unsafe { extend_borrow(buffer) }
     }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl GPURenderBundleEncoder {
+impl<'js> GPURenderBundleEncoder<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
@@ -1167,415 +383,134 @@ impl GPURenderBundleEncoder {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
-    pub fn push_debug_group(&self, value: String, ctx: Ctx<'_>) -> Result<()> {
-        let _ = value;
-        self.state.borrow_mut().debug_groups += 1;
-        self.with_encoder(&ctx, |_| {})
-    }
+    // The safe `wgpu` crate exposes no debug groups on bundle encoders, so
+    // these are no-ops; wgpu-core never sees them.
+    pub fn push_debug_group(&self, _value: String) {}
 
-    pub fn pop_debug_group(&self, ctx: Ctx<'_>) -> Result<()> {
-        let mut state = self.state.borrow_mut();
-        if state.debug_groups == 0 {
-            state.invalid = true;
-        } else {
-            state.debug_groups -= 1;
-        }
-        drop(state);
-        self.with_encoder(&ctx, |_| {})
-    }
+    pub fn pop_debug_group(&self) {}
 
-    pub fn insert_debug_marker(&self, value: String, ctx: Ctx<'_>) -> Result<()> {
-        let _ = value;
-        self.with_encoder(&ctx, |_| {})
-    }
+    pub fn insert_debug_marker(&self, _value: String) {}
 
-    pub fn set_pipeline<'js>(
-        &self, pipeline: Class<'js, GPURenderPipeline>, _ctx: Ctx<'js>,
+    pub fn set_pipeline(
+        &self, pipeline: Class<'js, GPURenderPipeline<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let pipeline = pipeline.borrow();
-        let device_id = self.state.borrow().device_id;
-        if pipeline.info.invalid || pipeline.info.device_id != device_id {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        let native = !pipeline.info.dummy;
-        let inner = native.then(|| pipeline.inner.clone());
-        {
-            let mut state = self.state.borrow_mut();
-            state.is_strip = pipeline.info.is_strip;
-            state.strip_index_format = pipeline.info.strip_index_format;
-            state.pipeline_bound = true;
-            state.pipeline_groups = pipeline.info.layout_groups.clone();
-            state.pipeline_auto = pipeline.info.auto_layout;
-            state.pipeline_auto_id = pipeline.info.auto_layout_id;
-            state.vertex_layouts = pipeline.info.vertex_layouts.clone();
-            state.native_pipeline = native;
-            state.immediate_required = pipeline.info.immediate_slots;
-        }
-        drop(pipeline);
-        if let Some(inner) = inner {
-            self.state
-                .borrow_mut()
-                .commands
-                .push(BundleCmd::SetPipeline(inner));
-        }
-        Ok(())
+        let pipeline = pipeline.borrow().inner.clone();
+        self.retained
+            .borrow_mut()
+            .push(Retained::Pipeline(pipeline.clone()));
+        // SAFETY: see `extend_borrow`; the clone above outlives the encoder.
+        let pipeline = unsafe { extend_borrow(&pipeline) };
+        self.record(&ctx, |encoder| encoder.set_pipeline(pipeline))
     }
 
-    pub fn set_bind_group<'js>(
+    pub fn set_bind_group(
         &self, index: JsU32, bind_group: Option<Class<'js, GPUBindGroup>>,
         dynamic_offsets: Opt<Value<'js>>, start: Opt<Option<JsU64>>, length: Opt<Option<JsU64>>,
         ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let offsets = crate::dynamic_offsets(&ctx, dynamic_offsets, start, length)?;
-        let native = bind_group.as_ref().and_then(|group| {
-            let group = group.borrow();
-            (!group.invalid).then(|| group.inner.clone())
-        });
-        let bind_group = bind_group.as_ref().map(|group| group.borrow());
-        let applied = {
-            let mut state = self.state.borrow_mut();
-            let device_id = state.device_id;
-            let max_bind_groups = state.max_bind_groups;
-            state.bound_groups.apply(
-                index.0,
-                bind_group.as_deref(),
-                &offsets,
-                device_id,
-                max_bind_groups,
-            )
-        };
-        {
-            let mut state = self.state.borrow_mut();
-            state.used_destroyed.extend(applied.used_destroyed);
-            state.used_mapped.extend(applied.used_mapped);
-            if applied.invalid {
-                state.invalid = true;
-            } else {
-                state.commands.push(BundleCmd::SetBindGroup {
-                    index: index.0,
-                    group: native,
-                    offsets,
-                });
-            }
-        }
-        let _ = ctx;
-        Ok(())
+        let group = bind_group.map(|group| group.borrow().inner.clone());
+        self.record(&ctx, |encoder| {
+            encoder.set_bind_group(index.0, group.as_ref(), &offsets);
+        })
     }
 
-    pub fn set_vertex_buffer<'js>(
+    pub fn set_vertex_buffer(
         &self, slot: JsU32, buffer: Option<Class<'js, GPUBuffer>>, offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let Some(buffer) = buffer else {
-            set_vertex_bound(
-                &mut self.state.borrow_mut().vertex_bounds,
-                slot.0 as usize,
-                None,
-            );
-            self.state
-                .borrow_mut()
-                .commands
-                .push(BundleCmd::UnsetVertexBuffer { slot: slot.0 });
-            return Ok(());
-        };
-        let buffer = buffer.borrow();
+        let buffer = buffer.map(|buffer| buffer.borrow().inner.clone());
         let offset = offset.0.flatten().map_or(0, |value| value.0);
-        let (device_id, max_vertex_buffers) = {
-            let state = self.state.borrow();
-            (state.device_id, state.max_vertex_buffers)
-        };
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset,
-            size.0.flatten().map(|value| value.0),
-            wgpu::BufferUsages::VERTEX,
-            4,
-            device_id,
-            slot.0 >= max_vertex_buffers,
-        );
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        if bind.invalid {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        let Some((start, end)) = bind.slice else {
-            set_vertex_bound(
-                &mut self.state.borrow_mut().vertex_bounds,
-                slot.0 as usize,
-                Some(0),
-            );
-            return Ok(());
-        };
-        set_vertex_bound(
-            &mut self.state.borrow_mut().vertex_bounds,
-            slot.0 as usize,
-            Some(end.saturating_sub(start)),
-        );
-        let inner = buffer.inner.clone();
-        drop(buffer);
-        let _ = ctx;
-        self.state
-            .borrow_mut()
-            .commands
-            .push(BundleCmd::SetVertexBuffer {
-                slot: slot.0,
-                buffer: inner,
-                start,
-                end,
-            });
-        Ok(())
+        let size = size.0.flatten().map(|value| value.0);
+        self.record(&ctx, |encoder| {
+            match buffer
+                .as_ref()
+                .map(|buffer| buffer_slice(buffer, offset, size))
+            {
+                None | Some(Ok(None)) => {
+                    encoder.set_vertex_buffer(slot.0, Option::<wgpu::BufferSlice<'_>>::None);
+                }
+                Some(Ok(Some(slice))) => encoder.set_vertex_buffer(slot.0, slice),
+                Some(Err(message)) => self.encoder.defer(message),
+            }
+        })
     }
 
-    pub fn set_index_buffer<'js>(
+    pub fn set_index_buffer(
         &self, buffer: Class<'js, GPUBuffer>, index_format: String, offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let format = format::index_format(&index_format, &ctx)?;
-        let stride = match format {
-            wgpu::IndexFormat::Uint16 => 2,
-            wgpu::IndexFormat::Uint32 => 4,
-        };
-        let buffer = buffer.borrow();
+        let buffer = self.retain_buffer(&buffer.borrow().inner);
         let offset = offset.0.flatten().map_or(0, |value| value.0);
-        let device_id = self.state.borrow().device_id;
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset,
-            size.0.flatten().map(|value| value.0),
-            wgpu::BufferUsages::INDEX,
-            stride,
-            device_id,
-            false,
-        );
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        if bind.invalid {
-            let mut state = self.state.borrow_mut();
-            state.invalid = true;
-            state.index_count = Some(0);
-            state.index_format = Some(format);
-            return Ok(());
-        }
-        self.state.borrow_mut().index_format = Some(format);
-        let Some((start, end)) = bind.slice else {
-            self.state.borrow_mut().index_count = Some(0);
-            return Ok(());
-        };
-        self.state.borrow_mut().index_count = Some(index_count(end - start, stride));
-        let inner = buffer.inner.clone();
-        drop(buffer);
-        let _ = ctx;
-        self.state
-            .borrow_mut()
-            .commands
-            .push(BundleCmd::SetIndexBuffer {
-                buffer: inner,
-                format,
-                start,
-                end,
-            });
-        Ok(())
+        let size = size.0.flatten().map(|value| value.0);
+        self.record(&ctx, |encoder| {
+            match buffer_slice(buffer, offset, size) {
+                Ok(Some(slice)) => encoder.set_index_buffer(slice, format),
+                Ok(None) => {}
+                Err(message) => self.encoder.defer(message),
+            }
+        })
     }
 
     pub fn draw(
         &self, vertex_count: JsU32, instance_count: Opt<Option<JsU32>>,
-        first_vertex: Opt<Option<JsU32>>, first_instance: Opt<Option<JsU32>>, ctx: Ctx<'_>,
+        first_vertex: Opt<Option<JsU32>>, first_instance: Opt<Option<JsU32>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let first_vertex = first_vertex.0.flatten().map_or(0, |value| value.0);
         let instance_count = instance_count.0.flatten().map_or(1, |value| value.0);
         let first_instance = first_instance.0.flatten().map_or(0, |value| value.0);
-        let Some(vertex_end) = first_vertex.checked_add(vertex_count.0) else {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        };
-        let Some(instance_end) = first_instance.checked_add(instance_count) else {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        };
-        if self.draw_invalid(vertex_end, instance_end, false) {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        if !self.skip_native_bundle_draw() {
-            self.state.borrow_mut().commands.push(BundleCmd::Draw {
-                first_vertex,
-                vertex_end,
-                first_instance,
-                instance_end,
-            });
-        }
-        let _ = ctx;
-        Ok(())
+        self.record(&ctx, |encoder| {
+            encoder.draw(
+                first_vertex..first_vertex.saturating_add(vertex_count.0),
+                first_instance..first_instance.saturating_add(instance_count),
+            );
+        })
     }
 
     pub fn draw_indexed(
         &self, index_count: JsU32, instance_count: Opt<Option<JsU32>>,
-        first_index: Opt<Option<JsU32>>, base_vertex: Opt<Value<'_>>,
-        first_instance: Opt<Option<JsU32>>, ctx: Ctx<'_>,
+        first_index: Opt<Option<JsU32>>, base_vertex: Opt<Value<'js>>,
+        first_instance: Opt<Option<JsU32>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let first_index = first_index.0.flatten().map_or(0, |value| value.0);
         let instance_count = instance_count.0.flatten().map_or(1, |value| value.0);
         let first_instance = first_instance.0.flatten().map_or(0, |value| value.0);
         let base_vertex = format::signed_i32(base_vertex.0, &ctx, 0)?;
-        let Some(index_end) = first_index.checked_add(index_count.0) else {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        };
-        let Some(instance_end) = first_instance.checked_add(instance_count) else {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        };
-        let (available, strip_mismatch) = {
-            let state = self.state.borrow();
-            (
-                state.index_count.unwrap_or(0),
-                state.is_strip && state.strip_index_format != state.index_format,
-            )
-        };
-        if u64::from(index_end) > available || strip_mismatch {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        if self.draw_invalid(index_count.0.min(1), instance_end, true) {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        if !self.skip_native_bundle_draw() && available > 0 {
-            self.state
-                .borrow_mut()
-                .commands
-                .push(BundleCmd::DrawIndexed {
-                    first_index,
-                    index_end,
-                    base_vertex,
-                    first_instance,
-                    instance_end,
-                });
-        }
-        let _ = ctx;
-        Ok(())
+        self.record(&ctx, |encoder| {
+            encoder.draw_indexed(
+                first_index..first_index.saturating_add(index_count.0),
+                base_vertex,
+                first_instance..first_instance.saturating_add(instance_count),
+            );
+        })
     }
 
-    pub fn set_immediates<'js>(
+    pub fn draw_indirect(
+        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let buffer = self.retain_buffer(&buffer.borrow().inner);
+        self.record(&ctx, |encoder| encoder.draw_indirect(buffer, offset.0))
+    }
+
+    pub fn draw_indexed_indirect(
+        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
+    ) -> Result<()> {
+        let buffer = self.retain_buffer(&buffer.borrow().inner);
+        self.record(&ctx, |encoder| {
+            encoder.draw_indexed_indirect(buffer, offset.0);
+        })
+    }
+
+    pub fn set_immediates(
         &self, offset: JsU32, data: Value<'js>, data_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let bytes = crate::immediates_bytes(data, data_offset, size, &ctx)?;
-        let max = self.state.borrow().max_immediate_size;
-        if crate::immediates_range_invalid(offset.0, bytes.len(), max) {
-            self.state.borrow_mut().invalid = true;
-        } else {
-            let slots = crate::immediate_slots_from_range(offset.0, bytes.len());
-            self.state.borrow_mut().immediate_filled |= slots;
-        }
-        Ok(())
+        self.record(&ctx, |encoder| encoder.set_immediates(offset.0, &bytes))
     }
 
-    pub fn draw_indirect<'js>(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
-    ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let buffer = buffer.borrow();
-        let device_id = self.state.borrow().device_id;
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset.0,
-            Some(DRAW_INDIRECT_BYTES),
-            wgpu::BufferUsages::INDIRECT,
-            4,
-            device_id,
-            false,
-        );
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        if bind.invalid {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        if self.draw_invalid(0, 0, false) {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        let _ = ctx;
-        Ok(())
-    }
-
-    pub fn draw_indexed_indirect<'js>(
-        &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
-    ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let buffer = buffer.borrow();
-        let device_id = self.state.borrow().device_id;
-        let bind = crate::buffer_bind(
-            &buffer,
-            offset.0,
-            Some(DRAW_INDEXED_INDIRECT_BYTES),
-            wgpu::BufferUsages::INDIRECT,
-            4,
-            device_id,
-            false,
-        );
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        if bind.invalid {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        if bind.slice.is_none() {
-            return Ok(());
-        }
-        let strip_mismatch = {
-            let state = self.state.borrow();
-            state.is_strip && state.strip_index_format != state.index_format
-        };
-        if strip_mismatch {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        if self.draw_invalid(0, 0, true) {
-            self.state.borrow_mut().invalid = true;
-            return Ok(());
-        }
-        let _ = ctx;
-        Ok(())
-    }
-
-    pub fn finish<'js>(
+    pub fn finish(
         &self, descriptor: Opt<Option<Object<'js>>>, ctx: Ctx<'js>,
     ) -> Result<GPURenderBundle> {
         let label = descriptor
@@ -1585,163 +520,84 @@ impl GPURenderBundleEncoder {
             .map(crate::label)
             .transpose()?
             .unwrap_or_default();
-        let mut state = self.state.borrow_mut();
-        if !state.open {
-            self.errors
-                .validation("GPURenderBundleEncoder is already finished");
-            drop(state);
-            return Ok(GPURenderBundle {
-                info:  Rc::new(BundleInfo {
-                    used_mapped:       Rc::from(Vec::new()),
-                    used_destroyed:    Rc::from(Vec::new()),
-                    device_id:         0,
-                    color_formats:     Rc::from(Vec::new()),
-                    depth_format:      None,
-                    sample_count:      1,
-                    depth_read_only:   None,
-                    stencil_read_only: None,
-                    commands:          Rc::from(Vec::new()),
-                }),
-                label: Rc::new(RefCell::new(label)),
-            });
-        }
-        state.open = false;
-        if state.invalid || state.debug_groups != 0 {
-            self.errors
-                .validation("GPURenderBundleEncoder debug groups are unbalanced");
-        }
-        let skip_replay = state.invalid || state.debug_groups != 0;
-        let encoder = state.encoder.take();
-        let used_mapped = Rc::<[Rc<RefCell<crate::BufferMapState>>]>::from(std::mem::take(
-            &mut state.used_mapped,
-        ));
-        let used_destroyed =
-            Rc::<[Rc<std::cell::Cell<bool>>]>::from(std::mem::take(&mut state.used_destroyed));
-        let commands = if skip_replay {
-            Rc::from(Vec::new())
-        } else {
-            Rc::from(std::mem::take(&mut state.commands))
-        };
-        let device_id = state.device_id;
-        let color_formats = state.color_formats.clone();
-        let depth_format = state.depth_format;
-        let sample_count = state.sample_count;
-        let depth_read_only = state.depth_read_only;
-        let stencil_read_only = state.stencil_read_only;
-        drop(state);
-        drop(encoder);
-        let _ = ctx;
+        let errors = self.errors();
+        let inner = self.encoder.end(&errors, |encoder| {
+            encoder.finish(&wgpu::RenderBundleDescriptor {
+                label: (!label.is_empty()).then_some(label.as_str()),
+            })
+        });
+        crate::flush_uncaptured(&self.device, &ctx)?;
+        // A second finish has no encoder left; the error was reported above
+        // and an empty bundle stands in for the invalid one wgpu would return.
+        let inner = inner.unwrap_or_else(|| {
+            self.device
+                .borrow()
+                .device
+                .create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor::default())
+                .finish(&wgpu::RenderBundleDescriptor::default())
+        });
         Ok(GPURenderBundle {
-            info:  Rc::new(BundleInfo {
-                used_mapped,
-                used_destroyed,
-                device_id,
-                color_formats,
-                depth_format,
-                sample_count,
-                depth_read_only,
-                stencil_read_only,
-                commands,
-            }),
+            inner,
             label: Rc::new(RefCell::new(label)),
         })
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bundle encoder construction needs device limits plus the JS descriptor"
-)]
-pub fn new_bundle_encoder(
-    device: &wgpu::Device, descriptor: Object<'_>, ctx: &Ctx<'_>, errors: ErrorSink,
-    device_id: u64, max_vertex_buffers: u32, max_immediate_size: u32, max_bind_groups: u32,
-) -> Result<GPURenderBundleEncoder> {
+pub fn new_bundle_encoder<'js>(
+    device: &Class<'js, GPUDevice<'js>>, descriptor: Object<'js>, ctx: &Ctx<'js>,
+) -> Result<GPURenderBundleEncoder<'js>> {
     let label = label(&descriptor)?;
+    let features = device.borrow().device.features();
     let color_formats = descriptor
         .get::<_, Array>("colorFormats")
-        .map_err(|_error| type_error(ctx, "colorFormats must be an array"))?;
-    let mut formats = Vec::with_capacity(color_formats.len());
-    for format in color_formats.iter::<Option<String>>() {
-        let parsed = format?
-            .map(|name| format::texture_format(&name, ctx))
-            .transpose()?;
-        if let Some(format) = parsed
-            && !device.features().contains(format.required_features())
-        {
-            return Err(type_error(ctx, "color format requires missing features"));
-        }
-        formats.push(parsed);
-    }
-    let depth_stencil = match descriptor.get::<_, Option<String>>("depthStencilFormat")? {
-        Some(name) => {
-            let format = format::texture_format(&name, ctx)?;
-            if !device.features().contains(format.required_features()) {
-                return Err(type_error(
-                    ctx,
-                    "depth stencil format requires missing features",
-                ));
-            }
-            Some(wgpu::RenderBundleDepthStencil {
-                format,
-                depth_read_only: descriptor
+        .map_err(|_error| type_error(ctx, "colorFormats must be an array"))?
+        .iter::<Option<String>>()
+        .map(|name| {
+            name?
+                .map(|name| format::texture_format_with_features(&name, features, ctx))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let depth_stencil = descriptor
+        .get::<_, Option<String>>("depthStencilFormat")?
+        .map(|name| {
+            Ok::<_, rquickjs::Error>(wgpu::RenderBundleDepthStencil {
+                format:            format::texture_format_with_features(&name, features, ctx)?,
+                depth_read_only:   descriptor
                     .get::<_, Option<bool>>("depthReadOnly")?
                     .unwrap_or_default(),
                 stencil_read_only: descriptor
                     .get::<_, Option<bool>>("stencilReadOnly")?
                     .unwrap_or_default(),
             })
-        }
-        None => None,
-    };
+        })
+        .transpose()?;
     let sample_count = descriptor
         .get::<_, Option<JsU32>>("sampleCount")?
-        .map_or(1, |value| value.0.max(1));
-    let _ = device;
+        .map_or(1, |value| value.0);
+    let encoder =
+        device
+            .borrow()
+            .device
+            .create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                label: (!label.is_empty()).then_some(label.as_str()),
+                color_formats: &color_formats,
+                depth_stencil,
+                sample_count,
+                multiview: None,
+            });
     Ok(GPURenderBundleEncoder {
-        errors,
-        label: Rc::new(RefCell::new(label)),
-        state: Rc::new(RefCell::new(BundleEncoderState {
-            // wgpu 30 `RenderBundleEncoder::finish` is fatal on a worker, and
-            // Drop of an unused encoder has SIGSEGV'd CTS cartesian bundle
-            // cases. Commands are software-recorded and replayed in
-            // executeBundles.
-            encoder: None,
-            open: true,
-            debug_groups: 0,
-            invalid: false,
-            device_id,
-            max_vertex_buffers,
-            max_immediate_size,
-            max_bind_groups,
-            index_count: None,
-            index_format: None,
-            is_strip: false,
-            strip_index_format: None,
-            used_mapped: Vec::new(),
-            used_destroyed: Vec::new(),
-            color_formats: Rc::from(formats),
-            depth_format: depth_stencil.as_ref().map(|state| state.format),
-            sample_count,
-            depth_read_only: depth_stencil.as_ref().map(|state| state.depth_read_only),
-            stencil_read_only: depth_stencil.as_ref().map(|state| state.stencil_read_only),
-            pipeline_bound: false,
-            native_pipeline: false,
-            bound_groups: crate::BindGroupSet::default(),
-            pipeline_groups: crate::empty_layout_groups(),
-            pipeline_auto: false,
-            pipeline_auto_id: 0,
-            vertex_layouts: Rc::from(Vec::new()),
-            vertex_bounds: Vec::new(),
-            immediate_required: 0,
-            immediate_filled: 0,
-            commands: Vec::new(),
-        })),
+        device:   device.clone(),
+        label:    RefCell::new(label),
+        encoder:  Recorder::open("GPURenderBundleEncoder", encoder),
+        retained: RefCell::new(Vec::new()),
     })
 }
 
 pub fn create_pipeline<'js>(
-    device: &GPUDevice<'_>, descriptor: Object<'js>, ctx: &Ctx<'js>,
-) -> Result<(GPURenderPipeline, bool)> {
+    device_class: &Class<'js, GPUDevice<'js>>, descriptor: Object<'js>, ctx: &Ctx<'js>,
+) -> Result<(GPURenderPipeline<'js>, bool)> {
+    let device = device_class.borrow();
     let label = label(&descriptor)?;
     let layout_value: Value = descriptor.get("layout")?;
     let (layout, layout_id, layout_groups, layout_immediate) = if layout_value.is_undefined()
@@ -2023,12 +879,6 @@ pub fn create_pipeline<'js>(
     let integer_filter = layout_groups
         .as_deref()
         .is_some_and(crate::layout_filtering_nonfilterable);
-    let auto_layout = layout.is_none();
-    let auto_layout_id = if auto_layout {
-        crate::next_resource_id()
-    } else {
-        0
-    };
     let stored_groups = layout_groups.unwrap_or_else(|| {
         crate::auto_layout_groups(&[
             (wgpu::ShaderStages::VERTEX, vertex_code.as_ref()),
@@ -2038,25 +888,6 @@ pub fn create_pipeline<'js>(
             ),
         ])
     });
-    let vertex_layouts = Rc::from(
-        owned_buffers
-            .iter()
-            .map(|buffer| {
-                buffer.as_ref().map(|(stride, step, attributes)| {
-                    let last_stride = attributes
-                        .iter()
-                        .map(|attribute| attribute.offset.saturating_add(attribute.format.size()))
-                        .max()
-                        .unwrap_or(0);
-                    VertexLayout {
-                        array_stride: *stride,
-                        step_mode: *step,
-                        last_stride,
-                    }
-                })
-            })
-            .collect::<Vec<_>>(),
-    );
     let immediate_unusable = format::naga_immediate_unusable(&vertex_code)
         || fragment_code
             .as_deref()
@@ -2110,37 +941,26 @@ pub fn create_pipeline<'js>(
         || fragment_code
             .as_deref()
             .is_some_and(|code| code.contains("texture_storage_"));
-    let immediate_slots = {
-        let vertex_bytes = format::immediate_byte_size(&vertex_code);
-        let fragment_bytes = fragment_code
-            .as_deref()
-            .map_or(0, format::immediate_byte_size);
-        let vertex_slots = if vertex_bytes > format::NAGA_IMMEDIATE_SLOT_BYTES {
-            format::immediate_slots_mask(vertex_bytes)
-        } else {
-            format::immediate_slots_used(
-                &vertex_code,
-                vertex_entry.as_deref(),
-                format::ShaderStage::Vertex,
-            )
-        };
-        let fragment_slots = if fragment_bytes > format::NAGA_IMMEDIATE_SLOT_BYTES {
-            format::immediate_slots_mask(fragment_bytes)
-        } else {
-            fragment_code.as_deref().map_or(0, |code| {
-                format::immediate_slots_used(
-                    code,
-                    fragment_entry.as_deref(),
-                    format::ShaderStage::Fragment,
-                )
-            })
-        };
-        vertex_slots | fragment_slots
-    };
     let skip_immediate = vertex_code.contains("var<immediate")
         || fragment_code
             .as_deref()
             .is_some_and(|code| code.contains("var<immediate"));
+    let bgls = crate::bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
+    let max_bind_groups = device.reported_limits().max_bind_groups;
+    let make = |inner: wgpu::RenderPipeline, dummy: bool| {
+        GPURenderPipeline {
+            device: device_class.clone(),
+            inner,
+            info: Rc::new(RenderPipelineInfo {
+                dummy,
+                layout_groups: stored_groups.clone(),
+                empty_bgl: empty_bgl.clone(),
+                bgls: bgls.clone(),
+                max_bind_groups,
+            }),
+            label: Rc::new(RefCell::new(label.clone())),
+        }
+    };
     if invalid
         || has_external
         || naga_interp_skip
@@ -2149,36 +969,11 @@ pub fn create_pipeline<'js>(
         || skip_immediate
         || skip_native_inter_stage
     {
-        let bgls =
-            crate::bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
         return Ok((
-            GPURenderPipeline {
-                inner: device.fallbacks.render_pipeline.clone(),
-                info:  Rc::new(RenderPipelineInfo {
-                    invalid,
-                    device_id: device.id,
-                    is_strip: matches!(
-                        primitive.topology,
-                        wgpu::PrimitiveTopology::LineStrip | wgpu::PrimitiveTopology::TriangleStrip
-                    ),
-                    strip_index_format: primitive.strip_index_format,
-                    dummy: true,
-                    layout_groups: stored_groups,
-                    auto_layout,
-                    auto_layout_id,
-                    empty_bgl,
-                    bgls,
-                    errors: device.errors.clone(),
-                    max_bind_groups: device.reported_limits().max_bind_groups,
-                    immediate_slots,
-                    vertex_layouts,
-                }),
-                label: Rc::new(RefCell::new(label)),
-            },
+            make(device.fallbacks.render_pipeline.clone(), true),
             invalid,
         ));
     }
-    let bgls = crate::bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
     device.errors.push(crate::GPUErrorKind::Validation);
     let inner = device
         .device
@@ -2206,32 +1001,7 @@ pub fn create_pipeline<'js>(
     if let Some(error) = scoped {
         device.errors.capture(error);
     }
-    Ok((
-        GPURenderPipeline {
-            inner,
-            info: Rc::new(RenderPipelineInfo {
-                invalid,
-                device_id: device.id,
-                is_strip: matches!(
-                    primitive.topology,
-                    wgpu::PrimitiveTopology::LineStrip | wgpu::PrimitiveTopology::TriangleStrip
-                ),
-                strip_index_format: primitive.strip_index_format,
-                dummy: invalid,
-                layout_groups: stored_groups,
-                auto_layout,
-                auto_layout_id,
-                empty_bgl,
-                bgls,
-                errors: device.errors.clone(),
-                max_bind_groups: device.reported_limits().max_bind_groups,
-                immediate_slots,
-                vertex_layouts,
-            }),
-            label: Rc::new(RefCell::new(label)),
-        },
-        invalid,
-    ))
+    Ok((make(inner, invalid), invalid))
 }
 
 fn primitive_state(object: Option<Object<'_>>, ctx: &Ctx<'_>) -> Result<wgpu::PrimitiveState> {
@@ -2530,60 +1300,26 @@ fn vertex_buffers_invalid(
     attr_count as u32 > limits.max_vertex_attributes || locations.len() != attr_count
 }
 
-fn pass_attachment_texture_use<'js>(
-    attachment: &Object<'js>, key: &str, ctx: &Ctx<'js>, write: bool,
-) -> Result<Option<crate::TextureUse>> {
-    let value = attachment.get::<_, Value>(key)?;
+fn texture_or_view<'js>(value: Value<'js>, ctx: &Ctx<'js>, key: &str) -> Result<wgpu::TextureView> {
     if let Ok(view) = Class::<GPUTextureView>::from_js(ctx, value.clone()) {
-        return Ok(Some(crate::TextureUse::from_view(
-            &view.borrow(),
-            write,
-            crate::TextureUseKind::Attachment,
-        )));
+        return Ok(view.borrow().inner.clone());
     }
     if let Ok(texture) = Class::<GPUTexture>::from_js(ctx, value) {
-        return Ok(Some(crate::TextureUse::from_texture(
-            &texture.borrow(),
-            write,
-            crate::TextureUseKind::Attachment,
-        )));
-    }
-    Ok(None)
-}
-
-fn pass_attachment_view<'js>(
-    attachment: &Object<'js>, key: &str, ctx: &Ctx<'js>,
-) -> Result<(
-    wgpu::TextureView,
-    wgpu::TextureFormat,
-    u32,
-    wgpu::TextureUsages,
-)> {
-    let value = attachment
-        .get::<_, Value>(key)
-        .map_err(|_error| type_error(ctx, format!("{key} must be a WebGPU object")))?;
-    if let Ok(view) = Class::<GPUTextureView>::from_js(ctx, value.clone()) {
-        let view = view.borrow();
-        return Ok((
-            view.inner.clone(),
-            view.format,
-            view.sample_count().max(1),
-            view.usage,
-        ));
-    }
-    if let Ok(texture) = Class::<GPUTexture>::from_js(ctx, value) {
-        let texture = texture.borrow();
-        return Ok((
-            texture.default_view(),
-            texture.format,
-            texture.samples.max(1),
-            texture.usage,
-        ));
+        return Ok(texture.borrow().default_view());
     }
     Err(type_error(
         ctx,
         format!("{key} must be a GPUTexture or GPUTextureView"),
     ))
+}
+
+fn attachment_view<'js>(
+    attachment: &Object<'js>, key: &str, ctx: &Ctx<'js>,
+) -> Result<wgpu::TextureView> {
+    let value = attachment
+        .get::<_, Value>(key)
+        .map_err(|_error| type_error(ctx, format!("{key} must be a WebGPU object")))?;
+    texture_or_view(value, ctx, key)
 }
 
 struct OwnedColorAttachment {
@@ -2593,76 +1329,72 @@ struct OwnedColorAttachment {
     depth_slice: Option<u32>,
 }
 
-struct OwnedDepthStencil {
-    view:        wgpu::TextureView,
-    depth_ops:   Option<wgpu::Operations<f32>>,
-    stencil_ops: Option<wgpu::Operations<u32>>,
-}
-
-pub struct BegunRenderPass {
-    pub label:               String,
-    pub pass:                Option<wgpu::RenderPass<'static>>,
-    pub invalid:             bool,
-    pub depth_read_only:     Option<bool>,
-    pub stencil_read_only:   Option<bool>,
-    pub color_formats:       Rc<[Option<wgpu::TextureFormat>]>,
-    pub depth_format:        Option<wgpu::TextureFormat>,
-    pub sample_count:        u32,
-    pub occlusion_native:    bool,
-    pub occlusion_count:     u32,
-    pub occlusion_destroyed: Option<Rc<std::cell::Cell<bool>>>,
-    pub attachment_uses:     Vec<crate::TextureUse>,
+/// The safe `wgpu` API folds "no ops" and "read-only" into one `None`, so the
+/// pairing rules the spec checks on the descriptor are reported by den; the
+/// message is deferred to `end()` where wgpu reports its own pass errors.
+fn depth_stencil_ops<'js, V: Copy>(
+    attachment: &Object<'js>, aspect: &str, clear: Option<V>, read_only: bool, ctx: &Ctx<'js>,
+) -> Result<std::result::Result<Option<wgpu::Operations<V>>, String>> {
+    let load = attachment.get::<_, Option<String>>(format!("{aspect}LoadOp"))?;
+    let store = attachment.get::<_, Option<String>>(format!("{aspect}StoreOp"))?;
+    let (load, store) = match (load, store) {
+        (Some(load), Some(store)) => (load, store),
+        (None, None) => return Ok(Ok(None)),
+        _ => {
+            return Ok(Err(format!(
+                "{aspect}LoadOp and {aspect}StoreOp must be set together"
+            )));
+        }
+    };
+    let load = match (load.as_str(), clear) {
+        ("load", _) => wgpu::LoadOp::Load,
+        ("clear", Some(clear)) => wgpu::LoadOp::Clear(clear),
+        ("clear", None) => {
+            return Ok(Err(format!(
+                "{aspect}ClearValue must be in range when {aspect}LoadOp is clear"
+            )));
+        }
+        (value, _) => return Err(type_error(ctx, format!("invalid GPULoadOp {value}"))),
+    };
+    let ops = wgpu::Operations {
+        load,
+        store: format::store_op(&store, ctx)?,
+    };
+    Ok(Ok((!read_only).then_some(ops)))
 }
 
 pub fn begin_render_pass<'js>(
-    encoder: &mut wgpu::CommandEncoder, descriptor: Object<'js>, ctx: &Ctx<'js>, device_id: u64,
-    native: bool,
-) -> Result<BegunRenderPass> {
-    let label = label(&descriptor)?;
+    encoder: &mut wgpu::CommandEncoder, descriptor: &Object<'js>, ctx: &Ctx<'js>,
+) -> Result<(wgpu::RenderPass<'static>, Option<String>)> {
+    let label = label(descriptor)?;
     let color_value = descriptor
         .get::<_, Array>("colorAttachments")
         .map_err(|_error| type_error(ctx, "colorAttachments must be an array"))?;
     let mut owned_colors = Vec::with_capacity(color_value.len());
-    let mut color_formats = Vec::with_capacity(color_value.len());
-    let mut attachment_uses = Vec::new();
-    let mut sample_count = 1;
     for attachment in color_value.iter::<Option<Object>>() {
         let Some(attachment) = attachment? else {
             owned_colors.push(None);
-            color_formats.push(None);
             continue;
         };
-        let (view, format, samples, _usage) = pass_attachment_view(&attachment, "view", ctx)?;
-        if let Some(used) = pass_attachment_texture_use(&attachment, "view", ctx, true)? {
-            attachment_uses.push(used);
-        }
-        color_formats.push(Some(format));
-        sample_count = samples;
         let resolve = match attachment.get::<_, Option<Value>>("resolveTarget")? {
             Some(value) if !value.is_null() && !value.is_undefined() => {
-                if let Ok(view) = Class::<GPUTextureView>::from_js(ctx, value.clone()) {
-                    Some(view.borrow().inner.clone())
-                } else if let Ok(texture) = Class::<GPUTexture>::from_js(ctx, value) {
-                    Some(texture.borrow().default_view())
-                } else {
-                    return Err(type_error(
-                        ctx,
-                        "resolveTarget must be a GPUTexture or GPUTextureView",
-                    ));
-                }
+                Some(texture_or_view(value, ctx, "resolveTarget")?)
             }
             _ => None,
         };
+        let clear = format::color(attachment.get("clearValue")?, ctx)?;
         let load = match attachment.get::<_, String>("loadOp")?.as_str() {
             "load" => wgpu::LoadOp::Load,
-            "clear" => wgpu::LoadOp::Clear(format::color(attachment.get("clearValue")?, ctx)?),
+            "clear" => wgpu::LoadOp::Clear(clear),
             value => return Err(type_error(ctx, format!("invalid GPULoadOp {value}"))),
         };
-        let store = format::store_op(&attachment.get::<_, String>("storeOp")?, ctx)?;
         owned_colors.push(Some(OwnedColorAttachment {
-            view,
+            view: attachment_view(&attachment, "view", ctx)?,
             resolve,
-            ops: wgpu::Operations { load, store },
+            ops: wgpu::Operations {
+                load,
+                store: format::store_op(&attachment.get::<_, String>("storeOp")?, ctx)?,
+            },
             depth_slice: attachment
                 .get::<_, Option<JsU32>>("depthSlice")?
                 .map(|value| value.0),
@@ -2681,210 +1413,73 @@ pub fn begin_render_pass<'js>(
             })
         })
         .collect::<Vec<_>>();
-    let mut depth_format = None;
-    let mut ds_invalid = false;
+    let mut deferred = None;
     let owned_depth = descriptor
         .get::<_, Option<Object>>("depthStencilAttachment")?
         .map(|attachment| {
-            let (view, format, samples, usage) = pass_attachment_view(&attachment, "view", ctx)?;
+            let view = attachment_view(&attachment, "view", ctx)?;
+            let depth_clear = attachment
+                .get::<_, Option<f64>>("depthClearValue")?
+                .filter(|value| (0.0..=1.0).contains(value))
+                .map(|value| value as f32);
             let depth_read_only = attachment
                 .get::<_, Option<bool>>("depthReadOnly")?
                 .unwrap_or_default();
             let stencil_read_only = attachment
                 .get::<_, Option<bool>>("stencilReadOnly")?
                 .unwrap_or_default();
-            let has_depth = format.has_depth_aspect();
-            let has_stencil = format.has_stencil_aspect();
-            if has_depth
-                && let Some(used) =
-                    pass_attachment_texture_use(&attachment, "view", ctx, !depth_read_only)?
-            {
-                attachment_uses.push(used.with_aspect(wgpu::TextureAspect::DepthOnly));
-            }
-            if has_stencil
-                && let Some(used) =
-                    pass_attachment_texture_use(&attachment, "view", ctx, !stencil_read_only)?
-            {
-                attachment_uses.push(used.with_aspect(wgpu::TextureAspect::StencilOnly));
-            }
-            depth_format = Some(format);
-            if color_formats.iter().all(Option::is_none) {
-                sample_count = samples;
-            }
-            let depth_load = attachment.get::<_, Option<String>>("depthLoadOp")?;
-            let depth_store = attachment.get::<_, Option<String>>("depthStoreOp")?;
-            let stencil_load = attachment.get::<_, Option<String>>("stencilLoadOp")?;
-            let stencil_store = attachment.get::<_, Option<String>>("stencilStoreOp")?;
-            let has_both_depth = depth_load.is_some() && depth_store.is_some();
-            let has_neither_depth = depth_load.is_none() && depth_store.is_none();
-            let has_both_stencil = stencil_load.is_some() && stencil_store.is_some();
-            let has_neither_stencil = stencil_load.is_none() && stencil_store.is_none();
-            let has_depth_settings = has_both_depth && !depth_read_only;
-            let has_stencil_settings = has_both_stencil && !stencil_read_only;
-            let good_aspect =
-                (!has_depth_settings || has_depth) && (!has_stencil_settings || has_stencil);
-            let good_depth = if has_depth && !depth_read_only {
-                has_both_depth
-            } else {
-                has_neither_depth
-            };
-            let good_stencil = if has_stencil && !stencil_read_only {
-                has_both_stencil
-            } else {
-                has_neither_stencil
-            };
-            let transient = usage.contains(wgpu::TextureUsages::TRANSIENT_ATTACHMENT);
-            let good_transient = !transient
-                || ((!has_depth
-                    || (depth_load.as_deref() == Some("clear")
-                        && depth_store.as_deref() == Some("discard")))
-                    && (!has_stencil
-                        || (stencil_load.as_deref() == Some("clear")
-                            && stencil_store.as_deref() == Some("discard"))));
-            let depth_clear = attachment.get::<_, Option<f64>>("depthClearValue")?;
-            let clear_invalid = depth_load.as_deref() == Some("clear")
-                && !depth_clear.is_some_and(|value| (0.0..=1.0).contains(&value));
-            if !good_aspect || !good_depth || !good_stencil || !good_transient || clear_invalid {
-                ds_invalid = true;
-            }
-            let depth_ops = if depth_read_only || !has_depth {
-                None
-            } else {
-                match (depth_load.as_deref(), depth_store.as_deref()) {
-                    (Some(load), Some(store)) => {
-                        let load = match load {
-                            "clear" => wgpu::LoadOp::Clear(depth_clear.unwrap_or(0.0) as f32),
-                            "load" => wgpu::LoadOp::Load,
-                            value => {
-                                return Err(type_error(ctx, format!("invalid GPULoadOp {value}")));
-                            }
-                        };
-                        Some(wgpu::Operations {
-                            load,
-                            store: format::store_op(store, ctx)?,
-                        })
-                    }
-                    _ => None,
+            let stencil_clear = attachment
+                .get::<_, Option<JsU32>>("stencilClearValue")?
+                .map_or(0, |value| value.0);
+            let depth_ops =
+                depth_stencil_ops(&attachment, "depth", depth_clear, depth_read_only, ctx)?;
+            let stencil_ops = depth_stencil_ops(
+                &attachment,
+                "stencil",
+                Some(stencil_clear),
+                stencil_read_only,
+                ctx,
+            )?;
+            let (depth_ops, stencil_ops) = match (depth_ops, stencil_ops) {
+                (Ok(depth_ops), Ok(stencil_ops)) => (depth_ops, stencil_ops),
+                (Err(message), _) | (_, Err(message)) => {
+                    deferred = Some(message);
+                    (None, None)
                 }
             };
-            let stencil_ops = if stencil_read_only || !has_stencil {
-                None
-            } else {
-                match (stencil_load.as_deref(), stencil_store.as_deref()) {
-                    (Some(load), Some(store)) => {
-                        let load = match load {
-                            "clear" => {
-                                wgpu::LoadOp::Clear(
-                                    attachment
-                                        .get::<_, Option<JsU32>>("stencilClearValue")?
-                                        .map_or(0, |value| value.0),
-                                )
-                            }
-                            "load" => wgpu::LoadOp::Load,
-                            value => {
-                                return Err(type_error(ctx, format!("invalid GPULoadOp {value}")));
-                            }
-                        };
-                        Some(wgpu::Operations {
-                            load,
-                            store: format::store_op(store, ctx)?,
-                        })
-                    }
-                    _ => None,
-                }
-            };
-            Ok(OwnedDepthStencil {
-                view,
-                depth_ops,
-                stencil_ops,
-            })
+            Ok::<_, rquickjs::Error>((view, depth_ops, stencil_ops))
         })
         .transpose()?;
-    let depth_stencil_attachment = owned_depth.as_ref().map(|attachment| {
+    let depth_stencil_attachment = owned_depth.as_ref().map(|(view, depth_ops, stencil_ops)| {
         wgpu::RenderPassDepthStencilAttachment {
-            view:        &attachment.view,
-            depth_ops:   attachment.depth_ops,
-            stencil_ops: attachment.stencil_ops,
+            view,
+            depth_ops: *depth_ops,
+            stencil_ops: *stencil_ops,
         }
     });
-    let timestamp_query;
-    let mut timestamp_invalid = false;
-    let timestamp_writes = match descriptor.get::<_, Option<Object>>("timestampWrites")? {
-        Some(writes) => {
-            let (query, beginning, end, invalid) =
-                query::timestamp_writes_from(&writes, ctx, device_id)?;
-            timestamp_invalid = invalid;
-            timestamp_query = query;
-            if invalid {
-                None
-            } else {
-                Some(wgpu::RenderPassTimestampWrites {
-                    query_set:                     &timestamp_query,
-                    beginning_of_pass_write_index: beginning,
-                    end_of_pass_write_index:       end,
-                })
-            }
-        }
-        None => None,
-    };
-    let occlusion = descriptor.get::<_, Option<Class<GPUQuerySet>>>("occlusionQuerySet")?;
-    let mut occlusion_invalid = false;
-    let occlusion_destroyed = occlusion
-        .as_ref()
-        .map(|query| query.borrow().destroyed.clone());
-    let occlusion_count = occlusion.as_ref().map_or(0, |query| query.borrow().count);
-    let occlusion_inner = occlusion.as_ref().and_then(|query| {
-        let query = query.borrow();
-        if query.invalid || query.ty != "occlusion" || query.device_id != device_id {
-            occlusion_invalid = true;
-            None
-        } else if query.destroyed.get() {
-            None
-        } else {
-            Some(query.inner.clone())
+    let timestamp = descriptor
+        .get::<_, Option<Object>>("timestampWrites")?
+        .map(|writes| query::timestamp_writes_from(&writes, ctx))
+        .transpose()?;
+    let timestamp_writes = timestamp.as_ref().map(|(query_set, beginning, end)| {
+        wgpu::RenderPassTimestampWrites {
+            query_set,
+            beginning_of_pass_write_index: *beginning,
+            end_of_pass_write_index: *end,
         }
     });
-    let pass = (native && !ds_invalid).then(|| {
-        encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: (!label.is_empty()).then_some(label.as_str()),
-                color_attachments: &color_attachments,
-                depth_stencil_attachment,
-                timestamp_writes,
-                occlusion_query_set: occlusion_inner.as_ref(),
-                multiview_mask: None,
-            })
-            .forget_lifetime()
-    });
-    let (depth_read_only, stencil_read_only) =
-        if let Some(attachment) = descriptor.get::<_, Option<Object>>("depthStencilAttachment")? {
-            (
-                Some(
-                    attachment
-                        .get::<_, Option<bool>>("depthReadOnly")?
-                        .unwrap_or_default(),
-                ),
-                Some(
-                    attachment
-                        .get::<_, Option<bool>>("stencilReadOnly")?
-                        .unwrap_or_default(),
-                ),
-            )
-        } else {
-            (None, None)
-        };
-    Ok(BegunRenderPass {
-        label,
-        pass,
-        invalid: timestamp_invalid || occlusion_invalid || ds_invalid,
-        depth_read_only,
-        stencil_read_only,
-        color_formats: Rc::from(color_formats),
-        depth_format,
-        sample_count,
-        occlusion_native: native && occlusion_inner.is_some(),
-        occlusion_count,
-        occlusion_destroyed,
-        attachment_uses,
-    })
+    let occlusion = descriptor
+        .get::<_, Option<Class<GPUQuerySet>>>("occlusionQuerySet")?
+        .map(|query_set| query_set.borrow().inner.clone());
+    let pass = encoder
+        .begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: (!label.is_empty()).then_some(label.as_str()),
+            color_attachments: &color_attachments,
+            depth_stencil_attachment,
+            timestamp_writes,
+            occlusion_query_set: occlusion.as_ref(),
+            multiview_mask: None,
+        })
+        .forget_lifetime();
+    Ok((pass, deferred))
 }

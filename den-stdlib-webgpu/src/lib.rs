@@ -18,7 +18,6 @@ mod texture;
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
     mem::MaybeUninit,
     num::NonZeroU64,
     ops::Range,
@@ -45,48 +44,12 @@ use crate::supported::{
 };
 
 static DEVICE_IDS: AtomicU64 = AtomicU64::new(1);
-static RESOURCE_IDS: AtomicU64 = AtomicU64::new(1);
-
-type DynamicWindow = (u32, u64, u64, u64);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TextureUseKind {
-    Attachment,
-    Sampled,
-    Storage,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct TextureUse {
-    id:          usize,
-    write:       bool,
-    kind:        TextureUseKind,
-    aspect:      wgpu::TextureAspect,
-    mip_base:    u32,
-    mip_count:   u32,
-    layer_base:  u32,
-    layer_count: u32,
-}
-
-#[derive(Clone)]
-struct BindGroupExtras {
-    windows:  Rc<[DynamicWindow]>,
-    textures: Rc<[TextureUse]>,
-}
-type DynamicWindowTable = HashMap<u64, BindGroupExtras>;
-
-thread_local! {
-    static BIND_GROUP_WINDOWS: RefCell<DynamicWindowTable> = RefCell::new(HashMap::new());
-}
-
-pub(crate) fn next_resource_id() -> u64 { RESOURCE_IDS.fetch_add(1, Ordering::Relaxed) }
 
 const MAP_READ: u32 = 1;
 const MAP_WRITE: u32 = 2;
 const WEBGPU_BUFFER_USAGE_MASK: u32 = 0x03ff;
 pub(crate) const MAX_HOST_ALLOCATION: u64 = 0x8000_0000;
 pub(crate) const JS_MAX_SAFE_INTEGER: u64 = 0x001F_FFFF_FFFF_FFFF;
-const INDIRECT_DISPATCH_BYTES: u64 = 12;
 
 pub(crate) fn illegal_constructor<T>(ctx: &Ctx<'_>) -> Result<T> {
     Err(Exception::throw_type(ctx, "Illegal constructor"))
@@ -216,42 +179,105 @@ fn iterable_strings<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<String
     Ok(names)
 }
 
-pub(crate) fn buffer_end(size: u64, offset: u64, length: Option<u64>) -> Option<u64> {
-    let end = match length {
-        Some(length) => offset.checked_add(length)?,
-        None => size,
-    };
-    (offset <= size && end <= size).then_some(end)
+/// wgpu's `BufferSlice` panics on out-of-range and empty ranges, both of
+/// which WebGPU reports as validation errors, so the range is resolved here:
+/// `Ok(None)` is an empty binding, `Err` carries the validation message.
+pub(crate) fn buffer_slice(
+    buffer: &wgpu::Buffer, offset: u64, size: Option<u64>,
+) -> std::result::Result<Option<wgpu::BufferSlice<'_>>, String> {
+    let end = size.map_or_else(|| Some(buffer.size()), |size| offset.checked_add(size));
+    match end {
+        Some(end) if offset <= end && end <= buffer.size() => {
+            Ok((offset < end).then(|| buffer.slice(offset..end)))
+        }
+        _ => {
+            Err(format!(
+                "buffer binding {offset}..{size:?} is outside the {} byte buffer",
+                buffer.size()
+            ))
+        }
+    }
 }
 
-pub(crate) struct BufferBind {
-    pub invalid:   bool,
-    #[expect(dead_code, reason = "callers now always track buffer state")]
-    pub destroyed: bool,
-    pub slice:     Option<(u64, u64)>,
+enum RecorderState<T> {
+    Open(T),
+    Ended,
+    /// Created from an already finished parent; that error was reported at
+    /// creation, so later operations stay silent like wgpu's invalid passes.
+    Invalid,
 }
 
-pub(crate) fn buffer_bind(
-    buffer: &GPUBuffer, offset: u64, size: Option<u64>, required: wgpu::BufferUsages, align: u64,
-    device_id: u64, extra_invalid: bool,
-) -> BufferBind {
-    let destroyed = matches!(*buffer.state.borrow(), BufferMapState::Destroyed);
-    let range = buffer_end(buffer.size, offset, size);
-    let empty = range == Some(offset);
-    let invalid = extra_invalid
-        || buffer.invalid
-        || !buffer.usage.contains(required)
-        || buffer.device_id != device_id
-        || (align != 0 && !offset.is_multiple_of(align))
-        || range.is_none();
-    let slice = match (invalid, destroyed, empty, range) {
-        (false, false, false, Some(end)) => Some((offset, end)),
-        _ => None,
-    };
-    BufferBind {
-        invalid,
-        destroyed,
-        slice,
+/// A wgpu recorder (command encoder, pass, bundle encoder) that `finish`/`end`
+/// consumes. Operations after that are the one content-timeline validation
+/// error the safe `wgpu` crate cannot produce itself.
+pub(crate) struct Recorder<T> {
+    what:     &'static str,
+    state:    RefCell<RecorderState<T>>,
+    /// Messages wgpu would only report when the recorder ends (its pass
+    /// validation runs at `end`), so den defers them to the same point.
+    deferred: RefCell<Option<String>>,
+}
+
+// SAFETY: a recorder never holds a `'js` value; `'static` wgpu handles do
+// not change when the JS lifetime is rebound.
+unsafe impl<T: 'static> JsLifetime<'_> for Recorder<T> {
+    type Changed<'to> = Self;
+}
+
+impl<T> Recorder<T> {
+    pub(crate) fn open(what: &'static str, inner: T) -> Self {
+        Self {
+            what,
+            state: RefCell::new(RecorderState::Open(inner)),
+            deferred: RefCell::new(None),
+        }
+    }
+
+    pub(crate) fn invalid(what: &'static str) -> Self {
+        Self {
+            what,
+            state: RefCell::new(RecorderState::Invalid),
+            deferred: RefCell::new(None),
+        }
+    }
+
+    pub(crate) fn map<U>(
+        &self, errors: &ErrorSink, operation: impl FnOnce(&mut T) -> U,
+    ) -> Option<U> {
+        match &mut *self.state.borrow_mut() {
+            RecorderState::Open(inner) => Some(operation(inner)),
+            RecorderState::Ended => {
+                errors.validation(format!("{} is already ended", self.what));
+                None
+            }
+            RecorderState::Invalid => None,
+        }
+    }
+
+    pub(crate) fn record(&self, errors: &ErrorSink, operation: impl FnOnce(&mut T)) {
+        self.map(errors, operation);
+    }
+
+    pub(crate) fn defer(&self, message: String) {
+        self.deferred.borrow_mut().get_or_insert(message);
+    }
+
+    /// Ends the recorder: `finish` consumes the wgpu value (dropping a pass
+    /// ends it), then any deferred message is reported after wgpu's own.
+    pub(crate) fn end<U>(&self, errors: &ErrorSink, finish: impl FnOnce(T) -> U) -> Option<U> {
+        let state = std::mem::replace(&mut *self.state.borrow_mut(), RecorderState::Ended);
+        let finished = match state {
+            RecorderState::Open(inner) => Some(finish(inner)),
+            RecorderState::Ended => {
+                errors.validation(format!("{} is already ended", self.what));
+                None
+            }
+            RecorderState::Invalid => None,
+        };
+        if let Some(message) = self.deferred.borrow_mut().take() {
+            errors.validation(message);
+        }
+        finished
     }
 }
 
@@ -291,35 +317,6 @@ pub(crate) fn immediates_bytes<'js>(
 }
 
 pub(crate) type PipelineLayoutGroups = Rc<[Rc<[wgpu::BindGroupLayoutEntry]>]>;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BindGroupLayoutKind {
-    UniformBuffer,
-    StorageBuffer,
-    ReadOnlyStorageBuffer,
-    Sampler,
-    ComparisonSampler,
-    Texture,
-    StorageTexture,
-    ExternalTexture,
-}
-
-#[derive(Clone)]
-pub(crate) struct BindGroupSlot {
-    pub invalid:        bool,
-    pub auto:           bool,
-    pub auto_layout_id: u64,
-    pub entries:        Rc<[(u32, u32, u64)]>,
-    pub buffer_sizes:   Rc<[(u32, u64)]>,
-    pub textures:       Rc<[TextureUse]>,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct BindGroupSet {
-    pub slots: Vec<Option<BindGroupSlot>>,
-}
-
-pub(crate) fn empty_layout_groups() -> PipelineLayoutGroups { Rc::from(Vec::new()) }
 
 fn naga_stage_for_visibility(visibility: wgpu::ShaderStages) -> Option<wgpu::naga::ShaderStage> {
     if visibility == wgpu::ShaderStages::COMPUTE {
@@ -388,93 +385,6 @@ pub(crate) fn auto_layout_groups(stages: &[(wgpu::ShaderStages, &str)]) -> Pipel
             .map(Rc::<[wgpu::BindGroupLayoutEntry]>::from)
             .collect::<Vec<_>>(),
     )
-}
-
-fn layout_entry_fingerprint(ty: wgpu::BindingType) -> u64 {
-    use std::hash::Hasher as _;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    hasher.write(format!("{ty:?}").as_bytes());
-    hasher.finish()
-}
-
-fn bind_group_entries_equivalent(left: &[(u32, u32, u64)], right: &[(u32, u32, u64)]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut left = left.to_vec();
-    let mut right = right.to_vec();
-    left.sort_by_key(|entry| entry.0);
-    right.sort_by_key(|entry| entry.0);
-    left == right
-}
-
-pub(crate) fn pipeline_bind_groups_mismatch(
-    groups: &[Rc<[wgpu::BindGroupLayoutEntry]>], auto: bool, auto_id: u64, bound: &BindGroupSet,
-) -> bool {
-    groups.iter().enumerate().any(|(index, entries)| {
-        if entries.is_empty() {
-            return false;
-        }
-        let Some(slot) = bound.slots.get(index).and_then(Option::as_ref) else {
-            return true;
-        };
-        if slot.invalid {
-            return true;
-        }
-        if auto != slot.auto {
-            return true;
-        }
-        let fingerprints = entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.binding,
-                    entry.visibility.bits(),
-                    layout_entry_fingerprint(entry.ty),
-                )
-            })
-            .collect::<Vec<_>>();
-        if auto {
-            auto_id != slot.auto_layout_id
-                || !bind_group_entries_equivalent(&fingerprints, &slot.entries)
-        } else {
-            !bind_group_entries_equivalent(&fingerprints, &slot.entries)
-        }
-    })
-}
-
-#[expect(
-    clippy::integer_division,
-    reason = "immediate slots are 4-byte words; integer division is the slot index"
-)]
-pub(crate) fn immediate_slots_from_range(offset: u32, length: usize) -> u64 {
-    let Ok(size) = u32::try_from(length) else {
-        return u64::MAX;
-    };
-    if size == 0 {
-        return 0;
-    }
-    let start = offset / 4;
-    if start >= 64 {
-        return 0;
-    }
-    let end = offset.saturating_add(size).div_ceil(4).min(64);
-    (u64::MAX << start) & (u64::MAX >> (64 - end))
-}
-
-pub(crate) fn immediates_unfilled(required: u64, filled: u64) -> bool { required & !filled != 0 }
-
-pub(crate) fn immediates_range_invalid(offset: u32, length: usize, max: u32) -> bool {
-    if !offset.is_multiple_of(4) {
-        return true;
-    }
-    let Some(end) = (offset as u64).checked_add(length as u64) else {
-        return true;
-    };
-    if end > u64::from(u32::MAX) {
-        return true;
-    }
-    max != 0 && end > u64::from(max)
 }
 
 fn apply_required_limits<'js>(
@@ -1124,11 +1034,9 @@ impl<'js> GPUDevice<'js> {
         Ok(GPUBuffer {
             device: self.device.clone(),
             errors: self.errors.clone(),
-            fallbacks: self.fallbacks.clone(),
             host_map: Rc::new(RefCell::new(host_map)),
             inner,
             invalid,
-            device_id: self.id,
             label: Rc::new(RefCell::new(label)),
             map_abort: Rc::new(Cell::new(false)),
             map_gen: Rc::new(Cell::new(0)),
@@ -1199,7 +1107,6 @@ impl<'js> GPUDevice<'js> {
         let label = label(&descriptor)?;
         let entries = array_value(&descriptor, "entries", ctx)?;
         let mut native = Vec::with_capacity(entries.len());
-        let mut kinds = Vec::with_capacity(entries.len());
         for entry in entries.iter::<Object>() {
             let entry = entry?;
             let binding = entry.get::<_, JsU32>("binding")?.0;
@@ -1218,7 +1125,7 @@ impl<'js> GPUDevice<'js> {
             if entry.get::<_, Option<JsU32>>("count")?.is_some() {
                 self.errors.validation("binding arrays are not implemented");
             }
-            let (ty, kind) = bind_group_layout_type(&entry, ctx)?;
+            let ty = bind_group_layout_type(&entry, ctx)?;
             if let wgpu::BindingType::StorageTexture { format, .. } = ty
                 && !self.device.features().contains(format.required_features())
             {
@@ -1227,7 +1134,6 @@ impl<'js> GPUDevice<'js> {
                     "storage texture format requires missing features",
                 ));
             }
-            kinds.push((binding, kind));
             native.push(wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility,
@@ -1252,10 +1158,7 @@ impl<'js> GPUDevice<'js> {
         Ok(GPUBindGroupLayout {
             inner,
             label: Rc::new(RefCell::new(label)),
-            kinds: Rc::from(kinds),
             entries: Rc::from(native),
-            auto: false,
-            auto_layout_id: 0,
         })
     }
 
@@ -1318,376 +1221,126 @@ impl<'js> GPUDevice<'js> {
         &self, descriptor: Object<'js>, ctx: &Ctx<'js>,
     ) -> Result<GPUBindGroup> {
         let label = label(&descriptor)?;
-        let layout_js = class_value::<GPUBindGroupLayout>(&descriptor, "layout", ctx)?;
-        let layout = layout_js.borrow().inner.clone();
-        let kinds = layout_js.borrow().kinds.clone();
-        let layout_entries = layout_js.borrow().entries.clone();
-        let auto = layout_js.borrow().auto;
-        let auto_layout_id = layout_js.borrow().auto_layout_id;
+        let layout = class_value::<GPUBindGroupLayout>(&descriptor, "layout", ctx)?
+            .borrow()
+            .inner
+            .clone();
         let entries = array_value(&descriptor, "entries", ctx)?;
         let mut resources = Vec::with_capacity(entries.len());
-        let mut used_destroyed = Vec::new();
-        let mut used_mapped = Vec::new();
-        let mut binding_buffers = Vec::new();
-        let mut texture_uses = Vec::new();
-        let mut invalid = false;
         for entry in entries.iter::<Object>() {
             let entry = entry?;
             let binding = entry.get::<_, JsU32>("binding")?.0;
-            let kind = kinds
-                .iter()
-                .find(|(id, _kind)| *id == binding)
-                .map(|(_id, kind)| *kind);
             let resource: Value = entry.get("resource")?;
             if Class::<GPUExternalTexture>::from_js(ctx, resource.clone()).is_ok() {
-                invalid = true;
+                // den has no external texture backing; the missing entry then
+                // also fails wgpu's entry-count check, which is the intent.
                 self.errors
                     .validation("GPUExternalTexture bindings are not supported");
                 continue;
             }
             if let Ok(buffer) = Class::<GPUBuffer>::from_js(ctx, resource.clone()) {
-                if matches!(kind, Some(BindGroupLayoutKind::ExternalTexture)) {
-                    invalid = true;
-                    self.errors
-                        .validation("externalTexture binding requires a texture view");
-                }
-                let buffer = buffer.borrow();
-                // Destroyed buffers are still valid JS objects; only invalid
-                // ones generate GPUValidationError at bind-group creation.
-                if buffer.invalid {
-                    invalid = true;
-                    self.errors.validation("GPUBuffer is invalid");
-                }
-                used_mapped.push(buffer.state.clone());
-                let min_size = layout_entries
-                    .iter()
-                    .find(|entry| entry.binding == binding)
-                    .and_then(|entry| {
-                        match entry.ty {
-                            wgpu::BindingType::Buffer {
-                                min_binding_size, ..
-                            } => min_binding_size.map(NonZeroU64::get),
-                            _ => None,
-                        }
-                    })
-                    .unwrap_or(0);
-                if min_size != 0 && buffer.size < min_size {
-                    invalid = true;
-                    self.errors
-                        .validation("buffer binding is smaller than minBindingSize");
-                }
-                binding_buffers.push((binding, 0, buffer.size, buffer.size));
                 resources.push(OwnedBinding::Buffer {
                     binding,
-                    buffer: buffer.binding_buffer(&self.device),
+                    buffer: buffer.borrow().inner.clone(),
                     offset: 0,
                     size: None,
                 });
                 continue;
             }
             if let Ok(texture) = Class::<texture::GPUTexture>::from_js(ctx, resource.clone()) {
-                if matches!(kind, Some(BindGroupLayoutKind::ExternalTexture)) {
-                    invalid = true;
-                    self.errors
-                        .validation("externalTexture binding requires a texture view");
-                }
-                let texture = texture.borrow();
-                if texture.is_dummy {
-                    invalid = true;
-                    self.errors.validation("GPUTexture is invalid");
-                }
-                used_destroyed.push(texture.destroyed.clone());
-                if let Some((write, kind)) = texture_binding_use(layout_entries.as_ref(), binding) {
-                    texture_uses.push(TextureUse {
-                        id: Rc::as_ptr(&texture.destroyed) as usize,
-                        write,
-                        kind,
-                        aspect: wgpu::TextureAspect::All,
-                        mip_base: 0,
-                        mip_count: texture.mip_levels,
-                        layer_base: 0,
-                        layer_count: texture.size.depth_or_array_layers.max(1),
-                    });
-                }
                 resources.push(OwnedBinding::View {
                     binding,
-                    view: texture.binding_view(),
+                    view: texture.borrow().default_view(),
                 });
                 continue;
             }
             if let Ok(view) = Class::<texture::GPUTextureView>::from_js(ctx, resource.clone()) {
-                let view = view.borrow();
-                if view.is_dummy {
-                    invalid = true;
-                    self.errors.validation("GPUTextureView is invalid");
-                }
-                used_destroyed.push(view.destroyed.clone());
-                if let Some((write, kind)) = texture_binding_use(layout_entries.as_ref(), binding) {
-                    texture_uses.push(TextureUse {
-                        id: Rc::as_ptr(&view.destroyed) as usize,
-                        write,
-                        kind,
-                        aspect: view.aspect(),
-                        mip_base: view.base_mip,
-                        mip_count: view.mip_count,
-                        layer_base: view.base_layer,
-                        layer_count: view.layer_count,
-                    });
-                }
-                if matches!(kind, Some(BindGroupLayoutKind::ExternalTexture))
-                    && !view.is_valid_external_texture()
-                {
-                    invalid = true;
-                    self.errors
-                        .validation("texture view is not valid as GPUExternalTexture");
-                }
                 resources.push(OwnedBinding::View {
                     binding,
-                    view: view.inner.clone(),
+                    view: view.borrow().inner.clone(),
                 });
                 continue;
             }
             if let Ok(sampler) = Class::<texture::GPUSampler>::from_js(ctx, resource.clone()) {
-                if matches!(kind, Some(BindGroupLayoutKind::ExternalTexture)) {
-                    invalid = true;
-                    self.errors
-                        .validation("externalTexture binding requires a texture view");
-                }
-                let sampler = sampler.borrow();
-                if sampler.invalid {
-                    invalid = true;
-                    self.errors.validation("GPUSampler is invalid");
-                }
                 resources.push(OwnedBinding::Sampler {
                     binding,
-                    sampler: sampler.inner.clone(),
+                    sampler: sampler.borrow().inner.clone(),
                 });
                 continue;
             }
             let resource = Object::from_js(ctx, resource)
                 .map_err(|_error| type_error(ctx, "bind group resource is not a GPU binding"))?;
-            let buffer = class_value::<GPUBuffer>(&resource, "buffer", ctx)?;
-            let buffer = buffer.borrow();
-            if buffer.invalid {
-                invalid = true;
-                self.errors.validation("GPUBuffer is invalid");
-            }
-            used_mapped.push(buffer.state.clone());
-            if matches!(kind, Some(BindGroupLayoutKind::ExternalTexture)) {
-                invalid = true;
-                self.errors
-                    .validation("externalTexture binding requires a texture view");
-            }
+            let buffer = class_value::<GPUBuffer>(&resource, "buffer", ctx)?
+                .borrow()
+                .inner
+                .clone();
             let offset = resource
                 .get::<_, Option<JsU64>>("offset")?
                 .map_or(0, |value| value.0);
+            // wgpu's binding size is `NonZeroU64`; the spec rejects zero on
+            // the device timeline, so report it and bind to the end instead.
             let size = resource.get::<_, Option<JsU64>>("size")?.and_then(|value| {
                 NonZeroU64::new(value.0).or_else(|| {
-                    invalid = true;
                     self.errors
                         .validation("buffer binding size must be greater than zero");
                     None
                 })
             });
-            let end = size.map_or(buffer.size, |size| offset.saturating_add(size.get()));
-            if offset > buffer.size || end > buffer.size {
-                invalid = true;
-                self.errors.validation("buffer binding is out of bounds");
-            }
-            let binding_size =
-                size.map_or_else(|| buffer.size.saturating_sub(offset), NonZeroU64::get);
-            let min_size = layout_entries
-                .iter()
-                .find(|entry| entry.binding == binding)
-                .and_then(|entry| {
-                    match entry.ty {
-                        wgpu::BindingType::Buffer {
-                            min_binding_size, ..
-                        } => min_binding_size.map(NonZeroU64::get),
-                        _ => None,
-                    }
-                })
-                .unwrap_or(0);
-            if min_size != 0 && binding_size < min_size {
-                invalid = true;
-                self.errors
-                    .validation("buffer binding is smaller than minBindingSize");
-            }
-            binding_buffers.push((binding, offset, binding_size, buffer.size));
             resources.push(OwnedBinding::Buffer {
                 binding,
-                buffer: buffer.binding_buffer(&self.device),
+                buffer,
                 offset,
                 size,
             });
         }
-        let mut dynamic_count = 0_u32;
-        let mut windows = Vec::new();
-        let mut ordered = layout_entries.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|entry| entry.binding);
-        for entry in ordered {
-            let wgpu::BindingType::Buffer {
-                has_dynamic_offset: true,
-                ty,
-                ..
-            } = entry.ty
-            else {
-                continue;
-            };
-            let align = match ty {
-                wgpu::BufferBindingType::Uniform => {
-                    self.device.limits().min_uniform_buffer_offset_alignment
-                }
-                wgpu::BufferBindingType::Storage { .. } => {
-                    self.device.limits().min_storage_buffer_offset_alignment
-                }
-            };
-            let (bind_offset, binding_size, buffer_size) = binding_buffers
-                .iter()
-                .find(|(binding, _, _, _)| *binding == entry.binding)
-                .map_or((0, 0, 0), |(_, bind_offset, size, buffer_size)| {
-                    (*bind_offset, *size, *buffer_size)
-                });
-            windows.push((align, bind_offset, binding_size, buffer_size));
-            dynamic_count += 1;
-        }
         let native = resources
             .iter()
-            .map(|resource| {
-                match resource {
-                    OwnedBinding::Buffer {
-                        binding,
-                        buffer,
-                        offset,
-                        size,
-                    } => {
-                        wgpu::BindGroupEntry {
-                            binding:  *binding,
-                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                buffer,
-                                offset: *offset,
-                                size: *size,
-                            }),
-                        }
-                    }
-                    OwnedBinding::View { binding, view } => {
-                        wgpu::BindGroupEntry {
-                            binding:  *binding,
-                            resource: wgpu::BindingResource::TextureView(view),
-                        }
-                    }
-                    OwnedBinding::Sampler { binding, sampler } => {
-                        wgpu::BindGroupEntry {
-                            binding:  *binding,
-                            resource: wgpu::BindingResource::Sampler(sampler),
-                        }
-                    }
-                }
-            })
+            .map(OwnedBinding::entry)
             .collect::<Vec<_>>();
-        if layout_entries.len() != native.len() {
-            invalid = true;
-            self.errors
-                .validation("bind group entry count must match the layout");
-        }
-        let inner = if skip_native_bgl(&layout_entries, self.device.features())
-            || layout_entries.len() != native.len()
-        {
-            self.fallbacks.bind_group.clone()
-        } else {
-            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label:   (!label.is_empty()).then_some(label.as_str()),
-                layout:  &layout,
-                entries: &native,
-            })
-        };
-        let fingerprints = layout_entries
-            .iter()
-            .map(|entry| {
-                (
-                    entry.binding,
-                    entry.visibility.bits(),
-                    layout_entry_fingerprint(entry.ty),
-                )
-            })
-            .collect::<Vec<_>>();
-        let window_key = fingerprints.as_ptr() as u64;
-        if !windows.is_empty() || !texture_uses.is_empty() {
-            BIND_GROUP_WINDOWS.with(|table| {
-                table.borrow_mut().insert(window_key, BindGroupExtras {
-                    windows:  Rc::from(windows),
-                    textures: Rc::from(texture_uses),
-                });
-            });
-        }
+        let inner = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   (!label.is_empty()).then_some(label.as_str()),
+            layout:  &layout,
+            entries: &native,
+        });
         Ok(GPUBindGroup {
             inner,
             label: Rc::new(RefCell::new(label)),
-            invalid,
-            auto,
-            auto_layout_id,
-            device_id: self.id,
-            dynamic_count,
-            used_destroyed,
-            used_mapped,
-            fingerprints,
-            buffer_sizes: Rc::from(
-                binding_buffers
-                    .iter()
-                    .map(|(binding, _offset, binding_size, _buffer_size)| (*binding, *binding_size))
-                    .collect::<Vec<_>>(),
-            ),
         })
     }
 }
 
-fn attachment_destroyed<'js>(
-    object: &Object<'js>, key: &str, ctx: &Ctx<'js>,
-) -> Result<Rc<Cell<bool>>> {
-    let value = object
-        .get::<_, Value>(key)
-        .map_err(|_error| type_error(ctx, format!("{key} must be a WebGPU object")))?;
-    if let Ok(view) = Class::<texture::GPUTextureView>::from_js(ctx, value.clone()) {
-        return Ok(view.borrow().destroyed.clone());
-    }
-    if let Ok(texture) = Class::<texture::GPUTexture>::from_js(ctx, value) {
-        return Ok(texture.borrow().destroyed.clone());
-    }
-    Err(type_error(
-        ctx,
-        format!("{key} must be a GPUTexture or GPUTextureView"),
-    ))
-}
-
-fn record_attachment_liveness<'js>(
-    descriptor: &Object<'js>, used: &mut Vec<Rc<Cell<bool>>>, ctx: &Ctx<'js>,
-) -> Result<()> {
-    let colors = descriptor.get::<_, Array>("colorAttachments")?;
-    for attachment in colors.iter::<Option<Object>>() {
-        let Some(attachment) = attachment? else {
-            continue;
-        };
-        used.push(attachment_destroyed(&attachment, "view", ctx)?);
-        match attachment.get::<_, Option<Value>>("resolveTarget")? {
-            Some(value) if !value.is_null() && !value.is_undefined() => {
-                if let Ok(view) = Class::<texture::GPUTextureView>::from_js(ctx, value.clone()) {
-                    used.push(view.borrow().destroyed.clone());
-                } else if let Ok(texture) = Class::<texture::GPUTexture>::from_js(ctx, value) {
-                    used.push(texture.borrow().destroyed.clone());
-                } else {
-                    return Err(type_error(
-                        ctx,
-                        "resolveTarget must be a GPUTexture or GPUTextureView",
-                    ));
+impl OwnedBinding {
+    fn entry(&self) -> wgpu::BindGroupEntry<'_> {
+        match self {
+            Self::Buffer {
+                binding,
+                buffer,
+                offset,
+                size,
+            } => {
+                wgpu::BindGroupEntry {
+                    binding:  *binding,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: *offset,
+                        size: *size,
+                    }),
                 }
             }
-            _ => {}
+            Self::View { binding, view } => {
+                wgpu::BindGroupEntry {
+                    binding:  *binding,
+                    resource: wgpu::BindingResource::TextureView(view),
+                }
+            }
+            Self::Sampler { binding, sampler } => {
+                wgpu::BindGroupEntry {
+                    binding:  *binding,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                }
+            }
         }
     }
-    if let Some(depth) = descriptor.get::<_, Option<Object>>("depthStencilAttachment")? {
-        used.push(attachment_destroyed(&depth, "view", ctx)?);
-    }
-    Ok(())
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
@@ -1744,18 +1397,11 @@ impl<'js> GPUDevice<'js> {
 
     pub fn create_texture(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<texture::GPUTexture> {
+    ) -> Result<texture::GPUTexture<'js>> {
         flushed(
             &this,
             &ctx,
-            texture::GPUTexture::from_descriptor(
-                &self.device,
-                &self.fallbacks,
-                descriptor,
-                &ctx,
-                &self.errors,
-                self.id,
-            ),
+            texture::GPUTexture::from_descriptor(&this.0, descriptor, &ctx),
         )
     }
 
@@ -1765,7 +1411,7 @@ impl<'js> GPUDevice<'js> {
         flushed(
             &this,
             &ctx,
-            texture::create_sampler(&self.device, descriptor, &ctx, &self.errors),
+            texture::create_sampler(&self.device, descriptor, &ctx),
         )
     }
 
@@ -1775,13 +1421,7 @@ impl<'js> GPUDevice<'js> {
         flushed(
             &this,
             &ctx,
-            query::GPUQuerySet::from_descriptor(
-                &self.device,
-                descriptor,
-                &ctx,
-                &self.errors,
-                self.id,
-            ),
+            query::GPUQuerySet::from_descriptor(&self.device, descriptor, &ctx),
         )
     }
 
@@ -1838,9 +1478,9 @@ impl<'js> GPUDevice<'js> {
 
     pub fn create_compute_pipeline(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<GPUComputePipeline> {
+    ) -> Result<GPUComputePipeline<'js>> {
         flushed(&this, &ctx, {
-            let (pipeline, invalid) = create_compute_pipeline(self, descriptor, &ctx)?;
+            let (pipeline, invalid) = create_compute_pipeline(&this.0, descriptor, &ctx)?;
             if invalid {
                 self.errors.validation("invalid compute pipeline");
             }
@@ -1851,16 +1491,16 @@ impl<'js> GPUDevice<'js> {
     pub fn create_compute_pipeline_async(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<Promise<'js>> {
-        Self::settle_pipeline(&this, &ctx, || {
-            create_compute_pipeline(self, descriptor, &ctx)
+        Self::settle_pipeline(&this, &ctx, |device| {
+            create_compute_pipeline(device, descriptor, &ctx)
         })
     }
 
     pub fn create_render_pipeline(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<render::GPURenderPipeline> {
+    ) -> Result<render::GPURenderPipeline<'js>> {
         flushed(&this, &ctx, {
-            let (pipeline, invalid) = render::create_pipeline(self, descriptor, &ctx)?;
+            let (pipeline, invalid) = render::create_pipeline(&this.0, descriptor, &ctx)?;
             if invalid {
                 self.errors.validation("invalid render pipeline");
             }
@@ -1871,27 +1511,18 @@ impl<'js> GPUDevice<'js> {
     pub fn create_render_pipeline_async(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
     ) -> Result<Promise<'js>> {
-        Self::settle_pipeline(&this, &ctx, || {
-            render::create_pipeline(self, descriptor, &ctx)
+        Self::settle_pipeline(&this, &ctx, |device| {
+            render::create_pipeline(device, descriptor, &ctx)
         })
     }
 
     pub fn create_render_bundle_encoder(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>, this: This<Class<'js, Self>>,
-    ) -> Result<render::GPURenderBundleEncoder> {
+    ) -> Result<render::GPURenderBundleEncoder<'js>> {
         flushed(
             &this,
             &ctx,
-            render::new_bundle_encoder(
-                &self.device,
-                descriptor,
-                &ctx,
-                self.errors.clone(),
-                self.id,
-                self.device.limits().max_vertex_buffers,
-                self.device.limits().max_immediate_size,
-                self.device.limits().max_bind_groups,
-            ),
+            render::new_bundle_encoder(&this.0, descriptor, &ctx),
         )
     }
 
@@ -1905,33 +1536,18 @@ impl<'js> GPUDevice<'js> {
             .map(crate::label)
             .transpose()?
             .unwrap_or_default();
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: (!label.is_empty()).then_some(label.as_str()),
+            });
         flushed(
             &this,
             &ctx,
             Ok(GPUCommandEncoder {
-                device_js: this.0.clone(),
-                errors:    self.errors.clone(),
-                label:     Rc::new(RefCell::new(label.clone())),
-                state:     Rc::new(RefCell::new(EncoderState {
-                    encoder:                Some(self.device.create_command_encoder(
-                        &wgpu::CommandEncoderDescriptor {
-                            label: (!label.is_empty()).then_some(label.as_str()),
-                        },
-                    )),
-                    open_passes:            0,
-                    native_passes:          0,
-                    used_destroyed:         Vec::new(),
-                    used_mapped:            Vec::new(),
-                    invalid:                false,
-                    device_id:              self.id,
-                    max_compute_workgroups: self
-                        .device
-                        .limits()
-                        .max_compute_workgroups_per_dimension,
-                    max_vertex_buffers:     self.device.limits().max_vertex_buffers,
-                    max_immediate_size:     self.device.limits().max_immediate_size,
-                    max_bind_groups:        self.device.limits().max_bind_groups,
-                })),
+                device:  this.0.clone(),
+                label:   RefCell::new(label),
+                encoder: Recorder::open("GPUCommandEncoder", encoder),
             }),
         )
     }
@@ -1980,11 +1596,12 @@ impl<'js> GPUDevice<'js> {
     /// like deno's `*_or_error` path: a captured error becomes the
     /// `GPUPipelineError` rejection and never reaches script-visible scopes.
     fn settle_pipeline<T: rquickjs::class::JsClass<'js> + 'js>(
-        this: &This<Class<'js, Self>>, ctx: &Ctx<'js>, create: impl FnOnce() -> Result<(T, bool)>,
+        this: &This<Class<'js, Self>>, ctx: &Ctx<'js>,
+        create: impl FnOnce(&Class<'js, Self>) -> Result<(T, bool)>,
     ) -> Result<Promise<'js>> {
         let errors = this.0.borrow().errors.clone();
         errors.push(GPUErrorKind::Validation);
-        let created = create();
+        let created = create(&this.0);
         let captured = errors.pop().unwrap_or_default();
         let (pipeline, invalid) = created?;
         let (promise, resolve, reject) = ctx.promise()?;
@@ -2001,8 +1618,9 @@ impl<'js> GPUDevice<'js> {
 }
 
 fn create_compute_pipeline<'js>(
-    device: &GPUDevice<'_>, descriptor: Object<'js>, ctx: &Ctx<'js>,
-) -> Result<(GPUComputePipeline, bool)> {
+    device_class: &Class<'js, GPUDevice<'js>>, descriptor: Object<'js>, ctx: &Ctx<'js>,
+) -> Result<(GPUComputePipeline<'js>, bool)> {
+    let device = device_class.borrow();
     let label = label(&descriptor)?;
     let layout_value: Value = descriptor.get("layout")?;
     let (layout, layout_id, layout_groups, layout_immediate) = if layout_value.is_undefined()
@@ -2056,42 +1674,30 @@ fn create_compute_pipeline<'js>(
         .as_ref()
         .is_some_and(|groups| layout_shader_mismatch(&code, groups, wgpu::ShaderStages::COMPUTE));
     let invalid = module_invalid || mismatched || shader_invalid || layout_mismatch;
-    let auto_layout = layout.is_none();
-    let auto_layout_id = if auto_layout { next_resource_id() } else { 0 };
     let stored_groups = layout_groups
         .unwrap_or_else(|| auto_layout_groups(&[(wgpu::ShaderStages::COMPUTE, code.as_ref())]));
     let empty_bgl = device.fallbacks.bind_group_layout.clone();
     let skip_immediate = code.contains("var<immediate");
-    let immediate_bytes = format::immediate_byte_size(&code);
-    let immediate_slots = if immediate_bytes > format::NAGA_IMMEDIATE_SLOT_BYTES {
-        format::immediate_slots_mask(immediate_bytes)
-    } else {
-        format::immediate_slots_used(&code, entry_point.as_deref(), format::ShaderStage::Compute)
-    };
     let skip_storage = code.contains("texture_storage_");
-    let shader_mins = Rc::from(format::shader_buffer_min_sizes(&code));
+    let bgls = bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
+    let make = |inner: wgpu::ComputePipeline, invalid: bool| {
+        GPUComputePipeline {
+            device: device_class.clone(),
+            inner,
+            invalid,
+            layout_groups: stored_groups.clone(),
+            empty_bgl: empty_bgl.clone(),
+            bgls: bgls.clone(),
+            max_bind_groups: limits.max_bind_groups,
+            label: Rc::new(RefCell::new(label.clone())),
+        }
+    };
     if invalid || format::uses_external_texture(&code) || skip_storage || skip_immediate {
-        let bgls = bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
         return Ok((
-            GPUComputePipeline {
-                inner: device.fallbacks.compute_pipeline.clone(),
-                invalid,
-                device_id: device.id,
-                layout_groups: stored_groups,
-                auto_layout,
-                auto_layout_id,
-                empty_bgl,
-                bgls,
-                errors: device.errors.clone(),
-                max_bind_groups: device.reported_limits().max_bind_groups,
-                immediate_slots,
-                shader_mins,
-                label: Rc::new(RefCell::new(label)),
-            },
+            make(device.fallbacks.compute_pipeline.clone(), invalid),
             invalid,
         ));
     }
-    let bgls = bind_group_layouts_from_groups(&device.device, &stored_groups, &empty_bgl);
     device.errors.push(GPUErrorKind::Validation);
     let inner = device
         .device
@@ -2111,26 +1717,8 @@ fn create_compute_pipeline<'js>(
     if let Some(error) = scoped {
         device.errors.capture(error);
     }
-    Ok((
-        GPUComputePipeline {
-            inner,
-            invalid,
-            device_id: device.id,
-            layout_groups: stored_groups,
-            auto_layout,
-            auto_layout_id,
-            empty_bgl,
-            bgls,
-            errors: device.errors.clone(),
-            max_bind_groups: device.reported_limits().max_bind_groups,
-            immediate_slots,
-            shader_mins,
-            label: Rc::new(RefCell::new(label)),
-        },
-        invalid,
-    ))
+    Ok((make(inner, invalid), invalid))
 }
-
 pub(crate) fn layout_shader_mismatch(
     code: &str, groups: &[Rc<[wgpu::BindGroupLayoutEntry]>], stage: wgpu::ShaderStages,
 ) -> bool {
@@ -2159,23 +1747,6 @@ pub(crate) fn layout_shader_mismatch(
             return true;
         };
         !entry.visibility.contains(stage) || !format::shader_binding_matches(binding, entry.ty)
-    })
-}
-
-fn shader_buffer_too_small(mins: &[(u32, u32, u64)], bound: &BindGroupSet) -> bool {
-    mins.iter().any(|&(group, binding, min)| {
-        let size = bound
-            .slots
-            .get(group as usize)
-            .and_then(Option::as_ref)
-            .and_then(|slot| {
-                slot.buffer_sizes
-                    .iter()
-                    .find(|(slot_binding, _size)| *slot_binding == binding)
-                    .map(|(_binding, size)| *size)
-            })
-            .unwrap_or(0);
-        size < min
     })
 }
 
@@ -2238,10 +1809,27 @@ fn skip_native_bgl(entries: &[wgpu::BindGroupLayoutEntry], features: wgpu::Featu
     })
 }
 
-fn bind_group_layout_type(
-    entry: &Object<'_>, ctx: &Ctx<'_>,
-) -> Result<(wgpu::BindingType, BindGroupLayoutKind)> {
-    if let Some(buffer) = entry.get::<_, Option<Object>>("buffer")? {
+fn bind_group_layout_type(entry: &Object<'_>, ctx: &Ctx<'_>) -> Result<wgpu::BindingType> {
+    let buffer = entry.get::<_, Option<Object>>("buffer")?;
+    let sampler = entry.get::<_, Option<Object>>("sampler")?;
+    let texture = entry.get::<_, Option<Object>>("texture")?;
+    let storage = entry.get::<_, Option<Object>>("storageTexture")?;
+    let external = entry.get::<_, Option<Object>>("externalTexture")?;
+    let kinds = [
+        buffer.is_some(),
+        sampler.is_some(),
+        texture.is_some(),
+        storage.is_some(),
+        external.is_some(),
+    ];
+    if kinds.iter().filter(|present| **present).count() != 1 {
+        return Err(type_error(
+            ctx,
+            "exactly one of buffer, sampler, texture, storageTexture or externalTexture must be \
+             specified",
+        ));
+    }
+    if let Some(buffer) = buffer {
         let ty = match buffer
             .get::<_, Option<String>>("type")?
             .as_deref()
@@ -2257,94 +1845,59 @@ fn bind_group_layout_type(
                 ));
             }
         };
-        return Ok((
-            wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: buffer
-                    .get::<_, Option<bool>>("hasDynamicOffset")?
-                    .unwrap_or_default(),
-                min_binding_size: buffer
-                    .get::<_, Option<JsU64>>("minBindingSize")?
-                    .and_then(|value| NonZeroU64::new(value.0)),
-            },
-            match ty {
-                wgpu::BufferBindingType::Uniform => BindGroupLayoutKind::UniformBuffer,
-                wgpu::BufferBindingType::Storage { read_only: false } => {
-                    BindGroupLayoutKind::StorageBuffer
-                }
-                wgpu::BufferBindingType::Storage { read_only: true } => {
-                    BindGroupLayoutKind::ReadOnlyStorageBuffer
-                }
-            },
-        ));
+        return Ok(wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: buffer
+                .get::<_, Option<bool>>("hasDynamicOffset")?
+                .unwrap_or_default(),
+            min_binding_size: buffer
+                .get::<_, Option<JsU64>>("minBindingSize")?
+                .and_then(|value| NonZeroU64::new(value.0)),
+        });
     }
-    if let Some(sampler) = entry.get::<_, Option<Object>>("sampler")? {
+    if let Some(sampler) = sampler {
         let name = sampler
             .get::<_, Option<String>>("type")?
             .unwrap_or_else(|| "filtering".into());
-        return Ok((
-            wgpu::BindingType::Sampler(format::sampler_binding_type(&name, ctx)?),
-            if name == "comparison" {
-                BindGroupLayoutKind::ComparisonSampler
-            } else {
-                BindGroupLayoutKind::Sampler
-            },
-        ));
+        return Ok(wgpu::BindingType::Sampler(format::sampler_binding_type(
+            &name, ctx,
+        )?));
     }
-    if let Some(texture) = entry.get::<_, Option<Object>>("texture")? {
-        return Ok((
-            wgpu::BindingType::Texture {
-                sample_type:    format::sample_type(
-                    texture.get::<_, Option<String>>("sampleType")?.as_deref(),
-                    ctx,
-                )?,
-                view_dimension: format::view_dimension_or(
-                    texture
-                        .get::<_, Option<String>>("viewDimension")?
-                        .as_deref(),
-                    wgpu::TextureViewDimension::D2,
-                    ctx,
-                )?,
-                multisampled:   texture
-                    .get::<_, Option<bool>>("multisampled")?
-                    .unwrap_or_default(),
-            },
-            BindGroupLayoutKind::Texture,
-        ));
+    if let Some(texture) = texture {
+        return Ok(wgpu::BindingType::Texture {
+            sample_type:    format::sample_type(
+                texture.get::<_, Option<String>>("sampleType")?.as_deref(),
+                ctx,
+            )?,
+            view_dimension: format::view_dimension_or(
+                texture
+                    .get::<_, Option<String>>("viewDimension")?
+                    .as_deref(),
+                wgpu::TextureViewDimension::D2,
+                ctx,
+            )?,
+            multisampled:   texture
+                .get::<_, Option<bool>>("multisampled")?
+                .unwrap_or_default(),
+        });
     }
-    if let Some(storage) = entry.get::<_, Option<Object>>("storageTexture")? {
-        return Ok((
-            wgpu::BindingType::StorageTexture {
-                access:         format::storage_access(
-                    storage.get::<_, Option<String>>("access")?.as_deref(),
-                    ctx,
-                )?,
-                format:         format::texture_format(&storage.get::<_, String>("format")?, ctx)?,
-                view_dimension: format::view_dimension_or(
-                    storage
-                        .get::<_, Option<String>>("viewDimension")?
-                        .as_deref(),
-                    wgpu::TextureViewDimension::D2,
-                    ctx,
-                )?,
-            },
-            BindGroupLayoutKind::StorageTexture,
-        ));
+    if let Some(storage) = storage {
+        return Ok(wgpu::BindingType::StorageTexture {
+            access:         format::storage_access(
+                storage.get::<_, Option<String>>("access")?.as_deref(),
+                ctx,
+            )?,
+            format:         format::texture_format(&storage.get::<_, String>("format")?, ctx)?,
+            view_dimension: format::view_dimension_or(
+                storage
+                    .get::<_, Option<String>>("viewDimension")?
+                    .as_deref(),
+                wgpu::TextureViewDimension::D2,
+                ctx,
+            )?,
+        });
     }
-    if entry.get::<_, Option<Object>>("externalTexture")?.is_some() {
-        return Ok((
-            wgpu::BindingType::Texture {
-                sample_type:    wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled:   false,
-            },
-            BindGroupLayoutKind::ExternalTexture,
-        ));
-    }
-    Err(type_error(
-        ctx,
-        "bind group layout entry must specify buffer, sampler, texture, or storageTexture",
-    ))
+    Ok(wgpu::BindingType::ExternalTexture)
 }
 
 pub(crate) fn dynamic_offsets<'js>(
@@ -2416,44 +1969,32 @@ pub(crate) enum BufferMapState {
 #[rquickjs::class(rename = "GPUBuffer")]
 pub struct GPUBuffer {
     #[qjs(skip_trace)]
-    device:               wgpu::Device,
+    device:           wgpu::Device,
     #[qjs(skip_trace)]
-    errors:               ErrorSink,
+    errors:           ErrorSink,
     #[qjs(skip_trace)]
-    pub(crate) fallbacks: Rc<texture::FallbackResources>,
+    host_map:         Rc<RefCell<Option<Vec<u8>>>>,
     #[qjs(skip_trace)]
-    host_map:             Rc<RefCell<Option<Vec<u8>>>>,
+    pub(crate) inner: wgpu::Buffer,
     #[qjs(skip_trace)]
-    pub(crate) inner:     wgpu::Buffer,
+    invalid:          bool,
     #[qjs(skip_trace)]
-    invalid:              bool,
+    label:            Rc<RefCell<String>>,
     #[qjs(skip_trace)]
-    device_id:            u64,
+    map_abort:        Rc<Cell<bool>>,
     #[qjs(skip_trace)]
-    label:                Rc<RefCell<String>>,
+    map_gen:          Rc<Cell<u64>>,
     #[qjs(skip_trace)]
-    map_abort:            Rc<Cell<bool>>,
+    native_mapped:    Rc<Cell<bool>>,
     #[qjs(skip_trace)]
-    map_gen:              Rc<Cell<u64>>,
+    pub(crate) size:  u64,
     #[qjs(skip_trace)]
-    native_mapped:        Rc<Cell<bool>>,
+    pub(crate) state: Rc<RefCell<BufferMapState>>,
     #[qjs(skip_trace)]
-    pub(crate) size:      u64,
-    #[qjs(skip_trace)]
-    pub(crate) state:     Rc<RefCell<BufferMapState>>,
-    #[qjs(skip_trace)]
-    usage:                wgpu::BufferUsages,
+    usage:            wgpu::BufferUsages,
 }
 
 impl GPUBuffer {
-    fn binding_buffer(&self, _device: &wgpu::Device) -> wgpu::Buffer {
-        if self.invalid || matches!(*self.state.borrow(), BufferMapState::Destroyed) {
-            self.fallbacks.buffer.clone()
-        } else {
-            self.inner.clone()
-        }
-    }
-
     fn reject_map<'js>(
         &self, ctx: &Ctx<'js>, message: &str, early: bool, name: &str,
     ) -> Result<Promise<'js>> {
@@ -2901,20 +2442,9 @@ impl<'js> GPUQueue<'js> {
         let layout = texture::texel_copy_layout(&data_layout)?;
         let size = format::extent3d(size, &ctx)?;
         let bytes = BufferSource::from_js(&ctx, data)?.into_bytes();
-        let texture = texture.borrow();
-        if texture.destroyed.get() || texture.is_dummy {
-            self.errors
-                .validation("writeTexture destination texture is invalid or destroyed");
-            return self.flush(&ctx);
-        }
-        if !texture.usage.contains(wgpu::TextureUsages::COPY_DST) {
-            self.errors
-                .validation("writeTexture destination must have COPY_DST");
-            return self.flush(&ctx);
-        }
         self.inner.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture.inner,
+                texture: &texture.borrow().inner,
                 mip_level,
                 origin,
                 aspect,
@@ -2927,50 +2457,17 @@ impl<'js> GPUQueue<'js> {
     }
 
     pub fn submit(&self, command_buffers: Array<'js>, ctx: Ctx<'js>) -> Result<()> {
-        let buffers = command_buffers
-            .iter::<Class<GPUCommandBuffer>>()
-            .collect::<Result<Vec<_>>>()?;
-        let mut seen = HashSet::with_capacity(buffers.len());
-        let mut native = Vec::with_capacity(buffers.len());
-        for buffer in &buffers {
-            let state = buffer.borrow().inner.clone();
-            if !seen.insert(Rc::as_ptr(&state)) {
-                self.errors
-                    .validation("command buffer listed more than once");
-                continue;
+        let mut native = Vec::with_capacity(command_buffers.len());
+        for buffer in command_buffers.iter::<Class<GPUCommandBuffer>>() {
+            // A buffer from a failed finish, or one already submitted, has no
+            // wgpu handle; wgpu would report the same validation error.
+            match buffer?.borrow().inner.borrow_mut().take() {
+                Some(command_buffer) => native.push(command_buffer),
+                None => {
+                    self.errors
+                        .validation("GPUCommandBuffer is invalid or was already submitted");
+                }
             }
-            let Some(command) = state.borrow_mut().take() else {
-                self.errors
-                    .validation("command buffer was already submitted");
-                continue;
-            };
-            if buffer
-                .borrow()
-                .used_destroyed
-                .iter()
-                .any(|destroyed| destroyed.get())
-            {
-                self.errors
-                    .validation("destroyed texture used in submitted commands");
-            }
-            if buffer
-                .borrow()
-                .used_mapped
-                .iter()
-                .any(|mapped| matches!(*mapped.borrow(), BufferMapState::Destroyed))
-            {
-                self.errors
-                    .validation("destroyed buffer used in submitted commands");
-            }
-            if buffer.borrow().used_mapped.iter().any(|mapped| {
-                !matches!(
-                    *mapped.borrow(),
-                    BufferMapState::Unmapped | BufferMapState::Destroyed
-                )
-            }) {
-                self.errors.validation("copy buffers must be unmapped");
-            }
-            native.push(command);
         }
         self.inner.submit(native);
         self.flush(&ctx)
@@ -3086,17 +2583,11 @@ impl GPUShaderModule {
 #[rquickjs::class(rename = "GPUBindGroupLayout")]
 pub struct GPUBindGroupLayout {
     #[qjs(skip_trace)]
-    pub(crate) inner:          wgpu::BindGroupLayout,
+    pub(crate) inner:   wgpu::BindGroupLayout,
     #[qjs(skip_trace)]
-    pub(crate) label:          Rc<RefCell<String>>,
+    pub(crate) label:   Rc<RefCell<String>>,
     #[qjs(skip_trace)]
-    pub(crate) kinds:          Rc<[(u32, BindGroupLayoutKind)]>,
-    #[qjs(skip_trace)]
-    pub(crate) entries:        Rc<[wgpu::BindGroupLayoutEntry]>,
-    #[qjs(skip_trace)]
-    pub(crate) auto:           bool,
-    #[qjs(skip_trace)]
-    pub(crate) auto_layout_id: u64,
+    pub(crate) entries: Rc<[wgpu::BindGroupLayoutEntry]>,
 }
 
 #[rquickjs::methods]
@@ -3141,37 +2632,9 @@ impl GPUPipelineLayout {
 #[rquickjs::class(rename = "GPUBindGroup")]
 pub struct GPUBindGroup {
     #[qjs(skip_trace)]
-    pub(crate) inner:          wgpu::BindGroup,
+    pub(crate) inner: wgpu::BindGroup,
     #[qjs(skip_trace)]
-    label:                     Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    pub(crate) invalid:        bool,
-    #[qjs(skip_trace)]
-    pub(crate) auto:           bool,
-    #[qjs(skip_trace)]
-    pub(crate) auto_layout_id: u64,
-    #[qjs(skip_trace)]
-    pub(crate) device_id:      u64,
-    #[qjs(skip_trace)]
-    dynamic_count:             u32,
-    #[qjs(skip_trace)]
-    used_destroyed:            Vec<Rc<Cell<bool>>>,
-    #[qjs(skip_trace)]
-    used_mapped:               Vec<Rc<RefCell<BufferMapState>>>,
-    #[qjs(skip_trace)]
-    fingerprints:              Vec<(u32, u32, u64)>,
-    #[qjs(skip_trace)]
-    buffer_sizes:              Rc<[(u32, u64)]>,
-}
-
-impl Drop for GPUBindGroup {
-    fn drop(&mut self) {
-        BIND_GROUP_WINDOWS.with(|table| {
-            table
-                .borrow_mut()
-                .remove(&(self.fingerprints.as_ptr() as u64));
-        });
-    }
+    label:            Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods]
@@ -3185,33 +2648,6 @@ impl GPUBindGroup {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 }
-
-fn kind_from_binding_type(ty: wgpu::BindingType) -> BindGroupLayoutKind {
-    match ty {
-        wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            ..
-        } => BindGroupLayoutKind::UniformBuffer,
-        wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: false },
-            ..
-        } => BindGroupLayoutKind::StorageBuffer,
-        wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            ..
-        } => BindGroupLayoutKind::ReadOnlyStorageBuffer,
-        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison) => {
-            BindGroupLayoutKind::ComparisonSampler
-        }
-        wgpu::BindingType::Sampler(_) => BindGroupLayoutKind::Sampler,
-        wgpu::BindingType::Texture { .. } | wgpu::BindingType::AccelerationStructure { .. } => {
-            BindGroupLayoutKind::Texture
-        }
-        wgpu::BindingType::StorageTexture { .. } => BindGroupLayoutKind::StorageTexture,
-        wgpu::BindingType::ExternalTexture => BindGroupLayoutKind::ExternalTexture,
-    }
-}
-
 pub(crate) fn bind_group_layouts_from_groups(
     device: &wgpu::Device, groups: &PipelineLayoutGroups, empty: &wgpu::BindGroupLayout,
 ) -> Rc<[wgpu::BindGroupLayout]> {
@@ -3233,290 +2669,28 @@ pub(crate) fn bind_group_layouts_from_groups(
     )
 }
 
-fn texture_binding_use(
-    entries: &[wgpu::BindGroupLayoutEntry], binding: u32,
-) -> Option<(bool, TextureUseKind)> {
-    entries
-        .iter()
-        .find(|entry| entry.binding == binding)
-        .and_then(|entry| {
-            match entry.ty {
-                wgpu::BindingType::Texture { .. } => Some((false, TextureUseKind::Sampled)),
-                wgpu::BindingType::StorageTexture {
-                    access: wgpu::StorageTextureAccess::ReadOnly,
-                    ..
-                } => Some((false, TextureUseKind::Storage)),
-                wgpu::BindingType::StorageTexture { .. } => Some((true, TextureUseKind::Storage)),
-                _ => None,
-            }
-        })
-}
-
-fn kinds_from_entries(entries: &[wgpu::BindGroupLayoutEntry]) -> Rc<[(u32, BindGroupLayoutKind)]> {
-    Rc::from(
-        entries
-            .iter()
-            .map(|entry| (entry.binding, kind_from_binding_type(entry.ty)))
-            .collect::<Vec<_>>(),
-    )
-}
-
-fn bind_group_extras(group: &GPUBindGroup) -> BindGroupExtras {
-    let key = group.fingerprints.as_ptr() as u64;
-    BIND_GROUP_WINDOWS.with(|table| {
-        table.borrow().get(&key).cloned().unwrap_or_else(|| {
-            BindGroupExtras {
-                windows:  Rc::from(Vec::new()),
-                textures: Rc::from(Vec::new()),
-            }
-        })
-    })
-}
-
-fn dynamic_windows(group: &GPUBindGroup) -> Rc<[DynamicWindow]> { bind_group_extras(group).windows }
-
-pub(crate) fn bind_group_texture_uses(group: &GPUBindGroup) -> Rc<[TextureUse]> {
-    bind_group_extras(group).textures
-}
-
-fn dynamic_offsets_invalid(group: &GPUBindGroup, offsets: &[u32]) -> bool {
-    if offsets.len() as u32 != group.dynamic_count {
-        return true;
-    }
-    if group.dynamic_count == 0 {
-        return false;
-    }
-    let windows = dynamic_windows(group);
-    if windows.len() != offsets.len() {
-        return true;
-    }
-    offsets.iter().zip(windows.iter()).any(
-        |(&offset, &(align, bind_offset, binding_size, buffer_size))| {
-            let offset = u64::from(offset);
-            if align != 0 && !offset.is_multiple_of(u64::from(align)) {
-                return true;
-            }
-            let Some(end) = bind_offset
-                .checked_add(offset)
-                .and_then(|start| start.checked_add(binding_size))
-            else {
-                return true;
-            };
-            end > buffer_size
-        },
-    )
-}
-
-pub(crate) struct BindGroupApply {
-    pub invalid:        bool,
-    pub used_destroyed: Vec<Rc<Cell<bool>>>,
-    pub used_mapped:    Vec<Rc<RefCell<BufferMapState>>>,
-}
-
-impl BindGroupSet {
-    pub(crate) fn apply(
-        &mut self, index: u32, group: Option<&GPUBindGroup>, offsets: &[u32], device_id: u64,
-        max_bind_groups: u32,
-    ) -> BindGroupApply {
-        if index >= max_bind_groups {
-            return BindGroupApply {
-                invalid:        true,
-                used_destroyed: Vec::new(),
-                used_mapped:    Vec::new(),
-            };
-        }
-        let slot = index as usize;
-        if self.slots.len() <= slot {
-            self.slots.resize_with(slot + 1, || None);
-        }
-        let Some(group) = group else {
-            if let Some(entry) = self.slots.get_mut(slot) {
-                *entry = None;
-            }
-            return BindGroupApply {
-                invalid:        false,
-                used_destroyed: Vec::new(),
-                used_mapped:    Vec::new(),
-            };
-        };
-        let invalid = group.invalid
-            || group.device_id != device_id
-            || dynamic_offsets_invalid(group, offsets);
-        if let Some(entry) = self.slots.get_mut(slot) {
-            *entry = Some(BindGroupSlot {
-                invalid,
-                auto: group.auto,
-                auto_layout_id: group.auto_layout_id,
-                entries: Rc::from(group.fingerprints.clone()),
-                buffer_sizes: group.buffer_sizes.clone(),
-                textures: bind_group_extras(group).textures,
-            });
-        }
-        BindGroupApply {
-            invalid,
-            used_destroyed: group.used_destroyed.clone(),
-            used_mapped: group.used_mapped.clone(),
-        }
-    }
-
-    pub(crate) fn texture_usage_conflict(
-        &self, pipeline_groups: Option<&PipelineLayoutGroups>, storage_alias: bool,
-    ) -> bool {
-        let uses = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(index, _slot)| {
-                pipeline_groups.is_none_or(|groups| {
-                    groups
-                        .get(*index)
-                        .is_some_and(|entries| !entries.is_empty())
-                })
-            })
-            .filter_map(|(_index, slot)| slot.as_ref())
-            .flat_map(|slot| slot.textures.iter().copied())
-            .collect::<Vec<_>>();
-        texture_uses_conflict(&uses, storage_alias)
-    }
-}
-
-pub(crate) fn texture_uses_conflict(uses: &[TextureUse], storage_alias: bool) -> bool {
-    uses.iter().enumerate().any(|(index, left)| {
-        uses.get(index + 1..)
-            .into_iter()
-            .flatten()
-            .any(|right| left.conflicts(*right, storage_alias))
-    })
-}
-
-impl TextureUse {
-    pub(crate) fn ranges_overlap(self, other: Self) -> bool {
-        self.id == other.id
-            && self.mip_base < other.mip_base.saturating_add(other.mip_count)
-            && other.mip_base < self.mip_base.saturating_add(self.mip_count)
-            && self.layer_base < other.layer_base.saturating_add(other.layer_count)
-            && other.layer_base < self.layer_base.saturating_add(self.layer_count)
-    }
-
-    pub(crate) fn aspects_overlap(self, other: Self) -> bool {
-        matches!(self.aspect, wgpu::TextureAspect::All)
-            || matches!(other.aspect, wgpu::TextureAspect::All)
-            || self.aspect == other.aspect
-    }
-
-    pub(crate) fn with_aspect(mut self, aspect: wgpu::TextureAspect) -> Self {
-        self.aspect = aspect;
-        self
-    }
-
-    // wgpu 30 records DEPTH_STENCIL_WRITE for a DS attachment unless both
-    // aspects are read-only, so a sampled bind group leftovers even when the
-    // sampled aspect is spec-compatible with a read-only aspect.
-    pub(crate) fn native_resource_leftover(self, binding: Self) -> bool {
-        self.kind == TextureUseKind::Attachment
-            && self.write
-            && binding.kind != TextureUseKind::Attachment
-            && !binding.write
-            && self.ranges_overlap(binding)
-    }
-
-    pub(crate) fn conflicts(self, other: Self, storage_alias: bool) -> bool {
-        if !self.ranges_overlap(other) || !self.aspects_overlap(other) {
-            return false;
-        }
-        if self.kind == other.kind {
-            return match self.kind {
-                TextureUseKind::Sampled => false,
-                TextureUseKind::Storage => {
-                    self.write != other.write || storage_alias && self.write && other.write
-                }
-                TextureUseKind::Attachment => true,
-            };
-        }
-        let attachment_storage = matches!(
-            (self.kind, other.kind),
-            (TextureUseKind::Attachment, TextureUseKind::Storage)
-                | (TextureUseKind::Storage, TextureUseKind::Attachment)
-        );
-        if attachment_storage {
-            true
-        } else {
-            self.write || other.write
-        }
-    }
-
-    pub(crate) fn from_view(
-        view: &crate::texture::GPUTextureView, write: bool, kind: TextureUseKind,
-    ) -> Self {
-        Self {
-            id: Rc::as_ptr(&view.destroyed) as usize,
-            write,
-            kind,
-            aspect: view.aspect(),
-            mip_base: view.base_mip,
-            mip_count: view.mip_count,
-            layer_base: view.base_layer,
-            layer_count: view.layer_count,
-        }
-    }
-
-    pub(crate) fn from_texture(
-        texture: &crate::texture::GPUTexture, write: bool, kind: TextureUseKind,
-    ) -> Self {
-        Self {
-            id: Rc::as_ptr(&texture.destroyed) as usize,
-            write,
-            kind,
-            aspect: wgpu::TextureAspect::All,
-            mip_base: 0,
-            mip_count: texture.mip_levels,
-            layer_base: 0,
-            layer_count: texture.size.depth_or_array_layers.max(1),
-        }
-    }
-}
-
-pub(crate) fn skip_native_texture_bind(attachments: &[TextureUse], extras: &[TextureUse]) -> bool {
-    extras.iter().any(|used| {
-        attachments.iter().any(|attachment| {
-            used.conflicts(*attachment, false) || attachment.native_resource_leftover(*used)
-        })
-    })
-}
-
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUComputePipeline")]
-pub struct GPUComputePipeline {
+pub struct GPUComputePipeline<'js> {
+    device:          Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
     inner:           wgpu::ComputePipeline,
     #[qjs(skip_trace)]
     invalid:         bool,
     #[qjs(skip_trace)]
-    device_id:       u64,
-    #[qjs(skip_trace)]
     layout_groups:   PipelineLayoutGroups,
-    #[qjs(skip_trace)]
-    auto_layout:     bool,
-    #[qjs(skip_trace)]
-    auto_layout_id:  u64,
     #[qjs(skip_trace)]
     empty_bgl:       wgpu::BindGroupLayout,
     #[qjs(skip_trace)]
     bgls:            Rc<[wgpu::BindGroupLayout]>,
     #[qjs(skip_trace)]
-    errors:          ErrorSink,
-    #[qjs(skip_trace)]
     max_bind_groups: u32,
-    #[qjs(skip_trace)]
-    immediate_slots: u64,
-    #[qjs(skip_trace)]
-    shader_mins:     Rc<[(u32, u32, u64)]>,
     #[qjs(skip_trace)]
     label:           Rc<RefCell<String>>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl GPUComputePipeline {
+impl<'js> GPUComputePipeline<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
@@ -3526,9 +2700,11 @@ impl GPUComputePipeline {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
-    pub fn get_bind_group_layout(&self, index: JsU32) -> GPUBindGroupLayout {
+    pub fn get_bind_group_layout(&self, index: JsU32, ctx: Ctx<'js>) -> Result<GPUBindGroupLayout> {
         if index.0 >= self.max_bind_groups {
-            self.errors
+            self.device
+                .borrow()
+                .errors
                 .validation("bind group layout index is out of range");
         }
         let entries = self
@@ -3544,74 +2720,33 @@ impl GPUComputePipeline {
                 .cloned()
                 .unwrap_or_else(|| self.empty_bgl.clone())
         };
-        GPUBindGroupLayout {
+        flush_uncaptured(&self.device, &ctx)?;
+        Ok(GPUBindGroupLayout {
             inner,
             label: Rc::new(RefCell::new(String::new())),
-            kinds: kinds_from_entries(&entries),
             entries,
-            auto: self.auto_layout,
-            auto_layout_id: self.auto_layout_id,
-        }
+        })
     }
 }
 
-pub(crate) struct EncoderState {
-    pub(crate) encoder:                Option<wgpu::CommandEncoder>,
-    pub(crate) open_passes:            usize,
-    pub(crate) native_passes:          u32,
-    pub(crate) used_destroyed:         Vec<Rc<Cell<bool>>>,
-    pub(crate) used_mapped:            Vec<Rc<RefCell<BufferMapState>>>,
-    pub(crate) invalid:                bool,
-    pub(crate) device_id:              u64,
-    pub(crate) max_compute_workgroups: u32,
-    pub(crate) max_vertex_buffers:     u32,
-    pub(crate) max_immediate_size:     u32,
-    pub(crate) max_bind_groups:        u32,
-}
-
-/// radv rejects a command stream with tens of thousands of timestamp passes.
-const MAX_NATIVE_PASSES: u32 = 256;
-
-#[derive(Clone, JsLifetime)]
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUCommandEncoder")]
 pub struct GPUCommandEncoder<'js> {
-    device_js: Class<'js, GPUDevice<'js>>,
+    device:  Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
-    errors:    ErrorSink,
+    label:   RefCell<String>,
     #[qjs(skip_trace)]
-    label:     Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    state:     Rc<RefCell<EncoderState>>,
-}
-
-impl<'js> Trace<'js> for GPUCommandEncoder<'js> {
-    fn trace<'a>(&self, tracer: Tracer<'a, 'js>) { self.device_js.trace(tracer); }
+    encoder: Recorder<wgpu::CommandEncoder>,
 }
 
 impl<'js> GPUCommandEncoder<'js> {
-    fn flush(&self, ctx: &Ctx<'js>) -> Result<()> { flush_uncaptured(&self.device_js, ctx) }
+    fn errors(&self) -> ErrorSink { self.device.borrow().errors.clone() }
 
-    fn with_encoder<T: Default>(
-        &self, ctx: &Ctx<'js>, operation: impl FnOnce(&mut wgpu::CommandEncoder) -> T,
-    ) -> Result<T> {
-        let mut state = self.state.borrow_mut();
-        if state.open_passes != 0 {
-            self.errors.validation("GPUCommandEncoder has an open pass");
-            self.flush(ctx)?;
-            return Ok(T::default());
-        }
-        if let Some(encoder) = state.encoder.as_mut() {
-            let value = operation(encoder);
-            drop(state);
-            self.flush(ctx)?;
-            Ok(value)
-        } else {
-            self.errors
-                .validation("GPUCommandEncoder is already finished");
-            drop(state);
-            self.flush(ctx)?;
-            Ok(T::default())
-        }
+    fn record(
+        &self, ctx: &Ctx<'js>, operation: impl FnOnce(&mut wgpu::CommandEncoder),
+    ) -> Result<()> {
+        self.encoder.record(&self.errors(), operation);
+        flush_uncaptured(&self.device, ctx)
     }
 }
 
@@ -3628,7 +2763,7 @@ impl<'js> GPUCommandEncoder<'js> {
 
     pub fn begin_compute_pass(
         &self, descriptor: Opt<Option<Object<'js>>>, ctx: Ctx<'js>,
-    ) -> Result<GPUComputePassEncoder> {
+    ) -> Result<GPUComputePassEncoder<'js>> {
         let descriptor = descriptor.0.flatten();
         let label = descriptor
             .as_ref()
@@ -3640,60 +2775,16 @@ impl<'js> GPUCommandEncoder<'js> {
             .map(|object| object.get::<_, Option<Object>>("timestampWrites"))
             .transpose()?
             .flatten()
-            .map(|writes| query::timestamp_writes_from(&writes, &ctx, self.device_js.borrow().id))
+            .map(|writes| query::timestamp_writes_from(&writes, &ctx))
             .transpose()?;
-        let mut state = self.state.borrow_mut();
-        if timestamp
-            .as_ref()
-            .is_some_and(|(_query, _beginning, _end, invalid)| *invalid)
-        {
-            state.invalid = true;
-        }
-        if state.open_passes != 0 {
-            state.invalid = true;
-            drop(state);
-            return Ok(GPUComputePassEncoder {
-                errors: self.errors.clone(),
-                label:  Rc::new(RefCell::new(label)),
-                state:  Rc::new(RefCell::new(ComputePassState::new(
-                    self.state.clone(),
-                    None,
-                    false,
-                ))),
-            });
-        }
-        let native = state.native_passes < MAX_NATIVE_PASSES;
-        if native {
-            state.native_passes += 1;
-        }
-        let Some(encoder) = state.encoder.as_mut() else {
-            self.errors
-                .validation("GPUCommandEncoder is already finished");
-            drop(state);
-            self.flush(&ctx)?;
-            return Ok(GPUComputePassEncoder {
-                errors: self.errors.clone(),
-                label:  Rc::new(RefCell::new(label)),
-                state:  Rc::new(RefCell::new(ComputePassState::new(
-                    self.state.clone(),
-                    None,
-                    false,
-                ))),
-            });
-        };
-        let timestamp_query;
-        let timestamp_writes = match timestamp {
-            Some((query, beginning, end, false)) => {
-                timestamp_query = query;
-                Some(wgpu::ComputePassTimestampWrites {
-                    query_set:                     &timestamp_query,
-                    beginning_of_pass_write_index: beginning,
-                    end_of_pass_write_index:       end,
-                })
+        let timestamp_writes = timestamp.as_ref().map(|(query_set, beginning, end)| {
+            wgpu::ComputePassTimestampWrites {
+                query_set,
+                beginning_of_pass_write_index: *beginning,
+                end_of_pass_write_index: *end,
             }
-            Some(_) | None => None,
-        };
-        let pass = native.then(|| {
+        });
+        let pass = self.encoder.map(&self.errors(), |encoder| {
             encoder
                 .begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: (!label.is_empty()).then_some(label.as_str()),
@@ -3701,69 +2792,42 @@ impl<'js> GPUCommandEncoder<'js> {
                 })
                 .forget_lifetime()
         });
-        state.open_passes = 1;
-        drop(state);
+        flush_uncaptured(&self.device, &ctx)?;
         Ok(GPUComputePassEncoder {
-            errors: self.errors.clone(),
-            label:  Rc::new(RefCell::new(label)),
-            state:  Rc::new(RefCell::new(ComputePassState::new(
-                self.state.clone(),
-                pass,
-                true,
-            ))),
+            device: self.device.clone(),
+            label:  RefCell::new(label),
+            pass:   pass.map_or_else(
+                || Recorder::invalid("GPUComputePassEncoder"),
+                |pass| Recorder::open("GPUComputePassEncoder", pass),
+            ),
         })
     }
 
     pub fn begin_render_pass(
         &self, descriptor: Object<'js>, ctx: Ctx<'js>,
-    ) -> Result<render::GPURenderPassEncoder> {
-        let mut attachments = Vec::new();
-        record_attachment_liveness(&descriptor, &mut attachments, &ctx)?;
-        let mut state = self.state.borrow_mut();
-        if state.open_passes != 0 {
-            state.invalid = true;
-            drop(state);
-            return Ok(render::GPURenderPassEncoder::finished(
-                crate::label(&descriptor)?,
-                self.state.clone(),
-                self.errors.clone(),
-            ));
-        }
-        state.used_destroyed.extend(attachments);
-        let native = state.native_passes < MAX_NATIVE_PASSES;
-        if native {
-            state.native_passes += 1;
-        }
-        let Some(encoder) = state.encoder.as_mut() else {
-            self.errors
-                .validation("GPUCommandEncoder is already finished");
-            drop(state);
-            self.flush(&ctx)?;
-            return Ok(render::GPURenderPassEncoder::finished(
-                crate::label(&descriptor)?,
-                self.state.clone(),
-                self.errors.clone(),
-            ));
+    ) -> Result<render::GPURenderPassEncoder<'js>> {
+        let label = crate::label(&descriptor)?;
+        let begun = self
+            .encoder
+            .map(&self.errors(), |encoder| {
+                render::begin_render_pass(encoder, &descriptor, &ctx)
+            })
+            .transpose()?;
+        flush_uncaptured(&self.device, &ctx)?;
+        let pass = match begun {
+            Some((pass, deferred)) => {
+                let recorder = Recorder::open("GPURenderPassEncoder", pass);
+                if let Some(message) = deferred {
+                    recorder.defer(message);
+                }
+                recorder
+            }
+            None => Recorder::invalid("GPURenderPassEncoder"),
         };
-        let begun = render::begin_render_pass(
-            encoder,
-            descriptor,
-            &ctx,
-            self.device_js.borrow().id,
-            native,
-        )?;
-        if begun.invalid {
-            state.invalid = true;
-        }
-        if let Some(destroyed) = begun.occlusion_destroyed.clone() {
-            state.used_destroyed.push(destroyed);
-        }
-        state.open_passes = 1;
-        drop(state);
         Ok(render::GPURenderPassEncoder::new(
-            self.state.clone(),
-            self.errors.clone(),
-            begun,
+            self.device.clone(),
+            label,
+            pass,
         ))
     }
 
@@ -3772,6 +2836,8 @@ impl<'js> GPUCommandEncoder<'js> {
         destination_or_size: Opt<Value<'js>>, destination_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
+        // WebGPU overloads: (source, destination, size?) and
+        // (source, sourceOffset, destination, destinationOffset, size?).
         let (source_offset, destination, destination_offset, size) = if let Ok(destination) =
             Class::<GPUBuffer>::from_js(&ctx, source_offset_or_destination.clone())
         {
@@ -3794,53 +2860,15 @@ impl<'js> GPUCommandEncoder<'js> {
                 size.0.flatten(),
             )
         };
-        let source = source.borrow();
-        let destination = destination.borrow();
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(source.state.clone());
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(destination.state.clone());
-        let size = size.map(|value| value.0);
-        let usage_invalid = !source.usage.contains(wgpu::BufferUsages::COPY_SRC)
-            || !destination.usage.contains(wgpu::BufferUsages::COPY_DST);
-        let align_invalid = !source_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-            || !destination_offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-            || size.is_some_and(|size| !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT));
-        let range_invalid = size.is_some_and(|size| {
-            source_offset
-                .checked_add(size)
-                .is_none_or(|end| end > source.size)
-                || destination_offset
-                    .checked_add(size)
-                    .is_none_or(|end| end > destination.size)
-        });
-        let invalid = source.invalid
-            || destination.invalid
-            || usage_invalid
-            || align_invalid
-            || range_invalid;
-        if invalid {
-            self.state.borrow_mut().invalid = true;
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        if !matches!(*source.state.borrow(), BufferMapState::Unmapped)
-            || !matches!(*destination.state.borrow(), BufferMapState::Unmapped)
-        {
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        self.with_encoder(&ctx, |encoder| {
+        let source = source.borrow().inner.clone();
+        let destination = destination.borrow().inner.clone();
+        self.record(&ctx, |encoder| {
             encoder.copy_buffer_to_buffer(
-                &source.inner,
+                &source,
                 source_offset,
-                &destination.inner,
+                &destination,
                 destination_offset,
-                size,
+                size.map(|value| value.0),
             );
         })
     }
@@ -3851,41 +2879,16 @@ impl<'js> GPUCommandEncoder<'js> {
         let (buffer, layout) = texture::texel_copy_buffer(source, &ctx)?;
         let (texture, mip_level, origin, aspect) = texture::texel_copy_texture(destination, &ctx)?;
         let size = format::extent3d(copy_size, &ctx)?;
-        let buffer = buffer.borrow();
-        let texture = texture.borrow();
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        self.state
-            .borrow_mut()
-            .used_destroyed
-            .push(texture.destroyed.clone());
-        let buffer_mapped = matches!(
-            *buffer.state.borrow(),
-            BufferMapState::Mapped { .. } | BufferMapState::Pending
-        );
-        let buffer_destroyed = matches!(*buffer.state.borrow(), BufferMapState::Destroyed);
-        if buffer_mapped || buffer.invalid || texture.is_dummy {
-            self.state.borrow_mut().invalid = true;
-        }
-        if buffer_mapped
-            || buffer_destroyed
-            || buffer.invalid
-            || texture.is_dummy
-            || texture.destroyed.get()
-        {
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        self.with_encoder(&ctx, |encoder| {
+        let buffer = buffer.borrow().inner.clone();
+        let texture = texture.borrow().inner.clone();
+        self.record(&ctx, |encoder| {
             encoder.copy_buffer_to_texture(
                 wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer.inner,
+                    buffer: &buffer,
                     layout,
                 },
                 wgpu::TexelCopyTextureInfo {
-                    texture: &texture.inner,
+                    texture: &texture,
                     mip_level,
                     origin,
                     aspect,
@@ -3901,43 +2904,18 @@ impl<'js> GPUCommandEncoder<'js> {
         let (texture, mip_level, origin, aspect) = texture::texel_copy_texture(source, &ctx)?;
         let (buffer, layout) = texture::texel_copy_buffer(destination, &ctx)?;
         let size = format::extent3d(copy_size, &ctx)?;
-        let buffer = buffer.borrow();
-        let texture = texture.borrow();
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        self.state
-            .borrow_mut()
-            .used_destroyed
-            .push(texture.destroyed.clone());
-        let buffer_mapped = matches!(
-            *buffer.state.borrow(),
-            BufferMapState::Mapped { .. } | BufferMapState::Pending
-        );
-        let buffer_destroyed = matches!(*buffer.state.borrow(), BufferMapState::Destroyed);
-        if buffer_mapped || buffer.invalid || texture.is_dummy {
-            self.state.borrow_mut().invalid = true;
-        }
-        if buffer_mapped
-            || buffer_destroyed
-            || buffer.invalid
-            || texture.is_dummy
-            || texture.destroyed.get()
-        {
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        self.with_encoder(&ctx, |encoder| {
+        let buffer = buffer.borrow().inner.clone();
+        let texture = texture.borrow().inner.clone();
+        self.record(&ctx, |encoder| {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &texture.inner,
+                    texture: &texture,
                     mip_level,
                     origin,
                     aspect,
                 },
                 wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer.inner,
+                    buffer: &buffer,
                     layout,
                 },
                 size,
@@ -3953,43 +2931,18 @@ impl<'js> GPUCommandEncoder<'js> {
         let (destination_texture, destination_mip, destination_origin, destination_aspect) =
             texture::texel_copy_texture(destination, &ctx)?;
         let size = format::extent3d(copy_size, &ctx)?;
-        let source_texture = source_texture.borrow();
-        let destination_texture = destination_texture.borrow();
-        self.state
-            .borrow_mut()
-            .used_destroyed
-            .push(source_texture.destroyed.clone());
-        self.state
-            .borrow_mut()
-            .used_destroyed
-            .push(destination_texture.destroyed.clone());
-        let device_id = self.state.borrow().device_id;
-        let finish_invalid = source_texture.is_dummy
-            || destination_texture.is_dummy
-            || source_texture.device_id != device_id
-            || destination_texture.device_id != device_id
-            || !source_texture.usage.contains(wgpu::TextureUsages::COPY_SRC)
-            || !destination_texture
-                .usage
-                .contains(wgpu::TextureUsages::COPY_DST);
-        let destroyed = source_texture.destroyed.get() || destination_texture.destroyed.get();
-        if finish_invalid {
-            self.state.borrow_mut().invalid = true;
-        }
-        if finish_invalid || destroyed {
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        self.with_encoder(&ctx, |encoder| {
+        let source_texture = source_texture.borrow().inner.clone();
+        let destination_texture = destination_texture.borrow().inner.clone();
+        self.record(&ctx, |encoder| {
             encoder.copy_texture_to_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture:   &source_texture.inner,
+                    texture:   &source_texture,
                     mip_level: source_mip,
                     origin:    source_origin,
                     aspect:    source_aspect,
                 },
                 wgpu::TexelCopyTextureInfo {
-                    texture:   &destination_texture.inner,
+                    texture:   &destination_texture,
                     mip_level: destination_mip,
                     origin:    destination_origin,
                     aspect:    destination_aspect,
@@ -4003,55 +2956,18 @@ impl<'js> GPUCommandEncoder<'js> {
         &self, query_set: Class<'js, query::GPUQuerySet>, first_query: JsU32, query_count: JsU32,
         destination: Class<'js, GPUBuffer>, destination_offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let query_set = query_set.borrow();
-        let destination = destination.borrow();
-        let dest_mapped = matches!(
-            *destination.state.borrow(),
-            BufferMapState::Mapped { .. } | BufferMapState::Pending
-        );
-        let dest_destroyed = matches!(*destination.state.borrow(), BufferMapState::Destroyed);
-        let query_end = first_query.0.saturating_add(query_count.0);
-        let dest_bytes = u64::from(query_count.0).saturating_mul(8);
-        let dest_end = destination_offset.0.saturating_add(dest_bytes);
-        let range_invalid = query_end > query_set.count
-            || !destination_offset.0.is_multiple_of(256)
-            || dest_end > destination.size;
-        let encode_invalid = query_set.invalid
-            || destination.invalid
-            || dest_mapped
-            || !destination
-                .usage
-                .contains(wgpu::BufferUsages::QUERY_RESOLVE)
-            || range_invalid
-            || query_set.device_id != self.state.borrow().device_id
-            || destination.device_id != self.state.borrow().device_id;
-        if dest_mapped {
-            self.errors
-                .validation("resolve destination must be unmapped");
-        }
-        if encode_invalid {
-            self.state.borrow_mut().invalid = true;
-        }
-        if dest_destroyed {
-            self.state
-                .borrow_mut()
-                .used_mapped
-                .push(destination.state.clone());
-        }
-        if query_set.destroyed.get() {
-            self.state
-                .borrow_mut()
-                .used_destroyed
-                .push(query_set.destroyed.clone());
-        }
-        if encode_invalid || dest_destroyed || query_set.destroyed.get() {
-            return Ok(());
-        }
-        self.with_encoder(&ctx, |encoder| {
+        let query_set = query_set.borrow().inner.clone();
+        let destination = destination.borrow().inner.clone();
+        let Some(query_end) = first_query.0.checked_add(query_count.0) else {
+            self.errors()
+                .validation("resolveQuerySet query range overflows");
+            return flush_uncaptured(&self.device, &ctx);
+        };
+        self.record(&ctx, |encoder| {
             encoder.resolve_query_set(
-                &query_set.inner,
+                &query_set,
                 first_query.0..query_end,
-                &destination.inner,
+                &destination,
                 destination_offset.0,
             );
         })
@@ -4061,33 +2977,10 @@ impl<'js> GPUCommandEncoder<'js> {
         &self, buffer: Class<'js, GPUBuffer>, offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>,
         ctx: Ctx<'js>,
     ) -> Result<()> {
-        let buffer = buffer.borrow();
-        self.state
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
+        let buffer = buffer.borrow().inner.clone();
         let offset = offset.0.flatten().map_or(0, |value| value.0);
         let size = size.0.flatten().map(|value| value.0);
-        let range_invalid = !offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-            || size.is_some_and(|size| !size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT))
-            || size
-                .unwrap_or_else(|| buffer.size.saturating_sub(offset))
-                .checked_add(offset)
-                .is_none_or(|end| end > buffer.size);
-        let invalid =
-            buffer.invalid || !buffer.usage.contains(wgpu::BufferUsages::COPY_DST) || range_invalid;
-        if invalid {
-            self.state.borrow_mut().invalid = true;
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        if !matches!(*buffer.state.borrow(), BufferMapState::Unmapped) {
-            self.flush(&ctx)?;
-            return Ok(());
-        }
-        self.with_encoder(&ctx, |encoder| {
-            encoder.clear_buffer(&buffer.inner, offset, size)
-        })
+        self.record(&ctx, |encoder| encoder.clear_buffer(&buffer, offset, size))
     }
 
     pub fn finish(
@@ -4100,196 +2993,52 @@ impl<'js> GPUCommandEncoder<'js> {
             .map(crate::label)
             .transpose()?
             .unwrap_or_default();
-        let mut state = self.state.borrow_mut();
-        if state.open_passes != 0 {
-            self.errors.validation("GPUCommandEncoder has an open pass");
-        }
-        if state.invalid {
-            self.errors.validation("GPUCommandEncoder is invalid");
-        }
-        let Some(encoder) = state.encoder.take() else {
-            self.errors
-                .validation("GPUCommandEncoder is already finished");
-            drop(state);
-            self.flush(&ctx)?;
-            return Ok(GPUCommandBuffer {
-                inner:          Rc::new(RefCell::new(None)),
-                label:          Rc::new(RefCell::new(label)),
-                used_destroyed: Rc::from(Vec::new()),
-                used_mapped:    Rc::from(Vec::new()),
-            });
-        };
-        let used_destroyed =
-            Rc::<[Rc<Cell<bool>>]>::from(std::mem::take(&mut state.used_destroyed));
-        let used_mapped =
-            Rc::<[Rc<RefCell<BufferMapState>>]>::from(std::mem::take(&mut state.used_mapped));
-        let buffer = GPUCommandBuffer {
-            inner: Rc::new(RefCell::new(Some(encoder.finish()))),
-            label: Rc::new(RefCell::new(label)),
-            used_destroyed,
-            used_mapped,
-        };
-        drop(state);
-        self.flush(&ctx)?;
-        Ok(buffer)
+        let inner = self
+            .encoder
+            .end(&self.errors(), wgpu::CommandEncoder::finish);
+        flush_uncaptured(&self.device, &ctx)?;
+        Ok(GPUCommandBuffer {
+            inner: RefCell::new(inner),
+            label: RefCell::new(label),
+        })
     }
 
     pub fn push_debug_group(&self, value: String, ctx: Ctx<'js>) -> Result<()> {
-        self.with_encoder(&ctx, |encoder| encoder.push_debug_group(&value))
+        self.record(&ctx, |encoder| encoder.push_debug_group(&value))
     }
 
     pub fn pop_debug_group(&self, ctx: Ctx<'js>) -> Result<()> {
-        self.with_encoder(&ctx, wgpu::CommandEncoder::pop_debug_group)
+        self.record(&ctx, wgpu::CommandEncoder::pop_debug_group)
     }
 
     pub fn insert_debug_marker(&self, value: String, ctx: Ctx<'js>) -> Result<()> {
-        self.with_encoder(&ctx, |encoder| encoder.insert_debug_marker(&value))
+        self.record(&ctx, |encoder| encoder.insert_debug_marker(&value))
     }
 }
 
-struct ComputePassState {
-    parent:             Rc<RefCell<EncoderState>>,
-    pass:               Option<wgpu::ComputePass<'static>>,
-    open:               bool,
-    bound_groups:       BindGroupSet,
-    pipeline_groups:    PipelineLayoutGroups,
-    pipeline_auto:      bool,
-    pipeline_auto_id:   u64,
-    pipeline_bound:     bool,
-    immediate_required: u64,
-    immediate_filled:   u64,
-    shader_mins:        Rc<[(u32, u32, u64)]>,
-}
-
-impl ComputePassState {
-    fn new(
-        parent: Rc<RefCell<EncoderState>>, pass: Option<wgpu::ComputePass<'static>>, open: bool,
-    ) -> Self {
-        Self {
-            parent,
-            pass,
-            open,
-            bound_groups: BindGroupSet::default(),
-            pipeline_groups: empty_layout_groups(),
-            pipeline_auto: false,
-            pipeline_auto_id: 0,
-            pipeline_bound: false,
-            immediate_required: 0,
-            immediate_filled: 0,
-            shader_mins: Rc::from(Vec::new()),
-        }
-    }
-}
-
-impl ComputePassState {
-    fn end(&mut self) -> bool {
-        if !self.open {
-            return false;
-        }
-        self.open = false;
-        let pass = self.pass.take();
-        let mut parent = self.parent.borrow_mut();
-        if let Some(pass) = pass {
-            if parent.encoder.is_none() {
-                let _pass = std::mem::ManuallyDrop::new(pass);
-            } else {
-                drop(pass);
-            }
-        }
-        parent.open_passes = parent.open_passes.saturating_sub(1);
-        true
-    }
-}
-
-impl Drop for ComputePassState {
-    fn drop(&mut self) { self.end(); }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUComputePassEncoder")]
-pub struct GPUComputePassEncoder {
+pub struct GPUComputePassEncoder<'js> {
+    device: Class<'js, GPUDevice<'js>>,
     #[qjs(skip_trace)]
-    errors: ErrorSink,
+    label:  RefCell<String>,
     #[qjs(skip_trace)]
-    label:  Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    state:  Rc<RefCell<ComputePassState>>,
+    pass:   Recorder<wgpu::ComputePass<'static>>,
 }
 
-impl GPUComputePassEncoder {
-    fn mark_invalid(&self) { self.state.borrow_mut().parent.borrow_mut().invalid = true; }
+impl<'js> GPUComputePassEncoder<'js> {
+    fn errors(&self) -> ErrorSink { self.device.borrow().errors.clone() }
 
-    fn compute_bind_mismatch(&self) -> bool {
-        let state = self.state.borrow();
-        if !state.pipeline_bound {
-            return true;
-        }
-        pipeline_bind_groups_mismatch(
-            &state.pipeline_groups,
-            state.pipeline_auto,
-            state.pipeline_auto_id,
-            &state.bound_groups,
-        )
-    }
-
-    fn skip_native_dispatch(&self) -> bool {
-        let missing = {
-            let state = self.state.borrow();
-            immediates_unfilled(state.immediate_required, state.immediate_filled)
-        };
-        let too_small = {
-            let state = self.state.borrow();
-            shader_buffer_too_small(&state.shader_mins, &state.bound_groups)
-        };
-        let usage_conflict = {
-            let state = self.state.borrow();
-            state
-                .bound_groups
-                .texture_usage_conflict(Some(&state.pipeline_groups), true)
-        };
-        if self.compute_bind_mismatch() || missing || too_small || usage_conflict {
-            self.mark_invalid();
-            return true;
-        }
-        let (skip_immediates, parent_invalid) = {
-            let state = self.state.borrow();
-            (state.immediate_required != 0, state.parent.borrow().invalid)
-        };
-        skip_immediates || parent_invalid
-    }
-
-    fn ensure_open(&self) -> bool {
-        if self.state.borrow().open {
-            true
-        } else {
-            self.errors
-                .validation("GPUComputePassEncoder is already ended");
-            false
-        }
-    }
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "JS methods return Result; keep one helper shape"
-    )]
-    fn with_pass<T: Default>(
-        &self, ctx: &Ctx<'_>, operation: impl FnOnce(&mut wgpu::ComputePass<'static>) -> T,
-    ) -> Result<T> {
-        let _ = ctx;
-        if !self.ensure_open() {
-            return Ok(T::default());
-        }
-        Ok(self
-            .state
-            .borrow_mut()
-            .pass
-            .as_mut()
-            .map_or_else(T::default, operation))
+    fn record(
+        &self, ctx: &Ctx<'js>, operation: impl FnOnce(&mut wgpu::ComputePass<'static>),
+    ) -> Result<()> {
+        self.pass.record(&self.errors(), operation);
+        flush_uncaptured(&self.device, ctx)
     }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl GPUComputePassEncoder {
+impl<'js> GPUComputePassEncoder<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
@@ -4299,185 +3048,78 @@ impl GPUComputePassEncoder {
     #[qjs(set, rename = "label")]
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
-    pub fn set_pipeline<'js>(
-        &self, pipeline: Class<'js, GPUComputePipeline>, ctx: Ctx<'js>,
+    pub fn set_pipeline(
+        &self, pipeline: Class<'js, GPUComputePipeline<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let pipeline = pipeline.borrow();
-        let device_id = self.state.borrow().parent.borrow().device_id;
-        if pipeline.invalid || pipeline.device_id != device_id {
-            self.mark_invalid();
-            return Ok(());
-        }
-        {
-            let mut state = self.state.borrow_mut();
-            state.pipeline_groups = pipeline.layout_groups.clone();
-            state.pipeline_auto = pipeline.auto_layout;
-            state.pipeline_auto_id = pipeline.auto_layout_id;
-            state.pipeline_bound = true;
-            state.immediate_required = pipeline.immediate_slots;
-            state.shader_mins = pipeline.shader_mins.clone();
-        }
-        self.with_pass(&ctx, |pass| pass.set_pipeline(&pipeline.inner))
+        self.record(&ctx, |pass| pass.set_pipeline(&pipeline.borrow().inner))
     }
 
-    pub fn set_bind_group<'js>(
+    pub fn set_bind_group(
         &self, index: JsU32, bind_group: Option<Class<'js, GPUBindGroup>>,
         dynamic_offsets: Opt<Value<'js>>, start: Opt<Option<JsU64>>, length: Opt<Option<JsU64>>,
         ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let offsets = crate::dynamic_offsets(&ctx, dynamic_offsets, start, length)?;
-        let native = bind_group.as_ref().and_then(|group| {
-            let group = group.borrow();
-            (!group.invalid).then(|| group.inner.clone())
-        });
-        let bind_group = bind_group.as_ref().map(|group| group.borrow());
-        let parent = self.state.borrow().parent.clone();
-        let (device_id, max_bind_groups) = {
-            let parent = parent.borrow();
-            (parent.device_id, parent.max_bind_groups)
-        };
-        let applied = {
-            let mut state = self.state.borrow_mut();
-            state.bound_groups.apply(
-                index.0,
-                bind_group.as_deref(),
-                &offsets,
-                device_id,
-                max_bind_groups,
-            )
-        };
-        {
-            let mut parent = parent.borrow_mut();
-            parent.used_destroyed.extend(applied.used_destroyed);
-            parent.used_mapped.extend(applied.used_mapped);
-        }
-        if applied.invalid {
-            self.mark_invalid();
-            return Ok(());
-        }
-        drop(bind_group);
-        self.with_pass(&ctx, |pass| {
-            pass.set_bind_group(index.0, native.as_ref(), &offsets);
+        let group = bind_group.map(|group| group.borrow().inner.clone());
+        self.record(&ctx, |pass| {
+            pass.set_bind_group(index.0, group.as_ref(), &offsets);
         })
     }
 
     pub fn dispatch_workgroups(
-        &self, x: JsU32, y: Opt<Option<JsU32>>, z: Opt<Option<JsU32>>, ctx: Ctx<'_>,
+        &self, x: JsU32, y: Opt<Option<JsU32>>, z: Opt<Option<JsU32>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let y = y.0.flatten().map_or(1, |value| value.0);
         let z = z.0.flatten().map_or(1, |value| value.0);
-        let max = self.state.borrow().parent.borrow().max_compute_workgroups;
-        if x.0 > max || y > max || z > max {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if self.skip_native_dispatch() {
-            return Ok(());
-        }
-        self.with_pass(&ctx, |pass| {
-            pass.dispatch_workgroups(x.0, y, z);
-        })
+        self.record(&ctx, |pass| pass.dispatch_workgroups(x.0, y, z))
     }
 
-    pub fn dispatch_workgroups_indirect<'js>(
+    pub fn dispatch_workgroups_indirect(
         &self, buffer: Class<'js, GPUBuffer>, offset: JsU64, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
-        let buffer = buffer.borrow();
-        let offset = offset.0;
-        let device_id = self.state.borrow().parent.borrow().device_id;
-        let bind = buffer_bind(
-            &buffer,
-            offset,
-            Some(INDIRECT_DISPATCH_BYTES),
-            wgpu::BufferUsages::INDIRECT,
-            4,
-            device_id,
-            false,
-        );
-        self.state
-            .borrow_mut()
-            .parent
-            .borrow_mut()
-            .used_mapped
-            .push(buffer.state.clone());
-        if bind.invalid {
-            self.mark_invalid();
-            return Ok(());
-        }
-        if self.skip_native_dispatch() {
-            return Ok(());
-        }
-        let Some((_, _)) = bind.slice else {
-            return Ok(());
-        };
-        self.with_pass(&ctx, |pass| {
-            pass.dispatch_workgroups_indirect(&buffer.inner, offset)
+        let buffer = buffer.borrow().inner.clone();
+        self.record(&ctx, |pass| {
+            pass.dispatch_workgroups_indirect(&buffer, offset.0);
         })
     }
 
-    pub fn set_immediates<'js>(
+    pub fn set_immediates(
         &self, offset: JsU32, data: Value<'js>, data_offset: Opt<Option<JsU64>>,
         size: Opt<Option<JsU64>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        if !self.ensure_open() {
-            return Ok(());
-        }
         let bytes = immediates_bytes(data, data_offset, size, &ctx)?;
-        let max = self.state.borrow().parent.borrow().max_immediate_size;
-        if immediates_range_invalid(offset.0, bytes.len(), max) {
-            self.mark_invalid();
-        } else {
-            let slots = immediate_slots_from_range(offset.0, bytes.len());
-            self.state.borrow_mut().immediate_filled |= slots;
-        }
-        Ok(())
+        self.record(&ctx, |pass| pass.set_immediates(offset.0, &bytes))
     }
 
-    pub fn end(&self, ctx: Ctx<'_>) -> Result<()> {
-        let _ = ctx;
-        if !self.state.borrow_mut().end() {
-            self.errors
-                .validation("GPUComputePassEncoder is already ended");
-        }
-        Ok(())
+    pub fn end(&self, ctx: Ctx<'js>) -> Result<()> {
+        // Dropping the pass ends it; wgpu validates the recorded commands
+        // here and reports through the sink.
+        self.pass.end(&self.errors(), drop);
+        flush_uncaptured(&self.device, &ctx)
     }
 
-    pub fn push_debug_group(&self, value: String, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, |pass| pass.push_debug_group(&value))
+    pub fn push_debug_group(&self, value: String, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, |pass| pass.push_debug_group(&value))
     }
 
-    pub fn pop_debug_group(&self, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, wgpu::ComputePass::pop_debug_group)
+    pub fn pop_debug_group(&self, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, wgpu::ComputePass::pop_debug_group)
     }
 
-    pub fn insert_debug_marker(&self, value: String, ctx: Ctx<'_>) -> Result<()> {
-        self.with_pass(&ctx, |pass| pass.insert_debug_marker(&value))
+    pub fn insert_debug_marker(&self, value: String, ctx: Ctx<'js>) -> Result<()> {
+        self.record(&ctx, |pass| pass.insert_debug_marker(&value))
     }
 }
 
-#[derive(Clone, Trace, JsLifetime)]
+/// `inner` is `None` after submit or when `finish` failed; submitting it then
+/// reports the validation error wgpu would have.
+#[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUCommandBuffer")]
 pub struct GPUCommandBuffer {
     #[qjs(skip_trace)]
-    inner:          Rc<RefCell<Option<wgpu::CommandBuffer>>>,
+    inner: RefCell<Option<wgpu::CommandBuffer>>,
     #[qjs(skip_trace)]
-    label:          Rc<RefCell<String>>,
-    #[qjs(skip_trace)]
-    used_destroyed: Rc<[Rc<Cell<bool>>]>,
-    #[qjs(skip_trace)]
-    used_mapped:    Rc<[Rc<RefCell<BufferMapState>>]>,
+    label: RefCell<String>,
 }
 
 #[rquickjs::methods]

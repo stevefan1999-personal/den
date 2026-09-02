@@ -13,6 +13,22 @@ pub fn texture_format(name: &str, ctx: &Ctx<'_>) -> Result<wgpu::TextureFormat> 
     kebab!(wgpu::TextureFormat, name, ctx, "GPUTextureFormat")
 }
 
+/// The spec validates "texture format required features" on the content
+/// timeline, so a feature-gated format is a `TypeError` rather than a
+/// validation error.
+pub fn texture_format_with_features(
+    name: &str, features: wgpu::Features, ctx: &Ctx<'_>,
+) -> Result<wgpu::TextureFormat> {
+    let format = texture_format(name, ctx)?;
+    if !features.contains(format.required_features()) {
+        return Err(type_error(
+            ctx,
+            format!("texture format {name} requires missing features"),
+        ));
+    }
+    Ok(format)
+}
+
 pub fn vertex_format(name: &str, ctx: &Ctx<'_>) -> Result<wgpu::VertexFormat> {
     // wgpu 30 has Unorm10_10_10_2 but not Snorm10_10_10_2. Same packed 4-byte
     // layout; CTS validation only cares about size/alignment/scalar class.
@@ -20,6 +36,51 @@ pub fn vertex_format(name: &str, ctx: &Ctx<'_>) -> Result<wgpu::VertexFormat> {
         return Ok(wgpu::VertexFormat::Unorm10_10_10_2);
     }
     kebab!(wgpu::VertexFormat, name, ctx, "GPUVertexFormat")
+}
+
+/// `GPUTextureComponentSwizzle` is four of `rgba01`; the syntax is a
+/// content-timeline `TypeError`, and so is the missing feature.
+pub fn component_swizzle(
+    swizzle: &str, features: wgpu::Features, ctx: &Ctx<'_>,
+) -> Result<wgpu::TextureComponentSwizzle> {
+    let component = |letter: Option<char>| {
+        match letter {
+            Some('0') => Ok(wgpu::ComponentSwizzle::Zero),
+            Some('1') => Ok(wgpu::ComponentSwizzle::One),
+            Some('r') => Ok(wgpu::ComponentSwizzle::R),
+            Some('g') => Ok(wgpu::ComponentSwizzle::G),
+            Some('b') => Ok(wgpu::ComponentSwizzle::B),
+            Some('a') => Ok(wgpu::ComponentSwizzle::A),
+            _ => {
+                Err(type_error(
+                    ctx,
+                    "swizzle must be exactly four characters from rgba01",
+                ))
+            }
+        }
+    };
+    if swizzle.chars().count() != 4 {
+        return Err(type_error(
+            ctx,
+            "swizzle must be exactly four characters from rgba01",
+        ));
+    }
+    let mut letters = swizzle.chars();
+    let parsed = wgpu::TextureComponentSwizzle {
+        r: component(letters.next())?,
+        g: component(letters.next())?,
+        b: component(letters.next())?,
+        a: component(letters.next())?,
+    };
+    if parsed != wgpu::TextureComponentSwizzle::default()
+        && !features.contains(wgpu::Features::TEXTURE_COMPONENT_SWIZZLE)
+    {
+        return Err(type_error(
+            ctx,
+            "texture-component-swizzle feature is not enabled",
+        ));
+    }
+    Ok(parsed)
 }
 
 pub fn compare_function(name: &str, ctx: &Ctx<'_>) -> Result<wgpu::CompareFunction> {
@@ -1532,55 +1593,6 @@ pub fn naga_immediate_unusable(code: &str) -> bool {
     immediate_byte_size(code) > NAGA_IMMEDIATE_SLOT_BYTES
 }
 
-pub fn immediate_slots_mask(bytes: u32) -> u64 {
-    let slots = (bytes >> 2).min(64);
-    (0..slots).fold(0_u64, |mask, index| mask | (1_u64 << index))
-}
-
-pub fn immediate_slots_used(code: &str, entry_point: Option<&str>, stage: ShaderStage) -> u64 {
-    let Ok(module) = wgpu::naga::front::wgsl::parse_str(code) else {
-        return 0;
-    };
-    let mut validator = wgpu::naga::valid::Validator::new(
-        wgpu::naga::valid::ValidationFlags::all(),
-        wgpu::naga::valid::Capabilities::IMMEDIATES,
-    );
-    let Ok(Some(info)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        validator.validate(&module).ok()
-    })) else {
-        return 0;
-    };
-    let want_stage = match stage {
-        ShaderStage::Compute => wgpu::naga::ShaderStage::Compute,
-        ShaderStage::Vertex => wgpu::naga::ShaderStage::Vertex,
-        ShaderStage::Fragment => wgpu::naga::ShaderStage::Fragment,
-    };
-    let gctx = module.to_ctx();
-    module
-        .entry_points
-        .iter()
-        .enumerate()
-        .filter(|(_index, entry)| {
-            entry.stage == want_stage && entry_point.is_none_or(|name| entry.name == name)
-        })
-        .fold(0, |bits, (index, _entry)| {
-            let function = info.get_entry_point(index);
-            bits | module
-                .global_variables
-                .iter()
-                .filter(|(_handle, var)| var.space == wgpu::naga::AddressSpace::Immediate)
-                .filter(|(handle, _var)| !function[*handle].is_empty())
-                .fold(0, |used, (_handle, var)| {
-                    used | wgpu::naga::valid::ImmediateSlots::from_type(
-                        &module.types[var.ty].inner,
-                        &module.types,
-                        gctx,
-                    )
-                    .map_or(0, immediate_slots_bits)
-                })
-        })
-}
-
 pub fn shader_buffer_min_sizes(code: &str) -> Vec<(u32, u32, u64)> {
     let Ok(module) = wgpu::naga::front::wgsl::parse_str(code) else {
         return Vec::new();
@@ -1631,17 +1643,6 @@ const fn vector_components(size: wgpu::naga::VectorSize) -> u64 {
         wgpu::naga::VectorSize::Tri => 3,
         wgpu::naga::VectorSize::Quad => 4,
     }
-}
-
-fn immediate_slots_bits(slots: wgpu::naga::valid::ImmediateSlots) -> u64 {
-    (0..64).fold(0_u64, |bits, index| {
-        let one = wgpu::naga::valid::ImmediateSlots::from_raw(1_u64 << index);
-        if slots.contains(one) {
-            bits | (1_u64 << index)
-        } else {
-            bits
-        }
-    })
 }
 
 #[cfg(test)]

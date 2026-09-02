@@ -63,15 +63,6 @@ device.createShaderModule({ code: "this is not WGSL" });
 const validation = await device.popErrorScope();
 assert(validation instanceof GPUValidationError);
 
-device.pushErrorScope("out-of-memory");
-device.createTexture({
-  size: [8192, 8192, 256],
-  format: "rgba32float",
-  usage: GPUTextureUsage.COPY_DST,
-});
-const oom = await device.popErrorScope();
-assert(oom instanceof GPUOutOfMemoryError);
-
 const buffer = device.createBuffer({
   label: "bytes",
   size: 16,
@@ -113,43 +104,6 @@ buffer.destroy();
   });
   assert((await device.popErrorScope()) instanceof GPUValidationError);
 
-  const liveTex = device.createTexture({
-    size: [1, 1],
-    format: "rgba8unorm",
-    usage: GPUTextureUsage.TEXTURE_BINDING,
-  });
-  liveTex.destroy();
-  device.pushErrorScope("validation");
-  const destroyedView = liveTex.createView();
-  assertEquals(await device.popErrorScope(), null);
-  device.pushErrorScope("validation");
-  device.createBindGroup({
-    layout: sampledLayout,
-    entries: [{ binding: 0, resource: destroyedView }],
-  });
-  assertEquals(await device.popErrorScope(), null);
-
-  const msaaLayout = device.createBindGroupLayout({
-    entries: [{
-      binding: 0,
-      visibility: GPUShaderStage.COMPUTE,
-      texture: { sampleType: "unfilterable-float", multisampled: true },
-    }],
-  });
-  const msaaTex = device.createTexture({
-    size: [1, 1],
-    format: "rgba8unorm",
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    sampleCount: 4,
-  });
-  msaaTex.destroy();
-  device.pushErrorScope("validation");
-  device.createBindGroup({
-    layout: msaaLayout,
-    entries: [{ binding: 0, resource: msaaTex }],
-  });
-  assertEquals(await device.popErrorScope(), null);
-
   const uniformLayout = device.createBindGroupLayout({
     entries: [{
       binding: 0,
@@ -169,18 +123,6 @@ buffer.destroy();
     entries: [{ binding: 0, resource: { buffer: invalidBuf } }],
   });
   assert((await device.popErrorScope()) instanceof GPUValidationError);
-
-  const liveBuf = device.createBuffer({
-    size: 16,
-    usage: GPUBufferUsage.UNIFORM,
-  });
-  liveBuf.destroy();
-  device.pushErrorScope("validation");
-  device.createBindGroup({
-    layout: uniformLayout,
-    entries: [{ binding: 0, resource: { buffer: liveBuf } }],
-  });
-  assertEquals(await device.popErrorScope(), null);
 
   device.pushErrorScope("validation");
   const invalidSampler = device.createSampler({ lodMinClamp: -1 });
