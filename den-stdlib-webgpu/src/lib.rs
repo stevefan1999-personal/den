@@ -212,6 +212,12 @@ pub(crate) fn buffer_slice(
 ) -> std::result::Result<Option<wgpu::BufferSlice<'_>>, String> {
     let end = size.map_or_else(|| Some(buffer.size()), |size| offset.checked_add(size));
     match end {
+        // ponytail: a legal zero-size binding is reported as "no buffer".
+        // `wgpu::RenderPass::set_vertex_buffer` calls `size_expect_nonzero`
+        // and panics on an empty slice (gfx-rs/wgpu#3170), and the safe API
+        // exposes no other way to record one; deno_webgpu can only bind it
+        // because it drives wgpu-core directly. Bind it for real once wgpu
+        // accepts empty slices.
         Some(end) if offset <= end && end <= buffer.size() => {
             Ok((offset < end).then(|| buffer.slice(offset..end)))
         }
