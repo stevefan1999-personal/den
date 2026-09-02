@@ -1,9 +1,15 @@
-//! Official test262 Temporal suite
-//! (`vendor/test262/test/built-ins/Temporal/**`).
+//! Official test262 Temporal suite: `test/built-ins/Temporal/**` plus
+//! `test/intl402/**`.
 //!
-//! Each official `.js` file is one cargo/nextest test. The file is read raw
-//! from the submodule and evaluated after the harness files it `$INCLUDE`s.
-//! This crate never rewrites files under `vendor/test262`.
+//! Most of `intl402` is Temporal: 2029 of its 3357 files exercise non-ISO
+//! calendars, and all but 45 of those never touch an `Intl` object, so they
+//! score den's calendar support today. Files that do need a real `Intl`
+//! constructor are ignored by feature, not by name.
+//!
+//! Each official `.js` file is one cargo/nextest test, named by its path under
+//! `test/`, so the subtree is part of the name. The file is read raw from the
+//! submodule and evaluated after the harness files it `$INCLUDE`s. This crate
+//! never rewrites files under `vendor/test262`.
 //!
 //! ```text
 //! cargo nextest run -p den-stdlib-temporal --test test262
@@ -28,6 +34,8 @@ fn workspace_root() -> PathBuf {
 }
 
 fn test262_root() -> PathBuf { workspace_root().join("vendor/test262") }
+
+const TEST262_TREES: &[&str] = &["built-ins/Temporal", "intl402"];
 
 #[derive(Debug, Default, Clone)]
 struct Frontmatter {
@@ -106,6 +114,9 @@ const SUPPORTED_FEATURES: &[&str] = &[
     "class",
     "class-fields-public",
     "Proxy",
+    // A calendar feature (eras and non-ISO month codes), not an Intl object:
+    // 1556 intl402 files carry it and run fine without any Intl constructor.
+    "Intl.Era-monthcode",
 ];
 
 fn should_skip(meta: &Frontmatter) -> Option<&'static str> {
@@ -120,9 +131,14 @@ fn should_skip(meta: &Frontmatter) -> Option<&'static str> {
         return Some("module/async flag");
     }
     for feature in &meta.features {
-        if feature.starts_with("Intl") || !SUPPORTED_FEATURES.contains(&feature.as_str()) {
-            return Some("unsupported feature");
+        if SUPPORTED_FEATURES.contains(&feature.as_str()) {
+            continue;
         }
+        return Some(if feature.starts_with("Intl") {
+            "needs an Intl object"
+        } else {
+            "unsupported feature"
+        });
     }
     None
 }
@@ -231,11 +247,11 @@ fn assert_harness_classification() -> Frontmatter {
     );
     assert_eq!(
         relative_to(
-            Path::new("/Temporal"),
-            Path::new("/Temporal/Instant/basic.js")
+            Path::new("/test"),
+            Path::new("/test/intl402/Temporal/basic.js")
         ),
-        "Instant/basic.js",
-        "trial names are official paths under built-ins/Temporal"
+        "intl402/Temporal/basic.js",
+        "trial names are official paths under test/, so the subtree is visible"
     );
     let meta = parse_frontmatter(
         "/*---\nfeatures: [Temporal, Intl.DateTimeFormat]\nflags: [async]\n---*/\n",
@@ -245,11 +261,17 @@ fn assert_harness_classification() -> Frontmatter {
         Some("module/async flag"),
         "async flag is a harness skip"
     );
-    let intl = parse_frontmatter("/*---\nfeatures: [Temporal, Intl]\n---*/\n");
+    let intl = parse_frontmatter("/*---\nfeatures: [Temporal, Intl.DateTimeFormat]\n---*/\n");
     assert_eq!(
         should_skip(&intl),
-        Some("unsupported feature"),
-        "Intl is not installed"
+        Some("needs an Intl object"),
+        "Intl constructors are not installed"
+    );
+    let eras = parse_frontmatter("/*---\nfeatures: [Temporal, Intl.Era-monthcode]\n---*/\n");
+    assert_eq!(
+        should_skip(&eras),
+        None,
+        "era/month-code calendars are plain Temporal"
     );
     let ok = parse_frontmatter("/*---\nfeatures: [Temporal]\n---*/\n");
     assert_eq!(should_skip(&ok), None, "plain Temporal is executable");
@@ -279,8 +301,8 @@ fn harness_classify() -> Result<(), Failed> {
 fn main() {
     let mut tests = vec![Trial::test("harness::classify", harness_classify)];
     let root = test262_root();
-    let suite = root.join("test/built-ins/Temporal");
-    if !suite.is_dir() {
+    let suite = root.join("test");
+    if !TEST262_TREES.iter().all(|tree| suite.join(tree).is_dir()) {
         tests.push(Trial::test("vendor/test262", || {
             Err(
                 "vendor/test262 is missing Temporal tests; run `git submodule update --init \
@@ -299,11 +321,14 @@ fn main() {
     };
     let harness = Arc::new(core_harness);
     let includes = Arc::new(extra_includes);
-    let mut files = collect_js_files(&suite);
+    let mut files: Vec<PathBuf> = TEST262_TREES
+        .iter()
+        .flat_map(|tree| collect_js_files(&suite.join(tree)))
+        .collect();
     files.sort();
     if files.is_empty() {
         tests.push(Trial::test("vendor/test262", || {
-            Err("walker found no tests under vendor/test262/test/built-ins/Temporal".into())
+            Err("walker found no tests under vendor/test262/test".into())
         }));
     }
     for file in files {
