@@ -277,13 +277,6 @@ impl<'js> GPURenderPassEncoder<'js> {
 
 crate::opaque_handle!(GPURenderBundle(wgpu::RenderBundle));
 
-/// Boxed handles the encoder was handed `&'static` references to.
-#[expect(dead_code, reason = "held only to outlive the encoder")]
-enum Retained {
-    Pipeline(Box<wgpu::RenderPipeline>),
-    Buffer(Box<wgpu::Buffer>),
-}
-
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPURenderBundleEncoder")]
 pub struct GPURenderBundleEncoder<'js> {
@@ -292,8 +285,9 @@ pub struct GPURenderBundleEncoder<'js> {
     label:    RefCell<String>,
     #[qjs(skip_trace)]
     encoder:  Recorder<wgpu::RenderBundleEncoder<'static>>,
+    /// Boxed handles the encoder was handed `&'static` references to.
     #[qjs(skip_trace)]
-    retained: RefCell<Vec<Retained>>,
+    retained: RefCell<Vec<Box<dyn std::any::Any>>>,
 }
 
 impl<'js> GPURenderBundleEncoder<'js> {
@@ -315,15 +309,15 @@ impl<'js> GPURenderBundleEncoder<'js> {
     /// SAFETY: the box lives in `self.retained` until the encoder is dropped,
     /// and a `Box`'s address does not move when the vec reallocates, so the
     /// pointer stays valid for as long as the encoder can dereference it.
-    fn retain<T: 'static>(&self, value: T, wrap: fn(Box<T>) -> Retained) -> &'static T {
+    fn retain<T: 'static>(&self, value: T) -> &'static T {
         let boxed = Box::new(value);
         let pointer = std::ptr::from_ref(&*boxed);
-        self.retained.borrow_mut().push(wrap(boxed));
+        self.retained.borrow_mut().push(boxed);
         unsafe { &*pointer }
     }
 
     fn retain_buffer(&self, buffer: &wgpu::Buffer) -> &'static wgpu::Buffer {
-        self.retain(buffer.clone(), Retained::Buffer)
+        self.retain(buffer.clone())
     }
 }
 
@@ -349,7 +343,7 @@ impl<'js> GPURenderBundleEncoder<'js> {
     pub fn set_pipeline(
         &self, pipeline: Class<'js, GPURenderPipeline<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
-        let pipeline = self.retain(pipeline.borrow().inner.clone(), Retained::Pipeline);
+        let pipeline = self.retain(pipeline.borrow().inner.clone());
         self.record(&ctx, |encoder| encoder.set_pipeline(pipeline))
     }
 
