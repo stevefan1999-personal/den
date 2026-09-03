@@ -3,6 +3,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use indexmap::IndexMap;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use rquickjs::{
     Array, Class, Coerced, Ctx, Filter, FromJs as _, Function, IntoJs as _, JsLifetime, Object,
     Result, Symbol, Value,
@@ -26,6 +27,18 @@ struct WebUrl {
 }
 
 impl WebUrl {
+    const PATH_SEGMENT: &AsciiSet = &CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'^')
+        .add(b'`')
+        .add(b'{')
+        .add(b'}');
+
     fn from_url(url: Url) -> Self {
         let pathname = (!url.cannot_be_a_base() && url.path().contains('^'))
             .then(|| url.path().replace('^', "%5E"));
@@ -405,44 +418,7 @@ impl WebUrl {
     }
 
     fn encode_path_segment(segment: &str) -> String {
-        let mut output = String::new();
-        for byte in segment.bytes() {
-            if byte <= 0x20
-                || byte >= 0x7f
-                || matches!(
-                    byte,
-                    b'"' | b'#' | b'<' | b'>' | b'?' | b'^' | b'`' | b'{' | b'}'
-                )
-            {
-                output.push('%');
-                output.push(Self::hex_digit(byte >> 4));
-                output.push(Self::hex_digit(byte & 0x0f));
-            } else {
-                output.push(char::from(byte));
-            }
-        }
-        output
-    }
-
-    const fn hex_digit(nibble: u8) -> char {
-        match nibble {
-            0 => '0',
-            1 => '1',
-            2 => '2',
-            3 => '3',
-            4 => '4',
-            5 => '5',
-            6 => '6',
-            7 => '7',
-            8 => '8',
-            9 => '9',
-            10 => 'A',
-            11 => 'B',
-            12 => 'C',
-            13 => 'D',
-            14 => 'E',
-            _ => 'F',
-        }
+        utf8_percent_encode(segment, Self::PATH_SEGMENT).to_string()
     }
 
     fn hostname(&self) -> &str {

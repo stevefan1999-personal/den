@@ -167,3 +167,8 @@ async fn form_data_wraps_blobs_and_keeps_files() -> eyre::Result<()> {
 async fn set_replaces_the_first_match_and_drops_the_rest() -> eyre::Result<()> {
     run("set_replaces_first_match.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pathname_percent_encodes_the_path_segment_set() -> eyre::Result<()> {
+    run("url_pathname_encoding.js").await
+}
