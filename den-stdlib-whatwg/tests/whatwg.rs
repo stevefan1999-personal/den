@@ -121,3 +121,8 @@ async fn event_source_reads_two_events_from_den_http() -> eyre::Result<()> {
 async fn readable_stream_cancel_is_the_native_method() -> eyre::Result<()> {
     run("readable_cancel_untouched.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_url_naming_bad_chunk_still_streams_intact() -> eyre::Result<()> {
+    run("fetch_bad_chunk_url.js").await
+}

@@ -257,3 +257,42 @@ async fn response_blob_wraps_the_body_when_blob_exists() {
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(outcome, "true|text/plain|hello");
 }
+
+/// A malformed chunk on the wire still fails the body after the good chunk,
+/// so nothing needs to sniff the URL for the WPT fixture name.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_chunk_fails_the_stream_after_the_good_one() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\
+                      Access-Control-Allow-Origin: *\r\n\r\n5\r\nhello\r\nzz\r\n",
+                )
+                .await;
+        }
+    });
+    // SAFETY: this test is the only writer for this process-local key.
+    unsafe {
+        std::env::set_var(
+            "DEN_TEST_BAD_CHUNK_URL",
+            format!("http://127.0.0.1:{port}/"),
+        );
+    }
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run("fetch_bad_chunk_wire.js"),
+    )
+    .await
+    .expect("bad chunk test timed out");
+}
+
+// ---- Finding #18 (from_reqwest takes the Headers it is given): edits to the
+// two

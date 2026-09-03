@@ -327,18 +327,11 @@ impl<'js> Response<'js> {
                 if let Some(fill) = &self.cache_fill {
                     fill.push(&chunk);
                 }
-                *self.inner.borrow_mut() = if self.url.contains("bad-chunk") {
-                    ResponseBody::Failed("network error after response".into())
-                } else {
-                    ResponseBody::Stream(stream)
-                };
+                *self.inner.borrow_mut() = ResponseBody::Stream(stream);
                 Ok(Some(chunk))
             }
             Some(Err(err)) => Err(Exception::throw_type(ctx, &err)),
             None => {
-                if self.url.contains("bad-chunk") {
-                    return Err(Exception::throw_type(ctx, "network error after response"));
-                }
                 if self
                     .expected_length
                     .is_some_and(|expected| expected > self.seen_length.get())

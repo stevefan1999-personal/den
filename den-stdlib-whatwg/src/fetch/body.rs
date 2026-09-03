@@ -460,25 +460,13 @@ async fn host_read_chunk<'js>(ctx: &Ctx<'js>, host: &Value<'js>) -> Result<Value
         .await
 }
 
-fn host_url_contains(host: &Value<'_>, needle: &str) -> bool {
-    host.as_object()
-        .and_then(|object| object.get::<_, String>("url").ok())
-        .is_some_and(|url| url.contains(needle))
-}
-
-enum HttpChunk {
-    Stop,
-    Continue,
-}
-
 fn apply_http_chunk<'js>(
-    ctx: &Ctx<'js>, controller: &Object<'js>, chunk: Value<'js>, check_abort: bool,
-) -> Result<HttpChunk> {
+    ctx: &Ctx<'js>, controller: &Object<'js>, chunk: Value<'js>,
+) -> Result<()> {
     if let Some(object) = chunk.as_object() {
-        if check_abort && truthy_prop(object, "__denAbort") {
+        if truthy_prop(object, "__denAbort") {
             let reason: Value = object.get("reason")?;
-            controller_call(controller, "error", Some(reason))?;
-            return Ok(HttpChunk::Stop);
+            return controller_call(controller, "error", Some(reason));
         }
         if truthy_prop(object, "__denStreamError") {
             let message = object
@@ -486,33 +474,20 @@ fn apply_http_chunk<'js>(
                 .ok()
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| "network error".into());
-            controller_call(controller, "error", Some(type_error_value(ctx, &message)?))?;
-            return Ok(HttpChunk::Stop);
+            return controller_call(controller, "error", Some(type_error_value(ctx, &message)?));
         }
     }
     if chunk.is_null() || chunk.is_undefined() {
-        controller_call(controller, "close", None)?;
-        return Ok(HttpChunk::Stop);
+        return controller_call(controller, "close", None);
     }
-    controller_call(controller, "enqueue", Some(chunk))?;
-    Ok(HttpChunk::Continue)
+    controller_call(controller, "enqueue", Some(chunk))
 }
 
 async fn pull_http_chunk<'js>(
     ctx: &Ctx<'js>, host: &Value<'js>, controller: &Object<'js>,
 ) -> Result<()> {
     let chunk = host_read_chunk(ctx, host).await?;
-    if matches!(
-        apply_http_chunk(ctx, controller, chunk, true)?,
-        HttpChunk::Stop
-    ) {
-        return Ok(());
-    }
-    if !host_url_contains(host, "bad-chunk") {
-        return Ok(());
-    }
-    let next = host_read_chunk(ctx, host).await?;
-    apply_http_chunk(ctx, controller, next, false).map(|_| ())
+    apply_http_chunk(ctx, controller, chunk)
 }
 
 fn array_buffer_method_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
