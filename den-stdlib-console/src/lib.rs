@@ -13,10 +13,6 @@ pub struct Formatter {
     max_depth: usize,
 }
 
-impl Default for Formatter {
-    fn default() -> Self { Self::new(10) }
-}
-
 impl Formatter {
     pub const fn new(max_depth: usize) -> Self { Self { max_depth } }
 
