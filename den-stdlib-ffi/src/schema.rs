@@ -411,14 +411,6 @@ impl ParamType {
             ctx, symbol, declared, 0,
         )?))
     }
-
-    /// Both a buffer and a callback reach C as an address.
-    pub fn ffi_type(&self) -> Type {
-        match self {
-            Self::Value(value) => value.ffi_type(),
-            Self::Buffer | Self::Callback(_) => Type::pointer(),
-        }
-    }
 }
 
 /// The signature of a JS function C may call.
