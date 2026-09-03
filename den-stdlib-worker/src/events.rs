@@ -1171,8 +1171,8 @@ pub fn finish<'js>(ctx: &Ctx<'js>, constructors: &Object<'js>) -> Result<()> {
     Ok(())
 }
 
-/// Add this module's natives to the `natives` bag: the printer, the trusted
-/// dispatch seam, and the handler-slot installer later preludes call.
+/// Add this module's natives to the `natives` bag: the printer and the trusted
+/// dispatch seam.
 pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
     natives.set(
         "reportException",
@@ -1181,10 +1181,6 @@ pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
     natives.set(
         "dispatchTrusted",
         Function::new(ctx.clone(), dispatch_trusted)?,
-    )?;
-    natives.set(
-        "__defineEventHandler",
-        Function::new(ctx.clone(), define_event_handler)?,
     )?;
     set_exception_sink(ctx, natives)?;
     Ok(())
