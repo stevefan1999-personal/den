@@ -1087,7 +1087,7 @@ impl<'js> WritableStreamDefaultWriter<'js> {
     }
 
     #[qjs(get)]
-    pub fn ready(&self, ctx: Ctx<'js>) -> Promise<'js> {
+    pub fn ready(&self) -> Promise<'js> {
         let inner = self.stream.borrow().inner.clone();
         if WritableStream::writer_is_current(&inner, self.id)
             && let Some(slot) = inner.borrow().writer.as_ref()
@@ -1096,12 +1096,11 @@ impl<'js> WritableStreamDefaultWriter<'js> {
             *self.ready.borrow_mut() = promise.clone();
             return promise;
         }
-        let _ = ctx;
         self.ready.borrow().clone()
     }
 
     #[qjs(get)]
-    pub fn closed(&self, ctx: Ctx<'js>) -> Promise<'js> {
+    pub fn closed(&self) -> Promise<'js> {
         let inner = self.stream.borrow().inner.clone();
         if WritableStream::writer_is_current(&inner, self.id)
             && let Some(slot) = inner.borrow().writer.as_ref()
@@ -1110,7 +1109,6 @@ impl<'js> WritableStreamDefaultWriter<'js> {
             *self.closed.borrow_mut() = promise.clone();
             return promise;
         }
-        let _ = ctx;
         self.closed.borrow().clone()
     }
 
@@ -1167,8 +1165,8 @@ impl<'js> WritableStreamDefaultWriter<'js> {
             return;
         }
         let (ready_pending, closed_pending) = WritableStream::writer_pending(&inner);
-        let _ = self.ready(ctx.clone());
-        let _ = self.closed(ctx.clone());
+        let _ = self.ready();
+        let _ = self.closed();
         let Some(reason) = WritableStream::release_writer(&ctx, &inner, self.id) else {
             return;
         };
