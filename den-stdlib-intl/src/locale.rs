@@ -15,7 +15,7 @@ use icu_locale_core::{
     subtags::{Language, Region, Script, Variant, Variants},
 };
 use rquickjs::{
-    Ctx, Exception, IntoJs, JsLifetime, Object, Result,
+    Ctx, Exception, IntoJs, JsLifetime, Result,
     class::{Class, Trace},
     prelude::Opt,
 };
@@ -170,9 +170,10 @@ impl Locale {
 
     /// `GetTextInfo`: the writing direction of the locale's script.
     pub fn get_text_info(&self) -> TextInfo {
+        let right_to_left =
+            LocaleDirectionality::new_extended().get(&self.tag.id) == Some(Direction::RightToLeft);
         TextInfo {
-            right_to_left: LocaleDirectionality::new_extended().get(&self.tag.id)
-                == Some(Direction::RightToLeft),
+            direction: if right_to_left { "rtl" } else { "ltr" },
         }
     }
 
@@ -344,19 +345,14 @@ impl Locale {
 
 /// The `getTextInfo` result. Its own type rather than an `Object` so that the
 /// class impl block stays free of the `'js` lifetime.
+#[derive(IntoJs)]
 pub struct TextInfo {
-    right_to_left: bool,
-}
-
-impl<'js> IntoJs<'js> for TextInfo {
-    fn into_js(self, ctx: &Ctx<'js>) -> Result<rquickjs::Value<'js>> {
-        let info = Object::new(ctx.clone())?;
-        info.set("direction", if self.right_to_left { "rtl" } else { "ltr" })?;
-        info.into_js(ctx)
-    }
+    direction: &'static str,
 }
 
 /// The `getWeekInfo` result: ISO weekday numbers, Monday being 1.
+#[derive(IntoJs)]
+#[qjs(rename_all = "camelCase")]
 pub struct WeekInfo {
     first_day: u8,
     weekend:   Vec<u8>,
@@ -367,13 +363,4 @@ impl WeekInfo {
         first_day: 1,
         weekend:   Vec::new(),
     };
-}
-
-impl<'js> IntoJs<'js> for WeekInfo {
-    fn into_js(self, ctx: &Ctx<'js>) -> Result<rquickjs::Value<'js>> {
-        let info = Object::new(ctx.clone())?;
-        info.set("firstDay", self.first_day)?;
-        info.set("weekend", self.weekend)?;
-        info.into_js(ctx)
-    }
 }

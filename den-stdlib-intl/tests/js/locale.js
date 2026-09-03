@@ -20,3 +20,9 @@ assertStrictEquals(new Intl.Locale("en-u-ca-ethiopic-amete-alem").calendar, "eth
 assertThrows(() => new Intl.Locale("en", { calendar: "ab" }), RangeError);
 assertThrows(() => new Intl.Locale("en", { calendar: "abcdefghi" }), RangeError);
 assertStrictEquals(new Intl.Locale("en", { calendar: "abc" }).calendar, "abc");
+
+// The info records are plain objects carrying exactly the spec's fields, in
+// the order the struct declares them: this is the derived IntoJs contract.
+assertEquals(Object.keys(new Intl.Locale("en-u-fw-wed").getWeekInfo()), ["firstDay", "weekend"]);
+assertEquals(new Intl.Locale("ar").getTextInfo(), { direction: "rtl" });
+assertEquals(new Intl.Locale("en").getTextInfo(), { direction: "ltr" });
