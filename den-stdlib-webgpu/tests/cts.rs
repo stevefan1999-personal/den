@@ -58,18 +58,27 @@ fn skip_reason(relative: &str) -> Option<&'static str> {
     None
 }
 
-fn collect_spec_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return files;
-    };
-    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-    entries.sort_by_key(fs::DirEntry::path);
-    for entry in entries {
+/// Every file under `dir`, depth first. An unreadable directory is the caller's
+/// error to report or ignore.
+fn walk(dir: &Path, visit: &mut dyn FnMut(&Path) -> Result<(), String>) -> Result<(), String> {
+    for entry in fs::read_dir(dir)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+    {
         let path = entry.path();
         if path.is_dir() {
-            files.extend(collect_spec_files(&path));
-        } else if path
+            walk(&path, visit)?;
+        } else {
+            visit(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_spec_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let _ = walk(dir, &mut |path| {
+        if path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
             && path.file_stem().is_some_and(|stem| {
@@ -78,9 +87,10 @@ fn collect_spec_files(dir: &Path) -> Vec<PathBuf> {
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("spec"))
             })
         {
-            files.push(path);
+            files.push(path.to_owned());
         }
-    }
+        Ok(())
+    });
     files
 }
 
@@ -114,55 +124,47 @@ fn transpile_tree(src_root: &Path, out_root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let _ = fs::remove_dir_all(out_root);
-    walk_transpile(src_root, src_root, out_root)?;
+    walk(src_root, &mut |path| {
+        transpile_entry(src_root, out_root, path)
+    })?;
     fs::create_dir_all(out_root).map_err(|error| error.to_string())?;
     fs::write(&stamp, head).map_err(|error| error.to_string())?;
     Ok(())
 }
 
-fn walk_transpile(src_root: &Path, dir: &Path, out_root: &Path) -> Result<(), String> {
-    let entries = fs::read_dir(dir).map_err(|error| error.to_string())?;
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let relative = path.strip_prefix(src_root).unwrap_or(&path);
-        let dest = out_root.join(relative);
-        if path.is_dir() {
-            fs::create_dir_all(&dest).map_err(|error| error.to_string())?;
-            walk_transpile(src_root, &path, out_root)?;
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let is_typescript = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
-            && Path::new(name).file_stem().is_some_and(|stem| {
-                Path::new(stem)
-                    .extension()
-                    .is_none_or(|ext| !ext.eq_ignore_ascii_case("d"))
-            });
-        let copy_as_is = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("js") || ext.eq_ignore_ascii_case("json"));
-        if !is_typescript && !copy_as_is {
-            continue;
-        }
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        if copy_as_is {
-            fs::copy(&path, dest).map_err(|error| error.to_string())?;
-            continue;
-        }
-        let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-        let source_type = SourceType::ts().with_module(true);
-        let output = transpile_with_source_map(&source, source_type, &path.to_string_lossy())
-            .map_err(|error| format!("{}: {error}", relative.display()))?;
-        let js_dest = dest.with_extension("js");
-        fs::write(js_dest, output.code).map_err(|error| error.to_string())?;
+fn transpile_entry(src_root: &Path, out_root: &Path, path: &Path) -> Result<(), String> {
+    let relative = path.strip_prefix(src_root).unwrap_or(path);
+    let dest = out_root.join(relative);
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(());
+    };
+    let is_typescript = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
+        && Path::new(name).file_stem().is_some_and(|stem| {
+            Path::new(stem)
+                .extension()
+                .is_none_or(|ext| !ext.eq_ignore_ascii_case("d"))
+        });
+    let copy_as_is = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("js") || ext.eq_ignore_ascii_case("json"));
+    if !is_typescript && !copy_as_is {
+        return Ok(());
     }
-    Ok(())
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    if copy_as_is {
+        fs::copy(path, dest).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let source = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let source_type = SourceType::ts().with_module(true);
+    let output = transpile_with_source_map(&source, source_type, &path.to_string_lossy())
+        .map_err(|error| format!("{}: {error}", relative.display()))?;
+    let js_dest = dest.with_extension("js");
+    fs::write(js_dest, output.code).map_err(|error| error.to_string())
 }
 
 fn spec_js_path(relative: &str) -> PathBuf {
