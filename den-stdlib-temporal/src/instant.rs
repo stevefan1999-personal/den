@@ -11,15 +11,13 @@ use temporal_rs::{
         ToStringRoundingOptions,
     },
     parsers::Precision,
-    partial::PartialDuration,
 };
 
 use crate::{
     convert::{
-        fractional_second_digits, get_defined, i128_to_bigint, optional_integral_i64,
-        optional_integral_i128, ordering_i32, probe_class, require_object, throw_value_of,
-        to_big_int_i128, to_instant, to_integer_if_integral, to_js_string, to_number, to_time_zone,
-        unwrap_temporal,
+        fractional_second_digits, get_defined, i128_to_bigint, ordering_i32, probe_class,
+        require_object, throw_value_of, to_big_int_i128, to_duration, to_instant,
+        to_integer_if_integral, to_js_string, to_number, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -72,61 +70,6 @@ fn optional_rounding_increment<'js>(
             unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
         }
     }
-}
-
-/// `ToTemporalDuration` with Instant.add/subtract Get order:
-/// days, hours, microseconds, milliseconds, minutes, months, nanoseconds,
-/// seconds, weeks, years.
-fn to_instant_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
-    if let Some(duration) = probe_class::<Duration>(ctx, value) {
-        return Ok(duration.inner);
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
-    }
-    let object = require_object(ctx, value, "duration must be an object")?;
-    let days = optional_integral_i64(ctx, &object, "days")?;
-    let hours = optional_integral_i64(ctx, &object, "hours")?;
-    let microseconds = optional_integral_i128(ctx, &object, "microseconds")?;
-    let milliseconds = optional_integral_i64(ctx, &object, "milliseconds")?;
-    let minutes = optional_integral_i64(ctx, &object, "minutes")?;
-    let months = optional_integral_i64(ctx, &object, "months")?;
-    let nanoseconds = optional_integral_i128(ctx, &object, "nanoseconds")?;
-    let seconds = optional_integral_i64(ctx, &object, "seconds")?;
-    let weeks = optional_integral_i64(ctx, &object, "weeks")?;
-    let years = optional_integral_i64(ctx, &object, "years")?;
-    if days.is_none()
-        && hours.is_none()
-        && microseconds.is_none()
-        && milliseconds.is_none()
-        && minutes.is_none()
-        && months.is_none()
-        && nanoseconds.is_none()
-        && seconds.is_none()
-        && weeks.is_none()
-        && years.is_none()
-    {
-        return Err(Exception::throw_type(
-            ctx,
-            "duration must have at least one field",
-        ));
-    }
-    unwrap_temporal(
-        ctx,
-        temporal_rs::Duration::from_partial_duration(PartialDuration {
-            years,
-            months,
-            weeks,
-            days,
-            hours,
-            minutes,
-            seconds,
-            milliseconds,
-            microseconds,
-            nanoseconds,
-        }),
-    )
 }
 
 /// Instant.since/until: Get largestUnit, roundingIncrement, roundingMode,
@@ -260,12 +203,12 @@ impl Instant {
     pub fn epoch_milliseconds(&self) -> i64 { self.inner.epoch_milliseconds() }
 
     pub fn add<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let duration = to_instant_duration(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         unwrap_temporal(&ctx, self.inner.add(&duration)).map(Self::wrap)
     }
 
     pub fn subtract<'js>(&self, duration_like: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let duration = to_instant_duration(&ctx, &duration_like)?;
+        let duration = to_duration(&ctx, &duration_like)?;
         unwrap_temporal(&ctx, self.inner.subtract(&duration)).map(Self::wrap)
     }
 

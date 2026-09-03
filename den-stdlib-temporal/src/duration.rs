@@ -20,8 +20,8 @@ use crate::{
         calendar_slot, ctor_integer_if_integral, ctor_integer_if_integral_i128,
         fractional_second_digits, get_defined, js_to_string, optional_integral_i64,
         optional_integral_i128, optional_truncated_i32, optional_truncated_u8,
-        optional_truncated_u16, ordering_i32, probe_class, throw_value_of, to_calendar, to_number,
-        to_time_zone, to_unit, unwrap_temporal,
+        optional_truncated_u16, ordering_i32, probe_class, throw_value_of, to_calendar,
+        to_duration, to_number, to_time_zone, to_unit, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -144,24 +144,6 @@ fn partial_duration_from_object<'js>(
         ));
     }
     Ok(partial)
-}
-
-fn to_temporal_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Duration> {
-    if let Some(duration) = probe_class::<Duration>(ctx, value) {
-        return Ok(duration.inner);
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(ctx, temporal_rs::Duration::from_utf8(string.as_bytes()));
-    }
-    let Some(object) = value.as_object() else {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert value to Temporal.Duration",
-        ));
-    };
-    let partial = partial_duration_from_object(ctx, object)?;
-    unwrap_temporal(ctx, temporal_rs::Duration::from_partial_duration(partial))
 }
 
 fn relative_to_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<RelativeTo>> {
@@ -317,15 +299,15 @@ impl Duration {
 
     #[qjs(static)]
     pub fn from<'js>(item: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        to_temporal_duration(&ctx, &item).map(Self::wrap)
+        to_duration(&ctx, &item).map(Self::wrap)
     }
 
     #[qjs(static)]
     pub fn compare<'js>(
         one: Value<'js>, two: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<i32> {
-        let left = to_temporal_duration(&ctx, &one)?;
-        let right = to_temporal_duration(&ctx, &two)?;
+        let left = to_duration(&ctx, &one)?;
+        let right = to_duration(&ctx, &two)?;
         let relative_to = relative_to_option(&ctx, &options_object(&ctx, options)?)?;
         unwrap_temporal(&ctx, left.compare(&right, relative_to)).map(ordering_i32)
     }
@@ -403,12 +385,12 @@ impl Duration {
     pub fn abs(&self) -> Self { Self::wrap(self.inner.abs()) }
 
     pub fn add<'js>(&self, other: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let other = to_temporal_duration(&ctx, &other)?;
+        let other = to_duration(&ctx, &other)?;
         unwrap_temporal(&ctx, self.inner.add(&other)).map(Self::wrap)
     }
 
     pub fn subtract<'js>(&self, other: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let other = to_temporal_duration(&ctx, &other)?;
+        let other = to_duration(&ctx, &other)?;
         unwrap_temporal(&ctx, self.inner.subtract(&other)).map(Self::wrap)
     }
 

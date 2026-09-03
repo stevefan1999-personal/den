@@ -37,3 +37,8 @@ async fn statics_now_and_plain_month_day_keep_their_shape() -> eyre::Result<()> 
 async fn to_locale_string_is_to_string_with_arguments_ignored() -> eyre::Result<()> {
     run("to_locale_string.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn duration_like_arguments_share_one_conversion() -> eyre::Result<()> {
+    run("duration_like.js").await
+}
