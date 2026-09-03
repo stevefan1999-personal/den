@@ -1,17 +1,18 @@
 use std::time::Duration;
 
-use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt as _, FromJs, Function, Module};
+use rquickjs::{AsyncContext, AsyncRuntime, CatchResultExt as _, Class, FromJs, Function, Module};
 use tokio::time;
 
-use super::NativePort;
+use super::{MessagePort, NativePort};
 use crate::transport::PortHandle;
 
-/// The one piece of `den:worker` these tests need that `den:worker` does
-/// not export: `__trackMessageListeners`, the ref rule itself. Worker
-/// construction is its production caller; the tests reach it as a global
-/// the fixture installs, and `nativeOf` reads the port-handle symbol the
-/// clone pre-pass uses.
-const LIFT_TRACKER: &str = include_str!("../fixtures/unit/port/lift_tracker.js");
+/// The two pieces of `den:worker` these tests need that `den:worker` does
+/// not export: `__trackMessageListeners`, the ref rule itself (Worker
+/// construction is its production caller), and `nativeOf`, the wrapper's
+/// `NativePort` — the same accessor the clone pre-pass uses.
+fn native_of<'js>(port: Class<'js, MessagePort<'js>>) -> Class<'js, NativePort> {
+    port.borrow().native()
+}
 
 /// One async runtime with `MessageChannel`/`MessagePort` installed. The
 /// pumps are `ctx.spawn`-ed futures, so nothing is delivered until the
@@ -37,8 +38,8 @@ impl Fixture {
                         "__trackMessageListeners",
                         Function::new(ctx.clone(), crate::port::track_message_listeners)?,
                     )?;
-                    let lift: Function<'_> = ctx.eval(LIFT_TRACKER)?;
-                    lift.call(())
+                    ctx.globals()
+                        .set("nativeOf", Function::new(ctx.clone(), native_of)?)
                 };
                 install().catch(&ctx).map_err(|error| error.to_string())
             })

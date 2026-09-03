@@ -1,10 +1,10 @@
 //! `MessagePort` / `MessageChannel`: the channel end, the pump, and the
 //! EventTarget wrappers.
 //!
-//! Each [`MessagePort`] keeps its [`NativePort`] under the symbol published as
-//! `natives.portHandleKey`, which is how the structured-clone pre-pass
-//! recognises a port in a message graph. `MessagePort.prototype` is reparented
-//! onto `EventTarget.prototype` so `port instanceof EventTarget` holds.
+//! The structured-clone pre-pass recognises a port in a message graph by
+//! probing for the [`MessagePort`] class and reading its [`NativePort`].
+//! `MessagePort.prototype` is reparented onto `EventTarget.prototype` so
+//! `port instanceof EventTarget` holds.
 
 use std::{
     cell::{Cell, RefCell},
@@ -254,7 +254,7 @@ impl NativePort {
 
     /// `nativePort.post(value, buffers, ports)` — the "message port post
     /// message steps" (HTML §9.4.4), with the transfer list already split by
-    /// `natives.splitTransfer`.
+    /// `clone::split_transfer`.
     ///
     /// Serialisation happens *before* the entanglement check, exactly as the
     /// spec orders it: a `DataCloneError` is synchronous and transfers
@@ -452,12 +452,10 @@ impl<'js> MessagePort<'js> {
             native: native.clone(),
         })?;
         native.set(WRAPPER_SLOT, port.clone())?;
-        let handle = crate::message::clone::CloneState::port_handle(ctx)?;
-        port.set(handle, native)?;
         Ok(port)
     }
 
-    fn native(&self) -> Class<'js, NativePort> { self.native.clone() }
+    pub(crate) fn native(&self) -> Class<'js, NativePort> { self.native.clone() }
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]

@@ -12,7 +12,7 @@
 use std::{ptr, slice};
 
 use den_util::{ObjectExt as _, throw_dom_exception};
-use rquickjs::{ArrayBuffer, Class, Ctx, Error, Exception, Object, Result, Value, qjs};
+use rquickjs::{ArrayBuffer, Class, Ctx, Error, Exception, Result, Value, qjs};
 
 use crate::{port::NativePort, transport::PortHandle};
 
@@ -368,24 +368,6 @@ fn clone_with_transfer<'js>(
                 error => error,
             }
         })
-}
-
-#[rquickjs::function(rename = "splitTransfer")]
-fn split_transfer_js<'js>(
-    ctx: Ctx<'js>, transfer: rquickjs::function::Opt<Value<'js>>,
-) -> Result<Object<'js>> {
-    let (buffers, ports) = clone::split_transfer(&ctx, transfer.0)?;
-    let out = Object::new(ctx.clone())?;
-    out.set("buffers", buffers)?;
-    out.set("ports", ports)?;
-    Ok(out)
-}
-
-pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
-    let port_handle = clone::CloneState::install(ctx)?;
-    natives.set("portHandleKey", port_handle)?;
-    natives.set("splitTransfer", js_split_transfer_js)?;
-    Ok(())
 }
 
 #[cfg(test)]

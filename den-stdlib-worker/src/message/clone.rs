@@ -9,39 +9,17 @@ use den_util::{
     new_dom_exception,
 };
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs as _, JsLifetime, Object,
-    Result, Symbol, Value, object::Property, qjs,
+    Array, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs as _, Object, Result,
+    Value, object::Property, qjs,
 };
 
-use crate::{message::throw_data_clone, port::NativePort, report::sink_hook};
+use crate::{
+    message::throw_data_clone,
+    port::{MessagePort, NativePort},
+    report::sink_hook,
+};
 
 const TAG: &str = "\0den:structured-clone";
-
-/// Per-realm clone state: the port-handle symbol JS MessagePort wrappers
-/// keep their [`NativePort`] under until that wrapper is itself a Rust class.
-#[derive(JsLifetime)]
-pub struct CloneState<'js> {
-    pub port_handle: Symbol<'js>,
-}
-
-impl<'js> CloneState<'js> {
-    pub fn install(ctx: &Ctx<'js>) -> Result<Symbol<'js>> {
-        let port_handle = Symbol::with_description(ctx.clone(), "den:port-handle")?;
-        ctx.store_userdata(Self {
-            port_handle: port_handle.clone(),
-        })
-        .map_err(|_store_error| {
-            Exception::throw_internal(ctx, "den:worker is already installed")
-        })?;
-        Ok(port_handle)
-    }
-
-    pub fn port_handle(ctx: &Ctx<'js>) -> Result<Symbol<'js>> {
-        ctx.userdata::<Self>()
-            .map(|state| state.port_handle.clone())
-            .ok_or_else(|| Exception::throw_internal(ctx, "den:worker is not installed"))
-    }
-}
 
 fn fail(ctx: &Ctx<'_>, what: &str) -> rquickjs::Error {
     throw_data_clone(ctx, &format!("{what} could not be cloned."))
@@ -154,27 +132,18 @@ fn error_name(name: &str) -> &str {
 pub fn prepare<'js>(
     ctx: &Ctx<'js>, value: Value<'js>, ports: &[Class<'js, NativePort>],
 ) -> Result<Value<'js>> {
-    let port_handle = CloneState::port_handle(ctx)?;
     let plain_object_class = Object::new(ctx.clone())?.into_value().class_id();
     let mut transferred = HashMap::new();
     for (index, port) in ports.iter().enumerate() {
         transferred.insert(port.as_inner().as_value().clone(), index);
     }
     let mut seen = HashMap::new();
-    copy(
-        ctx,
-        value,
-        &port_handle,
-        plain_object_class,
-        &transferred,
-        &mut seen,
-    )
+    copy(ctx, value, plain_object_class, &transferred, &mut seen)
 }
 
 fn copy<'js>(
-    ctx: &Ctx<'js>, value: Value<'js>, port_handle: &Symbol<'js>,
-    plain_object_class: qjs::JSClassID, transferred: &HashMap<Value<'js>, usize>,
-    seen: &mut HashMap<Value<'js>, Value<'js>>,
+    ctx: &Ctx<'js>, value: Value<'js>, plain_object_class: qjs::JSClassID,
+    transferred: &HashMap<Value<'js>, usize>, seen: &mut HashMap<Value<'js>, Value<'js>>,
 ) -> Result<Value<'js>> {
     if value.is_symbol() {
         let description = value
@@ -218,9 +187,11 @@ fn copy<'js>(
     if let Some(name) = forbidden_name(ctx, &value)? {
         return Err(fail(ctx, name));
     }
-    if let Some(object) = value.as_object()
-        && let Ok(port) = object.get::<_, Class<'js, NativePort>>(port_handle.clone())
+    if let Some(wrapper) = value
+        .as_object()
+        .and_then(Class::<MessagePort>::from_object)
     {
+        let port = wrapper.borrow().native();
         let Some(&index) = transferred.get(port.as_inner().as_value()) else {
             return Err(fail(ctx, "a MessagePort that is not in the transfer list"));
         };
@@ -262,7 +233,6 @@ fn copy<'js>(
             copy(
                 ctx,
                 object.get("buffer")?,
-                port_handle,
                 plain_object_class,
                 transferred,
                 seen,
@@ -318,7 +288,6 @@ fn copy<'js>(
             let cause = copy(
                 ctx,
                 object.get("cause")?,
-                port_handle,
                 plain_object_class,
                 transferred,
                 seen,
@@ -335,7 +304,6 @@ fn copy<'js>(
             ctx,
             &value,
             dest.as_inner(),
-            port_handle,
             plain_object_class,
             transferred,
             seen,
@@ -353,22 +321,8 @@ fn copy<'js>(
             .call((value.clone(),))?;
         for index in 0..entries.len() {
             let pair: Array<'js> = entries.get(index)?;
-            let key = copy(
-                ctx,
-                pair.get(0)?,
-                port_handle,
-                plain_object_class,
-                transferred,
-                seen,
-            )?;
-            let item = copy(
-                ctx,
-                pair.get(1)?,
-                port_handle,
-                plain_object_class,
-                transferred,
-                seen,
-            )?;
+            let key = copy(ctx, pair.get(0)?, plain_object_class, transferred, seen)?;
+            let item = copy(ctx, pair.get(1)?, plain_object_class, transferred, seen)?;
             dest.get::<_, Function<'js>>("set")?.call::<_, ()>((
                 rquickjs::function::This(dest_value.clone()),
                 key,
@@ -390,7 +344,6 @@ fn copy<'js>(
             let item = copy(
                 ctx,
                 items.get(index)?,
-                port_handle,
                 plain_object_class,
                 transferred,
                 seen,
@@ -404,15 +357,7 @@ fn copy<'js>(
         let dest = Object::new(ctx.clone())?;
         let dest_value = dest.clone().into_value();
         seen.insert(value.clone(), dest_value.clone());
-        copy_own(
-            ctx,
-            &value,
-            &dest,
-            port_handle,
-            plain_object_class,
-            transferred,
-            seen,
-        )?;
+        copy_own(ctx, &value, &dest, plain_object_class, transferred, seen)?;
         return Ok(dest_value);
     }
     seen.insert(value.clone(), value.clone());
@@ -420,9 +365,8 @@ fn copy<'js>(
 }
 
 fn copy_own<'js>(
-    ctx: &Ctx<'js>, from: &Value<'js>, to: &Object<'js>, port_handle: &Symbol<'js>,
-    plain_object_class: qjs::JSClassID, transferred: &HashMap<Value<'js>, usize>,
-    seen: &mut HashMap<Value<'js>, Value<'js>>,
+    ctx: &Ctx<'js>, from: &Value<'js>, to: &Object<'js>, plain_object_class: qjs::JSClassID,
+    transferred: &HashMap<Value<'js>, usize>, seen: &mut HashMap<Value<'js>, Value<'js>>,
 ) -> Result<()> {
     let Some(object) = from.as_object() else {
         return Ok(());
@@ -441,7 +385,6 @@ fn copy_own<'js>(
             let copied = copy(
                 ctx,
                 object.get(&key)?,
-                port_handle,
                 plain_object_class,
                 transferred,
                 seen,
@@ -630,7 +573,6 @@ pub fn split_transfer<'js>(
     if transfer.is_undefined() || transfer.is_null() {
         return Ok((buffers, ports));
     }
-    let port_handle = CloneState::port_handle(ctx)?;
     let Some(list) = transfer.as_array() else {
         return Err(fail(ctx, "a value in the transfer list"));
     };
@@ -640,10 +582,11 @@ pub fn split_transfer<'js>(
             buffers.push(entry);
             continue;
         }
-        if let Some(object) = entry.as_object()
-            && let Ok(port) = object.get::<_, Class<'js, NativePort>>(port_handle.clone())
+        if let Some(wrapper) = entry
+            .as_object()
+            .and_then(Class::<MessagePort>::from_object)
         {
-            ports.push(port);
+            ports.push(wrapper.borrow().native());
             continue;
         }
         return Err(fail(ctx, "a value in the transfer list"));
