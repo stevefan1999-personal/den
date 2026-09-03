@@ -1,6 +1,6 @@
 use den_package_store::{
-    CancellationToken, DependencyKind, NewDependency, NewExport, NewPackageFile, NewRelease,
-    PackageStore, PackageStoreError, RegistryId, RootRequirement,
+    DependencyKind, NewDependency, NewExport, NewPackageFile, NewRelease, PackageStore,
+    PackageStoreError, RegistryId, RootRequirement,
 };
 use sea_orm::{ConnectionTrait as _, Database, DbBackend, Statement};
 
@@ -444,23 +444,6 @@ async fn repeated_solves_are_deterministic() -> TestResult {
     for _ in 0..20 {
         assert_eq!(snapshot.solve(&roots)?, expected);
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn solve_can_be_cancelled_before_start() -> TestResult {
-    let (store, registry_id) = store_with_registry().await?;
-    insert_release(&store, registry_id, "app", "1.0.0", &[], None).await?;
-    let snapshot = store.repository_snapshot().await?;
-    let cancellation = CancellationToken::default();
-    cancellation.cancel();
-    assert!(matches!(
-        snapshot.solve_with_cancellation(
-            &[RootRequirement::new(registry_id, "app", "*")],
-            Some(cancellation)
-        ),
-        Err(PackageStoreError::Cancelled)
-    ));
     Ok(())
 }
 

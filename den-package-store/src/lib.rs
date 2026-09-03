@@ -18,5 +18,5 @@ pub use runtime::{
     HydrationLimits, HydrationResult, PackageHydrationError, PackageModule, PackageModuleSnapshot,
     PackageResolutionError, ResolutionResult,
 };
-pub use solve::{CancellationToken, RootRequirement};
+pub use solve::RootRequirement;
 pub use store::PackageStore;

@@ -1,12 +1,4 @@
-use std::{
-    any::Any,
-    collections::BTreeMap,
-    fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::{collections::BTreeMap, fmt};
 
 use resolvo::{
     Candidates, Condition, ConditionId, ConditionalRequirement, Dependencies, DependencyProvider,
@@ -56,16 +48,6 @@ impl RootRequirement {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
-
-impl CancellationToken {
-    pub fn cancel(&self) { self.0.store(true, Ordering::Release); }
-
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool { self.0.load(Ordering::Acquire) }
-}
-
 impl RepositorySnapshot {
     /// Solve one flat version per `(registry, package)` key.
     ///
@@ -73,19 +55,7 @@ impl RepositorySnapshot {
     /// until scoped package instances can model their semantics. This API must
     /// not be used as if it already models an npm-style nested tree.
     pub fn solve(&self, roots: &[RootRequirement]) -> Result<SolveResult> {
-        self.solve_with_cancellation(roots, None)
-    }
-
-    pub fn solve_with_cancellation(
-        &self, roots: &[RootRequirement], cancellation: Option<CancellationToken>,
-    ) -> Result<SolveResult> {
-        if cancellation
-            .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
-        {
-            return Err(PackageStoreError::Cancelled);
-        }
-        let provider = SnapshotProvider::new(self, cancellation)?;
+        let provider = SnapshotProvider::new(self);
         let requirements = roots
             .iter()
             .map(|root| provider.root_requirement(root))
@@ -223,22 +193,15 @@ struct SnapshotProvider {
     pool:         Pool<JsRange, PackageKey>,
     candidates:   BTreeMap<PackageKey, Vec<SolvableId>>,
     dependencies: BTreeMap<VersionId, Vec<SnapshotDependency>>,
-    cancellation: Option<CancellationToken>,
 }
 
 impl SnapshotProvider {
-    fn new(snapshot: &RepositorySnapshot, cancellation: Option<CancellationToken>) -> Result<Self> {
+    fn new(snapshot: &RepositorySnapshot) -> Self {
         let pool = Pool::new();
         let mut candidates = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
 
         for (package_key, versions) in &snapshot.packages {
-            if cancellation
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled)
-            {
-                return Err(PackageStoreError::Cancelled);
-            }
             let name_id = pool.intern_package_name(package_key.clone());
             let mut versions = versions.clone();
             versions.sort_by(|left, right| {
@@ -249,12 +212,6 @@ impl SnapshotProvider {
             });
             let mut package_candidates = Vec::with_capacity(versions.len());
             for version in versions {
-                if cancellation
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled)
-                {
-                    return Err(PackageStoreError::Cancelled);
-                }
                 let unsupported = version
                     .dependencies
                     .iter()
@@ -296,12 +253,11 @@ impl SnapshotProvider {
             candidates.insert(package_key.clone(), package_candidates);
         }
 
-        Ok(Self {
+        Self {
             pool,
             candidates,
             dependencies,
-            cancellation,
-        })
+        }
     }
 
     fn root_requirement(&self, root: &RootRequirement) -> Result<ConditionalRequirement> {
@@ -462,12 +418,5 @@ impl DependencyProvider for SnapshotProvider {
             }
         }
         Dependencies::Known(known)
-    }
-
-    fn should_cancel_with_value(&self) -> Option<Box<dyn Any>> {
-        self.cancellation
-            .as_ref()
-            .filter(|token| token.is_cancelled())
-            .map(|_| Box::new(()) as Box<dyn Any>)
     }
 }
