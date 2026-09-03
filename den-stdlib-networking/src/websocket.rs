@@ -114,13 +114,7 @@ impl NativeWebSocket {
     /// Parse and reject anything the WHATWG constructor must treat as
     /// SyntaxError.
     pub fn parse_url(input: &str) -> Result<Url, NativeWsError> {
-        let parsed = match Url::parse(input) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                discard_error(error);
-                return Err(NativeWsError::InvalidUrl);
-            }
-        };
+        let parsed = Url::parse(input).map_err(|_error| NativeWsError::InvalidUrl)?;
         match parsed.scheme() {
             "ws" | "wss" => {}
             _ => return Err(NativeWsError::InvalidScheme),
@@ -170,13 +164,7 @@ impl NativeWebSocket {
     pub fn connect_with(url: &str, options: NativeWsConnectOptions) -> Result<Self, NativeWsError> {
         let parsed = Self::parse_url(url)?;
         Self::validate_protocols(&options.protocols)?;
-        let handle = match Handle::try_current() {
-            Ok(handle) => handle,
-            Err(error) => {
-                discard_error(error);
-                return Err(NativeWsError::NoRuntime);
-            }
-        };
+        let handle = Handle::try_current().map_err(|_error| NativeWsError::NoRuntime)?;
         if parsed.scheme() == "wss" {
             tls_connector(options.ca_pem.as_deref())?;
         }
@@ -232,17 +220,11 @@ impl NativeWebSocket {
                     }
                     if !options.protocols.is_empty() {
                         let joined = options.protocols.join(", ");
-                        match HeaderValue::from_str(&joined) {
-                            Ok(value) => {
-                                request
-                                    .headers_mut()
-                                    .insert("Sec-WebSocket-Protocol", value);
-                            }
-                            Err(error) => {
-                                discard_error(error);
-                                return Err(NativeWsError::InvalidProtocol);
-                            }
-                        }
+                        let value = HeaderValue::from_str(&joined)
+                            .map_err(|_error| NativeWsError::InvalidProtocol)?;
+                        request
+                            .headers_mut()
+                            .insert("Sec-WebSocket-Protocol", value);
                     }
                     let (stream, response) = client_async(request, transport).await?;
                     let selected = header_text(response.headers(), "sec-websocket-protocol");
@@ -314,8 +296,7 @@ impl NativeWebSocket {
 
     fn enqueue(&self, amount: usize, command: Command) -> Result<(), NativeWsError> {
         self.buffered.fetch_add(amount, Ordering::Relaxed);
-        self.commands.send(command).map_err(|error| {
-            discard_error(error);
+        self.commands.send(command).map_err(|_error| {
             reduce_buffered(&self.buffered, amount);
             NativeWsError::Closed
         })
@@ -342,8 +323,6 @@ pub fn is_valid_subprotocol(name: &str) -> bool {
             )
         })
 }
-
-fn discard_error(error: impl std::fmt::Display) { let _ = error.to_string(); }
 
 fn reduce_buffered(buffered: &AtomicUsize, amount: usize) {
     let _ = buffered.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -436,13 +415,8 @@ where
                         close_emitted = true;
                         break Ok(());
                     }
-                    Some(Err(error)) => {
-                        if close_sent.is_some() {
-                            discard_error(error);
-                            break Ok(());
-                        }
-                        break Err(NativeWsError::from(error));
-                    }
+                    Some(Err(_error)) if close_sent.is_some() => break Ok(()),
+                    Some(Err(error)) => break Err(NativeWsError::from(error)),
                     None => break Ok(()),
                 }
             }
