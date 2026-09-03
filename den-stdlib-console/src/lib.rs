@@ -16,7 +16,7 @@ pub struct Formatter {
 impl Formatter {
     pub const fn new(max_depth: usize) -> Self { Self { max_depth } }
 
-    pub fn format<W: std::fmt::Write>(&self, out: &mut W, value: Value<'_>) -> Result<()> {
+    pub fn format(&self, out: &mut String, value: Value<'_>) -> Result<()> {
         self.format_value(out, value, false, 0, &mut HashSet::new())
     }
 
@@ -81,10 +81,10 @@ impl Formatter {
                 }
                 'd' => {
                     let Coerced(number) = Coerced::<f64>::from_js(value.ctx(), value.clone())?;
-                    Self::write_number(out, number)?;
+                    Self::write_number(out, number);
                 }
-                'i' => Self::write_number(out, Self::parse_number(value, "parseInt")?)?,
-                'f' => Self::write_number(out, Self::parse_number(value, "parseFloat")?)?,
+                'i' => Self::write_number(out, Self::parse_number(value, "parseInt")?),
+                'f' => Self::write_number(out, Self::parse_number(value, "parseFloat")?),
                 'o' | 'O' => self.format(out, value.clone())?,
                 // CSS styling has no terminal representation, but still consumes
                 // its argument like browser consoles do.
@@ -100,7 +100,7 @@ impl Formatter {
         parse.call((value.clone(),))
     }
 
-    fn write_number(out: &mut String, number: f64) -> Result<()> {
+    fn write_number(out: &mut String, number: f64) {
         let text = if number == f64::INFINITY {
             "Infinity".to_owned()
         } else if number == f64::NEG_INFINITY {
@@ -108,19 +108,18 @@ impl Formatter {
         } else {
             number.to_string()
         };
-        out.write_str(&text).map_err(|_error| Error::Unknown)
+        out.push_str(&text);
     }
 
-    fn format_value<'js, W: std::fmt::Write>(
-        &self, out: &mut W, value: Value<'js>, key: bool, depth: usize,
+    fn format_value<'js>(
+        &self, out: &mut String, value: Value<'js>, key: bool, depth: usize,
         ancestors: &mut HashSet<Value<'js>>,
     ) -> Result<()> {
         if value.as_exception().is_some()
             || instance_of_global(value.ctx(), &value, "DOMException")?
         {
-            return out
-                .write_str(&format_thrown(value.ctx(), &value))
-                .map_err(|_error| Error::Unknown);
+            out.push_str(&format_thrown(value.ctx(), &value));
+            return Ok(());
         }
 
         match value.type_of() {
@@ -128,28 +127,30 @@ impl Formatter {
             // to its Rust type only to print it back is the same coercion.
             Type::String | Type::Int | Type::Bool => {
                 let Coerced(text) = Coerced::<String>::from_js(value.ctx(), value.clone())?;
-                out.write_str(&text).map_err(|_error| Error::Unknown)?
+                out.push_str(&text);
             }
+            // `String`'s `fmt::Write` is infallible; the Results are noise.
             Type::Float => {
-                write!(
+                let _ = write!(
                     out,
                     "{}",
                     value
                         .as_float()
                         .ok_or_else(|| Error::new_from_js("value", "float"))?
-                )
-                .map_err(|_error| Error::Unknown)?
+                );
             }
             Type::BigInt => {
                 let Coerced(text) = Coerced::<String>::from_js(value.ctx(), value.clone())?;
-                write!(out, "{text}n").map_err(|_error| Error::Unknown)?;
+                let _ = write!(out, "{text}n");
             }
             Type::Array => {
                 if depth >= self.max_depth {
-                    return out.write_str("[Array]").map_err(|_error| Error::Unknown);
+                    out.push_str("[Array]");
+                    return Ok(());
                 }
                 if !ancestors.insert(value.clone()) {
-                    return out.write_str("[Circular]").map_err(|_error| Error::Unknown);
+                    out.push_str("[Circular]");
+                    return Ok(());
                 }
                 let result: Result<()> = (|| {
                     let array = value
@@ -158,19 +159,19 @@ impl Formatter {
                     if key {
                         for (index, element) in array.iter().enumerate() {
                             if index > 0 {
-                                out.write_char(',').map_err(|_error| Error::Unknown)?;
+                                out.push(',');
                             }
                             self.format_value(out, element?, true, depth + 1, ancestors)?;
                         }
                     } else {
-                        out.write_str("[ ").map_err(|_error| Error::Unknown)?;
+                        out.push_str("[ ");
                         for (index, element) in array.iter().enumerate() {
                             if index > 0 {
-                                out.write_str(", ").map_err(|_error| Error::Unknown)?;
+                                out.push_str(", ");
                             }
                             self.format_value(out, element?, false, depth + 1, ancestors)?;
                         }
-                        out.write_str(" ]").map_err(|_error| Error::Unknown)?;
+                        out.push_str(" ]");
                     }
                     Ok(())
                 })();
@@ -179,31 +180,33 @@ impl Formatter {
             }
             Type::Object | Type::Promise | Type::Proxy => {
                 if depth >= self.max_depth {
-                    return out.write_str("[Object]").map_err(|_error| Error::Unknown);
+                    out.push_str("[Object]");
+                    return Ok(());
                 }
                 if key {
-                    return out
-                        .write_str("[object Object]")
-                        .map_err(|_error| Error::Unknown);
+                    out.push_str("[object Object]");
+                    return Ok(());
                 }
                 if !ancestors.insert(value.clone()) {
-                    return out.write_str("[Circular]").map_err(|_error| Error::Unknown);
+                    out.push_str("[Circular]");
+                    return Ok(());
                 }
                 let result: Result<()> = (|| {
                     let object = value
                         .as_object()
                         .ok_or_else(|| Error::new_from_js("value", "object"))?;
-                    out.write_str("{ ").map_err(|_error| Error::Unknown)?;
+                    out.push_str("{ ");
                     for (index, property) in object.props().enumerate() {
                         if index > 0 {
-                            out.write_str(", ").map_err(|_error| Error::Unknown)?;
+                            out.push_str(", ");
                         }
                         let (property, nested) = property?;
                         self.format_value(out, property, true, depth + 1, ancestors)?;
-                        out.write_str(": ").map_err(|_error| Error::Unknown)?;
+                        out.push_str(": ");
                         self.format_value(out, nested, false, depth + 1, ancestors)?;
                     }
-                    out.write_str(" }").map_err(|_error| Error::Unknown)
+                    out.push_str(" }");
+                    Ok(())
                 })();
                 ancestors.remove(&value);
                 result?;
@@ -216,7 +219,7 @@ impl Formatter {
                     Some(description) => description.to_string()?,
                     None => String::new(),
                 };
-                write!(out, "Symbol({description})").map_err(|_error| Error::Unknown)?;
+                let _ = write!(out, "Symbol({description})");
             }
             Type::Function | Type::Constructor => {
                 let function = value
@@ -230,20 +233,16 @@ impl Formatter {
                     .filter(|name| name != "[object Object]");
                 match name {
                     Some(name) => {
-                        write!(out, "[Function: {name}]").map_err(|_error| Error::Unknown)?
+                        let _ = write!(out, "[Function: {name}]");
                     }
-                    None => {
-                        out.write_str("[Function (anonymous)]")
-                            .map_err(|_error| Error::Unknown)?
-                    }
+                    None => out.push_str("[Function (anonymous)]"),
                 }
             }
-            Type::Null => out.write_str("null").map_err(|_error| Error::Unknown)?,
-            Type::Undefined => {
-                out.write_str("undefined")
-                    .map_err(|_error| Error::Unknown)?
+            Type::Null => out.push_str("null"),
+            Type::Undefined => out.push_str("undefined"),
+            other => {
+                let _ = write!(out, "[{}]", other.as_str());
             }
-            other => write!(out, "[{}]", other.as_str()).map_err(|_error| Error::Unknown)?,
         }
         Ok(())
     }

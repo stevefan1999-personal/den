@@ -143,3 +143,8 @@ fn formatter_prints_primitives_verbatim_inside_containers() -> eyre::Result<()> 
         Ok(())
     })
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn console_rejects_lone_surrogates_with_a_type_error() -> eyre::Result<()> {
+    run("surrogates.js").await
+}
