@@ -31,3 +31,6 @@ assertEquals(parsed.ext, ".txt");
 assertEquals(parsed.name, "file");
 assertEquals(posix.format(parsed), "/home/user/file.txt");
 assertEquals(posix.format({ name: "file", ext: "txt" }), "file.txt");
+// U+012F and U+015C truncate to '/' and '\\' as bytes; they are not separators.
+assertEquals(posix.normalize("dir/į/Ŝ/../x"), "dir/į/x");
+assertEquals(posix.relative("/dir/į", "/dir/Ŝ"), "../Ŝ");

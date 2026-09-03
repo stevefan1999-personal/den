@@ -33,6 +33,22 @@ enum Style {
     Windows,
 }
 
+impl Style {
+    const fn separator(self) -> &'static str {
+        match self {
+            Self::Posix => "/",
+            Self::Windows => "\\",
+        }
+    }
+
+    const fn is_separator(self, byte: u8) -> bool {
+        match self {
+            Self::Posix => byte == b'/',
+            Self::Windows => windows_separator(byte),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Operation {
     Resolve,
@@ -154,12 +170,9 @@ fn windows_root(path: &str) -> WindowsRoot {
 }
 
 fn normalize_segments(path: &str, absolute: bool, style: Style) -> String {
-    let separator = |character| {
-        match style {
-            Style::Posix => character == '/',
-            Style::Windows => matches!(character, '/' | '\\'),
-        }
-    };
+    // The `is_ascii` guard is load-bearing: U+012F truncates to b'/' and U+015C
+    // to b'\\'.
+    let separator = |character: char| character.is_ascii() && style.is_separator(character as u8);
     let mut segments = Vec::new();
     for segment in path.split(separator) {
         match segment {
@@ -174,10 +187,7 @@ fn normalize_segments(path: &str, absolute: bool, style: Style) -> String {
             _ => segments.push(segment),
         }
     }
-    segments.join(match style {
-        Style::Posix => "/",
-        Style::Windows => "\\",
-    })
+    segments.join(style.separator())
 }
 
 fn cwd() -> String {
@@ -399,22 +409,10 @@ fn relative(from: &str, to: &str, style: Style) -> String {
     if from == to {
         return String::new();
     }
-    let (from, to, separator) = match style {
-        Style::Posix => {
-            (
-                posix_resolve(&[from.to_owned()]),
-                posix_resolve(&[to.to_owned()]),
-                "/",
-            )
-        }
-        Style::Windows => {
-            (
-                windows_resolve(&[from.to_owned()]),
-                windows_resolve(&[to.to_owned()]),
-                "\\",
-            )
-        }
-    };
+    let (from, to) = (
+        resolve(&[from.to_owned()], style),
+        resolve(&[to.to_owned()], style),
+    );
     let equal = match style {
         Style::Posix => from == to,
         Style::Windows => from.to_lowercase() == to.to_lowercase(),
@@ -430,14 +428,10 @@ fn relative(from: &str, to: &str, style: Style) -> String {
         }
     }
     let split = |path: &str| {
-        path.split(if matches!(style, Style::Posix) {
-            '/'
-        } else {
-            '\\'
-        })
-        .filter(|part| !part.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>()
+        path.split(style.separator())
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
     };
     let from_parts = split(&from);
     let to_parts = split(&to);
@@ -454,7 +448,7 @@ fn relative(from: &str, to: &str, style: Style) -> String {
     }
     let mut output = vec!["..".to_owned(); from_parts.len() - common];
     output.extend_from_slice(to_parts.get(common..).unwrap_or_default());
-    output.join(separator)
+    output.join(style.separator())
 }
 
 fn dirname(path: &str, style: Style) -> String {
@@ -476,16 +470,13 @@ fn dirname(path: &str, style: Style) -> String {
             }
         }
     };
-    let separator = |byte| {
-        match style {
-            Style::Posix => byte == b'/',
-            Style::Windows => windows_separator(byte),
-        }
-    };
     let mut end = None;
     let mut trailing = true;
     for index in (boundary..bytes.len()).rev() {
-        if bytes.get(index).is_some_and(|byte| separator(*byte)) {
+        if bytes
+            .get(index)
+            .is_some_and(|byte| style.is_separator(*byte))
+        {
             if !trailing {
                 end = Some(index);
                 break;
@@ -513,12 +504,6 @@ fn dirname(path: &str, style: Style) -> String {
 }
 
 fn basename(path: &str, suffix: Option<&str>, style: Style) -> String {
-    let separator = |byte| {
-        match style {
-            Style::Posix => byte == b'/',
-            Style::Windows => windows_separator(byte),
-        }
-    };
     let mut start = if matches!(style, Style::Windows)
         && path
             .as_bytes()
@@ -532,7 +517,11 @@ fn basename(path: &str, suffix: Option<&str>, style: Style) -> String {
     };
     let bytes = path.as_bytes();
     let mut end = bytes.len();
-    while end > start && bytes.get(end - 1).is_some_and(|byte| separator(*byte)) {
+    while end > start
+        && bytes
+            .get(end - 1)
+            .is_some_and(|byte| style.is_separator(*byte))
+    {
         end -= 1;
     }
     if end == start {
@@ -542,7 +531,7 @@ fn basename(path: &str, suffix: Option<&str>, style: Style) -> String {
         .get(start..end)
         .unwrap_or_default()
         .iter()
-        .rposition(|byte| separator(*byte))
+        .rposition(|byte| style.is_separator(*byte))
     {
         start += index + 1;
     }
@@ -581,22 +570,20 @@ fn parse(path: &str, style: Style) -> Parts {
             (path.get(..end).unwrap_or_default().to_owned(), end)
         }
     };
-    let separator = |byte| {
-        match style {
-            Style::Posix => byte == b'/',
-            Style::Windows => windows_separator(byte),
-        }
-    };
     let bytes = path.as_bytes();
     let mut end = bytes.len();
-    while end > root_end && bytes.get(end - 1).is_some_and(|byte| separator(*byte)) {
+    while end > root_end
+        && bytes
+            .get(end - 1)
+            .is_some_and(|byte| style.is_separator(*byte))
+    {
         end -= 1;
     }
     let start = bytes
         .get(root_end..end)
         .unwrap_or_default()
         .iter()
-        .rposition(|byte| separator(*byte))
+        .rposition(|byte| style.is_separator(*byte))
         .map_or(root_end, |index| root_end + index + 1);
     let base = path.get(start..end).unwrap_or_default().to_owned();
     let ext = extname(&base, style);
@@ -884,14 +871,7 @@ fn format_path<'js>(ctx: &Ctx<'js>, value: Value<'js>, style: Style) -> Result<S
     if root.as_deref() == Some(dir.as_str()) {
         Ok(format!("{dir}{base}"))
     } else {
-        Ok(format!(
-            "{dir}{}{base}",
-            if matches!(style, Style::Posix) {
-                '/'
-            } else {
-                '\\'
-            }
-        ))
+        Ok(format!("{dir}{}{base}", style.separator()))
     }
 }
 

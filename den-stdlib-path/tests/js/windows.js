@@ -23,3 +23,6 @@ assertEquals(parsed.base, "file.txt");
 assertEquals(parsed.ext, ".txt");
 assertEquals(parsed.name, "file");
 assertEquals(windows.format(parsed), "C:\\home\\user\\file.txt");
+// U+012F and U+015C truncate to '/' and '\\' as bytes; they are not separators.
+assertEquals(windows.normalize("dir\\į\\Ŝ\\..\\x"), "dir\\į\\x");
+assertEquals(windows.relative("C:\\dir\\į", "C:\\dir\\Ŝ"), "..\\Ŝ");
