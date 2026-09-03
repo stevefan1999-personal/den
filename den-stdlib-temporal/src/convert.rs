@@ -3,7 +3,7 @@
 //! Slot-bearing Temporal objects are probed without leaving a `TypeError`
 //! pending when the value is simply the wrong class.
 
-use std::str::FromStr as _;
+use std::str::FromStr;
 
 use den_util::Probe as _;
 use rquickjs::{
@@ -11,7 +11,13 @@ use rquickjs::{
     atom::PredefinedAtom, class::JsClass, function::This, prelude::Opt,
 };
 use temporal_rs::{
-    Calendar, TimeZone, options::Unit, parsers::Precision, partial::PartialDuration,
+    Calendar, TimeZone,
+    options::{
+        DifferenceSettings, DisplayCalendar, Overflow, RoundingIncrement, RoundingOptions,
+        ToStringRoundingOptions,
+    },
+    parsers::Precision,
+    partial::PartialDuration,
 };
 
 use crate::{
@@ -337,11 +343,6 @@ pub fn i128_to_bigint(ctx: Ctx<'_>, value: i128) -> Result<BigInt<'_>> {
     ctor.call((value.to_string(),))
 }
 
-pub fn to_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Unit::from_str(&name).map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
-}
-
 /// `GetStringOrNumberOption` for `fractionalSecondDigits`: a Number is
 /// floored, everything else is `ToString`-ed (`"auto"` or RangeError).
 /// Interfaces disagree on the not-finite message, so the caller supplies it.
@@ -370,6 +371,94 @@ pub fn fractional_second_digits<'js>(
         ctx,
         "fractionalSecondDigits must be \"auto\" or 0-9",
     ))
+}
+
+/// `GetOption`'s string path, then the enum temporal_rs parses for us.
+pub fn option_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, what: &str) -> Result<T> {
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
+    T::from_str(&name).map_err(|_error| Exception::throw_range(ctx, &format!("invalid {what}")))
+}
+
+pub fn optional_enum<'js, T: FromStr>(
+    ctx: &Ctx<'js>, object: &Object<'js>, key: &str, what: &str,
+) -> Result<Option<T>> {
+    get_defined(object, key)?
+        .map(|value| option_enum(ctx, &value, what))
+        .transpose()
+}
+
+pub fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
+    options_object(ctx, options)?.map_or(Ok(None), |object| {
+        optional_enum(ctx, &object, "overflow", "overflow option")
+    })
+}
+
+pub fn calendar_name_option<'js>(
+    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
+) -> Result<DisplayCalendar> {
+    let display = options_object(ctx, options)?.map_or(Ok(None), |object| {
+        optional_enum(ctx, &object, "calendarName", "calendarName option")
+    })?;
+    Ok(display.unwrap_or(DisplayCalendar::Auto))
+}
+
+pub fn rounding_increment<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>,
+) -> Result<Option<RoundingIncrement>> {
+    get_defined(object, "roundingIncrement")?
+        .map(|value| {
+            let number = to_number(ctx, &value)?;
+            unwrap_temporal(ctx, RoundingIncrement::try_from(number))
+        })
+        .transpose()
+}
+
+/// `GetDifferenceSettings` reads largestUnit, roundingIncrement, roundingMode
+/// and smallestUnit in that order; the order-of-operations tests observe it.
+pub fn difference_settings<'js>(
+    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
+) -> Result<DifferenceSettings> {
+    let mut settings = DifferenceSettings::default();
+    let Some(object) = options_object(ctx, options)? else {
+        return Ok(settings);
+    };
+    settings.largest_unit = optional_enum(ctx, &object, "largestUnit", "Temporal unit")?;
+    settings.increment = rounding_increment(ctx, &object)?;
+    settings.rounding_mode = optional_enum(ctx, &object, "roundingMode", "roundingMode")?;
+    settings.smallest_unit = optional_enum(ctx, &object, "smallestUnit", "Temporal unit")?;
+    Ok(settings)
+}
+
+/// `round()`'s argument: a string is the smallest unit, an object is read as
+/// roundingIncrement, roundingMode, smallestUnit. `largest_unit` stays unset
+/// because every temporal_rs rounding path resolves it to `Auto` itself.
+pub fn rounding_options<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result<RoundingOptions> {
+    let mut rounding = RoundingOptions::default();
+    if options.is_string() {
+        rounding.smallest_unit = Some(option_enum(ctx, options, "Temporal unit")?);
+        return Ok(rounding);
+    }
+    let object = require_object(ctx, options, "options must be an object")?;
+    rounding.increment = rounding_increment(ctx, &object)?;
+    rounding.rounding_mode = optional_enum(ctx, &object, "roundingMode", "roundingMode")?;
+    rounding.smallest_unit = optional_enum(ctx, &object, "smallestUnit", "Temporal unit")?;
+    Ok(rounding)
+}
+
+/// `toString()`'s rounding half: fractionalSecondDigits, roundingMode,
+/// smallestUnit. Interfaces disagree on the not-finite message only.
+pub fn to_string_rounding<'js>(
+    ctx: &Ctx<'js>, object: &Object<'js>, not_finite_message: &str,
+) -> Result<ToStringRoundingOptions> {
+    let precision = get_defined(object, "fractionalSecondDigits")?
+        .map_or(Ok(Precision::Auto), |value| {
+            fractional_second_digits(ctx, &value, not_finite_message)
+        })?;
+    Ok(ToStringRoundingOptions {
+        precision,
+        rounding_mode: optional_enum(ctx, object, "roundingMode", "roundingMode")?,
+        smallest_unit: optional_enum(ctx, object, "smallestUnit", "Temporal unit")?,
+    })
 }
 
 /// The calendar carried by any Temporal object with a `[[Calendar]]` slot.

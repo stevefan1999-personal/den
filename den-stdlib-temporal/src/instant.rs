@@ -1,23 +1,14 @@
-use std::str::FromStr as _;
-
 use rquickjs::{
-    BigInt, Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value,
-    atom::PredefinedAtom, class::Trace, prelude::Opt,
+    BigInt, Ctx, Exception, JsLifetime, Result, Value, atom::PredefinedAtom, class::Trace,
+    prelude::Opt,
 };
-use temporal_rs::{
-    TimeZone,
-    options::{
-        DifferenceSettings, RoundingIncrement, RoundingMode, RoundingOptions,
-        ToStringRoundingOptions,
-    },
-    parsers::Precision,
-};
+use temporal_rs::{TimeZone, options::ToStringRoundingOptions};
 
 use crate::{
     convert::{
-        fractional_second_digits, get_defined, i128_to_bigint, require_object, throw_value_of,
-        to_big_int_i128, to_duration, to_instant, to_integer_if_integral, to_number, to_time_zone,
-        unwrap_temporal,
+        difference_settings, get_defined, i128_to_bigint, require_object, rounding_options,
+        throw_value_of, to_big_int_i128, to_duration, to_instant, to_integer_if_integral,
+        to_string_rounding, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -34,83 +25,6 @@ impl Instant {
     pub(crate) const fn wrap(inner: temporal_rs::Instant) -> Self { Self { inner } }
 }
 
-fn instant_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    temporal_rs::options::Unit::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
-}
-
-fn instant_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    RoundingMode::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
-}
-
-fn optional_unit<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<temporal_rs::options::Unit>> {
-    get_defined(object, key)?.map_or(Ok(None), |value| instant_unit(ctx, &value).map(Some))
-}
-
-fn optional_rounding_mode<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, key: &str,
-) -> Result<Option<RoundingMode>> {
-    get_defined(object, key)?.map_or(Ok(None), |value| {
-        instant_rounding_mode(ctx, &value).map(Some)
-    })
-}
-
-fn optional_rounding_increment<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Option<RoundingIncrement>> {
-    match get_defined(object, "roundingIncrement")? {
-        None => Ok(None),
-        Some(value) => {
-            let number = to_number(ctx, &value)?;
-            unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
-        }
-    }
-}
-
-/// Instant.since/until: Get largestUnit, roundingIncrement, roundingMode,
-/// smallestUnit.
-fn instant_difference_settings<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<DifferenceSettings> {
-    let Some(value) = options.0.filter(|value| !value.is_undefined()) else {
-        return Ok(DifferenceSettings::default());
-    };
-    let object = require_object(ctx, &value, "options must be an object")?;
-    let mut settings = DifferenceSettings::default();
-    settings.largest_unit = optional_unit(ctx, &object, "largestUnit")?;
-    settings.increment = optional_rounding_increment(ctx, &object)?;
-    settings.rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;
-    settings.smallest_unit = optional_unit(ctx, &object, "smallestUnit")?;
-    Ok(settings)
-}
-
-/// Instant.round: undefined is TypeError; a string is `smallestUnit`.
-/// Get order is roundingIncrement, roundingMode, smallestUnit.
-fn instant_rounding_options<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result<RoundingOptions> {
-    if options.is_undefined() {
-        return Err(Exception::throw_type(ctx, "options is required"));
-    }
-    if options.is_string() {
-        let mut rounding = RoundingOptions::default();
-        rounding.smallest_unit = Some(instant_unit(ctx, options)?);
-        return Ok(rounding);
-    }
-    let object = require_object(ctx, options, "options must be an object")?;
-    let increment = optional_rounding_increment(ctx, &object)?;
-    let rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;
-    let smallest_unit = optional_unit(ctx, &object, "smallestUnit")?;
-    let mut rounding = RoundingOptions::default();
-    rounding.increment = increment;
-    rounding.rounding_mode = rounding_mode;
-    rounding.smallest_unit = smallest_unit;
-    Ok(rounding)
-}
-
 /// Instant.toString: Get fractionalSecondDigits, roundingMode, smallestUnit,
 /// timeZone.
 fn instant_to_string_parts<'js>(
@@ -120,23 +34,11 @@ fn instant_to_string_parts<'js>(
         return Ok((None, ToStringRoundingOptions::default()));
     };
     let object = require_object(ctx, &value, "options must be an object")?;
-    let precision = match get_defined(&object, "fractionalSecondDigits")? {
-        None => Precision::Auto,
-        Some(value) => {
-            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite")?
-        }
-    };
-    let rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;
-    let smallest_unit = optional_unit(ctx, &object, "smallestUnit")?;
-    let time_zone = match get_defined(&object, "timeZone")? {
-        None => None,
-        Some(value) => Some(to_time_zone(ctx, &value)?),
-    };
-    Ok((time_zone, ToStringRoundingOptions {
-        precision,
-        smallest_unit,
-        rounding_mode,
-    }))
+    let rounding = to_string_rounding(ctx, &object, "fractionalSecondDigits is not finite")?;
+    let time_zone = get_defined(&object, "timeZone")?
+        .map(|value| to_time_zone(ctx, &value))
+        .transpose()?;
+    Ok((time_zone, rounding))
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -211,7 +113,7 @@ impl Instant {
         &self, other: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Duration> {
         let other = to_instant(&ctx, &other)?;
-        let settings = instant_difference_settings(&ctx, options)?;
+        let settings = difference_settings(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.until(&other, settings)).map(Duration::wrap)
     }
 
@@ -219,12 +121,12 @@ impl Instant {
         &self, other: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Duration> {
         let other = to_instant(&ctx, &other)?;
-        let settings = instant_difference_settings(&ctx, options)?;
+        let settings = difference_settings(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.since(&other, settings)).map(Duration::wrap)
     }
 
     pub fn round<'js>(&self, options: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let rounding = instant_rounding_options(&ctx, &options)?;
+        let rounding = rounding_options(&ctx, &options)?;
         unwrap_temporal(&ctx, self.inner.round(rounding)).map(Self::wrap)
     }
 

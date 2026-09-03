@@ -1,23 +1,18 @@
-use std::str::FromStr as _;
-
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
-    class::Trace, prelude::Opt,
+    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
+    prelude::Opt,
 };
 use temporal_rs::{
-    options::{
-        DifferenceSettings, Overflow, RoundingIncrement, RoundingMode, RoundingOptions,
-        ToStringRoundingOptions, Unit,
-    },
-    parsers::Precision,
+    options::{Overflow, ToStringRoundingOptions},
     partial::PartialTime,
 };
 
 use crate::{
     convert::{
-        calendar_slot, fractional_second_digits, get_defined, optional_truncated_i128,
-        options_object, probe_class, require_object, throw_value_of, to_duration, to_number,
-        truncated_u8_or_zero, truncated_u16_or_zero, unwrap_temporal,
+        calendar_slot, difference_settings, get_defined, optional_truncated_i128, options_object,
+        overflow_option, probe_class, require_object, rounding_options, throw_value_of,
+        to_duration, to_string_rounding, truncated_u8_or_zero, truncated_u16_or_zero,
+        unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -60,17 +55,17 @@ impl PlainTime {
     #[qjs(static)]
     pub fn from<'js>(item: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<Self> {
         if let Some(time) = existing_plain_time(&ctx, &item) {
-            let _overflow = overflow_from_options(&ctx, options)?;
+            let _overflow = overflow_option(&ctx, options)?.unwrap_or_default();
             return Ok(Self::wrap(time));
         }
         if item.is_string() {
             let time = parse_plain_time(&ctx, &item)?;
-            let _overflow = overflow_from_options(&ctx, options)?;
+            let _overflow = overflow_option(&ctx, options)?.unwrap_or_default();
             return Ok(Self::wrap(time));
         }
         let object = require_object(&ctx, &item, "cannot convert value to Temporal.PlainTime")?;
         let record = to_time_record(&ctx, &object)?;
-        let overflow = overflow_from_options(&ctx, options)?;
+        let overflow = overflow_option(&ctx, options)?.unwrap_or_default();
         time_from_record(&ctx, record, overflow).map(Self::wrap)
     }
 
@@ -126,17 +121,7 @@ impl PlainTime {
     }
 
     pub fn round<'js>(&self, round_to: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        if round_to.is_undefined() {
-            return Err(Exception::throw_type(&ctx, "roundTo is required"));
-        }
-        let rounding = if round_to.is_string() {
-            let mut rounding = RoundingOptions::default();
-            rounding.smallest_unit = Some(option_unit(&ctx, &round_to)?);
-            rounding
-        } else {
-            let object = require_object(&ctx, &round_to, "roundTo must be an object or string")?;
-            time_rounding_options(&ctx, &object)?
-        };
+        let rounding = rounding_options(&ctx, &round_to)?;
         unwrap_temporal(&ctx, self.inner.round(rounding)).map(Self::wrap)
     }
 
@@ -146,7 +131,7 @@ impl PlainTime {
         let object = require_object(&ctx, &temporal_time_like, "with() requires a property bag")?;
         reject_calendar_or_time_zone(&ctx, &object)?;
         let record = to_time_record(&ctx, &object)?;
-        let overflow = overflow_from_options(&ctx, options)?;
+        let overflow = overflow_option(&ctx, options)?.unwrap_or_default();
         let partial = partial_from_record(&ctx, record, overflow)?;
         unwrap_temporal(&ctx, self.inner.with(partial, Some(overflow))).map(Self::wrap)
     }
@@ -156,7 +141,12 @@ impl PlainTime {
     }
 
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
-        let rounding = string_rounding_options(&ctx, options)?;
+        let rounding = match options_object(&ctx, options)? {
+            None => ToStringRoundingOptions::default(),
+            Some(object) => {
+                to_string_rounding(&ctx, &object, "fractionalSecondDigits must be finite")?
+            }
+        };
         unwrap_temporal(&ctx, self.inner.to_ixdtf_string(rounding))
     }
 
@@ -219,19 +209,6 @@ pub fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<tempo
     let object = require_object(ctx, value, "cannot convert value to Temporal.PlainTime")?;
     let record = to_time_record(ctx, &object)?;
     time_from_record(ctx, record, Overflow::Constrain)
-}
-
-fn overflow_from_options<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Overflow> {
-    overflow_from_object(ctx, options_object(ctx, options)?.as_ref())
-}
-
-fn overflow_from_object<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> Result<Overflow> {
-    let Some(options) = options else {
-        return Ok(Overflow::Constrain);
-    };
-    get_defined(options, "overflow")?.map_or(Ok(Overflow::Constrain), |value| {
-        option_overflow(ctx, &value)
-    })
 }
 
 /// `ToTemporalTimeRecord`: Get time units in alphabetical order.
@@ -333,96 +310,4 @@ fn time_from_record(
         ctx,
         temporal_rs::PlainTime::from_partial(partial, Some(overflow)),
     )
-}
-
-fn difference_settings<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<DifferenceSettings> {
-    let object = options_object(ctx, options)?;
-    let mut settings = DifferenceSettings::default();
-    let Some(object) = object.as_ref() else {
-        return Ok(settings);
-    };
-    if let Some(value) = get_defined(object, "largestUnit")? {
-        settings.largest_unit = Some(option_unit(ctx, &value)?);
-    }
-    if let Some(value) = get_defined(object, "roundingIncrement")? {
-        let number = to_number(ctx, &value)?;
-        settings.increment = Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?);
-    }
-    if let Some(value) = get_defined(object, "roundingMode")? {
-        settings.rounding_mode = Some(option_rounding_mode(ctx, &value)?);
-    }
-    if let Some(value) = get_defined(object, "smallestUnit")? {
-        settings.smallest_unit = Some(option_unit(ctx, &value)?);
-    }
-    Ok(settings)
-}
-
-fn time_rounding_options<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RoundingOptions> {
-    let increment = match get_defined(object, "roundingIncrement")? {
-        None => None,
-        Some(value) => {
-            let number = to_number(ctx, &value)?;
-            Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
-        }
-    };
-    let rounding_mode = match get_defined(object, "roundingMode")? {
-        None => None,
-        Some(value) => Some(option_rounding_mode(ctx, &value)?),
-    };
-    let smallest_unit = match get_defined(object, "smallestUnit")? {
-        None => None,
-        Some(value) => Some(option_unit(ctx, &value)?),
-    };
-    let mut rounding = RoundingOptions::default();
-    rounding.smallest_unit = smallest_unit;
-    rounding.rounding_mode = rounding_mode;
-    rounding.increment = increment;
-    Ok(rounding)
-}
-
-fn string_rounding_options<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<ToStringRoundingOptions> {
-    let object = options_object(ctx, options)?;
-    let Some(object) = object.as_ref() else {
-        return Ok(ToStringRoundingOptions::default());
-    };
-    let precision = match get_defined(object, "fractionalSecondDigits")? {
-        None => Precision::Auto,
-        Some(value) => {
-            fractional_second_digits(ctx, &value, "fractionalSecondDigits must be finite")?
-        }
-    };
-    let rounding_mode = match get_defined(object, "roundingMode")? {
-        None => None,
-        Some(value) => Some(option_rounding_mode(ctx, &value)?),
-    };
-    let smallest_unit = match get_defined(object, "smallestUnit")? {
-        None => None,
-        Some(value) => Some(option_unit(ctx, &value)?),
-    };
-    Ok(ToStringRoundingOptions {
-        precision,
-        smallest_unit,
-        rounding_mode,
-    })
-}
-
-fn option_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Unit::from_str(&name).map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
-}
-
-fn option_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    RoundingMode::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
-}
-
-fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Overflow::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }

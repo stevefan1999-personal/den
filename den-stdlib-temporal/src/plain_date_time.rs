@@ -1,7 +1,7 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value,
+    Ctx, Exception, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     prelude::{Opt, Rest},
@@ -9,20 +9,17 @@ use rquickjs::{
 use temporal_rs::{
     Calendar, MonthCode,
     fields::{CalendarFields, DateTimeFields},
-    options::{
-        DifferenceSettings, Disambiguation, DisplayCalendar, Overflow, RoundingIncrement,
-        RoundingMode, RoundingOptions, ToStringRoundingOptions, Unit,
-    },
-    parsers::Precision,
+    options::{DisplayCalendar, ToStringRoundingOptions},
     partial::{PartialDateTime, PartialTime},
 };
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, fractional_second_digits, get_defined,
-        optional_month_code, optional_truncated_i32, optional_truncated_u8, optional_truncated_u16,
-        options_object, probe_class, reject_calendar_or_time_zone, require_object, throw_value_of,
-        to_duration, to_number, to_time_zone, truncated_u8_or_zero, truncated_u16_or_zero,
+        calendar_slot, ctor_required_i32, ctor_required_u8, difference_settings, get_defined,
+        optional_enum, optional_month_code, optional_truncated_i32, optional_truncated_u8,
+        optional_truncated_u16, options_object, overflow_option, probe_class,
+        reject_calendar_or_time_zone, require_object, rounding_options, throw_value_of,
+        to_duration, to_string_rounding, to_time_zone, truncated_u8_or_zero, truncated_u16_or_zero,
         unwrap_temporal,
     },
     duration::Duration,
@@ -40,77 +37,6 @@ pub struct PlainDateTime {
 
 impl PlainDateTime {
     pub(crate) const fn wrap(inner: temporal_rs::PlainDateTime) -> Self { Self { inner } }
-}
-
-fn get_overflow<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> Result<Option<Overflow>> {
-    let Some(object) = options else {
-        return Ok(None);
-    };
-    let Some(value) = get_defined(object, "overflow")? else {
-        return Ok(None);
-    };
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Overflow::from_str(&name)
-        .map(Some)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
-}
-
-fn get_unit_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
-    let Some(value) = get_defined(object, key)? else {
-        return Ok(None);
-    };
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Unit::from_str(&name)
-        .map(Some)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
-}
-
-fn get_rounding_mode_option<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Option<RoundingMode>> {
-    let Some(value) = get_defined(object, "roundingMode")? else {
-        return Ok(None);
-    };
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    RoundingMode::from_str(&name)
-        .map(Some)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
-}
-
-fn get_rounding_increment<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<Option<RoundingIncrement>> {
-    let Some(value) = get_defined(object, "roundingIncrement")? else {
-        return Ok(None);
-    };
-    let number = to_number(ctx, &value)?;
-    unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
-}
-
-fn get_fractional_second_digits<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Precision> {
-    let Some(value) = get_defined(object, "fractionalSecondDigits")? else {
-        return Ok(Precision::Auto);
-    };
-    fractional_second_digits(ctx, &value, "fractionalSecondDigits must be finite")
-}
-
-fn difference_settings<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<DifferenceSettings> {
-    let object = options_object(ctx, options)?;
-    let Some(object) = object else {
-        return Ok(DifferenceSettings::default());
-    };
-    let largest_unit = get_unit_option(ctx, &object, "largestUnit")?;
-    let increment = get_rounding_increment(ctx, &object)?;
-    let rounding_mode = get_rounding_mode_option(ctx, &object)?;
-    let smallest_unit = get_unit_option(ctx, &object, "smallestUnit")?;
-    let mut settings = DifferenceSettings::default();
-    settings.largest_unit = largest_unit;
-    settings.smallest_unit = smallest_unit;
-    settings.rounding_mode = rounding_mode;
-    settings.increment = increment;
-    Ok(settings)
 }
 
 fn has_calendar_or_time_zone_slot<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
@@ -207,18 +133,15 @@ fn to_pdt<'js>(
     ctx: &Ctx<'js>, value: &Value<'js>, options: Opt<Value<'js>>,
 ) -> Result<temporal_rs::PlainDateTime> {
     if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, options.as_ref())?;
+        let _overflow = overflow_option(ctx, options)?;
         return Ok(date_time.inner);
     }
     if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, options.as_ref())?;
+        let _overflow = overflow_option(ctx, options)?;
         return Ok(zoned.inner.to_plain_date_time());
     }
     if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, options.as_ref())?;
+        let _overflow = overflow_option(ctx, options)?;
         return unwrap_temporal(ctx, date.inner.to_plain_date_time(None));
     }
     if value.is_string() {
@@ -227,57 +150,18 @@ fn to_pdt<'js>(
             ctx,
             temporal_rs::PlainDateTime::from_utf8(string.as_bytes()),
         )?;
-        let options = options_object(ctx, options)?;
-        let _overflow = get_overflow(ctx, options.as_ref())?;
+        let _overflow = overflow_option(ctx, options)?;
         return Ok(parsed);
     }
     let object = require_object(ctx, value, "cannot convert value to Temporal.PlainDateTime")?;
     let calendar = get_calendar_with_iso_default(ctx, &object)?;
     let (fields, month_code) = datetime_fields_from_object(ctx, &object)?;
-    let options = options_object(ctx, options)?;
-    let overflow = get_overflow(ctx, options.as_ref())?;
+    let overflow = overflow_option(ctx, options)?;
     let fields = apply_month_code(ctx, fields, month_code)?;
     unwrap_temporal(
         ctx,
         temporal_rs::PlainDateTime::from_partial(PartialDateTime { fields, calendar }, overflow),
     )
-}
-
-fn rounding_from_value<'js>(ctx: &Ctx<'js>, options: Value<'js>) -> Result<RoundingOptions> {
-    if options.is_string() {
-        let mut rounding = RoundingOptions::default();
-        rounding.largest_unit = Some(Unit::Auto);
-        rounding.smallest_unit = Some({
-            let name = Coerced::<String>::from_js(ctx, options.clone())?.0;
-            Unit::from_str(&name)
-                .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))?
-        });
-        return Ok(rounding);
-    }
-    let object = require_object(ctx, &options, "options must be an object")?;
-    let increment = get_rounding_increment(ctx, &object)?;
-    let rounding_mode = get_rounding_mode_option(ctx, &object)?;
-    let smallest_unit = get_unit_option(ctx, &object, "smallestUnit")?;
-    let mut rounding = RoundingOptions::default();
-    rounding.largest_unit = Some(Unit::Auto);
-    rounding.smallest_unit = smallest_unit;
-    rounding.rounding_mode = rounding_mode;
-    rounding.increment = increment;
-    Ok(rounding)
-}
-
-fn get_disambiguation<'js>(
-    ctx: &Ctx<'js>, options: Option<&Object<'js>>,
-) -> Result<Disambiguation> {
-    let Some(object) = options else {
-        return Ok(Disambiguation::Compatible);
-    };
-    let Some(value) = get_defined(object, "disambiguation")? else {
-        return Ok(Disambiguation::Compatible);
-    };
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Disambiguation::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid disambiguation"))
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -401,7 +285,7 @@ impl PlainDateTime {
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let duration = to_duration(&ctx, &duration_like)?;
-        let overflow = get_overflow(&ctx, options_object(&ctx, options)?.as_ref())?;
+        let overflow = overflow_option(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.add(&duration, overflow)).map(Self::wrap)
     }
 
@@ -409,7 +293,7 @@ impl PlainDateTime {
         &self, duration_like: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         let duration = to_duration(&ctx, &duration_like)?;
-        let overflow = get_overflow(&ctx, options_object(&ctx, options)?.as_ref())?;
+        let overflow = overflow_option(&ctx, options)?;
         unwrap_temporal(&ctx, self.inner.subtract(&duration, overflow)).map(Self::wrap)
     }
 
@@ -450,7 +334,7 @@ impl PlainDateTime {
             "timeZone is not allowed in with()",
         )?;
         let (fields, month_code) = datetime_fields_from_object(&ctx, &object)?;
-        let overflow = get_overflow(&ctx, options_object(&ctx, options)?.as_ref())?;
+        let overflow = overflow_option(&ctx, options)?;
         let fields = apply_month_code(&ctx, fields, month_code)?;
         unwrap_temporal(&ctx, self.inner.with(fields, overflow)).map(Self::wrap)
     }
@@ -473,7 +357,7 @@ impl PlainDateTime {
     }
 
     pub fn round<'js>(&self, options: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        let rounding = rounding_from_value(&ctx, options)?;
+        let rounding = rounding_options(&ctx, &options)?;
         unwrap_temporal(&ctx, self.inner.round(rounding)).map(Self::wrap)
     }
 
@@ -485,7 +369,11 @@ impl PlainDateTime {
         &self, time_zone: Value<'js>, options: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<ZonedDateTime> {
         let zone = to_time_zone(&ctx, &time_zone)?;
-        let disambiguation = get_disambiguation(&ctx, options_object(&ctx, options)?.as_ref())?;
+        let disambiguation = options_object(&ctx, options)?
+            .map_or(Ok(None), |object| {
+                optional_enum(&ctx, &object, "disambiguation", "disambiguation")
+            })?
+            .unwrap_or_default();
         unwrap_temporal(&ctx, self.inner.to_zoned_date_time(zone, disambiguation))
             .map(ZonedDateTime::wrap)
     }
@@ -495,26 +383,11 @@ impl PlainDateTime {
         let (rounding, display) = match object {
             None => (ToStringRoundingOptions::default(), DisplayCalendar::Auto),
             Some(object) => {
-                let display = match get_defined(&object, "calendarName")? {
-                    None => DisplayCalendar::Auto,
-                    Some(value) => {
-                        let name = Coerced::<String>::from_js(&ctx, value.clone())?.0;
-                        DisplayCalendar::from_str(&name).map_err(|_error| {
-                            Exception::throw_range(&ctx, "invalid calendarName option")
-                        })?
-                    }
-                };
-                let precision = get_fractional_second_digits(&ctx, &object)?;
-                let rounding_mode = get_rounding_mode_option(&ctx, &object)?;
-                let smallest_unit = get_unit_option(&ctx, &object, "smallestUnit")?;
-                (
-                    ToStringRoundingOptions {
-                        precision,
-                        smallest_unit,
-                        rounding_mode,
-                    },
-                    display,
-                )
+                let display = optional_enum(&ctx, &object, "calendarName", "calendarName option")?
+                    .unwrap_or(DisplayCalendar::Auto);
+                let rounding =
+                    to_string_rounding(&ctx, &object, "fractionalSecondDigits must be finite")?;
+                (rounding, display)
             }
         };
         unwrap_temporal(&ctx, self.inner.to_ixdtf_string(rounding, display))

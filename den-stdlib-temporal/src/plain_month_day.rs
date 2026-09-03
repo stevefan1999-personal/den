@@ -1,8 +1,8 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
-    class::Trace, prelude::Opt,
+    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
+    prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
@@ -13,9 +13,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_u8, get_defined, optional_month_code, options_object,
-        probe_class, require_object, throw_temporal, throw_value_of, to_integer_with_truncation,
-        to_plain_month_day, truncated_i32, unwrap_temporal,
+        calendar_name_option, calendar_slot, ctor_required_u8, get_defined, optional_month_code,
+        overflow_option, probe_class, require_object, throw_temporal, throw_value_of,
+        to_integer_with_truncation, to_plain_month_day, truncated_i32, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_time::PlainTime,
@@ -115,16 +115,9 @@ impl PlainMonthDay {
     }
 
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
-        let display = match options_object(&ctx, options)? {
-            None => DisplayCalendar::Auto,
-            Some(object) => {
-                match get_defined(&object, "calendarName")? {
-                    None => DisplayCalendar::Auto,
-                    Some(value) => option_display_calendar(&ctx, &value)?,
-                }
-            }
-        };
-        Ok(self.inner.to_ixdtf_string(display))
+        Ok(self
+            .inner
+            .to_ixdtf_string(calendar_name_option(&ctx, options)?))
     }
 
     #[qjs(rename = "toJSON")]
@@ -278,26 +271,6 @@ fn field_to_u8<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<u8> {
         return Ok(u8::MAX);
     }
     Ok(integer as u8)
-}
-
-fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
-    let Some(object) = options_object(ctx, options)? else {
-        return Ok(None);
-    };
-    get_defined(&object, "overflow")?
-        .map_or(Ok(None), |value| option_overflow(ctx, &value).map(Some))
-}
-
-fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    Overflow::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
-}
-
-fn option_display_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<DisplayCalendar> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    DisplayCalendar::from_str(&name)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid calendarName option"))
 }
 
 fn is_partial_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<bool> {

@@ -8,9 +8,8 @@ use temporal_rs::{
     Calendar, MonthCode, TimeZone, UtcOffset,
     fields::ZonedDateTimeFields,
     options::{
-        DifferenceSettings, Disambiguation, DisplayCalendar, DisplayOffset, DisplayTimeZone,
-        OffsetDisambiguation, Overflow, RoundingIncrement, RoundingOptions,
-        ToStringRoundingOptions,
+        Disambiguation, DisplayCalendar, DisplayOffset, DisplayTimeZone, OffsetDisambiguation,
+        Overflow, ToStringRoundingOptions,
     },
     parsed_intermediates::ParsedZonedDateTime,
     parsers::Precision,
@@ -20,10 +19,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, optional_month_code,
-        optional_truncated_i32, options_object, probe_class, throw_value_of, to_big_int_i128,
-        to_calendar, to_duration, to_number, to_time_zone, truncated_u8, truncated_u16,
-        unwrap_temporal,
+        calendar_slot, difference_settings, fractional_second_digits, get_defined, i128_to_bigint,
+        optional_enum, optional_month_code, optional_truncated_i32, options_object,
+        overflow_option, probe_class, rounding_options, throw_value_of, to_big_int_i128,
+        to_calendar, to_duration, to_time_zone, truncated_u8, truncated_u16, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -271,19 +270,7 @@ impl ZonedDateTime {
     }
 
     pub fn round<'js>(&self, options: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
-        if options.is_undefined() {
-            return Err(Exception::throw_type(&ctx, "smallestUnit is required"));
-        }
-        let rounding = if options.is_string() {
-            let mut rounding = RoundingOptions::default();
-            rounding.smallest_unit = Some(unit_from_value(&ctx, &options)?);
-            rounding
-        } else {
-            let object = options.as_object().ok_or_else(|| {
-                Exception::throw_type(&ctx, "round options must be an object or string")
-            })?;
-            datetime_rounding_options(&ctx, object)?
-        };
+        let rounding = rounding_options(&ctx, &options)?;
         unwrap_temporal(&ctx, self.inner.round(rounding)).map(Self::wrap)
     }
 
@@ -346,28 +333,6 @@ fn calendar_identifier<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
     calendar_slot(ctx, value).map_or_else(|| to_calendar(ctx, value), Ok)
-}
-
-fn overflow_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
-    Overflow::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
-}
-
-fn unit_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
-    temporal_rs::options::Unit::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
-}
-
-fn rounding_mode_from_value<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<temporal_rs::options::RoundingMode> {
-    temporal_rs::options::RoundingMode::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
-}
-
-fn display_calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<DisplayCalendar> {
-    DisplayCalendar::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
-        .map_err(|_error| Exception::throw_range(ctx, "invalid calendarName option"))
 }
 
 fn parse_offset_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<UtcOffset> {
@@ -472,30 +437,11 @@ fn zoned_options<'js>(
     let Some(object) = options_object(ctx, options)? else {
         return Ok((None, Some(default_offset), None));
     };
-    let disambiguation = match get_defined(&object, "disambiguation")? {
-        None => None,
-        Some(value) => {
-            let name = Coerced::<String>::from_js(ctx, value)?.0;
-            Some(
-                Disambiguation::from_str(&name)
-                    .map_err(|_error| Exception::throw_range(ctx, "invalid disambiguation"))?,
-            )
-        }
-    };
-    let offset_option = match get_defined(&object, "offset")? {
-        None => Some(default_offset),
-        Some(value) => {
-            let name = Coerced::<String>::from_js(ctx, value)?.0;
-            Some(
-                OffsetDisambiguation::from_str(&name)
-                    .map_err(|_error| Exception::throw_range(ctx, "invalid offset option"))?,
-            )
-        }
-    };
-    let overflow = match get_defined(&object, "overflow")? {
-        None => None,
-        Some(value) => Some(overflow_from_value(ctx, &value)?),
-    };
+    let disambiguation: Option<Disambiguation> =
+        optional_enum(ctx, &object, "disambiguation", "disambiguation")?;
+    let offset_option =
+        optional_enum(ctx, &object, "offset", "offset option")?.or(Some(default_offset));
+    let overflow = optional_enum(ctx, &object, "overflow", "overflow option")?;
     Ok((disambiguation, offset_option, overflow))
 }
 
@@ -560,63 +506,6 @@ fn to_zoned<'js>(
     ))
 }
 
-fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
-    let Some(object) = options_object(ctx, options)? else {
-        return Ok(None);
-    };
-    get_defined(&object, "overflow")?
-        .map_or(Ok(None), |value| overflow_from_value(ctx, &value).map(Some))
-}
-
-fn difference_settings<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<DifferenceSettings> {
-    let mut settings = DifferenceSettings::default();
-    let Some(object) = options_object(ctx, options)? else {
-        return Ok(settings);
-    };
-    settings.largest_unit = match get_defined(&object, "largestUnit")? {
-        None => None,
-        Some(value) => Some(unit_from_value(ctx, &value)?),
-    };
-    settings.increment = match get_defined(&object, "roundingIncrement")? {
-        None => None,
-        Some(value) => {
-            let number = to_number(ctx, &value)?;
-            Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
-        }
-    };
-    settings.rounding_mode = match get_defined(&object, "roundingMode")? {
-        None => None,
-        Some(value) => Some(rounding_mode_from_value(ctx, &value)?),
-    };
-    settings.smallest_unit = match get_defined(&object, "smallestUnit")? {
-        None => None,
-        Some(value) => Some(unit_from_value(ctx, &value)?),
-    };
-    Ok(settings)
-}
-
-fn datetime_rounding_options<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RoundingOptions> {
-    let mut options = RoundingOptions::default();
-    options.increment = match get_defined(object, "roundingIncrement")? {
-        None => None,
-        Some(value) => {
-            let number = to_number(ctx, &value)?;
-            Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
-        }
-    };
-    options.rounding_mode = match get_defined(object, "roundingMode")? {
-        None => None,
-        Some(value) => Some(rounding_mode_from_value(ctx, &value)?),
-    };
-    options.smallest_unit = match get_defined(object, "smallestUnit")? {
-        None => None,
-        Some(value) => Some(unit_from_value(ctx, &value)?),
-    };
-    Ok(options)
-}
-
 fn direction_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TransitionDirection> {
     let direction = if value.is_string() {
         Coerced::<String>::from_js(ctx, value.clone())?.0
@@ -651,40 +540,18 @@ fn to_string_options<'js>(
             ToStringRoundingOptions::default(),
         ));
     };
-    let display_calendar = match get_defined(&object, "calendarName")? {
-        None => DisplayCalendar::Auto,
-        Some(value) => display_calendar_from_value(ctx, &value)?,
-    };
-    let precision = match get_defined(&object, "fractionalSecondDigits")? {
-        None => Precision::Auto,
-        Some(value) => {
-            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite")?
-        }
-    };
-    let display_offset = match get_defined(&object, "offset")? {
-        None => DisplayOffset::Auto,
-        Some(value) => {
-            let name = Coerced::<String>::from_js(ctx, value)?.0;
-            DisplayOffset::from_str(&name)
-                .map_err(|_error| Exception::throw_range(ctx, "invalid offset option"))?
-        }
-    };
-    let rounding_mode = match get_defined(&object, "roundingMode")? {
-        None => None,
-        Some(value) => Some(rounding_mode_from_value(ctx, &value)?),
-    };
-    let smallest_unit = match get_defined(&object, "smallestUnit")? {
-        None => None,
-        Some(value) => Some(unit_from_value(ctx, &value)?),
-    };
-    let display_timezone = match get_defined(&object, "timeZoneName")? {
-        None => DisplayTimeZone::Auto,
-        Some(value) => {
-            let name = Coerced::<String>::from_js(ctx, value)?.0;
-            DisplayTimeZone::from_str(&name)
-                .map_err(|_error| Exception::throw_range(ctx, "invalid timeZoneName option"))?
-        }
-    };
+    let display_calendar = optional_enum(ctx, &object, "calendarName", "calendarName option")?
+        .unwrap_or(DisplayCalendar::Auto);
+    let precision = get_defined(&object, "fractionalSecondDigits")?
+        .map_or(Ok(Precision::Auto), |value| {
+            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite")
+        })?;
+    let display_offset =
+        optional_enum(ctx, &object, "offset", "offset option")?.unwrap_or(DisplayOffset::Auto);
+    let rounding_mode = optional_enum(ctx, &object, "roundingMode", "roundingMode")?;
+    let smallest_unit = optional_enum(ctx, &object, "smallestUnit", "Temporal unit")?;
+    let display_timezone = optional_enum(ctx, &object, "timeZoneName", "timeZoneName option")?
+        .unwrap_or(DisplayTimeZone::Auto);
     Ok((
         display_offset,
         display_timezone,

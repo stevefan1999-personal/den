@@ -1,23 +1,22 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
-    class::Trace, prelude::Opt,
+    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
+    prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
     fields::CalendarFields,
-    options::{
-        DifferenceSettings, DisplayCalendar, Overflow, RoundingIncrement, RoundingMode, Unit,
-    },
+    options::{DisplayCalendar, Overflow},
     partial::PartialDate,
 };
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_month_code,
-        optional_truncated_i32, optional_truncated_i128, options_object, probe_class,
-        throw_value_of, to_duration, to_number, to_time_zone, unwrap_temporal,
+        calendar_name_option, calendar_slot, ctor_required_i32, ctor_required_u8,
+        difference_settings, get_defined, optional_month_code, optional_truncated_i32,
+        optional_truncated_i128, overflow_option, probe_class, throw_value_of, to_duration,
+        to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -36,53 +35,6 @@ pub struct PlainDate {
 
 impl PlainDate {
     pub(crate) const fn wrap(inner: temporal_rs::PlainDate) -> Self { Self { inner } }
-}
-
-fn option_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, what: &str) -> Result<T> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    T::from_str(&name).map_err(|_error| Exception::throw_range(ctx, &format!("invalid {what}")))
-}
-
-fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
-    let Some(object) = options_object(ctx, options)? else {
-        return Ok(None);
-    };
-    get_defined(&object, "overflow")?.map_or(Ok(None), |value| {
-        option_enum(ctx, &value, "overflow option").map(Some)
-    })
-}
-
-fn difference_settings<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<DifferenceSettings> {
-    let Some(object) = options_object(ctx, options)? else {
-        return Ok(DifferenceSettings::default());
-    };
-    let largest_unit = match get_defined(&object, "largestUnit")? {
-        None => None,
-        Some(value) => Some(option_enum::<Unit>(ctx, &value, "Temporal unit")?),
-    };
-    let increment = match get_defined(&object, "roundingIncrement")? {
-        None => None,
-        Some(value) => {
-            let number = to_number(ctx, &value)?;
-            Some(unwrap_temporal(ctx, RoundingIncrement::try_from(number))?)
-        }
-    };
-    let rounding_mode = match get_defined(&object, "roundingMode")? {
-        None => None,
-        Some(value) => Some(option_enum::<RoundingMode>(ctx, &value, "roundingMode")?),
-    };
-    let smallest_unit = match get_defined(&object, "smallestUnit")? {
-        None => None,
-        Some(value) => Some(option_enum::<Unit>(ctx, &value, "Temporal unit")?),
-    };
-    let mut settings = DifferenceSettings::default();
-    settings.largest_unit = largest_unit;
-    settings.smallest_unit = smallest_unit;
-    settings.rounding_mode = rounding_mode;
-    settings.increment = increment;
-    Ok(settings)
 }
 
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
@@ -471,16 +423,9 @@ impl PlainDate {
     }
 
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
-        let display = match options_object(&ctx, options)? {
-            None => DisplayCalendar::Auto,
-            Some(object) => {
-                match get_defined(&object, "calendarName")? {
-                    None => DisplayCalendar::Auto,
-                    Some(value) => option_enum(&ctx, &value, "calendarName option")?,
-                }
-            }
-        };
-        Ok(self.inner.to_ixdtf_string(display))
+        Ok(self
+            .inner
+            .to_ixdtf_string(calendar_name_option(&ctx, options)?))
     }
 
     #[qjs(rename = "toJSON")]

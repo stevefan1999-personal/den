@@ -1,24 +1,22 @@
-use std::str::FromStr;
+use std::str::FromStr as _;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
-    class::Trace, prelude::Opt,
+    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
+    prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
     fields::{CalendarFields, YearMonthCalendarFields},
-    options::{
-        DifferenceSettings, DisplayCalendar, Overflow, RoundingIncrement, RoundingMode, Unit,
-    },
+    options::{DisplayCalendar, Overflow},
     partial::PartialYearMonth,
 };
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_month_code,
-        optional_truncated_i32, optional_truncated_i128, options_object, probe_class,
-        reject_calendar_or_time_zone, throw_value_of, to_duration, to_integer_with_truncation,
-        to_number, truncated_u8, unwrap_temporal,
+        calendar_name_option, calendar_slot, ctor_required_i32, ctor_required_u8,
+        difference_settings, optional_month_code, optional_truncated_i32, optional_truncated_i128,
+        overflow_option, probe_class, reject_calendar_or_time_zone, throw_value_of, to_duration,
+        to_integer_with_truncation, truncated_u8, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -187,7 +185,9 @@ impl PlainYearMonth {
     }
 
     pub fn to_string<'js>(&self, options: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<String> {
-        Ok(self.inner.to_ixdtf_string(display_calendar(&ctx, options)?))
+        Ok(self
+            .inner
+            .to_ixdtf_string(calendar_name_option(&ctx, options)?))
     }
 
     #[qjs(rename = "toJSON")]
@@ -333,69 +333,6 @@ fn is_temporal_object<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> bool {
         || probe_class::<PlainTime>(ctx, value).is_some()
         || probe_class::<Instant>(ctx, value).is_some()
         || probe_class::<Duration>(ctx, value).is_some()
-}
-
-fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Option<Overflow>> {
-    options_object(ctx, options)?.map_or(Ok(None), |object| {
-        get_defined(&object, "overflow")?.map_or(Ok(None), |value| {
-            parse_enum(ctx, &value, "invalid overflow option").map(Some)
-        })
-    })
-}
-
-fn display_calendar<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<DisplayCalendar> {
-    options_object(ctx, options)?.map_or(Ok(DisplayCalendar::Auto), |object| {
-        get_defined(&object, "calendarName")?.map_or(Ok(DisplayCalendar::Auto), |value| {
-            parse_enum(ctx, &value, "invalid calendarName option")
-        })
-    })
-}
-
-fn difference_settings<'js>(
-    ctx: &Ctx<'js>, options: Opt<Value<'js>>,
-) -> Result<DifferenceSettings> {
-    let Some(object) = options_object(ctx, options)? else {
-        return Ok(DifferenceSettings::default());
-    };
-    let mut settings = DifferenceSettings::default();
-    settings.largest_unit = optional_unit(ctx, &object.get("largestUnit")?)?;
-    settings.increment = optional_rounding_increment(ctx, &object.get("roundingIncrement")?)?;
-    settings.rounding_mode = optional_rounding_mode(ctx, &object.get("roundingMode")?)?;
-    settings.smallest_unit = optional_unit(ctx, &object.get("smallestUnit")?)?;
-    Ok(settings)
-}
-
-fn optional_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<Unit>> {
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        parse_enum(ctx, value, "invalid Temporal unit").map(Some)
-    }
-}
-
-fn optional_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<RoundingMode>> {
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        parse_enum(ctx, value, "invalid roundingMode").map(Some)
-    }
-}
-
-fn parse_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<T> {
-    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
-    name.parse()
-        .map_err(|_error| Exception::throw_range(ctx, message))
-}
-
-fn optional_rounding_increment<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<Option<RoundingIncrement>> {
-    if value.is_undefined() {
-        Ok(None)
-    } else {
-        let number = to_number(ctx, value)?;
-        unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
-    }
 }
 
 fn month_u8(ctx: &Ctx<'_>, month: Option<i128>, overflow: Overflow) -> Result<Option<u8>> {

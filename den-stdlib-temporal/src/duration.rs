@@ -9,7 +9,7 @@ use temporal_rs::{
     fields::{CalendarFields, ZonedDateTimeFields},
     options::{
         Disambiguation, OffsetDisambiguation, Overflow, RelativeTo, RoundingIncrement,
-        RoundingMode, RoundingOptions, ToStringRoundingOptions, Unit,
+        RoundingOptions, ToStringRoundingOptions, Unit,
     },
     parsers::Precision,
     partial::{PartialDate, PartialDuration, PartialTime, PartialZonedDateTime},
@@ -18,10 +18,10 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, ctor_integer_if_integral, ctor_integer_if_integral_i128,
-        fractional_second_digits, get_defined, optional_integral_i64, optional_integral_i128,
-        optional_month_code, optional_truncated_i32, optional_truncated_u8, optional_truncated_u16,
-        probe_class, throw_value_of, to_calendar, to_duration, to_number, to_time_zone, to_unit,
-        unwrap_temporal,
+        fractional_second_digits, get_defined, option_enum, optional_enum, optional_integral_i64,
+        optional_integral_i128, optional_month_code, optional_truncated_i32, optional_truncated_u8,
+        optional_truncated_u16, probe_class, throw_value_of, to_calendar, to_duration, to_number,
+        to_time_zone, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -220,22 +220,6 @@ fn relative_to_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Optio
     }
 }
 
-fn optional_unit<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
-    get_defined(object, key)?.map_or(Ok(None), |value| {
-        let name = Coerced::<String>::from_js(ctx, value)?.0;
-        Unit::from_str(&name)
-            .map(Some)
-            .map_err(|error| out_of_range(ctx, error))
-    })
-}
-
-fn rounding_mode_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<RoundingMode>> {
-    get_defined(object, "roundingMode")?.map_or(Ok(None), |value| {
-        let name = Coerced::<String>::from_js(ctx, value)?.0;
-        unwrap_temporal(ctx, RoundingMode::from_str(&name)).map(Some)
-    })
-}
-
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Duration {
     #[qjs(constructor)]
@@ -367,19 +351,19 @@ impl Duration {
     pub fn round<'js>(&self, options: Value<'js>, ctx: Ctx<'js>) -> Result<Self> {
         let (rounding, relative_to) = if options.is_string() {
             let mut rounding = RoundingOptions::default();
-            rounding.smallest_unit = Some(to_unit(&ctx, &options)?);
+            rounding.smallest_unit = Some(option_enum(&ctx, &options, "Temporal unit")?);
             (rounding, None)
         } else {
             let object = required_options_object(&ctx, &options)?;
-            let largest_unit = optional_unit(&ctx, &object, "largestUnit")?;
+            let largest_unit = optional_enum(&ctx, &object, "largestUnit", "Temporal unit")?;
             let relative_to = relative_to_option(&ctx, &object)?;
             let increment =
                 get_defined(&object, "roundingIncrement")?.map_or(Ok(None), |value| {
                     unwrap_temporal(&ctx, RoundingIncrement::try_from(to_number(&ctx, &value)?))
                         .map(Some)
                 })?;
-            let rounding_mode = rounding_mode_option(&ctx, &object)?;
-            let smallest_unit = optional_unit(&ctx, &object, "smallestUnit")?;
+            let rounding_mode = optional_enum(&ctx, &object, "roundingMode", "roundingMode")?;
+            let smallest_unit = optional_enum(&ctx, &object, "smallestUnit", "Temporal unit")?;
             if largest_unit.is_none() && smallest_unit.is_none() {
                 return Err(Exception::throw_range(
                     &ctx,
@@ -398,11 +382,11 @@ impl Duration {
 
     pub fn total<'js>(&self, options: Value<'js>, ctx: Ctx<'js>) -> Result<f64> {
         let (unit, relative_to) = if options.is_string() {
-            (to_unit(&ctx, &options)?, None)
+            (option_enum(&ctx, &options, "Temporal unit")?, None)
         } else {
             let object = required_options_object(&ctx, &options)?;
             let relative_to = relative_to_option(&ctx, &object)?;
-            let unit = optional_unit(&ctx, &object, "unit")?
+            let unit = optional_enum(&ctx, &object, "unit", "Temporal unit")?
                 .ok_or_else(|| Exception::throw_range(&ctx, "unit is required"))?;
             (unit, relative_to)
         };
@@ -421,8 +405,8 @@ impl Duration {
                 )?
             }
         };
-        let rounding_mode = rounding_mode_option(&ctx, &object)?;
-        let smallest_unit = optional_unit(&ctx, &object, "smallestUnit")?;
+        let rounding_mode = optional_enum(&ctx, &object, "roundingMode", "roundingMode")?;
+        let smallest_unit = optional_enum(&ctx, &object, "smallestUnit", "Temporal unit")?;
         unwrap_temporal(
             &ctx,
             self.inner.as_temporal_string(ToStringRoundingOptions {
