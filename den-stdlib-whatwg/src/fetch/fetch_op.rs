@@ -294,17 +294,19 @@ fn single_header_value<'a>(headers: &'a [(String, String)], name: &str) -> Optio
     values.next().is_none().then_some(value)
 }
 
+/// The first well-formed `name=<seconds>` in `Cache-Control`. A malformed
+/// value is skipped rather than ending the scan, matching HTTP caching.
+fn directive_secs(headers: &[(String, String)], name: &str) -> Option<u64> {
+    header_value(headers, "cache-control")?
+        .split(',')
+        .find_map(|part| {
+            let (key, value) = part.trim().split_once('=')?;
+            key.eq_ignore_ascii_case(name).then(|| value.parse().ok())?
+        })
+}
+
 fn parse_max_age(headers: &[(String, String)]) -> Option<Duration> {
-    let cc = header_value(headers, "cache-control")?;
-    for part in cc.split(',') {
-        let part = part.trim();
-        if let Some(rest) = part.to_ascii_lowercase().strip_prefix("max-age=")
-            && let Ok(secs) = rest.parse::<u64>()
-        {
-            return Some(Duration::from_secs(secs));
-        }
-    }
-    None
+    directive_secs(headers, "max-age").map(Duration::from_secs)
 }
 
 fn parse_http_date(value: &str) -> Option<SystemTime> { httpdate::parse_http_date(value).ok() }
@@ -354,22 +356,6 @@ fn cache_fresh(entry: &CacheEntry) -> bool {
     false
 }
 
-fn request_min_fresh(headers: &[(String, String)]) -> Option<u64> {
-    let cc = header_value(headers, "cache-control")?;
-    for part in cc.split(',') {
-        if let Some(rest) = part.trim().to_ascii_lowercase().strip_prefix("min-fresh=")
-            && let Ok(secs) = rest.parse::<u64>()
-        {
-            return Some(secs);
-        }
-    }
-    None
-}
-
-fn request_only_if_cached(headers: &[(String, String)]) -> bool {
-    cache_directive(headers, "only-if-cached")
-}
-
 fn user_has_conditional(headers: &[(String, String)]) -> bool {
     headers.iter().any(|(name, _)| {
         matches!(
@@ -403,40 +389,12 @@ fn encode_location(location: &str) -> String {
     out
 }
 
-fn request_max_age(headers: &[(String, String)]) -> Option<u64> {
-    let cc = header_value(headers, "cache-control")?;
-    for part in cc.split(',') {
-        if let Some(rest) = part.trim().to_ascii_lowercase().strip_prefix("max-age=")
-            && let Ok(secs) = rest.parse::<u64>()
-        {
-            return Some(secs);
-        }
-    }
-    None
-}
-
 fn request_max_stale(headers: &[(String, String)]) -> Option<u64> {
-    let cc = header_value(headers, "cache-control")?;
-    for part in cc.split(',') {
-        let part = part.trim().to_ascii_lowercase();
-        if part == "max-stale" {
-            return Some(u64::MAX);
-        }
-        if let Some(rest) = part.strip_prefix("max-stale=")
-            && let Ok(secs) = rest.parse::<u64>()
-        {
-            return Some(secs);
-        }
-    }
-    None
-}
-
-fn request_no_store(headers: &[(String, String)]) -> bool {
-    header_value(headers, "cache-control").is_some_and(|value| {
-        value
-            .to_ascii_lowercase()
+    directive_secs(headers, "max-stale").or_else(|| {
+        header_value(headers, "cache-control")?
             .split(',')
-            .any(|part| part.trim() == "no-store")
+            .any(|part| part.trim().eq_ignore_ascii_case("max-stale"))
+            .then_some(u64::MAX)
     })
 }
 
@@ -1317,7 +1275,7 @@ impl<'js> HttpFetch<'_, 'js> {
         let user_conditional = user_has_conditional(&headers);
         let cacheable_method = matches!(method.as_str(), "GET" | "HEAD");
         let skip_reuse = user_conditional
-            || request_no_store(&request_headers)
+            || cache_directive(&request_headers, "no-store")
             || cache_directive(&request_headers, "no-cache");
 
         if cacheable_method
@@ -1331,7 +1289,7 @@ impl<'js> HttpFetch<'_, 'js> {
             let freshness = cached.max_age.map(|max| max.as_secs());
             let remaining = freshness.unwrap_or(0).saturating_sub(age);
             let min_fresh_ok =
-                request_min_fresh(&request_headers).is_none_or(|min| remaining >= min);
+                directive_secs(&request_headers, "min-fresh").is_none_or(|min| remaining >= min);
             let stale_ok = request_max_stale(&request_headers).is_some_and(|stale| {
                 let lifetime = freshness.unwrap_or(0);
                 age <= lifetime.saturating_add(stale)
@@ -1340,7 +1298,7 @@ impl<'js> HttpFetch<'_, 'js> {
                 && min_fresh_ok
                 && !header_value(&request_headers, "cache-control")
                     .is_some_and(|value| value.to_ascii_lowercase().contains("max-age=0"))
-                && request_max_age(&request_headers).is_none_or(|max| age <= max);
+                && directive_secs(&request_headers, "max-age").is_none_or(|max| age <= max);
             if is_redirect_status(cached.status)
                 && redirect == "follow"
                 && (cache_mode == "only-if-cached"
@@ -1412,7 +1370,7 @@ impl<'js> HttpFetch<'_, 'js> {
             }
         } else if cache_mode == "only-if-cached" {
             return Err(network_error(ctx, "only-if-cached miss"));
-        } else if request_only_if_cached(&request_headers) {
+        } else if cache_directive(&request_headers, "only-if-cached") {
             let headers =
                 Class::instance(ctx.clone(), Headers::empty_with(headers::Guard::Immutable))?;
             return Ok(Response::from_bytes(
@@ -1965,7 +1923,46 @@ fn cached_response<'js>(
 
 #[cfg(test)]
 mod tests {
-    use super::cors_safelisted_request_header;
+    use super::{
+        cache_directive, cors_safelisted_request_header, directive_secs, parse_max_age,
+        request_max_stale,
+    };
+
+    fn cache_control(value: &str) -> Vec<(String, String)> {
+        vec![("cache-control".to_string(), value.to_string())]
+    }
+
+    #[test]
+    fn cache_control_directives_parse_the_first_well_formed_seconds() {
+        use std::time::Duration;
+
+        assert_eq!(
+            parse_max_age(&cache_control("public, Max-Age=60")),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(
+            directive_secs(&cache_control("max-age=x, max-age=5"), "max-age"),
+            Some(5)
+        );
+        assert_eq!(directive_secs(&cache_control("max-age"), "max-age"), None);
+        assert_eq!(
+            directive_secs(&cache_control("min-fresh = 3"), "min-fresh"),
+            None
+        );
+        assert_eq!(
+            request_max_stale(&cache_control("max-stale")),
+            Some(u64::MAX)
+        );
+        assert_eq!(request_max_stale(&cache_control("max-stale=7")), Some(7));
+        assert_eq!(request_max_stale(&cache_control("max-stale=abc")), None);
+        assert_eq!(request_max_stale(&cache_control("no-cache")), None);
+        assert!(cache_directive(&cache_control("no-store"), "no-store"));
+        assert!(cache_directive(
+            &cache_control("only-if-cached"),
+            "only-if-cached"
+        ));
+        assert!(!cache_directive(&cache_control("no-cache"), "no-store"));
+    }
 
     #[test]
     fn cors_safelists_only_a_single_ordered_byte_range() {
