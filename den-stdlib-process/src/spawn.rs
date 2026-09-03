@@ -232,29 +232,10 @@ impl Child {
     }
 }
 
-/// `{ code }` from `child.wait()`. `code` is `null` when the child was
-/// signaled.
-#[derive(Trace, JsLifetime)]
-#[rquickjs::class(rename = "ExitStatus")]
-pub struct ExitStatus {
-    #[qjs(skip_trace)]
-    code: Option<i32>,
-}
-
-#[rquickjs::methods]
-impl ExitStatus {
-    #[qjs(get, enumerable)]
-    pub fn code<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        match self.code {
-            Some(code) => code.into_js(&ctx),
-            None => Ok(Value::new_null(ctx)),
-        }
-    }
-}
-
 #[rquickjs::methods(rename_all = "camelCase")]
 impl Child {
-    pub async fn wait(&self, ctx: Ctx<'_>) -> Result<ExitStatus> {
+    /// `{ code }` — `code` is `null` when the child was signaled.
+    pub async fn wait<'js>(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
         let mut slot = self.slot.lock().await;
         let code = match &mut *slot {
             ChildSlot::Exited(code) => *code,
@@ -269,7 +250,12 @@ impl Child {
             }
         };
         drop(slot);
-        Ok(ExitStatus { code })
+        let status = Object::new(ctx.clone())?;
+        status.set("code", match code {
+            Some(code) => code.into_js(&ctx)?,
+            None => Value::new_null(ctx.clone()),
+        })?;
+        Ok(status)
     }
 
     pub fn kill(&self, Opt(sig): Opt<String>, ctx: Ctx<'_>) -> Result<()> {
