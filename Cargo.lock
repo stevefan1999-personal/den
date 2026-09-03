@@ -1137,7 +1137,6 @@ dependencies = [
  "den-config",
  "den-core",
  "den-package-store",
- "den-util",
  "libc",
  "log",
  "mimalloc",

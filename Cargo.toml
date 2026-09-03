@@ -737,7 +737,6 @@ console-subscriber = { workspace = true, optional = true }
 den-config.workspace = true
 den-core = { workspace = true, default-features = false }
 den-package-store = { workspace = true, optional = true }
-den-util.workspace = true
 # Feature carrier: compile out dependency DEBUG/TRACE records in release builds.
 log.workspace = true
 mimalloc = { workspace = true, optional = true }
