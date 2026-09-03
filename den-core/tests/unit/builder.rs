@@ -8,24 +8,20 @@ use crate::engine::EngineError;
 fn builder_defaults_are_bounded_and_deny_by_default() {
     let builder = EngineBuilder::new();
     assert_eq!(
-        builder.settings.max_stack_size, DEFAULT_MAX_STACK_SIZE,
+        builder.max_stack_size, DEFAULT_MAX_STACK_SIZE,
         "the default stack size must be explicit"
     );
     assert_ne!(
-        builder.settings.max_stack_size, 0,
+        builder.max_stack_size, 0,
         "the default stack must not be unlimited"
     );
-    assert_eq!(
-        builder.settings.heap_limit, None,
-        "hosts opt in to a heap ceiling"
-    );
+    assert_eq!(builder.heap_limit, None, "hosts opt in to a heap ceiling");
     assert!(
-        builder.settings.import_map.is_none(),
+        builder.import_map.is_none(),
         "hosts opt in to an import map"
     );
     assert!(
         builder
-            .settings
             .policy
             .check(&Request::env("PATH").expect("valid name"))
             .is_err(),

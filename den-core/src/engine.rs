@@ -32,7 +32,7 @@ use {
 #[cfg(feature = "package-store")]
 use crate::package::{PackageLoader, PackageResolver};
 use crate::{
-    builder::{EngineBuilder, EngineSettings},
+    builder::EngineBuilder,
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
     resolver::{
         file::AbsolutePathResolver,
@@ -106,10 +106,7 @@ unsafe impl JsLifetime<'_> for PendingRejections {
 /// is the worker crate's business: it owns the token and installs the interrupt
 /// handler on the runtime this hands back.
 #[cfg(feature = "stdlib-worker")]
-struct DenWorkerHost {
-    bundle:   Bundle,
-    settings: EngineSettings,
-}
+struct DenWorkerHost(EngineBuilder);
 
 #[cfg(feature = "stdlib-worker")]
 impl WorkerHost for DenWorkerHost {
@@ -118,11 +115,10 @@ impl WorkerHost for DenWorkerHost {
         // multi-threaded runtime: `block_in_place` + `block_on` is what lets a
         // synchronous trait method reach an async constructor, and it is the
         // same pair den's module loaders already use one layer down.
-        let bundle = self.bundle;
-        let settings = self.settings.clone();
+        let builder = self.0.clone();
         let engine = block_in_place(|| {
             Handle::current().block_on(async move {
-                let engine = Engine::build(bundle, settings).await;
+                let engine = Engine::build(builder).await;
                 // Signals belong to the process, and only the realm running the
                 // root event loop can deliver them: a worker's loop is `idle()`
                 // and never drains an inbox.
@@ -271,22 +267,23 @@ impl Engine {
         EngineBuilder::new().bundle(bundle).build().await
     }
 
-    pub(crate) async fn build(bundle: Bundle, settings: EngineSettings) -> Engine {
+    pub(crate) async fn build(builder: EngineBuilder) -> Engine {
         let runtime = AsyncRuntime::new()
             .unwrap_or_else(|error| panic!("could not create QuickJS runtime: {error}"));
-        runtime.set_max_stack_size(settings.max_stack_size).await;
-        if let Some(limit) = settings.heap_limit {
+        runtime.set_max_stack_size(builder.max_stack_size).await;
+        if let Some(limit) = builder.heap_limit {
             runtime.set_memory_limit(limit).await;
         }
 
         #[cfg(feature = "stdlib-worker")]
-        let worker_settings = settings.clone();
+        let worker_builder = builder.clone();
         #[cfg(feature = "stdlib-process")]
-        let argv = settings.argv.clone();
+        let argv = builder.argv.clone();
         #[cfg(feature = "package-store")]
-        let package_modules = settings.package_modules.clone();
-        let import_map = settings.import_map.clone();
-        let policy = settings.policy;
+        let package_modules = builder.package_modules.clone();
+        let import_map = builder.import_map.clone();
+        let policy = builder.policy;
+        let bundle = builder.bundle;
 
         {
             let mut builtin_resolver = BuiltinResolver::default();
@@ -455,10 +452,7 @@ impl Engine {
                     // makes a worker able to spawn workers of its own.
                     Self::store_userdata(
                         &ctx,
-                        den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost {
-                            bundle,
-                            settings: worker_settings,
-                        })),
+                        den_stdlib_worker::HostHandle(Arc::new(DenWorkerHost(worker_builder))),
                     )?;
                     Self::store_userdata(&ctx, Self::working_directory_url())?;
                 }

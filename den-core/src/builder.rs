@@ -18,8 +18,13 @@ pub const DEFAULT_MAX_STACK_SIZE: usize = 1024 * 1024;
 
 const EMPTY_BUNDLE: Bundle = rquickjs::loader::bundle::Bundle(&rquickjs::phf::Map::new());
 
+/// Configuration for one den realm. Dedicated workers receive a clone of the
+/// same policy metadata and resource limits. Builtin operations do not enforce
+/// the policy yet; hosts can retrieve it from
+/// [`Engine`](crate::engine::Engine).
 #[derive(Clone, Debug)]
-pub(crate) struct EngineSettings {
+pub struct EngineBuilder {
+    pub(crate) bundle:          Bundle,
     pub(crate) max_stack_size:  usize,
     pub(crate) heap_limit:      Option<usize>,
     pub(crate) policy:          Policy,
@@ -27,32 +32,6 @@ pub(crate) struct EngineSettings {
     pub(crate) import_map:      Option<ImportMap>,
     #[cfg(feature = "package-store")]
     pub(crate) package_modules: Option<Arc<PackageModuleSnapshot>>,
-}
-
-impl Default for EngineSettings {
-    fn default() -> Self {
-        Self {
-            max_stack_size:                                    DEFAULT_MAX_STACK_SIZE,
-            heap_limit:                                        None,
-            policy:                                            Policy::default(),
-            argv:                                              std::env::args_os()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-            import_map:                                        None,
-            #[cfg(feature = "package-store")]
-            package_modules:                                   None,
-        }
-    }
-}
-
-/// Configuration for one den realm. Dedicated workers receive a clone of the
-/// same policy metadata and resource limits. Builtin operations do not enforce
-/// the policy yet; hosts can retrieve it from
-/// [`Engine`](crate::engine::Engine).
-#[derive(Clone, Debug)]
-pub struct EngineBuilder {
-    bundle:   Bundle,
-    settings: EngineSettings,
 }
 
 impl EngineBuilder {
@@ -67,26 +46,26 @@ impl EngineBuilder {
 
     #[must_use]
     pub const fn max_stack_size(mut self, bytes: usize) -> Self {
-        self.settings.max_stack_size = bytes;
+        self.max_stack_size = bytes;
         self
     }
 
     #[must_use]
     pub const fn heap_limit(mut self, bytes: usize) -> Self {
-        self.settings.heap_limit = Some(bytes);
+        self.heap_limit = Some(bytes);
         self
     }
 
     #[must_use]
     /// Store host policy metadata in the realm and its workers.
     pub fn policy(mut self, policy: Policy) -> Self {
-        self.settings.policy = policy;
+        self.policy = policy;
         self
     }
 
     #[must_use]
     pub fn argv(mut self, argv: Vec<String>) -> Self {
-        self.settings.argv = argv;
+        self.argv = argv;
         self
     }
 
@@ -95,25 +74,33 @@ impl EngineBuilder {
     pub fn import_map<P: AsRef<Path>>(
         mut self, json: &str, base_dir: P,
     ) -> Result<Self, ImportMapError> {
-        self.settings.import_map = Some(ImportMap::parse(json, base_dir.as_ref())?);
+        self.import_map = Some(ImportMap::parse(json, base_dir.as_ref())?);
         Ok(self)
     }
 
     #[cfg(feature = "package-store")]
     #[must_use]
     pub fn package_modules(mut self, snapshot: Arc<PackageModuleSnapshot>) -> Self {
-        self.settings.package_modules = Some(snapshot);
+        self.package_modules = Some(snapshot);
         self
     }
 
-    pub async fn build(self) -> Engine { Engine::build(self.bundle, self.settings).await }
+    pub async fn build(self) -> Engine { Engine::build(self).await }
 }
 
 impl Default for EngineBuilder {
     fn default() -> Self {
         Self {
-            bundle:   EMPTY_BUNDLE,
-            settings: EngineSettings::default(),
+            bundle:                                            EMPTY_BUNDLE,
+            max_stack_size:                                    DEFAULT_MAX_STACK_SIZE,
+            heap_limit:                                        None,
+            policy:                                            Policy::default(),
+            argv:                                              std::env::args_os()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+            import_map:                                        None,
+            #[cfg(feature = "package-store")]
+            package_modules:                                   None,
         }
     }
 }
