@@ -965,10 +965,6 @@ impl<'js> Trace<'js> for ReadableStreamDefaultController<'js> {
     }
 }
 
-impl<'js> ReadableStreamDefaultController<'js> {
-    fn stream(&self, _ctx: &Ctx<'js>) -> Inner<'js> { Rc::clone(&self.inner) }
-}
-
 #[rquickjs::methods(rename_all = "camelCase")]
 impl<'js> ReadableStreamDefaultController<'js> {
     #[qjs(constructor)]
@@ -985,17 +981,15 @@ impl<'js> ReadableStreamDefaultController<'js> {
     }
 
     pub fn enqueue(&self, ctx: Ctx<'js>, chunk: Opt<Value<'js>>) -> Result<()> {
-        let inner = self.stream(&ctx);
         ReadableStream::enqueue(
             &ctx,
-            &inner,
+            &self.inner,
             chunk.0.unwrap_or_else(|| Value::new_undefined(ctx.clone())),
         )
     }
 
     pub fn close(&self, ctx: Ctx<'js>) -> Result<()> {
-        let inner = self.stream(&ctx);
-        ReadableStream::close_requested(&ctx, &inner)
+        ReadableStream::close_requested(&ctx, &self.inner)
     }
 
     pub fn error(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) {
