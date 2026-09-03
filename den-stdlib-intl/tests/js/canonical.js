@@ -6,7 +6,9 @@ assertEquals(Intl.getCanonicalLocales(new Intl.Locale("de-de")), ["de-DE"]);
 // Duplicates collapse, order is preserved and holes are skipped.
 assertEquals(Intl.getCanonicalLocales(["fr", "en-US", "FR"]), ["fr", "en-US"]);
 assertEquals(Intl.getCanonicalLocales({ length: 2, 1: "es" }), ["es"]);
-assertThrows(() => Intl.getCanonicalLocales("en-"), RangeError);
+// A structurally invalid tag is a RangeError naming the tag and ICU4X's reason.
+assertThrows(() => Intl.getCanonicalLocales("en-"), RangeError, '"en-" is not a valid language tag');
+assertThrows(() => new Intl.Locale("en-"), RangeError, "is not a valid language tag");
 assertThrows(() => Intl.getCanonicalLocales([1]), TypeError);
 // Surplus arguments are ignored, never rejected.
 assertEquals(Intl.getCanonicalLocales("en", "surplus", 3), ["en"]);

@@ -79,17 +79,6 @@ impl Bcp47 {
     /// region through likely subtags, which the common data set omits.
     const CANONICALIZER: LocaleCanonicalizer = LocaleCanonicalizer::new_extended();
 
-    /// `IsStructurallyValidLanguageTag` — ICU4X's parser is the UTS-35 grammar
-    /// ECMA-402 defers to, so a parse failure is exactly a RangeError.
-    pub fn parse(ctx: &Ctx<'_>, tag: &str) -> Result<Locale> {
-        Locale::try_from_str(tag).map_err(|error| {
-            Exception::throw_range(
-                ctx,
-                &format!("{tag:?} is not a valid language tag: {error}"),
-            )
-        })
-    }
-
     /// `CanonicalizeUnicodeLocaleId`, in place.
     ///
     /// ICU4X's canonicalizer rewrites the language identifier but leaves the
@@ -113,8 +102,16 @@ impl Bcp47 {
     }
 
     /// `CanonicalizeUnicodeLocaleId(IsStructurallyValidLanguageTag(tag))`.
+    ///
+    /// ICU4X's parser is the UTS-35 grammar ECMA-402 defers to, so a parse
+    /// failure is exactly a RangeError.
     pub fn canonical(ctx: &Ctx<'_>, tag: &str) -> Result<Locale> {
-        let mut locale = Self::parse(ctx, tag)?;
+        let mut locale = Locale::try_from_str(tag).map_err(|error| {
+            Exception::throw_range(
+                ctx,
+                &format!("{tag:?} is not a valid language tag: {error}"),
+            )
+        })?;
         Self::canonicalize(&mut locale);
         Ok(locale)
     }
