@@ -54,10 +54,6 @@ fn parent_id() -> u32 {
     {
         windows_parent_id()
     }
-    #[cfg(not(any(unix, windows)))]
-    {
-        0
-    }
 }
 
 #[cfg(windows)]

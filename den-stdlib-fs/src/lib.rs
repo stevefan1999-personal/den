@@ -96,8 +96,8 @@ impl WriteOptions {
             tokio::fs::write(path, contents).await?;
             return Ok(());
         }
-        // tempfile is sync, and this is the same blocking shape tokio::fs::write
-        // already uses underneath.
+        // tempfile is sync, and this is the same blocking shape
+        // tokio::fs::write already uses underneath.
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let target = Path::new(&path);
             let parent = target
@@ -251,8 +251,6 @@ pub mod fs {
             permissions.set_readonly(mode & 0o222 == 0);
             tokio::fs::set_permissions(path, permissions).await?;
         }
-        #[cfg(not(any(unix, windows)))]
-        let _ = (path, mode);
         Ok(())
     }
 

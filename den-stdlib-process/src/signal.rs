@@ -76,11 +76,6 @@ impl Signal {
                 }
             }
         }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = name;
-            Err(Exception::throw_type(ctx, "signals are not supported"))
-        }
     }
 
     pub fn send(pid: i32, name: Option<&str>, ctx: &Ctx<'_>) -> Result<()> {
@@ -103,11 +98,6 @@ impl Signal {
         {
             let _ = Self::number(name, ctx)?;
             Self::windows_kill(pid as u32, ctx)
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = pid;
-            Err(Exception::throw_internal(ctx, "kill is not supported"))
         }
     }
 }
@@ -189,8 +179,6 @@ impl SignalHub {
         let listenable = Self::kind(&sig).is_some();
         #[cfg(windows)]
         let listenable = matches!(sig.as_str(), "SIGINT" | "SIGBREAK");
-        #[cfg(not(any(unix, windows)))]
-        let listenable = false;
         if !listenable {
             // SIGKILL/SIGSTOP and friends cannot be caught; match the platform.
             let _ = Signal::number(&sig, ctx)?;
@@ -301,11 +289,6 @@ impl SignalHub {
             } else {
                 return Ok(());
             }
-            Ok(())
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (ctx, sig, inbox_tx);
             Ok(())
         }
     }
