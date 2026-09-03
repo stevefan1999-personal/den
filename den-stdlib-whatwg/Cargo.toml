@@ -12,6 +12,7 @@ keywords.workspace = true
 
 [dependencies]
 base64-simd.workspace = true
+# preserve_order: keeps reqwest's cookie jar IndexMap-backed so the Cookie header order is deterministic
 cookie_store = { version = "0.22.1", features = ["preserve_order"] }
 data-url.workspace = true
 den-stdlib-networking.workspace = true
