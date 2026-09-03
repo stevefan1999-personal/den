@@ -70,17 +70,19 @@ impl LoadedLibrary {
     /// library does not export is an error that names the schema key, not a
     /// surprise at the first call. `None` is "no such name", which only an
     /// `optional` entry is allowed to survive.
-    fn address(&self, ctx: &Ctx<'_>, symbol: &str) -> Result<Option<*const c_void>> {
-        let handle = self.handle.borrow();
-        let handle = handle
-            .as_ref()
-            .ok_or_else(|| ErrorKind::Closed.throw_at(ctx, "library is closed", &self.path))?;
+    fn address(&self, symbol: &str) -> Option<*const c_void> {
         // SAFETY: `symbol::<T>` only transmutes the `dlsym` result into a
         // pointer-sized `T`, and `*const c_void` is exactly that; it reads
         // nothing through the address. Whether that address is really the
         // function or object the schema describes is the caller's contract
         // (§5.1) and cannot be checked at any layer.
-        Ok(unsafe { handle.symbol::<*const c_void>(symbol) }.ok())
+        unsafe {
+            self.handle
+                .borrow()
+                .as_ref()?
+                .symbol::<*const c_void>(symbol)
+        }
+        .ok()
     }
 
     pub fn is_live(&self) -> bool { self.handle.borrow().is_some() }
@@ -332,7 +334,7 @@ pub fn open<'js>(
 fn bind<'js>(
     ctx: &Ctx<'js>, library: &Rc<LoadedLibrary>, key: &str, spec: &SymbolSpec,
 ) -> Result<Value<'js>> {
-    let Some(address) = library.address(ctx, &spec.symbol)? else {
+    let Some(address) = library.address(&spec.symbol) else {
         if spec.optional {
             return Ok(Value::new_null(ctx.clone()));
         }
