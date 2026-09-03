@@ -260,9 +260,6 @@ impl Engine {
 
     pub async fn new() -> Engine { EngineBuilder::new().build().await }
 
-    #[must_use]
-    pub fn builder() -> EngineBuilder { EngineBuilder::new() }
-
     /// Build an engine that resolves application-owned modules from bytecode
     /// produced by [`rquickjs::embed!`].
     ///
@@ -467,13 +464,15 @@ impl Engine {
                     Self::store_userdata(&ctx, Self::working_directory_url())?;
                 }
 
-                // After `den:worker` so `navigator.gpu` attaches to the existing
-                // Navigator instance instead of replacing it.
+                // After `den:worker` so `navigator.gpu` attaches to the
+                // existing Navigator instance instead of
+                // replacing it.
                 #[cfg(feature = "stdlib-webgpu")]
                 evaluate_stdlib_module!(den_stdlib_webgpu::js_webgpu, "den:webgpu");
 
-                // After `den:worker` so FileReader / XHR / EventSource / WebSocket
-                // can extend EventTarget. Fetch is already wired above.
+                // After `den:worker` so FileReader / XHR / EventSource /
+                // WebSocket can extend EventTarget. Fetch is
+                // already wired above.
                 #[cfg(feature = "stdlib-whatwg")]
                 evaluate_stdlib_module!(den_stdlib_whatwg::js_whatwg, "den:whatwg");
 
