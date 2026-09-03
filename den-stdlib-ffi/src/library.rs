@@ -18,7 +18,7 @@ use crate::{
     callback::InsideCall,
     error::ErrorKind,
     grant::FfiGrant,
-    marshal::{self, ArgumentCell, Borrowed, Bytes},
+    marshal::{self, ArgumentCell, Borrowed},
     schema::{CallMode, FnSig, ParamType, SymbolKind, SymbolSpec},
 };
 
@@ -216,17 +216,6 @@ impl BoundFn {
             )
         }
     }
-
-    /// Everything the worker thread needs, and nothing that belongs to a realm.
-    fn plan<'js>(&self, ctx: &Ctx<'js>, arguments: &[Value<'js>]) -> Result<ForeignCall> {
-        let prepared = self.prepare(ctx, arguments)?;
-        Ok(ForeignCall {
-            address:   self.address,
-            signature: Arc::clone(&self.signature),
-            cells:     prepared.cells,
-            mapped:    prepared.mapped,
-        })
-    }
 }
 
 /// One call's arguments, marshalled: the plain data C is handed, the JS
@@ -237,44 +226,6 @@ struct Prepared<'js> {
     cells:    Vec<ArgumentCell>,
     borrowed: Vec<(usize, Borrowed<'js>)>,
     mapped:   Vec<Mapped>,
-}
-
-/// One `nonblocking` call in flight: plain data, plus the share of the library
-/// handle that keeps the code mapped until it returns even if the script
-/// disposes the library meanwhile.
-struct ForeignCall {
-    address:   usize,
-    signature: Arc<FnSig>,
-    cells:     Vec<ArgumentCell>,
-    /// The bound symbol's own library, and one share per library an argument's
-    /// address belongs to: JS keeps running while this call is on its worker,
-    /// so any of them can be disposed underneath it.
-    mapped:    Vec<Mapped>,
-}
-
-impl ForeignCall {
-    /// # Safety
-    ///
-    /// As [`marshal::invoke`]: the schema must be the symbol's real signature,
-    /// which is the caller's contract (§5.1 item 1).
-    unsafe fn run(self) -> Bytes {
-        let cif = self.signature.cif();
-        // SAFETY: the caller's contract, restated on this function. The CIF is
-        // rebuilt from the same signature the cells were marshalled against.
-        let cell = unsafe {
-            marshal::invoke(
-                &self.signature.result,
-                &cif,
-                CodePtr::from_ptr(std::ptr::with_exposed_provenance(self.address)),
-                &self.cells,
-            )
-        };
-        // Explicit, because this is the field's whole job: the `dlclose` a
-        // concurrent `Symbol.dispose` asked for happens here, after the call,
-        // rather than under it.
-        drop(self.mapped);
-        cell
-    }
 }
 
 /// `open(path, schema, grant)` — the module's only entry point, and the only
@@ -399,26 +350,50 @@ fn nonblocking<'js>(ctx: &Ctx<'js>, call: Rc<BoundFn>) -> Result<Function<'js>> 
             // settles — so by then the pending exception is somebody else's or
             // nobody's. `CaughtError` owns the value and re-raises it at the
             // moment the rejection is actually delivered.
-            let planned = CaughtError::catch(&ctx, call.plan(&ctx, &args.0));
-            let signature = Arc::clone(&call.signature);
-            let library = Rc::clone(&call.library);
+            let planned = CaughtError::catch(&ctx, call.prepare(&ctx, &args.0));
+            let call = Rc::clone(&call);
             async move {
-                let planned = planned.map_err(|caught| caught.throw(&ctx))?;
-                // SAFETY: as the synchronous path — the CIF is rebuilt from the
-                // signature the cells were marshalled against, and that the
-                // schema is the symbol's real signature is the caller's
-                // contract (§5.1 item 1).
-                let returned = tokio::task::spawn_blocking(move || unsafe { planned.run() })
-                    .await
-                    .map_err(|joined| {
-                        ErrorKind::BadArgument.throw(
-                            &ctx,
-                            format_args!("the foreign call did not finish: {joined}"),
+                // `borrowed` is `'js`-bound and not `Send`: the `..` drops it
+                // here, before anything crosses to the worker.
+                let Prepared { cells, mapped, .. } =
+                    planned.map_err(|caught| caught.throw(&ctx))?;
+                let (address, signature) = (call.address, Arc::clone(&call.signature));
+                let returned = tokio::task::spawn_blocking(move || {
+                    let cif = signature.cif();
+                    // SAFETY: as the synchronous path — the CIF is rebuilt from
+                    // the signature the cells were marshalled against, and that
+                    // the schema is the symbol's real signature is the caller's
+                    // contract (§5.1 item 1).
+                    let bytes = unsafe {
+                        marshal::invoke(
+                            &signature.result,
+                            &cif,
+                            CodePtr::from_ptr(std::ptr::with_exposed_provenance(address)),
+                            &cells,
                         )
-                    })?;
+                    };
+                    // The `dlclose` a concurrent `Symbol.dispose` asked for
+                    // happens here, after the call, rather than under it.
+                    drop(mapped);
+                    bytes
+                })
+                .await
+                .map_err(|joined| {
+                    ErrorKind::BadArgument.throw(
+                        &ctx,
+                        format_args!("the foreign call did not finish: {joined}"),
+                    )
+                })?;
                 // SAFETY: `cell` holds exactly the bytes libffi wrote for the
                 // declared result type.
-                unsafe { marshal::read(&ctx, &signature.result, returned.as_ptr(), Some(&library)) }
+                unsafe {
+                    marshal::read(
+                        &ctx,
+                        &call.signature.result,
+                        returned.as_ptr(),
+                        Some(&call.library),
+                    )
+                }
             }
         }),
     )
