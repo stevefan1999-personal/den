@@ -4,7 +4,7 @@
 //! real backpressure knob, and this module is the only place in the subsystem
 //! that reaches for `ctx.spawn`.
 
-use std::{cell::RefCell, fmt, future::Future, pin::Pin, rc::Rc};
+use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
 
 use rquickjs::{Class, Ctx, Result, Value};
 
@@ -13,27 +13,7 @@ use crate::streams::{
     writable::{Inner as WsInner, WritableStream},
 };
 
-pub type SinkFuture<'js> =
-    Pin<Box<dyn Future<Output = std::result::Result<(), StreamError>> + 'js>>;
-
-#[derive(Debug)]
-pub enum StreamError {
-    Io(std::io::Error),
-    Message(String),
-}
-
-impl fmt::Display for StreamError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(f, "{error}"),
-            Self::Message(message) => f.write_str(message),
-        }
-    }
-}
-
-impl From<std::io::Error> for StreamError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error) }
-}
+pub type SinkFuture<'js> = Pin<Box<dyn Future<Output = std::result::Result<(), String>> + 'js>>;
 
 pub struct ByteSink<'js> {
     write: Box<dyn FnMut(Ctx<'js>, Vec<u8>) -> SinkFuture<'js> + 'js>,
@@ -113,7 +93,7 @@ fn settle_native<'js>(
         match future.await {
             Ok(()) => cap.borrow_mut().fulfill(&spawn_ctx),
             Err(error) => {
-                let reason = type_error(&spawn_ctx, &error.to_string());
+                let reason = type_error(&spawn_ctx, &error);
                 cap.borrow_mut().reject(reason);
             }
         }

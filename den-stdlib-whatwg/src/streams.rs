@@ -29,7 +29,7 @@ use rquickjs::{
 };
 
 pub use crate::streams::{
-    native::{ByteSink, SinkFuture, StreamError},
+    native::{ByteSink, SinkFuture},
     readable::{
         ReadableStream, ReadableStreamAsyncIterator, ReadableStreamDefaultController,
         ReadableStreamDefaultReader,

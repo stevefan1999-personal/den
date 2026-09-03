@@ -24,7 +24,7 @@ use rquickjs::{
 };
 use tokio::sync::mpsc;
 
-use crate::streams::{ReadableStream, StreamError, WritableStream, mark_handled};
+use crate::streams::{ReadableStream, WritableStream, mark_handled};
 
 /// Chunks the transport may hold. One is enough to keep the socket busy while
 /// still stopping the producer a chunk after the network does.
@@ -54,10 +54,10 @@ pub fn stream_request_body<'js>(
                 let sender = open.borrow().clone();
                 Box::pin(async move {
                     let Some(sender) = sender else {
-                        return Err(StreamError::Message(GONE.to_owned()));
+                        return Err(GONE.to_owned());
                     };
                     if sender.send(Ok(bytes)).await.is_err() {
-                        return Err(StreamError::Message(GONE.to_owned()));
+                        return Err(GONE.to_owned());
                     }
                     Ok(())
                 })
