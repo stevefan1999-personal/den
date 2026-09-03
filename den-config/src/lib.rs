@@ -131,8 +131,6 @@ impl Config {
 
     pub fn root(&self) -> Option<&Path> { self.source.as_ref().map(|source| source.root.as_path()) }
 
-    pub const fn permissions(&self) -> Option<&PermissionsConfig> { self.permissions.as_ref() }
-
     /// Convert configured permissions to den's deny-by-default host policy.
     pub fn policy(&self) -> std::result::Result<Policy, PolicyError> {
         self.permissions
