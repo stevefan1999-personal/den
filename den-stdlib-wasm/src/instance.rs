@@ -646,8 +646,8 @@ impl<'js> Instance<'js> {
                 HostWrappers::table(ctx, table)?
             } else if let Some(global) = external.clone().into_global() {
                 HostWrappers::global(ctx, global)?
-            } else if let Some(tag) = Self::export_tag(&external) {
-                tag.into_js(ctx)?
+            } else if let Some(inner) = external.clone().into_tag() {
+                crate::tag::Tag { inner }.into_js(ctx)?
             } else {
                 // wasmtime's `SharedMemory` is the only remaining kind, and den
                 // has no `SharedArrayBuffer`-backed `Memory` to wrap one in.
@@ -675,16 +675,6 @@ impl<'js> Instance<'js> {
         Ok(exports)
     }
 
-    fn export_tag(external: &Extern) -> Option<crate::tag::Tag> {
-        external
-            .clone()
-            .into_tag()
-            .map(|inner| crate::tag::Tag { inner })
-    }
-
-    /// Whether an engine error is a *trap* rather than a link or host failure.
-    fn is_trap(error: &Error) -> bool { error.downcast_ref::<wasmtime::Trap>().is_some() }
-
     /// The JS API separates the two ways instantiation can fail: an import that
     /// cannot be linked is a `LinkError`, while a trap — which at instantiation
     /// time can only come from an active segment initialiser or the module's
@@ -701,7 +691,7 @@ impl<'js> Instance<'js> {
         // the caught value.)
         if ctx.has_exception() {
             rquickjs::Error::Exception
-        } else if Self::is_trap(&error) {
+        } else if error.downcast_ref::<wasmtime::Trap>().is_some() {
             throw_runtime(ctx, error)
         } else {
             throw_link(ctx, error)
