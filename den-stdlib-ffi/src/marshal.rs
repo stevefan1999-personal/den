@@ -66,8 +66,6 @@ pub struct Bytes {
 }
 
 impl Bytes {
-    pub fn for_type(declared: &NativeType) -> Self { Self::zeroed(declared.size()) }
-
     fn zeroed(size: usize) -> Self {
         Self {
             cells: vec![Cell::default(); size.max(CELL_BYTES).div_ceil(CELL_BYTES)],
@@ -303,9 +301,10 @@ impl ArgumentCell {
     /// ([`crate::callback::InsideCall`]).
     fn refuse_unstable_store<'js>(ctx: &Ctx<'js>, view: &TypedArray<'js, u8>) -> Result<()> {
         let buffer = view.arraybuffer()?;
-        // SAFETY: `buffer` is a live value of this realm, and `JS_IsArrayBuffer`
-        // only reads its class id — it neither takes a reference nor runs JS,
-        // so passing the borrowed raw value is enough.
+        // SAFETY: `buffer` is a live value of this realm, and
+        // `JS_IsArrayBuffer` only reads its class id — it neither takes
+        // a reference nor runs JS, so passing the borrowed raw value is
+        // enough.
         if !unsafe { qjs::JS_IsArrayBuffer(buffer.as_value().as_raw()) } {
             return Err(ErrorKind::BadArgument.throw(
                 ctx,
@@ -534,7 +533,7 @@ pub unsafe fn invoke(
     declared: &NativeType, cif: &Cif, address: CodePtr, cells: &[ArgumentCell],
 ) -> Bytes {
     let args: Vec<Arg<'_>> = cells.iter().map(ArgumentCell::as_arg).collect();
-    let mut cell = Bytes::for_type(declared);
+    let mut cell = Bytes::zeroed(declared.size());
     // A `void` function has nowhere to write, and libffi wants to be told so
     // rather than handed a buffer it must not touch.
     let returned = if *declared == NativeType::Void {
