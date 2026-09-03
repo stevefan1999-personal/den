@@ -21,7 +21,6 @@ pub async fn build_engine(config: Option<&Config>, argv: Vec<String>) -> Result<
     let Some(config) = config else {
         return Ok(builder.build().await);
     };
-    validate_runtime_config(config)?;
 
     builder = builder.policy(config.policy()?);
     if let Some(budgets) = config.budgets() {
@@ -51,34 +50,6 @@ pub async fn build_engine(config: Option<&Config>, argv: Vec<String>) -> Result<
     }
 
     Ok(builder.build().await)
-}
-
-fn validate_runtime_config(config: &Config) -> Result<()> {
-    if config.offline() == Some(true) {
-        return Err(eyre!("`offline` is not supported by the den runtime"));
-    }
-    if config.frozen() == Some(true) {
-        return Err(eyre!("`frozen` is not supported by the den runtime"));
-    }
-    if config.reload() == Some(true) {
-        return Err(eyre!("`reload` is not supported by the den runtime"));
-    }
-    if config.env_files().is_some_and(|files| !files.is_empty()) {
-        return Err(eyre!("`envFiles` is not supported by the den runtime"));
-    }
-    if let Some(budgets) = config.budgets() {
-        if budgets.timeout_ms.is_some() {
-            return Err(eyre!(
-                "`budgets.timeoutMs` is not supported by the den runtime"
-            ));
-        }
-        if budgets.max_workers.is_some() {
-            return Err(eyre!(
-                "`budgets.maxWorkers` is not supported by the den runtime"
-            ));
-        }
-    }
-    Ok(())
 }
 
 pub async fn run_preloads(engine: &Engine, config: Option<&Config>) -> Result<()> {
@@ -294,27 +265,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_runtime_controls_and_unknown_registries_fail_early()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for (name, field) in [
-            ("offline", r#""offline": true"#),
-            ("frozen", r#""frozen": true"#),
-            ("reload", r#""reload": true"#),
-            ("envFiles", r#""envFiles": [".env"]"#),
-            ("budgets.timeoutMs", r#""budgets": { "timeoutMs": 1 }"#),
-            ("budgets.maxWorkers", r#""budgets": { "maxWorkers": 1 }"#),
-        ] {
-            let temp = tempdir()?;
-            let path = temp.path().join("den.json");
-            fs::write(&path, format!("{{ {field} }}"))?;
-            let config = den_config::Config::load(path)?;
-            let error = match build_engine(Some(&config), vec!["den".into()]).await {
-                Ok(_engine) => panic!("{name} should be rejected"),
-                Err(error) => error,
-            };
-            assert!(error.to_string().contains(name), "{error:#}");
-        }
-
+    async fn unknown_registries_fail_early() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempdir()?;
         let path = temp.path().join("den.json");
         fs::write(

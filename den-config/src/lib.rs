@@ -59,11 +59,7 @@ pub struct Config {
     budgets:          Option<BudgetsConfig>,
     tasks:            Option<BTreeMap<String, TaskConfig>>,
     workspace:        Option<WorkspaceConfig>,
-    env_files:        Option<Vec<PathBuf>>,
     preloads:         Option<Vec<PathBuf>>,
-    offline:          Option<bool>,
-    frozen:           Option<bool>,
-    reload:           Option<bool>,
     source:           Option<ConfigSource>,
 }
 
@@ -80,11 +76,7 @@ struct RawConfig {
     budgets:          Option<BudgetsConfig>,
     tasks:            Option<BTreeMap<String, TaskConfig>>,
     workspace:        Option<WorkspaceConfig>,
-    env_files:        Option<Vec<PathBuf>>,
     preloads:         Option<Vec<PathBuf>>,
-    offline:          Option<bool>,
-    frozen:           Option<bool>,
-    reload:           Option<bool>,
 }
 
 impl Default for RawConfig {
@@ -104,11 +96,7 @@ impl From<Config> for RawConfig {
             budgets:          config.budgets,
             tasks:            config.tasks,
             workspace:        config.workspace,
-            env_files:        config.env_files,
             preloads:         config.preloads,
-            offline:          config.offline,
-            frozen:           config.frozen,
-            reload:           config.reload,
         }
     }
 }
@@ -126,11 +114,7 @@ impl From<RawConfig> for Config {
             budgets:          raw.budgets,
             tasks:            raw.tasks,
             workspace:        raw.workspace,
-            env_files:        raw.env_files,
             preloads:         raw.preloads,
-            offline:          raw.offline,
-            frozen:           raw.frozen,
-            reload:           raw.reload,
             source:           None,
         }
     }
@@ -199,8 +183,6 @@ pub struct PermissionsConfig {
 pub struct BudgetsConfig {
     pub heap_bytes:  Option<u64>,
     pub stack_bytes: Option<usize>,
-    pub timeout_ms:  Option<u64>,
-    pub max_workers: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -275,15 +257,7 @@ impl Config {
 
     pub const fn workspace(&self) -> Option<&WorkspaceConfig> { self.workspace.as_ref() }
 
-    pub fn env_files(&self) -> Option<&[PathBuf]> { self.env_files.as_deref() }
-
     pub fn preloads(&self) -> Option<&[PathBuf]> { self.preloads.as_deref() }
-
-    pub const fn offline(&self) -> Option<bool> { self.offline }
-
-    pub const fn frozen(&self) -> Option<bool> { self.frozen }
-
-    pub const fn reload(&self) -> Option<bool> { self.reload }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = absolute(path.as_ref())?;
@@ -356,7 +330,6 @@ impl Config {
         resolve_dependency_targets(root, &mut self.dev_dependencies)?;
         resolve_optional_path(root, &mut self.import_map);
         resolve_optional_path(root, &mut self.package_store);
-        resolve_paths(root, &mut self.env_files);
         resolve_paths(root, &mut self.preloads);
 
         if let Some(permissions) = &mut self.permissions {
@@ -728,7 +701,6 @@ mod tests {
                 // JSONC comments and trailing commas are intentional.
                 "importMap": "config/import-map.json",
                 "packageStore": ".den/packages.db",
-                "envFiles": [".env"],
                 "preloads": ["boot.ts"],
                 "permissions": {
                     "read": ["data"],
@@ -750,7 +722,6 @@ mod tests {
             config.package_store,
             Some(temp.path().join(".den/packages.db"))
         );
-        assert_eq!(config.env_files, Some(vec![temp.path().join(".env")]));
         assert_eq!(config.preloads, Some(vec![temp.path().join("boot.ts")]));
         assert_eq!(
             config
@@ -777,9 +748,9 @@ mod tests {
         let nested = temp.path().join("a/b");
         fs::create_dir_all(&nested).expect("create nested directory");
         let discovered_path = temp.path().join("den.jsonc");
-        write(&discovered_path, r#"{ "offline": true }"#);
+        write(&discovered_path, r#"{ "packageStore": "discovered.db" }"#);
         let explicit_path = nested.join("explicit.json");
-        write(&explicit_path, r#"{ "offline": false }"#);
+        write(&explicit_path, r#"{ "packageStore": "explicit.db" }"#);
 
         let discovered = Config::discover(&nested, None)
             .expect("discover configuration")
@@ -788,19 +759,22 @@ mod tests {
             discovered.source().map(|source| source.path.as_path()),
             Some(discovered_path.as_path())
         );
-        assert_eq!(discovered.offline, Some(true));
+        assert_eq!(
+            discovered.package_store,
+            Some(temp.path().join("discovered.db"))
+        );
 
         let explicit = Config::discover(&nested, Some(&explicit_path))
             .expect("load explicit configuration")
             .expect("configuration exists");
-        assert_eq!(explicit.offline, Some(false));
+        assert_eq!(explicit.package_store, Some(nested.join("explicit.db")));
     }
 
     #[test]
     fn malformed_and_unknown_fields_report_the_file() {
         let temp = tempdir().expect("create temp directory");
         let malformed = temp.path().join("den.json");
-        write(&malformed, r#"{ "offline": "yes" }"#);
+        write(&malformed, r#"{ "preloads": true }"#);
 
         let error = Config::load(&malformed).expect_err("wrong field type should fail");
         assert!(matches!(error, ConfigError::Parse { .. }));
@@ -808,9 +782,26 @@ mod tests {
         assert!(message.contains(malformed.to_string_lossy().as_ref()));
         assert!(message.contains("boolean"));
 
-        write(&malformed, r#"{ "offine": true }"#);
-        let error = Config::load(&malformed).expect_err("unknown field should fail");
-        assert!(error.to_string().contains("unknown field `offine`"));
+        // Keys den used to parse and then reject by hand are plain unknown
+        // fields now.
+        for (key, body) in [
+            ("offine", r#"{ "offine": true }"#),
+            ("offline", r#"{ "offline": false }"#),
+            ("frozen", r#"{ "frozen": true }"#),
+            ("reload", r#"{ "reload": true }"#),
+            ("envFiles", r#"{ "envFiles": [] }"#),
+            ("timeoutMs", r#"{ "budgets": { "timeoutMs": 1 } }"#),
+            ("maxWorkers", r#"{ "budgets": { "maxWorkers": 1 } }"#),
+        ] {
+            write(&malformed, body);
+            let error = Config::load(&malformed).expect_err("unknown field should fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{key}`")),
+                "{key}: {error}"
+            );
+        }
     }
 
     #[test]
