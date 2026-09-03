@@ -20,13 +20,6 @@ pub struct PackageResolver {
 
 impl PackageResolver {
     #[must_use]
-    pub const fn new(snapshot: Arc<PackageModuleSnapshot>) -> Self {
-        Self {
-            snapshot: Some(snapshot),
-        }
-    }
-
-    #[must_use]
     pub(crate) const fn optional(snapshot: Option<Arc<PackageModuleSnapshot>>) -> Self {
         Self { snapshot }
     }
@@ -56,13 +49,6 @@ pub struct PackageLoader {
 }
 
 impl PackageLoader {
-    #[must_use]
-    pub const fn new(snapshot: Arc<PackageModuleSnapshot>) -> Self {
-        Self {
-            snapshot: Some(snapshot),
-        }
-    }
-
     #[must_use]
     pub(crate) const fn optional(snapshot: Option<Arc<PackageModuleSnapshot>>) -> Self {
         Self { snapshot }
@@ -212,8 +198,8 @@ mod tests {
         let snapshot = Arc::new(fixture()?);
         let runtime = Runtime::new()?;
         runtime.set_loader(
-            PackageResolver::new(snapshot.clone()),
-            PackageLoader::new(snapshot),
+            PackageResolver::optional(Some(snapshot.clone())),
+            PackageLoader::optional(Some(snapshot)),
         );
         let context = Context::full(&runtime)?;
         context.with(|ctx| -> rquickjs::Result<()> {
@@ -281,7 +267,7 @@ mod tests {
         let snapshot = Arc::new(fixture()?);
         let fallback_called = Arc::new(AtomicBool::new(false));
         let mut resolver = (
-            PackageResolver::new(snapshot),
+            PackageResolver::optional(Some(snapshot)),
             FallbackResolver(fallback_called.clone()),
         );
         let runtime = Runtime::new()?;
@@ -310,7 +296,7 @@ mod tests {
         let fallback_called = Arc::new(AtomicBool::new(false));
         let mut resolver = (
             ImportMapResolver,
-            PackageResolver::new(snapshot),
+            PackageResolver::optional(Some(snapshot)),
             FallbackResolver(fallback_called.clone()),
         );
         let runtime = Runtime::new()?;
