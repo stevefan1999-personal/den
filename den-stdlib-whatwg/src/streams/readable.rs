@@ -444,8 +444,9 @@ impl<'js> ReadableStream<'js> {
         };
         match outcome {
             Ok(value) => {
-                // Pinning the controller is what keeps the record's JS values alive
-                // for the length of this operation: see the note on
+                // Pinning the controller is what keeps the record's JS values
+                // alive for the length of this operation: see
+                // the note on
                 // `ReadableStreamDefaultController`.
                 let pin = Pins::hold(ctx, Self::keeper(inner));
                 let ok = {
@@ -703,11 +704,6 @@ impl<'js> ReadableStream<'js> {
             }
         }
         Self::wrap(ctx, inner)
-    }
-
-    pub fn tee_pair(stream: &Class<'js, Self>, ctx: &Ctx<'js>) -> Result<(Value<'js>, Value<'js>)> {
-        let (left, right) = pipe::tee(ctx, stream, false)?;
-        Ok((left.into_value(), right.into_value()))
     }
 
     pub fn tee_pair_for_clone(
