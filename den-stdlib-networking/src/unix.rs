@@ -1,15 +1,11 @@
-#[cfg(unix)] use std::sync::Arc;
+use std::sync::Arc;
 
 use rquickjs::{Ctx, Error, JsLifetime, Result, TypedArray, class::Trace, convert::List};
 #[cfg(unix)]
-use tokio::{
-    net::{UnixListener, UnixStream},
-    sync::RwLock,
-};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::RwLock;
 
-#[cfg(unix)]
-use crate::io::{AsyncReadWrapper, AsyncWriteWrapper};
-use crate::io::{JsByteBuf, impl_stream_wrapper};
+use crate::io::{AsyncReadWrapper, AsyncWriteWrapper, JsByteBuf, impl_stream_wrapper};
 
 #[cfg(unix)]
 fn unix_pathname(addr: &tokio::net::unix::SocketAddr) -> String {
@@ -27,17 +23,23 @@ fn unix_unsupported() -> Error {
     .into()
 }
 
+#[cfg(unix)]
+type NativeStream = UnixStream;
+// Never instantiated off unix: `connect` and `accept` both fail there and
+// `new UnixStream()` throws. The alias only exists so the shared macro arm
+// still type-checks.
+#[cfg(not(unix))]
+type NativeStream = tokio::io::Empty;
+
 #[derive(Trace, JsLifetime, Clone, Debug)]
 #[rquickjs::class(rename = "UnixStream")]
 pub struct UnixStreamWrapper {
-    #[cfg(unix)]
     #[qjs(skip_trace)]
-    stream: Arc<RwLock<UnixStream>>,
+    stream: Arc<RwLock<NativeStream>>,
 }
 
 impl_stream_wrapper! {
     UnixStreamWrapper,
-    unsupported: unix_unsupported,
 
     #[qjs(get, enumerable)]
     pub fn local_addr(&self) -> Result<String> {
