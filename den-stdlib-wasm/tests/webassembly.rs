@@ -153,3 +153,8 @@ async fn a_trap_in_the_start_function_is_a_runtime_error() -> eyre::Result<()> {
 async fn reflection_dictionaries_keep_their_spec_key_order() -> eyre::Result<()> {
     run("reflection_types.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn memory_buffer_kinds_are_cached_per_kind_and_detach_each_other() -> eyre::Result<()> {
+    run("buffer_kinds.js").await
+}

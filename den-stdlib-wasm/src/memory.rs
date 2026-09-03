@@ -250,13 +250,7 @@ impl<'js> MemoryBuffers<'js> {
             {
                 return Ok(entry.buffer.clone());
             }
-            live.retain_mut(|entry| {
-                if entry.base != base {
-                    return true;
-                }
-                entry.buffer.detach();
-                false
-            });
+            Self::detach_from(live, base);
             let buffer = Self::alias(ctx, base, byte_length)?;
             live.push(LiveBuffer {
                 memory: *memory,
@@ -290,13 +284,7 @@ impl<'js> MemoryBuffers<'js> {
             {
                 return Ok(entry.buffer.clone());
             }
-            live.retain_mut(|entry| {
-                if entry.base != base {
-                    return true;
-                }
-                entry.buffer.detach();
-                false
-            });
+            Self::detach_from(live, base);
             let buffer = Self::resizable_alias(ctx, byte_length, max_byte_length)?;
             live.push(LiveBuffer {
                 memory: *memory,
@@ -338,15 +326,22 @@ impl<'js> MemoryBuffers<'js> {
     /// comparison [`Self::refresh`] makes is not enough there.
     fn detach_at(ctx: &Ctx<'js>, base: usize) -> Result<()> {
         Self::with_live(ctx, |live| {
-            live.retain_mut(|entry| {
-                if entry.base != base {
-                    return true;
-                }
-                entry.buffer.detach();
-                false
-            });
+            Self::detach_from(live, base);
             Ok(())
         })
+    }
+
+    /// Detach every buffer registered at `base`. Callers that already hold the
+    /// registry borrow use this; [`Self::detach_at`] is the same sweep from
+    /// outside it.
+    fn detach_from(live: &mut Vec<LiveBuffer<'js>>, base: usize) {
+        live.retain_mut(|entry| {
+            if entry.base != base {
+                return true;
+            }
+            entry.buffer.detach();
+            false
+        });
     }
 
     /// The current base address and byte length of `memory`.
