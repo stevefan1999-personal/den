@@ -350,42 +350,6 @@ impl Config {
         Ok(None)
     }
 
-    /// Merge an authoritative higher-priority layer into this one. Maps and
-    /// nested settings merge by key; lists and scalar values replace only when
-    /// explicitly set.
-    ///
-    /// This overlay may broaden permissions and is intended for CLI/user
-    /// precedence only. Workspace and worker policies must be converted into
-    /// separate capability policies and intersected instead.
-    pub fn merge(&mut self, higher: Self) {
-        merge_map(&mut self.imports, higher.imports);
-        replace(&mut self.import_map, higher.import_map);
-        replace(&mut self.package_store, higher.package_store);
-        merge_map(&mut self.registries, higher.registries);
-        merge_map(&mut self.dependencies, higher.dependencies);
-        merge_map(&mut self.dev_dependencies, higher.dev_dependencies);
-        merge_nested(
-            &mut self.permissions,
-            higher.permissions,
-            PermissionsConfig::merge,
-        );
-        merge_nested(&mut self.budgets, higher.budgets, BudgetsConfig::merge);
-        merge_map(&mut self.tasks, higher.tasks);
-        replace(&mut self.workspace, higher.workspace);
-        replace(&mut self.env_files, higher.env_files);
-        replace(&mut self.preloads, higher.preloads);
-        replace(&mut self.offline, higher.offline);
-        replace(&mut self.frozen, higher.frozen);
-        replace(&mut self.reload, higher.reload);
-        replace(&mut self.source, higher.source);
-    }
-
-    #[must_use]
-    pub fn merged(mut self, higher: Self) -> Self {
-        self.merge(higher);
-        self
-    }
-
     fn resolve_paths(&mut self, root: &Path, source_path: &Path) -> Result<()> {
         resolve_import_targets(root, &mut self.imports)?;
         resolve_dependency_targets(root, &mut self.dependencies)?;
@@ -465,20 +429,6 @@ impl PermissionsConfig {
             |value| NameScope::exact(value).map(Scope::Secrets),
         )?;
         Ok(Policy::new(rules))
-    }
-
-    fn merge(&mut self, higher: Self) {
-        replace(&mut self.read, higher.read);
-        replace(&mut self.write, higher.write);
-        replace(&mut self.net_connect, higher.net_connect);
-        replace(&mut self.net_listen, higher.net_listen);
-        replace(&mut self.env, higher.env);
-        replace(&mut self.run, higher.run);
-        replace(&mut self.sys, higher.sys);
-        replace(&mut self.ffi, higher.ffi);
-        replace(&mut self.imports, higher.imports);
-        replace(&mut self.secrets, higher.secrets);
-        replace(&mut self.prompt, higher.prompt);
     }
 
     fn resolve_paths(&mut self, root: &Path, source_path: &Path) -> Result<()> {
@@ -582,15 +532,6 @@ fn network_scope(value: &str, capability: Capability) -> std::result::Result<Sco
         Capability::NetListen => Scope::NetListen(network),
         _ => return Err(ScopeError::InvalidHost),
     })
-}
-
-impl BudgetsConfig {
-    fn merge(&mut self, higher: Self) {
-        replace(&mut self.heap_bytes, higher.heap_bytes);
-        replace(&mut self.stack_bytes, higher.stack_bytes);
-        replace(&mut self.timeout_ms, higher.timeout_ms);
-        replace(&mut self.max_workers, higher.max_workers);
-    }
 }
 
 impl TaskConfig {
@@ -766,38 +707,14 @@ fn lexical_normalize(path: PathBuf) -> PathBuf {
     normalized
 }
 
-fn replace<T>(lower: &mut Option<T>, higher: Option<T>) {
-    if higher.is_some() {
-        *lower = higher;
-    }
-}
-
-fn merge_map<K: Ord, V>(lower: &mut Option<BTreeMap<K, V>>, higher: Option<BTreeMap<K, V>>) {
-    if let Some(higher) = higher {
-        lower.get_or_insert_default().extend(higher);
-    }
-}
-
-fn merge_nested<T>(lower: &mut Option<T>, higher: Option<T>, merge: impl FnOnce(&mut T, T)) {
-    if let Some(higher) = higher {
-        if let Some(lower) = lower {
-            merge(lower, higher);
-        } else {
-            *lower = Some(higher);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{fs, path::Path};
 
     use den_capabilities::{Decision, Request};
     use tempfile::tempdir;
 
-    use super::{
-        Access, Config, ConfigError, ParseOptions, RawConfig, TaskConfig, WorkspaceConfig, file_url,
-    };
+    use super::{Access, Config, ConfigError, TaskConfig, WorkspaceConfig, file_url};
 
     fn write(path: &Path, text: &str) { fs::write(path, text).expect("write test configuration"); }
 
@@ -913,106 +830,43 @@ mod tests {
     }
 
     #[test]
-    fn higher_priority_layers_merge_maps_and_replace_explicit_values() {
-        let lower: RawConfig = jsonc_parser::parse_to_serde_value(
-            r#"{
-                "imports": { "a": "./a.ts", "same": "./old.ts" },
-                "permissions": { "read": true, "netConnect": ["example.com"] },
-                "budgets": { "heapBytes": 10, "timeoutMs": 20 },
-                "envFiles": ["base.env"],
-                "offline": true
-            }"#,
-            &ParseOptions::default(),
-        )
-        .expect("parse lower layer");
-        let higher: RawConfig = jsonc_parser::parse_to_serde_value(
-            r#"{
-                "imports": { "b": "./b.ts", "same": "./new.ts" },
-                "permissions": { "read": false },
-                "budgets": { "timeoutMs": 5 },
-                "envFiles": [],
-                "offline": false
-            }"#,
-            &ParseOptions::default(),
-        )
-        .expect("parse higher layer");
-
-        let merged = Config::from(lower).merged(Config::from(higher));
-        assert_eq!(
-            merged.imports,
-            Some(BTreeMap::from([
-                ("a".into(), "./a.ts".into()),
-                ("b".into(), "./b.ts".into()),
-                ("same".into(), "./new.ts".into()),
-            ]))
-        );
-        let permissions = merged.permissions.expect("permissions remain configured");
-        assert_eq!(permissions.read, Some(Access::All(false)));
-        assert_eq!(
-            permissions.net_connect,
-            Some(Access::List(vec!["example.com".into()]))
-        );
-        let budgets = merged.budgets.expect("budgets remain configured");
-        assert_eq!(budgets.heap_bytes, Some(10));
-        assert_eq!(budgets.timeout_ms, Some(5));
-        assert_eq!(merged.env_files, Some(Vec::new()));
-        assert_eq!(merged.offline, Some(false));
-    }
-
-    #[test]
-    fn merged_loaded_configs_keep_each_entrys_declaring_root() {
+    fn imports_and_dependencies_resolve_to_file_urls_from_the_config_root() {
         let temp = tempdir().expect("create temp directory");
-        let lower_root = temp.path().join("lower");
-        let higher_root = temp.path().join("higher");
-        fs::create_dir_all(&lower_root).expect("create lower root");
-        fs::create_dir_all(&higher_root).expect("create higher root");
-        let lower_path = lower_root.join("den.json");
-        let higher_path = higher_root.join("den.json");
+        let path = temp.path().join("den.json");
         write(
-            &lower_path,
+            &path,
             r#"{
-                "imports": { "lower": "./lower.ts" },
-                "dependencies": { "local": "file:./pkg" },
-                "tasks": { "lower": "den run lower.ts" }
-            }"#,
-        );
-        write(
-            &higher_path,
-            r#"{
-                "imports": { "higher": "./higher.ts" },
-                "tasks": { "higher": "den run higher.ts" }
+                "imports": { "local": "./local.ts", "remote": "https://example.test/mod.ts" },
+                "dependencies": { "file": "file:./pkg", "link": "link:./linked", "jsr": "jsr:@scope/pkg@1" }
             }"#,
         );
 
-        let merged = Config::load(lower_path)
-            .expect("load lower")
-            .merged(Config::load(higher_path).expect("load higher"));
-        let imports = merged.imports.expect("imports");
+        let config = Config::load(&path).expect("load configuration");
+        let imports = config.imports.expect("imports");
         assert_eq!(
-            imports.get("lower"),
-            Some(&file_url(&lower_root.join("lower.ts")).expect("lower file URL"))
+            imports.get("local"),
+            Some(&file_url(&temp.path().join("local.ts")).expect("file URL"))
         );
         assert_eq!(
-            imports.get("higher"),
-            Some(&file_url(&higher_root.join("higher.ts")).expect("higher file URL"))
+            imports.get("remote").map(String::as_str),
+            Some("https://example.test/mod.ts")
+        );
+        let dependencies = config.dependencies.expect("dependencies");
+        assert_eq!(
+            dependencies.get("file"),
+            Some(&file_url(&temp.path().join("pkg")).expect("file URL"))
         );
         assert_eq!(
-            merged
-                .dependencies
-                .and_then(|values| values.get("local").cloned()),
-            Some(file_url(&lower_root.join("pkg")).expect("package file URL"))
+            dependencies.get("link"),
+            Some(&format!(
+                "link:{}",
+                file_url(&temp.path().join("linked")).expect("file URL")
+            ))
         );
-        for (name, root) in [("lower", lower_root), ("higher", higher_root)] {
-            let TaskConfig::Detailed(task) = merged
-                .tasks
-                .as_ref()
-                .and_then(|tasks| tasks.get(name))
-                .expect("task")
-            else {
-                panic!("loaded task should carry its root")
-            };
-            assert_eq!(task.cwd.as_deref(), Some(root.as_path()));
-        }
+        assert_eq!(
+            dependencies.get("jsr").map(String::as_str),
+            Some("jsr:@scope/pkg@1")
+        );
     }
 
     #[test]
