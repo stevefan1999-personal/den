@@ -316,6 +316,31 @@ async fn aborting_a_listener_signal_unrefs_the_port() {
     fixture.settle().await;
 }
 
+/// The retire-then-run order of a `once` listener, seen through the ref rule:
+/// the listener is gone by the time it runs, so a pump that pauses on that
+/// removal must be restarted by the `addEventListener` the listener itself
+/// makes — and the queue behind it must survive the round trip.
+#[tokio::test]
+async fn a_once_listener_that_re_adds_itself_keeps_the_port_reffed() {
+    let fixture = Fixture::new().await;
+    fixture.run(TRACKED).await;
+    fixture
+        .run(include_str!(
+            "../fixtures/unit/port/a_once_listener_that_re_adds_itself_keeps_the_port_reffed.js"
+        ))
+        .await;
+    fixture.drain().await;
+    assert_eq!(fixture.text("log.join()").await, "first,second");
+    assert!(
+        fixture.is_busy().await,
+        "the re-added once listener must keep the pump alive"
+    );
+    fixture
+        .run(r#"target.removeEventListener("message", relisten);"#)
+        .await;
+    fixture.settle().await;
+}
+
 #[tokio::test]
 async fn a_data_clone_error_is_synchronous_and_leaves_the_port_usable() {
     let fixture = Fixture::new().await;

@@ -13,13 +13,11 @@ use std::{
     task::Poll,
 };
 
-use den_util::{coerce_string, construct};
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Error, Exception, FromJs as _, Function, IntoJs as _, JsLifetime,
-    Object, Result, Value,
+    Class, Ctx, Error, Exception, Function, IntoJs as _, JsLifetime, Object, Result, Value,
     class::Trace,
-    function::{Args, FuncArg, Opt, Rest, This},
-    object::{Accessor, Property},
+    function::{FuncArg, Opt, This},
+    object::Accessor,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
@@ -386,11 +384,10 @@ pub fn pair(ctx: Ctx<'_>) -> Result<Vec<Class<'_, NativePort>>> {
 const WRAPPER_SLOT: &str = "\0den:port-wrapper";
 
 fn dispatch_messages_at<'js>(
-    ctx: &Ctx<'js>, target: Value<'js>, native: Class<'js, NativePort>, after: Function<'js>,
+    ctx: &Ctx<'js>, target: Value<'js>, native: Class<'js, NativePort>,
 ) -> Result<()> {
     let on_message = Function::new(ctx.clone(), {
         let target = target.clone();
-        let after = after.clone();
         move |ctx: Ctx<'js>, data: Value<'js>, ports: Vec<Class<'js, NativePort>>| -> Result<()> {
             let wrapped = ports
                 .into_iter()
@@ -408,13 +405,11 @@ fn dispatch_messages_at<'js>(
                 )?,
             )?;
             crate::events::dispatch_trusted(ctx.clone(), target.clone(), event.into_value())?;
-            after.call::<_, ()>(("message",))?;
             Ok(())
         }
     })?;
     let on_message_error = Function::new(ctx.clone(), {
         let target = target.clone();
-        let after = after.clone();
         move |ctx: Ctx<'js>| -> Result<()> {
             let event = Class::instance(
                 ctx.clone(),
@@ -425,7 +420,6 @@ fn dispatch_messages_at<'js>(
                 )?,
             )?;
             crate::events::dispatch_trusted(ctx.clone(), target.clone(), event.into_value())?;
-            after.call::<_, ()>(("messageerror",))?;
             Ok(())
         }
     })?;
@@ -499,8 +493,7 @@ impl<'js> MessagePort<'js> {
 
     pub fn start(this: This<Class<'js, Self>>, ctx: Ctx<'js>) -> Result<()> {
         let native = this.0.borrow().native();
-        let noop = Function::new(ctx.clone(), |_: String| ())?;
-        dispatch_messages_at(&ctx, this.0.clone().into_value(), native, noop)
+        dispatch_messages_at(&ctx, this.0.clone().into_value(), native)
     }
 
     pub fn close(&self) { self.native.borrow().close(); }
@@ -536,285 +529,55 @@ impl<'js> MessageChannel<'js> {
     pub const fn to_string_tag() -> &'static str { "MessageChannel" }
 }
 
-struct TrackerState {
-    armed: bool,
-    refed: bool,
-}
-
-fn bind_method<'js>(object: &Object<'js>, name: &str, this: Value<'js>) -> Result<Function<'js>> {
-    let method: Function<'js> = object.get(name)?;
-    let bind: Function<'js> = method.get("bind")?;
-    bind.call((This(method), this))
-}
-
-fn call_spread<'js>(ctx: &Ctx<'js>, function: &Function<'js>, args: &[Value<'js>]) -> Result<()> {
-    let mut call = Args::new(ctx.clone(), args.len());
-    for arg in args {
-        call.push_arg(arg.clone())?;
-    }
-    function.call_arg::<Value<'js>>(call).map(|_| ())
-}
-
-fn truthy_prop<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<bool> {
-    match object.get::<_, Value<'js>>(key)? {
-        value if value.is_undefined() || value.is_null() => Ok(false),
-        value => Ok(Coerced::<bool>::from_js(ctx, value)?.0),
-    }
-}
-
-fn flatten_listener_options<'js>(
-    ctx: &Ctx<'js>, options: Option<&Value<'js>>,
-) -> Result<(bool, bool, Option<Value<'js>>)> {
-    let Some(options) = options else {
-        return Ok((false, false, None));
-    };
-    if let Some(capture) = options.as_bool() {
-        return Ok((capture, false, None));
-    }
-    let Some(object) = options.as_object() else {
-        return Ok((false, false, None));
-    };
-    let signal = match object.get::<_, Value<'js>>("signal")? {
-        value if value.is_undefined() || value.is_null() => None,
-        value => Some(value),
-    };
-    Ok((
-        truthy_prop(ctx, object, "capture")?,
-        truthy_prop(ctx, object, "once")?,
-        signal,
-    ))
-}
-
-fn js_map_this<'js>(map: &Object<'js>) -> This<Value<'js>> { This(map.clone().into_value()) }
-
-fn js_map_set<'js>(map: &Object<'js>, key: Value<'js>, value: Value<'js>) -> Result<()> {
-    map.get::<_, Function<'js>>("set")?
-        .call::<_, ()>((js_map_this(map), key, value))
-}
-
-fn js_map_delete<'js>(map: &Object<'js>, key: Value<'js>) -> Result<()> {
-    map.get::<_, Function<'js>>("delete")?
-        .call::<_, ()>((js_map_this(map), key))
-}
-
-fn bucket_for<'js>(
-    ctx: &Ctx<'js>, buckets: &Object<'js>, event_type: &str, capture: bool,
-) -> Result<Object<'js>> {
-    let key = format!("{event_type}|{capture}").into_js(ctx)?;
-    let existing: Value<'js> = buckets
-        .get::<_, Function<'js>>("get")?
-        .call((js_map_this(buckets), key.clone()))?;
-    if let Some(bucket) = existing.as_object() {
-        return Ok(bucket.clone());
-    }
-    let bucket: Object<'js> = construct(ctx, "Map", ())?;
-    js_map_set(buckets, key, bucket.clone().into_value())?;
-    Ok(bucket)
-}
-
-fn refresh<'js>(
-    ctx: &Ctx<'js>, state: &Rc<RefCell<TrackerState>>, bag: &Object<'js>,
-) -> Result<()> {
-    let buckets: Object<'js> = bag.get("buckets")?;
-    let listening = if state.borrow().armed {
-        let values: Function = buckets.get("values")?;
-        let iterator: Value = values.call((js_map_this(&buckets),))?;
-        let from: Function = ctx.globals().get::<_, Object>("Array")?.get("from")?;
-        let inner: Array = from.call((iterator,))?;
-        let mut any = false;
-        for index in 0..inner.len() {
-            let bucket: Object = inner.get(index)?;
-            let size: f64 = bucket.get("size")?;
-            if size > 0.0 {
-                any = true;
-                break;
-            }
-        }
-        any
-    } else {
-        false
-    };
-    if listening == state.borrow().refed {
+/// The ref rule's one decision: a pump exactly while the target is armed and
+/// has a `message`/`messageerror` listener. Idempotent, and safe to reach from
+/// inside a dispatch — a paused run leaves its queue behind and returns at its
+/// next poll, and a fresh `start` finds `run` already cleared.
+fn refresh<'js>(ctx: &Ctx<'js>, bag: &Object<'js>) -> Result<()> {
+    let target: Value<'js> = bag.get("target")?;
+    let listening = bag.get::<_, bool>("armed")?
+        && crate::events::EventTarget::has_listeners(ctx, &target, &["message", "messageerror"])?;
+    if listening == bag.get::<_, bool>("refed")? {
         return Ok(());
     }
-    state.borrow_mut().refed = listening;
-    let target: Value<'js> = bag.get("target")?;
+    bag.set("refed", listening)?;
     let native: Class<'js, NativePort> = bag.get("native")?;
     if listening {
-        let retire: Function<'js> = bag.get("retire")?;
-        dispatch_messages_at(ctx, target, native, retire)?;
-    } else {
-        native.borrow().pause();
+        return dispatch_messages_at(ctx, target, native);
     }
+    native.borrow().pause();
     Ok(())
-}
-
-fn is_message_type(event_type: &str) -> bool {
-    event_type == "message" || event_type == "messageerror"
 }
 
 /// Ref-on-listener: returns the arm function. See docs/research/11 §2.1 rule 2.
 pub fn track_message_listeners<'js>(
     ctx: Ctx<'js>, target: Value<'js>, native: Class<'js, NativePort>,
 ) -> Result<Function<'js>> {
-    let Some(object) = target.as_object() else {
-        return Err(Exception::throw_type(&ctx, "Illegal invocation"));
-    };
-    // JS Map lives on the wrapper functions so cycle GC can see callback edges.
-    // RustFunction::trace is empty — Values in an Rc<HashMap> leak until
-    // JS_FreeRuntime.
-    let state = Rc::new(RefCell::new(TrackerState {
-        armed: false,
-        refed: false,
-    }));
+    // State lives on a JS object hung off the hook rather than in a Rust
+    // closure: RustFunction::trace is empty, so a target or port captured in
+    // Rust would be invisible to the cycle GC and leak until JS_FreeRuntime.
     let bag = Object::new(ctx.clone())?;
     bag.set("target", target.clone())?;
     bag.set("native", native)?;
-    bag.set(
-        "inheritedAdd",
-        bind_method(object, "addEventListener", target.clone())?,
+    bag.set("armed", false)?;
+    bag.set("refed", false)?;
+    let hook = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>, function: FuncArg<Function<'js>>| -> Result<()> {
+            refresh(&ctx, &function.0.get("_bag")?)
+        },
     )?;
-    bag.set(
-        "inheritedRemove",
-        bind_method(object, "removeEventListener", target.clone())?,
+    let arm = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>, function: FuncArg<Function<'js>>| -> Result<()> {
+            let bag: Object<'js> = function.0.get("_bag")?;
+            bag.set("armed", true)?;
+            refresh(&ctx, &bag)
+        },
     )?;
-    bag.set("buckets", construct::<_, Object>(&ctx, "Map", ())?)?;
-
-    let retire = Function::new(ctx.clone(), {
-        let state = Rc::clone(&state);
-        move |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, event_type: String| -> Result<()> {
-            let bag: Object<'js> = function.0.get("_bag")?;
-            let buckets: Object<'js> = bag.get("buckets")?;
-            let from: Function = ctx.globals().get::<_, Object>("Array")?.get("from")?;
-            for capture in [false, true] {
-                let bucket = bucket_for(&ctx, &buckets, &event_type, capture)?;
-                let entries: Array = from.call((bucket.clone(),))?;
-                for index in 0..entries.len() {
-                    let pair: Array = entries.get(index)?;
-                    let once: bool = pair.get(1)?;
-                    if once {
-                        js_map_delete(&bucket, pair.get(0)?)?;
-                    }
-                }
-            }
-            refresh(&ctx, &state, &bag)
-        }
-    })?;
-    let add = Function::new(ctx.clone(), {
-        let state = Rc::clone(&state);
-        move |ctx: Ctx<'js>,
-              function: FuncArg<Function<'js>>,
-              Rest(args): Rest<Value<'js>>|
-              -> Result<()> {
-            let bag: Object<'js> = function.0.get("_bag")?;
-            let inherited: Function<'js> = bag.get("inheritedAdd")?;
-            call_spread(&ctx, &inherited, &args)?;
-            let Some(type_value) = args.first() else {
-                return Ok(());
-            };
-            let event_type = coerce_string(&ctx, type_value.clone())?;
-            if !is_message_type(&event_type) {
-                return Ok(());
-            }
-            let callback = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-            let (capture, once, signal) = flatten_listener_options(&ctx, args.get(2))?;
-            if callback.is_null() || callback.is_undefined() {
-                return refresh(&ctx, &state, &bag);
-            }
-            if let Some(signal) = &signal
-                && let Some(object) = signal.as_object()
-                && truthy_prop(&ctx, object, "aborted")?
-            {
-                return refresh(&ctx, &state, &bag);
-            }
-            let buckets: Object<'js> = bag.get("buckets")?;
-            let bucket = bucket_for(&ctx, &buckets, &event_type, capture)?;
-            let has: bool = bucket
-                .get::<_, Function<'js>>("has")?
-                .call((js_map_this(&bucket), callback.clone()))?;
-            if has {
-                return refresh(&ctx, &state, &bag);
-            }
-            js_map_set(&bucket, callback.clone(), once.into_js(&ctx)?)?;
-            if let Some(signal) = signal
-                && let Some(object) = signal.as_object()
-            {
-                let add_abort: Function<'js> = object.get("addEventListener")?;
-                let remover = Function::new(ctx.clone(), {
-                    let state = Rc::clone(&state);
-                    move |ctx: Ctx<'js>, function: FuncArg<Function<'js>>| -> Result<()> {
-                        let bag: Object<'js> = function.0.get("_bag")?;
-                        let event_type: String = function.0.get("_type")?;
-                        let capture: bool = function.0.get("_capture")?;
-                        let callback: Value<'js> = function.0.get("_callback")?;
-                        let buckets: Object<'js> = bag.get("buckets")?;
-                        js_map_delete(
-                            &bucket_for(&ctx, &buckets, &event_type, capture)?,
-                            callback,
-                        )?;
-                        refresh(&ctx, &state, &bag)
-                    }
-                })?;
-                remover.set("_bag", bag.clone())?;
-                remover.set("_type", event_type)?;
-                remover.set("_capture", capture)?;
-                remover.set("_callback", callback)?;
-                let options = Object::new(ctx.clone())?;
-                options.set("once", true)?;
-                add_abort.call::<_, ()>((This(signal), "abort", remover, options))?;
-            }
-            refresh(&ctx, &state, &bag)
-        }
-    })?;
-    let remove = Function::new(ctx.clone(), {
-        let state = Rc::clone(&state);
-        move |ctx: Ctx<'js>,
-              function: FuncArg<Function<'js>>,
-              Rest(args): Rest<Value<'js>>|
-              -> Result<()> {
-            let bag: Object<'js> = function.0.get("_bag")?;
-            let inherited: Function<'js> = bag.get("inheritedRemove")?;
-            call_spread(&ctx, &inherited, &args)?;
-            let Some(type_value) = args.first() else {
-                return Ok(());
-            };
-            let event_type = coerce_string(&ctx, type_value.clone())?;
-            if !is_message_type(&event_type) {
-                return Ok(());
-            }
-            let (capture, _, _) = flatten_listener_options(&ctx, args.get(2))?;
-            let callback = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-            let buckets: Object<'js> = bag.get("buckets")?;
-            js_map_delete(&bucket_for(&ctx, &buckets, &event_type, capture)?, callback)?;
-            refresh(&ctx, &state, &bag)
-        }
-    })?;
-    let arm = Function::new(ctx.clone(), {
-        let state = Rc::clone(&state);
-        move |ctx: Ctx<'js>, function: FuncArg<Function<'js>>| -> Result<()> {
-            state.borrow_mut().armed = true;
-            let bag: Object<'js> = function.0.get("_bag")?;
-            refresh(&ctx, &state, &bag)
-        }
-    })?;
-    for function in [&retire, &add, &remove, &arm] {
-        function.set("_bag", bag.clone())?;
-    }
-    bag.set("retire", retire)?;
-    object.prop(
-        "addEventListener",
-        Property::from(add).writable().configurable(),
-    )?;
-    object.prop(
-        "removeEventListener",
-        Property::from(remove).writable().configurable(),
-    )?;
+    hook.set("_bag", bag.clone())?;
+    arm.set("_bag", bag)?;
+    crate::events::EventTarget::set_change_hook(&ctx, &target, hook)?;
     Ok(arm)
 }
 

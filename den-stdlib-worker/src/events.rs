@@ -583,6 +583,9 @@ impl<'js> Trace<'js> for HandlerSlot<'js> {
 struct ListenerTable<'js> {
     by_type:  HashMap<String, Vec<Listener<'js>>>,
     handlers: HashMap<String, HandlerSlot<'js>>,
+    /// Called after every change to `by_type`; the port pump's ref rule
+    /// (`port::track_message_listeners`) hangs off it.
+    hook:     Option<Function<'js>>,
 }
 
 impl<'js> Trace<'js> for ListenerTable<'js> {
@@ -598,6 +601,9 @@ impl<'js> Trace<'js> for ListenerTable<'js> {
         }
         for handler in self.handlers.values() {
             handler.trace(tracer);
+        }
+        if let Some(hook) = &self.hook {
+            hook.trace(tracer);
         }
     }
 }
@@ -658,6 +664,52 @@ impl<'js> EventTarget<'js> {
         Ok(target)
     }
 
+    /// Whether any listener is registered for one of `types`.
+    pub(crate) fn has_listeners(ctx: &Ctx<'js>, this: &Value<'js>, types: &[&str]) -> Result<bool> {
+        let target = Self::resolve(ctx, this)?;
+        let inner = target.try_borrow()?;
+        let table = inner
+            .table
+            .try_borrow()
+            .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+        Ok(types.iter().any(|event_type| {
+            table
+                .by_type
+                .get(*event_type)
+                .is_some_and(|list| !list.is_empty())
+        }))
+    }
+
+    /// Install the function [`Self::notify`] calls after every change to
+    /// `this`'s listener lists.
+    pub(crate) fn set_change_hook(
+        ctx: &Ctx<'js>, this: &Value<'js>, hook: Function<'js>,
+    ) -> Result<()> {
+        let target = Self::resolve(ctx, this)?;
+        let inner = target.try_borrow()?;
+        inner
+            .table
+            .try_borrow_mut()
+            .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?
+            .hook = Some(hook);
+        Ok(())
+    }
+
+    /// Run the change hook, if any, with no table borrow held: the hook reads
+    /// the table straight back through [`Self::has_listeners`].
+    fn notify(ctx: &Ctx<'js>, this: &Value<'js>) -> Result<()> {
+        let hook = {
+            let target = Self::resolve(ctx, this)?;
+            let inner = target.try_borrow()?;
+            let table = inner
+                .table
+                .try_borrow()
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+            table.hook.clone()
+        };
+        hook.map_or(Ok(()), |hook| hook.call::<_, ()>(()))
+    }
+
     fn flatten(options: Option<&Value<'js>>) -> Result<(bool, bool, Option<Value<'js>>)> {
         let Some(options) = options else {
             return Ok((false, false, None));
@@ -716,15 +768,20 @@ impl<'js> EventTarget<'js> {
         let Ok(target) = Self::resolve(ctx, this) else {
             return;
         };
-        let Ok(inner) = target.try_borrow() else {
-            return;
-        };
-        let Ok(mut table) = inner.table.try_borrow_mut() else {
-            return;
-        };
-        if let Some(list) = table.by_type.get_mut(event_type) {
-            list.retain(|other| !Rc::ptr_eq(&other.removed, &record.removed));
+        {
+            let Ok(inner) = target.try_borrow() else {
+                return;
+            };
+            let Ok(mut table) = inner.table.try_borrow_mut() else {
+                return;
+            };
+            if let Some(list) = table.by_type.get_mut(event_type) {
+                list.retain(|other| !Rc::ptr_eq(&other.removed, &record.removed));
+            }
         }
+        // Reached from inside a dispatch or an abort listener, where no caller
+        // can take an `Err`: a hook that fails is reported, not lost.
+        report_uncaught(ctx, Self::notify(ctx, this));
     }
 
     fn invoke_listener(
@@ -844,26 +901,28 @@ impl<'js> EventTarget<'js> {
         if let Some(signal) = signal {
             Self::add_abort_listener(ctx, this.clone(), signal, record, event_type)?;
         }
-        Ok(())
+        Self::notify(ctx, this)
     }
 
     fn remove(
         ctx: &Ctx<'js>, this: &Value<'js>, event_type: &str, callback: &Value<'js>, capture: bool,
     ) -> Result<()> {
         let target = Self::resolve(ctx, this)?;
-        let inner = target.try_borrow()?;
-        let mut table = inner
-            .table
-            .try_borrow_mut()
-            .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
-        if let Some(list) = table.by_type.get_mut(event_type)
-            && let Some(index) = list
-                .iter()
-                .position(|other| other.callback == *callback && other.capture == capture)
         {
-            list.remove(index).removed.set(true);
+            let inner = target.try_borrow()?;
+            let mut table = inner
+                .table
+                .try_borrow_mut()
+                .map_err(|_borrow_error| Exception::throw_internal(ctx, "EventTarget is busy"))?;
+            if let Some(list) = table.by_type.get_mut(event_type)
+                && let Some(index) = list
+                    .iter()
+                    .position(|other| other.callback == *callback && other.capture == capture)
+            {
+                list.remove(index).removed.set(true);
+            }
         }
-        Ok(())
+        Self::notify(ctx, this)
     }
 
     pub(crate) fn handler_value(
@@ -904,13 +963,7 @@ impl<'js> EventTarget<'js> {
         };
         if stored.is_null() {
             if let Some(listener) = existing {
-                Self::call_listener_method(
-                    ctx,
-                    this,
-                    "removeEventListener",
-                    event_type,
-                    &listener,
-                )?;
+                Self::remove(ctx, this, event_type, &listener, false)?;
             }
             let inner = target.try_borrow()?;
             let mut table = inner
@@ -942,7 +995,15 @@ impl<'js> EventTarget<'js> {
             }
         })?
         .into_value();
-        Self::call_listener_method(ctx, this, "addEventListener", event_type, &listener)?;
+        Self::add(
+            ctx,
+            this,
+            event_type.to_owned(),
+            listener.clone(),
+            false,
+            false,
+            None,
+        )?;
         {
             let inner = target.try_borrow()?;
             let mut table = inner
@@ -955,34 +1016,6 @@ impl<'js> EventTarget<'js> {
             });
         }
         Ok(())
-    }
-
-    /// HTML §8.1.8.1 goes through `this.addEventListener` so a target that
-    /// wrapped those methods (the ref-on-listener rule) still sees the slot.
-    fn call_listener_method(
-        ctx: &Ctx<'js>, this: &Value<'js>, method: &str, event_type: &str, listener: &Value<'js>,
-    ) -> Result<()> {
-        if let Some(object) = this.as_object()
-            && let Ok(function) = object.get::<_, Function<'js>>(method)
-        {
-            function.call::<_, ()>((This(this.clone()), event_type, listener.clone()))?;
-            return Ok(());
-        }
-        match method {
-            "addEventListener" => {
-                Self::add(
-                    ctx,
-                    this,
-                    event_type.to_owned(),
-                    listener.clone(),
-                    false,
-                    false,
-                    None,
-                )
-            }
-            "removeEventListener" => Self::remove(ctx, this, event_type, listener, false),
-            _ => Ok(()),
-        }
     }
 
     fn invoke_handler(
