@@ -5,7 +5,7 @@ use std::ffi::CString;
 use den_util::{BufferSource, Probe as _};
 use rquickjs::{
     ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs as _, Function, Object, Result, Symbol,
-    Value, function::Constructor, qjs,
+    Value, qjs,
 };
 
 use crate::{
@@ -146,45 +146,23 @@ impl Host {
     }
 
     pub fn event<'js>(ctx: &Ctx<'js>, type_: &str) -> Result<Value<'js>> {
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("Event") {
-            ctor.construct((type_,))
-        } else {
-            let object = Object::new(ctx.clone())?;
-            object.set("type", type_)?;
-            Ok(object.into_value())
-        }
+        den_util::construct(ctx, "Event", (type_,))
     }
 
     pub fn message_event<'js>(
         ctx: &Ctx<'js>, type_: &str, data: Value<'js>, origin: &str, last_event_id: &str,
     ) -> Result<Value<'js>> {
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("MessageEvent") {
-            let opts = Object::new(ctx.clone())?;
-            opts.set("data", data)?;
-            opts.set("origin", origin)?;
-            opts.set("lastEventId", last_event_id)?;
-            ctor.construct((type_, opts))
-        } else {
-            let object = Object::new(ctx.clone())?;
-            object.set("type", type_)?;
-            object.set("data", data)?;
-            object.set("origin", origin)?;
-            object.set("lastEventId", last_event_id)?;
-            Ok(object.into_value())
-        }
+        let opts = Object::new(ctx.clone())?;
+        opts.set("data", data)?;
+        opts.set("origin", origin)?;
+        opts.set("lastEventId", last_event_id)?;
+        den_util::construct(ctx, "MessageEvent", (type_, opts))
     }
 
     pub fn error_event<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("ErrorEvent") {
-            let opts = Object::new(ctx.clone())?;
-            opts.set("message", message)?;
-            ctor.construct(("error", opts))
-        } else {
-            let object = Object::new(ctx.clone())?;
-            object.set("type", "error")?;
-            object.set("message", message)?;
-            Ok(object.into_value())
-        }
+        let opts = Object::new(ctx.clone())?;
+        opts.set("message", message)?;
+        den_util::construct(ctx, "ErrorEvent", ("error", opts))
     }
 
     pub fn progress_event<'js>(
@@ -194,17 +172,7 @@ impl Host {
         opts.set("lengthComputable", length_computable)?;
         opts.set("loaded", loaded)?;
         opts.set("total", total)?;
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("ProgressEvent") {
-            ctor.construct((type_, opts))
-        } else {
-            let event = Self::event(ctx, type_)?;
-            if let Some(object) = event.as_object() {
-                object.set("lengthComputable", length_computable)?;
-                object.set("loaded", loaded)?;
-                object.set("total", total)?;
-            }
-            Ok(event)
-        }
+        den_util::construct(ctx, "ProgressEvent", (type_, opts))
     }
 
     pub fn close_event<'js>(
@@ -214,17 +182,7 @@ impl Host {
         opts.set("code", code)?;
         opts.set("reason", reason)?;
         opts.set("wasClean", was_clean)?;
-        if let Ok(ctor) = ctx.globals().get::<_, Constructor<'js>>("CloseEvent") {
-            ctor.construct(("close", opts))
-        } else {
-            let event = Self::event(ctx, "close")?;
-            if let Some(object) = event.as_object() {
-                object.set("code", code)?;
-                object.set("reason", reason)?;
-                object.set("wasClean", was_clean)?;
-            }
-            Ok(event)
-        }
+        den_util::construct(ctx, "CloseEvent", ("close", opts))
     }
 
     pub fn install_formdata_symbol(ctx: &Ctx<'_>) -> Result<()> {

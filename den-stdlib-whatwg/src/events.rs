@@ -19,16 +19,7 @@ impl ProgressEvent {
         ctx: Ctx<'js>, type_: String, options: Opt<Option<Object<'js>>>,
     ) -> Result<Object<'js>> {
         let options = options.0.flatten();
-        let event = if let Ok(ctor) = ctx
-            .globals()
-            .get::<_, rquickjs::function::Constructor>("Event")
-        {
-            ctor.construct::<_, Object>((type_.as_str(), options.clone()))?
-        } else {
-            let object = Object::new(ctx.clone())?;
-            object.set("type", type_.as_str())?;
-            object
-        };
+        let event: Object = den_util::construct(&ctx, "Event", (type_.as_str(), options.clone()))?;
         let (length_computable, loaded, total) = Self::fields(options.as_ref())?;
         event.set("lengthComputable", length_computable)?;
         event.set("loaded", loaded)?;
@@ -68,16 +59,7 @@ impl CloseEvent {
         ctx: Ctx<'js>, type_: String, options: Opt<Option<Object<'js>>>,
     ) -> Result<Object<'js>> {
         let options = options.0.flatten();
-        let event = if let Ok(ctor) = ctx
-            .globals()
-            .get::<_, rquickjs::function::Constructor>("Event")
-        {
-            ctor.construct::<_, Object>((type_.as_str(), options.clone()))?
-        } else {
-            let object = Object::new(ctx.clone())?;
-            object.set("type", type_.as_str())?;
-            object
-        };
+        let event: Object = den_util::construct(&ctx, "Event", (type_.as_str(), options.clone()))?;
         let (code, reason, was_clean) = Self::fields(options.as_ref())?;
         event.set("code", code)?;
         event.set("reason", reason)?;

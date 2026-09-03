@@ -146,3 +146,8 @@ async fn clone_copies_every_response_field() -> eyre::Result<()> {
 async fn headers_guards_survive_request_response_and_copy() -> eyre::Result<()> {
     run("headers_guard.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn progress_and_close_events_are_real_events() -> eyre::Result<()> {
+    run("events_construct.js").await
+}
