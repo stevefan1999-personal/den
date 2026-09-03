@@ -1499,7 +1499,6 @@ dependencies = [
  "den-transpiler-oxc",
  "den-util",
  "libtest-mimic",
- "log",
  "rquickjs",
  "serde_json",
  "tokio",
