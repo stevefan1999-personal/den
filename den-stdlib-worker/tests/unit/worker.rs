@@ -563,7 +563,7 @@ async fn a_message_posted_before_the_parent_listens_is_queued_for_it() {
 /// event loop, so the port close is invisible to it, and nothing is shut
 /// down until the runtime has already been made to go idle — which it can
 /// only do once the fault pump has seen the cancellation
-/// `NativeWorker::terminate` is the sole source of.
+/// `Worker.terminate()` is the sole source of.
 #[tokio::test(flavor = "multi_thread")]
 async fn terminate_alone_stops_a_worker_that_can_never_see_its_port() {
     let fixture = Fixture::new("terminate-alone", &[SPIN]).await;

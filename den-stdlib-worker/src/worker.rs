@@ -6,9 +6,9 @@
 //! boundary — the parent and the worker each own a runtime, and they speak
 //! only through the channel a [`PortHandle`] pair is made of.
 //!
-//! The JS-visible [`Worker`] is an EventTarget wrapper around [`NativeWorker`]
-//! and the outside [`NativePort`]. `DedicatedWorkerGlobalScope` is the same
-//! for the worker's global object.
+//! The JS-visible [`Worker`] is an EventTarget wrapper around the thread's
+//! stop token and the outside [`NativePort`]. `DedicatedWorkerGlobalScope` is
+//! the same for the worker's global object.
 //!
 //! See docs/research/09-rquickjs-threads-and-event-loop.md §4, §6, §7 and
 //! docs/research/11-workers-den-integration-and-tests.md §9.
@@ -448,49 +448,27 @@ pub async fn shutdown(context: &AsyncContext) {
     }
 }
 
-/// The parent realm's handle on one worker thread.
-#[derive(Trace, JsLifetime)]
-#[rquickjs::class(rename = "NativeWorker")]
-pub struct NativeWorker {
-    /// Cancels the worker: the engine's interrupt handler observes it (a
-    /// running script), and so does the `closing` child token the thread body
-    /// waits on (a parked one).
-    #[qjs(skip_trace)]
-    stop: CancellationToken,
-}
-
-impl NativeWorker {
-    /// Deliver the worker's faults to the parent-side half of the error chain.
-    ///
-    /// The pump ends when the worker thread drops its sender — which it does
-    /// by exiting — or at `terminate()`, whichever comes first.
-    async fn pump_faults<'js>(
-        ctx: Ctx<'js>, mut inbox: UnboundedReceiver<WorkerFault>, stop: CancellationToken,
-        on_fault: Function<'js>,
-    ) {
-        while let Some(Some(fault)) = stop.run_until_cancelled(inbox.recv()).await {
-            let dispatched = on_fault.call::<_, ()>((fault,));
-            // The handler for "nobody handled an error" throwing is the end of
-            // the line; report it rather than lose it.
-            report_uncaught(&ctx, dispatched);
-        }
+/// Deliver the worker's faults to the parent-side half of the error chain.
+///
+/// The pump ends when the worker thread drops its sender — which it does by
+/// exiting — or at `terminate()`, whichever comes first.
+async fn pump_faults<'js>(
+    ctx: Ctx<'js>, mut inbox: UnboundedReceiver<WorkerFault>, stop: CancellationToken,
+    on_fault: Function<'js>,
+) {
+    while let Some(Some(fault)) = stop.run_until_cancelled(inbox.recv()).await {
+        let dispatched = on_fault.call::<_, ()>((fault,));
+        // The handler for "nobody handled an error" throwing is the end of
+        // the line; report it rather than lose it.
+        report_uncaught(&ctx, dispatched);
     }
-}
-
-#[rquickjs::methods]
-impl NativeWorker {
-    /// `nativeWorker.terminate()` — HTML §10.2.4 "terminate a worker": the
-    /// interrupt handler aborts whatever the worker is running without letting
-    /// a `finally` block observe it, and the cancelled token releases a worker
-    /// that is merely parked. Idempotent.
-    pub fn terminate(&self) { self.stop.cancel(); }
 }
 
 /// Spawn a worker thread (HTML §10.2.6.3 step 10, "run a worker in parallel").
 pub fn spawn<'js>(
     ctx: Ctx<'js>, url: String, kind: ScriptKind, name: String, port: Class<'js, NativePort>,
     on_fault: Function<'js>,
-) -> Result<Class<'js, NativeWorker>> {
+) -> Result<CancellationToken> {
     let script = kind.resolve(&ctx, &url)?;
     // The worker realm's own base URL is its script's directory, which is what
     // makes a nested `new Worker("./x.js")` mean what it says.
@@ -533,13 +511,13 @@ pub fn spawn<'js>(
         stop: stop.clone(),
         join,
     })?;
-    ctx.spawn(NativeWorker::pump_faults(
+    ctx.spawn(pump_faults(
         ctx.clone(),
         fault_inbox,
         stop.clone(),
         on_fault,
     ));
-    Class::instance(ctx, NativeWorker { stop })
+    Ok(stop)
 }
 
 /// Everything one worker thread needs, in the order its body uses it.
@@ -942,8 +920,12 @@ impl DedicatedWorkerGlobalScope {
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub struct Worker<'js> {
-    port:   Class<'js, NativePort>,
-    thread: Class<'js, NativeWorker>,
+    port: Class<'js, NativePort>,
+    /// Cancels the worker: the engine's interrupt handler observes it (a
+    /// running script), and so does the `closing` child token the thread body
+    /// waits on (a parked one).
+    #[qjs(skip_trace)]
+    stop: CancellationToken,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -971,10 +953,10 @@ impl<'js> Worker<'js> {
                 Ok(())
             },
         )?;
-        let thread = spawn(ctx.clone(), url, kind, name, inside, on_fault.clone())?;
+        let stop = spawn(ctx.clone(), url, kind, name, inside, on_fault.clone())?;
         let worker = Class::instance(ctx.clone(), Self {
             port: outside.clone(),
-            thread,
+            stop,
         })?;
         on_fault.set("_worker", worker.clone())?;
         let arm = track_message_listeners(ctx.clone(), worker.clone().into_value(), outside)?;
@@ -989,8 +971,11 @@ impl<'js> Worker<'js> {
         self.port.borrow().post(ctx, message, buffers, ports)
     }
 
+    /// HTML §10.2.4 "terminate a worker": the interrupt handler aborts whatever
+    /// the worker is running without letting a `finally` block observe it, and
+    /// the cancelled token releases a worker that is merely parked. Idempotent.
     pub fn terminate(&self) {
-        self.thread.borrow().terminate();
+        self.stop.cancel();
         self.port.borrow().close();
     }
 
