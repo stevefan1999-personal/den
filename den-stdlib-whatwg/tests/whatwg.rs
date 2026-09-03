@@ -182,3 +182,8 @@ async fn native_line_endings_fold_cr_and_crlf_to_lf() -> eyre::Result<()> {
 async fn lock_errors_and_writer_promises_follow_the_specification() -> eyre::Result<()> {
     run("streams_lock_and_writer_promises.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transformer_finish_that_rejects_errors_the_other_half() -> eyre::Result<()> {
+    run("streams_transform_finish.js").await
+}

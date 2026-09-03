@@ -232,6 +232,24 @@ fn settle_finish<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, rejected: Option<Val
     }
 }
 
+/// Settle the finish capability once the transformer's flush or cancel result
+/// settles, either way.
+fn react_finish<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, value: Value<'js>) -> Result<()> {
+    let on_ok = {
+        let shared = shared.clone();
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
+            settle_finish(&ctx, &shared, None);
+        })?
+    };
+    let on_err = {
+        let shared = shared.clone();
+        Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
+            settle_finish(&ctx, &shared, Some(reason));
+        })?
+    };
+    react(ctx, value, Some(on_ok), Some(on_err))
+}
+
 fn cancel_finish<'js>(
     ctx: &Ctx<'js>, shared: &Shared<'js>, reason: Value<'js>, from_source: bool,
 ) -> Result<Promise<'js>> {
@@ -271,19 +289,7 @@ fn cancel_finish<'js>(
             writable_of(shared).and_then(|writable| WritableStream::stored_error(&writable));
     }
     clear_algorithms(shared);
-    let on_ok = {
-        let shared = shared.clone();
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            settle_finish(&ctx, &shared, None);
-        })?
-    };
-    let on_err = {
-        let shared = shared.clone();
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-            settle_finish(&ctx, &shared, Some(reason));
-        })?
-    };
-    react(ctx, cancelled, Some(on_ok), Some(on_err))?;
+    react_finish(ctx, shared, cancelled)?;
     Ok(promise)
 }
 
@@ -311,19 +317,7 @@ fn close_finish<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>) -> Result<Promise<'js
         _ => Value::new_undefined(ctx.clone()),
     };
     clear_algorithms(shared);
-    let on_ok = {
-        let shared = shared.clone();
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-            settle_finish(&ctx, &shared, None);
-        })?
-    };
-    let on_err = {
-        let shared = shared.clone();
-        Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-            settle_finish(&ctx, &shared, Some(reason));
-        })?
-    };
-    react(ctx, flushed, Some(on_ok), Some(on_err))?;
+    react_finish(ctx, shared, flushed)?;
     Ok(promise)
 }
 
