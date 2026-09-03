@@ -1,13 +1,3 @@
-Promise.prototype.finally = function finallyPolyfill(onFinally) {
-  const run = typeof onFinally === "function" ? onFinally : () => {};
-  return this.then(
-    (value) => Promise.resolve(run()).then(() => value),
-    (reason) =>
-      Promise.resolve(run()).then(() => {
-        throw reason;
-      }),
-  );
-};
 if (typeof globalThis.window === "undefined") {
   globalThis.window = { location: new URL("http://localhost/cts") };
 }
