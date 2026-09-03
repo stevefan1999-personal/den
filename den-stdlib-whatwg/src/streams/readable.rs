@@ -14,8 +14,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, native::NativeSource, optional_object, pipe, range_error, react, thrown,
-    type_error,
+    Cap, Pins, method, optional_object, pipe, range_error, react, thrown, type_error,
 };
 
 pub enum RsState<'js> {
@@ -149,7 +148,6 @@ pub struct ReadableInner<'js> {
     pub(crate) source:          Object<'js>,
     pub(crate) pull_fn:         Option<Function<'js>>,
     pub(crate) cancel_fn:       Option<Function<'js>>,
-    pub(crate) native:          Option<Rc<RefCell<NativeSource<'js>>>>,
     pub(crate) started:         bool,
     pub(crate) pulling:         bool,
     pub(crate) pull_again:      bool,
@@ -259,7 +257,6 @@ impl<'js> ReadableStream<'js> {
             source:          Object::new(ctx.clone())?,
             pull_fn:         None,
             cancel_fn:       None,
-            native:          None,
             started:         false,
             pulling:         false,
             pull_again:      false,
@@ -397,7 +394,6 @@ impl<'js> ReadableStream<'js> {
         borrow.pull_fn = None;
         borrow.cancel_fn = None;
         borrow.size_fn = None;
-        borrow.native = None;
     }
 
     fn should_pull(inner: &Inner<'js>) -> bool {
@@ -425,10 +421,6 @@ impl<'js> ReadableStream<'js> {
                 return;
             }
             borrow.pulling = true;
-        }
-        if inner.borrow().native.is_some() {
-            crate::streams::native::drive_pull(ctx, inner);
-            return;
         }
         let (pull_fn, source, controller) = {
             let borrow = inner.borrow();
@@ -662,17 +654,10 @@ impl<'js> ReadableStream<'js> {
             borrow.queue.clear();
             borrow.queue_total = 0.0;
         }
-        let (cancel_fn, source, native) = {
+        let (cancel_fn, source) = {
             let borrow = inner.borrow();
-            (
-                borrow.cancel_fn.clone(),
-                borrow.source.clone(),
-                borrow.native.clone(),
-            )
+            (borrow.cancel_fn.clone(), borrow.source.clone())
         };
-        if let Some(native) = native {
-            native.borrow_mut().cancel(reason.clone());
-        }
         let outcome = cancel_fn.map_or_else(
             || Ok(Value::new_undefined(ctx.clone())),
             |cancel| cancel.call::<_, Value>((This(source), reason)),

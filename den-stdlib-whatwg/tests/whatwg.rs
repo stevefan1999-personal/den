@@ -192,3 +192,8 @@ async fn a_transformer_finish_that_rejects_errors_the_other_half() -> eyre::Resu
 async fn a_write_parked_on_transform_backpressure_waits_for_a_pull() -> eyre::Result<()> {
     run("streams_transform_backpressure.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_is_pulled_only_while_the_consumer_has_demand() -> eyre::Result<()> {
+    run("streams_demand_pacing.js").await
+}

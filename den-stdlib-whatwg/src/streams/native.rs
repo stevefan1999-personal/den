@@ -1,22 +1,18 @@
-//! The seam a Rust byte producer or consumer plugs into.
+//! The seam a Rust byte consumer plugs into.
 //!
-//! `pull` is invoked only while the stream has demand, so the high-water mark
-//! is the real backpressure knob, and this module is the only place in the
-//! subsystem that reaches for `ctx.spawn`.
+//! Writes are handed to the sink one at a time, so the high-water mark is the
+//! real backpressure knob, and this module is the only place in the subsystem
+//! that reaches for `ctx.spawn`.
 
 use std::{cell::RefCell, fmt, future::Future, pin::Pin, rc::Rc};
 
-use rquickjs::{Class, Ctx, Result, TypedArray, Value};
+use rquickjs::{Class, Ctx, Result, Value};
 
 use crate::streams::{
-    Cap,
-    readable::{Inner as RsInner, ReadableStream},
-    thrown, type_error,
+    Cap, type_error,
     writable::{Inner as WsInner, WritableStream},
 };
 
-pub type PullFuture<'js> =
-    Pin<Box<dyn Future<Output = std::result::Result<Option<Vec<u8>>, StreamError>> + 'js>>;
 pub type SinkFuture<'js> =
     Pin<Box<dyn Future<Output = std::result::Result<(), StreamError>> + 'js>>;
 
@@ -39,34 +35,13 @@ impl From<std::io::Error> for StreamError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
 }
 
-/// A host byte source. `Ok(None)` ends the stream.
-pub struct ByteSource<'js> {
-    pull:   Box<dyn FnMut(Ctx<'js>) -> PullFuture<'js> + 'js>,
-    cancel: Option<Box<dyn FnOnce(Value<'js>) + 'js>>,
-}
-
-// SAFETY: the boxed closures are `'js`-scoped and hold no other lifetime.
-unsafe impl<'js> rquickjs::JsLifetime<'js> for ByteSource<'js> {
-    type Changed<'to> = ByteSource<'to>;
-}
-
-pub(crate) type NativeSource<'js> = ByteSource<'js>;
-
-impl<'js> ByteSource<'js> {
-    pub(crate) fn cancel(&mut self, reason: Value<'js>) {
-        if let Some(cancel) = self.cancel.take() {
-            cancel(reason);
-        }
-    }
-}
-
 pub struct ByteSink<'js> {
     write: Box<dyn FnMut(Ctx<'js>, Vec<u8>) -> SinkFuture<'js> + 'js>,
     close: Option<Box<dyn FnOnce(Ctx<'js>) -> SinkFuture<'js> + 'js>>,
     abort: Option<Box<dyn FnOnce(Value<'js>) + 'js>>,
 }
 
-// SAFETY: see `ByteSource`.
+// SAFETY: the boxed closures are `'js`-scoped and hold no other lifetime.
 unsafe impl<'js> rquickjs::JsLifetime<'js> for ByteSink<'js> {
     type Changed<'to> = ByteSink<'to>;
 }
@@ -78,32 +53,6 @@ impl<'js> ByteSink<'js> {
         if let Some(abort) = self.abort.take() {
             abort(reason);
         }
-    }
-}
-
-impl<'js> ReadableStream<'js> {
-    /// Build a stream over a Rust byte source. `hwm` counts chunks: 1 paces the
-    /// producer to one chunk in flight, which is what fetch and den:http want.
-    pub fn from_native<P, C>(
-        ctx: &Ctx<'js>, hwm: f64, pull: P, cancel: C,
-    ) -> Result<Class<'js, Self>>
-    where
-        P: FnMut(Ctx<'js>) -> PullFuture<'js> + 'js,
-        C: FnOnce(Value<'js>) + 'js,
-    {
-        let inner = Self::new_inner(ctx)?;
-        {
-            let mut borrow = inner.borrow_mut();
-            borrow.started = true;
-            borrow.hwm = hwm;
-            borrow.native = Some(Rc::new(RefCell::new(ByteSource {
-                pull:   Box::new(pull),
-                cancel: Some(Box::new(cancel)),
-            })));
-        }
-        let stream = Self::wrap(ctx, Rc::clone(&inner))?;
-        Self::pull_if_needed(ctx, &inner);
-        Ok(stream)
     }
 }
 
@@ -129,47 +78,6 @@ impl<'js> WritableStream<'js> {
         }
         Self::wrap(ctx, inner)
     }
-}
-
-/// One spawned future per outstanding pull — never a loop, so `idle()` still
-/// resolves and cancelling the stream discards an in-flight result.
-pub(crate) fn drive_pull<'js>(ctx: &Ctx<'js>, inner: &RsInner<'js>) {
-    let Some(source) = inner.borrow().native.clone() else {
-        ReadableStream::pull_settled(ctx, inner);
-        return;
-    };
-    let future = (source.borrow_mut().pull)(ctx.clone());
-    // Weak: an in-flight pull must not keep a dropped stream alive, and a
-    // second strong owner would break the single-tracer rule.
-    let inner = Rc::downgrade(inner);
-    let spawn_ctx = ctx.clone();
-    ctx.spawn(async move {
-        let outcome = future.await;
-        let Some(inner) = inner.upgrade() else {
-            return;
-        };
-        match outcome {
-            Ok(Some(bytes)) => {
-                match TypedArray::<u8>::new_copy(spawn_ctx.clone(), bytes) {
-                    Ok(chunk) => {
-                        let _ = ReadableStream::enqueue(&spawn_ctx, &inner, chunk.into_value());
-                    }
-                    Err(error) => {
-                        let reason = thrown(&spawn_ctx, error);
-                        ReadableStream::error(&spawn_ctx, &inner, reason);
-                    }
-                }
-            }
-            Ok(None) => {
-                let _ = ReadableStream::close_requested(&spawn_ctx, &inner);
-            }
-            Err(error) => {
-                let reason = type_error(&spawn_ctx, &error.to_string());
-                ReadableStream::error(&spawn_ctx, &inner, reason);
-            }
-        }
-        ReadableStream::pull_settled(&spawn_ctx, &inner);
-    });
 }
 
 pub(crate) fn drive_write<'js>(

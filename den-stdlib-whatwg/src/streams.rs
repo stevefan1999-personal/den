@@ -3,7 +3,7 @@
 //! The state machine is synchronous Rust. Promises are minted with
 //! `ctx.promise()` and settled inline, so their reactions land on QuickJS's own
 //! microtask queue and turn ordering matches the specification. `ctx.spawn` is
-//! confined to [`native`], where a host byte source is polled.
+//! confined to [`native`], where a host byte sink is driven.
 //!
 //! Internal sequencing that the specification expresses as records rather than
 //! promises — read requests, the pipe and tee consumers — stays Rust closures,
@@ -29,7 +29,7 @@ use rquickjs::{
 };
 
 pub use crate::streams::{
-    native::{ByteSink, ByteSource, PullFuture, SinkFuture, StreamError},
+    native::{ByteSink, SinkFuture, StreamError},
     readable::{
         ReadableStream, ReadableStreamAsyncIterator, ReadableStreamDefaultController,
         ReadableStreamDefaultReader,
