@@ -1893,11 +1893,10 @@ impl<'js> HttpFetch<'_, 'js> {
         // now — and neither is caching, which the fill mirrors as bytes flow.
         let content_len = response.content_length();
         if integrity.is_empty() {
-            let mut produced = Response::from_reqwest(ctx, response, kind)?;
+            let mut produced = Response::from_reqwest(ctx, response, kind, headers);
             produced.expected_length = content_len;
             produced.cache_fill = CacheFill::pending(cache_writes);
             produced.redirected = redirected;
-            produced.headers = headers;
             produced.url = url.to_string();
             produced.status = status;
             return Ok(produced);

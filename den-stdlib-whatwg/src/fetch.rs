@@ -171,25 +171,10 @@ impl<'js> Response<'js> {
     }
 
     pub(crate) fn from_reqwest(
-        ctx: &Ctx<'js>, response: reqwest::Response, kind: &str,
-    ) -> Result<Self> {
+        ctx: &Ctx<'js>, response: reqwest::Response, kind: &str, headers: Class<'js, Headers>,
+    ) -> Self {
         let status = response.status();
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                let text = value.to_str().map_or_else(
-                    |_| value.as_bytes().iter().map(|byte| *byte as char).collect(),
-                    ToString::to_string,
-                );
-                (name.as_str().to_string(), text)
-            })
-            .collect::<Vec<_>>();
-        let mut header_obj = Headers::from_pairs(headers);
-        header_obj.guard = headers::Guard::Immutable;
         let status_text = status.canonical_reason().unwrap_or("").to_owned();
-        let url = response.url().to_string();
-        let headers = Class::instance(ctx.clone(), header_obj)?;
         let mut result = Self::from_body(
             status.as_u16(),
             headers,
@@ -197,9 +182,8 @@ impl<'js> Response<'js> {
             JsValue::new_null(ctx.clone()),
         );
         result.status_text = status_text;
-        result.url = url;
         result.kind = kind.to_owned();
-        Ok(result)
+        result
     }
 
     pub(crate) fn from_bytes(

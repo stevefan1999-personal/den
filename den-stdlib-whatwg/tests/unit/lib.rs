@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use den_core::engine::Engine;
 use futures::{SinkExt as _, StreamExt as _};
 use rquickjs::{
-    CatchResultExt as _, Class, Context, Module, Promise, Runtime, Value, prelude::This,
+    CatchResultExt as _, Class, Context, Module, Promise, Runtime, Value, function::Opt,
+    prelude::This,
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use super::fetch::Response;
+use super::fetch::{Headers, Response};
 
 #[test]
 fn whatwg_installs_its_event_dependency_when_evaluated_alone() {
@@ -196,18 +197,23 @@ async fn a_response_body_survives_transfer_and_detach() {
             // socket is involved. `Response` holds an `Rc`, so it cannot be
             // captured by the `Send` closure and is made here.
             let respond = || {
-                Response::from_reqwest(&ctx, http::Response::new("body").into(), "basic")
-                    .expect("response")
+                let headers = Class::instance(ctx.clone(), Headers::new(ctx.clone(), Opt(None))?)?;
+                Ok::<_, rquickjs::Error>(Response::from_reqwest(
+                    &ctx,
+                    http::Response::new("body").into(),
+                    "basic",
+                    headers,
+                ))
             };
             let run = async {
                 let buffer = Response::array_buffer(
-                    This(Class::instance(ctx.clone(), respond())?),
+                    This(Class::instance(ctx.clone(), respond()?)?),
                     ctx.clone(),
                 )?
                 .into_future::<Value>()
                 .await?;
                 let view =
-                    Response::bytes(This(Class::instance(ctx.clone(), respond())?), ctx.clone())?
+                    Response::bytes(This(Class::instance(ctx.clone(), respond()?)?), ctx.clone())?
                         .into_future::<Value>()
                         .await?;
                 ctx.globals().set("body", buffer)?;
@@ -230,16 +236,16 @@ async fn response_blob_wraps_the_body_when_blob_exists() {
         .context
         .async_with(async |ctx| {
             let run = async {
+                let headers = Class::instance(
+                    ctx.clone(),
+                    Headers::from_pairs([("content-type", "text/plain")]),
+                )?;
                 let response = Response::from_reqwest(
                     &ctx,
-                    http::Response::builder()
-                        .header("content-type", "text/plain")
-                        .body("hello")
-                        .expect("response")
-                        .into(),
+                    http::Response::new("hello").into(),
                     "basic",
-                )
-                .expect("from_reqwest");
+                    headers,
+                );
                 let blob =
                     Response::blob(This(Class::instance(ctx.clone(), response)?), ctx.clone())?
                         .into_future::<Value>()
