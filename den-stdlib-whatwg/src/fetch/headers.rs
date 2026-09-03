@@ -445,7 +445,7 @@ const fn is_cors_unsafe_byte(byte: u8) -> bool {
 
 fn is_forbidden_response_header(name: &str) -> bool { matches!(name, "set-cookie" | "set-cookie2") }
 
-fn is_no_cors_safelisted(name: &str, value: &str, existing: Option<&String>) -> bool {
+pub fn is_no_cors_safelisted(name: &str, value: &str, existing: Option<&String>) -> bool {
     let combined = existing.map_or_else(|| value.to_string(), |old| format!("{old}, {value}"));
     match name {
         "accept" | "accept-language" | "content-language" => {

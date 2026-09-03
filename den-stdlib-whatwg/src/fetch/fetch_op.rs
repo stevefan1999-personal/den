@@ -25,7 +25,7 @@ use super::{
     Request, Response,
     body::is_blocked_port,
     data_url,
-    headers::{self, Headers, is_forbidden_request_header},
+    headers::{self, Headers, is_forbidden_request_header, is_no_cors_safelisted},
 };
 
 struct AbortWatch {
@@ -227,42 +227,6 @@ fn connect_url(url: &reqwest::Url) -> reqwest::Url {
 
 fn cors_safelisted_request_header(name: &str, value: &str) -> bool {
     match name {
-        "accept" | "accept-language" | "content-language" => {
-            value.len() <= 128
-                && !value.bytes().any(|byte| {
-                    matches!(
-                        byte,
-                        0x00..=0x08
-                            | 0x0A..=0x1F
-                            | 0x22
-                            | 0x28
-                            | 0x29
-                            | 0x3A
-                            | 0x3C
-                            | 0x3E
-                            | 0x3F
-                            | 0x40
-                            | 0x5B
-                            | 0x5C
-                            | 0x5D
-                            | 0x7B
-                            | 0x7D
-                            | 0x7F
-                    )
-                })
-        }
-        "content-type" => {
-            let mime = value
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
-            matches!(
-                mime.as_str(),
-                "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
-            ) && value.len() <= 128
-        }
         "range" => {
             if value.len() > 128 {
                 return false;
@@ -286,7 +250,7 @@ fn cors_safelisted_request_header(name: &str, value: &str) -> bool {
             let last = last.trim_start_matches('0');
             first.len() < last.len() || (first.len() == last.len() && first <= last)
         }
-        _ => false,
+        _ => is_no_cors_safelisted(name, value, None),
     }
 }
 
@@ -2021,5 +1985,26 @@ mod tests {
             "range",
             &format!("bytes=0-{}", "1".repeat(121))
         ));
+        for (name, value) in [
+            ("content-type", "text/plain; charset=utf-8"),
+            ("accept", "text/html"),
+            ("content-language", "en"),
+        ] {
+            assert!(
+                cors_safelisted_request_header(name, value),
+                "{name}: {value}"
+            );
+        }
+        for (name, value) in [
+            ("content-type", "application/json"),
+            ("accept", "text/\"html"),
+            ("x-custom", "1"),
+            ("accept", &"a".repeat(129)),
+        ] {
+            assert!(
+                !cors_safelisted_request_header(name, value),
+                "{name}: {value}"
+            );
+        }
     }
 }
