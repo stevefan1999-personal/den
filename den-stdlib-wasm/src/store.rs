@@ -135,22 +135,10 @@ pub struct ActiveHostCallGuard<'js> {
 }
 
 impl ActiveHostCall {
-    fn install(ctx: &Ctx<'_>) -> Result<()> {
-        if ctx.userdata::<Self>().is_some() {
-            return Ok(());
-        }
-        ctx.store_userdata(Self::default())
-            .map_err(|_error| {
-                Exception::throw_internal(ctx, "the WebAssembly host-call stack is already in use")
-            })
-            .map(|_| ())
-    }
-
     /// Remember `caller` for the JS frame that is about to run.
     pub fn enter<'js>(
         ctx: &Ctx<'js>, caller: &backend::Caller<'_>,
     ) -> Result<ActiveHostCallGuard<'js>> {
-        Self::install(ctx)?;
         let slot = ctx.userdata::<Self>().ok_or_else(|| {
             Exception::throw_internal(
                 ctx,
