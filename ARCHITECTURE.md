@@ -231,7 +231,7 @@ cargo nextest run --workspace --profile official --build-jobs 8 \
 Focused conformance suites are Test262 Temporal, the WebAssembly spec runner,
 WPT, and WebGPU CTS (`cargo nextest run -p den-stdlib-webgpu --test cts`).
 WPT uses the vendored sparse checkout and the official `wptserve` process on
-ports 8000–8002; [the workflow](.github/workflows/wpt.yml) owns that server
+ports 8000–8002; [scripts/wptserve.sh](scripts/wptserve.sh) owns that server
 lifecycle.
 
 Closed investigation notes stay available in Git history. The remaining
