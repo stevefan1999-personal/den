@@ -14,23 +14,22 @@ use temporal_rs::{
     },
     parsed_intermediates::ParsedZonedDateTime,
     parsers::Precision,
-    partial::{PartialTime, PartialZonedDateTime},
+    partial::PartialZonedDateTime,
     provider::TransitionDirection,
 };
 
 use crate::{
     convert::{
         calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
-        optional_truncated_i32, optional_truncated_u8, optional_truncated_u16, options_object,
-        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_big_int_i128,
-        to_calendar, to_duration, to_number, to_time_zone, truncated_u8, truncated_u16,
-        unwrap_temporal,
+        optional_truncated_i32, options_object, ordering_i32, probe_class,
+        reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
+        to_number, to_time_zone, truncated_u8, truncated_u16, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
-    plain_time::PlainTime,
+    plain_time::{PlainTime, to_temporal_time},
 };
 
 #[derive(Trace, JsLifetime, Clone)]
@@ -243,7 +242,7 @@ impl ZonedDateTime {
         let time = match time.0 {
             None => None,
             Some(value) if value.is_undefined() => None,
-            Some(value) => Some(plain_time_from_value(&ctx, &value)?),
+            Some(value) => Some(to_temporal_time(&ctx, &value)?),
         };
         unwrap_temporal(&ctx, self.inner.with_plain_time(time)).map(Self::wrap)
     }
@@ -678,45 +677,6 @@ fn direction_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Transitio
     };
     TransitionDirection::from_str(&direction)
         .map_err(|_error| Exception::throw_range(ctx, "invalid direction"))
-}
-
-fn plain_time_from_value<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<temporal_rs::PlainTime> {
-    if let Some(time) = probe_class::<PlainTime>(ctx, value) {
-        return Ok(time.inner);
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.to_plain_time());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.to_plain_time());
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(ctx, temporal_rs::PlainTime::from_utf8(string.as_bytes()));
-    }
-    let Some(object) = value.as_object() else {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert value to Temporal.PlainTime",
-        ));
-    };
-    let partial = PartialTime {
-        hour:        optional_truncated_u8(ctx, object, "hour")?,
-        microsecond: optional_truncated_u16(ctx, object, "microsecond")?,
-        millisecond: optional_truncated_u16(ctx, object, "millisecond")?,
-        minute:      optional_truncated_u8(ctx, object, "minute")?,
-        nanosecond:  optional_truncated_u16(ctx, object, "nanosecond")?,
-        second:      optional_truncated_u8(ctx, object, "second")?,
-    };
-    if partial.is_empty() {
-        return Err(Exception::throw_type(
-            ctx,
-            "time property bag must have at least one field",
-        ));
-    }
-    unwrap_temporal(ctx, temporal_rs::PlainTime::from_partial(partial, None))
 }
 
 fn to_string_options<'js>(

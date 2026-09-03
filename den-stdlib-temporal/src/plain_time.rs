@@ -210,7 +210,7 @@ fn parse_plain_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
     unwrap_temporal(ctx, temporal_rs::PlainTime::from_utf8(string.as_bytes()))
 }
 
-fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
+pub fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
     if let Some(time) = existing_plain_time(ctx, value) {
         return Ok(time);
     }

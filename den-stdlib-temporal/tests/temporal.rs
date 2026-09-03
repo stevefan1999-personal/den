@@ -42,3 +42,8 @@ async fn to_locale_string_is_to_string_with_arguments_ignored() -> eyre::Result<
 async fn duration_like_arguments_share_one_conversion() -> eyre::Result<()> {
     run("duration_like.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn time_property_bags_require_a_unit_and_constrain() -> eyre::Result<()> {
+    run("time_bag.js").await
+}

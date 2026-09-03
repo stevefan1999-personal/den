@@ -28,7 +28,7 @@ use crate::{
     },
     duration::Duration,
     plain_date::PlainDate,
-    plain_time::PlainTime,
+    plain_time::{PlainTime, to_temporal_time},
     zoned_date_time::ZonedDateTime,
 };
 
@@ -317,44 +317,6 @@ fn to_pdt<'js>(
     )
 }
 
-fn to_plain_time_like<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
-    if let Some(time) = probe_class::<PlainTime>(ctx, value) {
-        return Ok(time.inner);
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.to_plain_time());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.to_plain_time());
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(ctx, temporal_rs::PlainTime::from_utf8(string.as_bytes()));
-    }
-    let object = require_object(ctx, value, "cannot convert value to Temporal.PlainTime")?;
-    let hour = optional_truncated_u8(ctx, &object, "hour")?;
-    let microsecond = optional_truncated_u16(ctx, &object, "microsecond")?;
-    let millisecond = optional_truncated_u16(ctx, &object, "millisecond")?;
-    let minute = optional_truncated_u8(ctx, &object, "minute")?;
-    let nanosecond = optional_truncated_u16(ctx, &object, "nanosecond")?;
-    let second = optional_truncated_u8(ctx, &object, "second")?;
-    let partial = PartialTime {
-        hour,
-        minute,
-        second,
-        millisecond,
-        microsecond,
-        nanosecond,
-    };
-    if partial.is_empty() {
-        return Err(Exception::throw_type(
-            ctx,
-            "time bag must have at least one time field",
-        ));
-    }
-    unwrap_temporal(ctx, temporal_rs::PlainTime::from_partial(partial, None))
-}
-
 fn rounding_from_value<'js>(ctx: &Ctx<'js>, options: Value<'js>) -> Result<RoundingOptions> {
     if options.is_string() {
         let mut rounding = RoundingOptions::default();
@@ -578,7 +540,7 @@ impl PlainDateTime {
 
     pub fn with_plain_time<'js>(&self, time: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<Self> {
         let time = match time.0 {
-            Some(value) if !value.is_undefined() => Some(to_plain_time_like(&ctx, &value)?),
+            Some(value) if !value.is_undefined() => Some(to_temporal_time(&ctx, &value)?),
             _ => None,
         };
         unwrap_temporal(&ctx, self.inner.with_time(time)).map(Self::wrap)

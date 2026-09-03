@@ -12,20 +12,20 @@ use temporal_rs::{
     options::{
         DifferenceSettings, DisplayCalendar, Overflow, RoundingIncrement, RoundingMode, Unit,
     },
-    partial::{PartialDate, PartialTime},
+    partial::PartialDate,
 };
 
 use crate::{
     convert::{
         calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_truncated_i32,
-        optional_truncated_i128, optional_truncated_u8, optional_truncated_u16, options_object,
-        ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_duration,
-        to_number, to_time_zone, unwrap_temporal,
+        optional_truncated_i128, options_object, ordering_i32, probe_class,
+        reject_illformed_month_code, throw_value_of, to_duration, to_number, to_time_zone,
+        unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
     plain_month_day::PlainMonthDay,
-    plain_time::PlainTime,
+    plain_time::{PlainTime, to_temporal_time},
     plain_year_month::PlainYearMonth,
     zoned_date_time::ZonedDateTime,
 };
@@ -384,45 +384,6 @@ fn to_temporal_date<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_
         .ok_or_else(|| Exception::throw_type(ctx, "cannot convert value to Temporal.PlainDate"))?;
     let bag = read_date_bag(ctx, object, false)?;
     date_from_partial(ctx, bag, Overflow::Constrain)
-}
-
-fn to_temporal_time<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::PlainTime> {
-    if let Some(time) = probe_class::<PlainTime>(ctx, value) {
-        return Ok(time.inner);
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return Ok(date_time.inner.to_plain_time());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner.to_plain_time());
-    }
-    if value.is_string() {
-        let string: String = value.get()?;
-        return unwrap_temporal(ctx, temporal_rs::PlainTime::from_utf8(string.as_bytes()));
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| Exception::throw_type(ctx, "cannot convert value to Temporal.PlainTime"))?;
-    let hour = optional_truncated_u8(ctx, object, "hour")?;
-    let microsecond = optional_truncated_u16(ctx, object, "microsecond")?;
-    let millisecond = optional_truncated_u16(ctx, object, "millisecond")?;
-    let minute = optional_truncated_u8(ctx, object, "minute")?;
-    let nanosecond = optional_truncated_u16(ctx, object, "nanosecond")?;
-    let second = optional_truncated_u8(ctx, object, "second")?;
-    unwrap_temporal(
-        ctx,
-        temporal_rs::PlainTime::from_partial(
-            PartialTime {
-                hour,
-                minute,
-                second,
-                millisecond,
-                microsecond,
-                nanosecond,
-            },
-            None,
-        ),
-    )
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
