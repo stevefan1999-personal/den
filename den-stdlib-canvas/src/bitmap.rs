@@ -2,8 +2,7 @@
 
 use den_util::Probe as _;
 use rquickjs::{
-    Class, Ctx, Error, Exception, Function, JsLifetime, Object, Result, TypedArray, U8Clamped,
-    Value,
+    Class, Ctx, Error, Exception, Function, JsLifetime, Object, Result, TypedArray, Value,
     atom::PredefinedAtom,
     class::Trace,
     prelude::{Rest, This},
@@ -75,15 +74,7 @@ impl ImageBitmap {
         let read = Function::new(
             ctx.clone(),
             |ctx: Ctx<'js>, this: This<Class<'js, Self>>| {
-                let pixels: Vec<U8Clamped> = this
-                    .0
-                    .try_borrow()?
-                    .pixels
-                    .iter()
-                    .copied()
-                    .map(U8Clamped)
-                    .collect();
-                TypedArray::new_copy(ctx, pixels)
+                TypedArray::<u8>::new_copy(ctx, &this.0.try_borrow()?.pixels)
             },
         )?;
         prototype.set(key, read)
