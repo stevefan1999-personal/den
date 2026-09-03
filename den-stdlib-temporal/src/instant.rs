@@ -1,8 +1,8 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    BigInt, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
-    prelude::Opt,
+    BigInt, Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom, class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     TimeZone,
@@ -16,8 +16,8 @@ use temporal_rs::{
 use crate::{
     convert::{
         fractional_second_digits, get_defined, i128_to_bigint, require_object, throw_value_of,
-        to_big_int_i128, to_duration, to_instant, to_integer_if_integral, to_js_string, to_number,
-        to_time_zone, unwrap_temporal,
+        to_big_int_i128, to_duration, to_instant, to_integer_if_integral, to_number, to_time_zone,
+        unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -35,13 +35,13 @@ impl Instant {
 }
 
 fn instant_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
-    let name = to_js_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     temporal_rs::options::Unit::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn instant_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
-    let name = to_js_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     RoundingMode::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
@@ -123,12 +123,7 @@ fn instant_to_string_parts<'js>(
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
         Some(value) => {
-            fractional_second_digits(
-                ctx,
-                &value,
-                "fractionalSecondDigits is not finite",
-                to_js_string,
-            )?
+            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite")?
         }
     };
     let rounding_mode = optional_rounding_mode(ctx, &object, "roundingMode")?;

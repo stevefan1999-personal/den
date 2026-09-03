@@ -1,8 +1,8 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Ctx, Exception, FromJs as _, Function, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
-    class::Trace, function::This, prelude::Opt,
+    Coerced, Ctx, Exception, FromJs as _, Function, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom, class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode, UtcOffset,
@@ -18,10 +18,10 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, ctor_integer_if_integral, ctor_integer_if_integral_i128,
-        fractional_second_digits, get_defined, js_to_string, optional_integral_i64,
-        optional_integral_i128, optional_truncated_i32, optional_truncated_u8,
-        optional_truncated_u16, probe_class, throw_value_of, to_calendar, to_duration, to_number,
-        to_time_zone, to_unit, unwrap_temporal,
+        fractional_second_digits, get_defined, optional_integral_i64, optional_integral_i128,
+        optional_month_code, optional_truncated_i32, optional_truncated_u8, optional_truncated_u16,
+        probe_class, throw_value_of, to_calendar, to_duration, to_number, to_time_zone, to_unit,
+        unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -83,33 +83,6 @@ fn required_options_object<'js>(ctx: &Ctx<'js>, options: &Value<'js>) -> Result<
 fn out_of_range(ctx: &Ctx<'_>, error: impl core::fmt::Debug) -> rquickjs::Error {
     drop(error);
     Exception::throw_range(ctx, "integer is out of range")
-}
-
-fn string_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert a Symbol to a String",
-        ));
-    }
-    let Some(object) = value.as_object() else {
-        return js_to_string(ctx, value);
-    };
-    let to_string: Function = object.get("toString")?;
-    let primitive: Value = to_string.call((This(object.clone()),))?;
-    if primitive.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert a Symbol to a String",
-        ));
-    }
-    if primitive.is_object() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert object to a primitive string",
-        ));
-    }
-    js_to_string(ctx, &primitive)
 }
 
 fn partial_duration_from_object<'js>(
@@ -178,16 +151,13 @@ fn relative_to_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Optio
     let millisecond = optional_truncated_u16(ctx, bag, "millisecond")?;
     let minute = optional_truncated_u8(ctx, bag, "minute")?;
     let month = optional_truncated_u8(ctx, bag, "month")?;
-    let month_code = get_defined(bag, "monthCode")?.map_or(Ok(None), |code| {
-        let text = js_to_string(ctx, &code)?;
-        unwrap_temporal(ctx, MonthCode::try_from_utf8(text.as_bytes())).map(Some)
-    })?;
+    let month_code = optional_month_code(ctx, bag)?
+        .map(|text| unwrap_temporal(ctx, MonthCode::try_from_utf8(text.as_bytes())))
+        .transpose()?;
     let nanosecond = optional_truncated_u16(ctx, bag, "nanosecond")?;
     let utc_offset = get_defined(bag, "offset")?.map_or(Ok(None), |offset| {
-        let text = if offset.is_string() {
-            offset.get::<String>()?
-        } else if offset.is_object() {
-            string_option(ctx, &offset)?
+        let text = if offset.is_string() || offset.is_object() {
+            Coerced::<String>::from_js(ctx, offset)?.0
         } else {
             return Err(Exception::throw_type(ctx, "offset must be a string"));
         };
@@ -252,7 +222,7 @@ fn relative_to_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Optio
 
 fn optional_unit<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result<Option<Unit>> {
     get_defined(object, key)?.map_or(Ok(None), |value| {
-        let name = string_option(ctx, &value)?;
+        let name = Coerced::<String>::from_js(ctx, value)?.0;
         Unit::from_str(&name)
             .map(Some)
             .map_err(|error| out_of_range(ctx, error))
@@ -261,7 +231,7 @@ fn optional_unit<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Result
 
 fn rounding_mode_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<RoundingMode>> {
     get_defined(object, "roundingMode")?.map_or(Ok(None), |value| {
-        let name = string_option(ctx, &value)?;
+        let name = Coerced::<String>::from_js(ctx, value)?.0;
         unwrap_temporal(ctx, RoundingMode::from_str(&name)).map(Some)
     })
 }
@@ -448,7 +418,6 @@ impl Duration {
                     &ctx,
                     &value,
                     "fractionalSecondDigits must be \"auto\" or 0-9",
-                    string_option,
                 )?
             }
         };

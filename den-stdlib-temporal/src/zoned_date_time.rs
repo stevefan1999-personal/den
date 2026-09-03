@@ -1,8 +1,8 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Class, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
-    prelude::Opt,
+    Class, Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value,
+    atom::PredefinedAtom, class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode, TimeZone, UtcOffset,
@@ -20,10 +20,10 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
-        optional_truncated_i32, options_object, probe_class, reject_illformed_month_code,
-        throw_value_of, to_big_int_i128, to_calendar, to_duration, to_number, to_time_zone,
-        truncated_u8, truncated_u16, unwrap_temporal,
+        calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, optional_month_code,
+        optional_truncated_i32, options_object, probe_class, throw_value_of, to_big_int_i128,
+        to_calendar, to_duration, to_number, to_time_zone, truncated_u8, truncated_u16,
+        unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -348,70 +348,33 @@ fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
     calendar_slot(ctx, value).map_or_else(|| to_calendar(ctx, value), Ok)
 }
 
-fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if value.is_null() {
-        return Ok("null".to_string());
-    }
-    if let Some(flag) = value.as_bool() {
-        return Ok(if flag { "true" } else { "false" }.to_string());
-    }
-    if let Some(number) = value.as_number() {
-        return Ok(number.to_string());
-    }
-    if value.is_big_int() {
-        return js_to_string(ctx, value);
-    }
-    js_to_string(ctx, value)
-}
-
 fn overflow_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
-    Overflow::from_str(&to_option_string(ctx, value)?)
+    Overflow::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
         .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
 fn unit_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::options::Unit> {
-    temporal_rs::options::Unit::from_str(&to_option_string(ctx, value)?)
+    temporal_rs::options::Unit::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
         .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn rounding_mode_from_value<'js>(
     ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::options::RoundingMode> {
-    temporal_rs::options::RoundingMode::from_str(&to_option_string(ctx, value)?)
+    temporal_rs::options::RoundingMode::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
         .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
 
 fn display_calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<DisplayCalendar> {
-    DisplayCalendar::from_str(&to_option_string(ctx, value)?)
+    DisplayCalendar::from_str(&Coerced::<String>::from_js(ctx, value.clone())?.0)
         .map_err(|_error| Exception::throw_range(ctx, "invalid calendarName option"))
-}
-
-fn require_string_field<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    let Some(object) = value.as_object() else {
-        return Err(Exception::throw_type(ctx, "must be a string"));
-    };
-    let to_string: rquickjs::Function = object.get(PredefinedAtom::ToString)?;
-    let result: Value = to_string.call((rquickjs::function::This(object.clone()),))?;
-    result
-        .as_string()
-        .ok_or_else(|| Exception::throw_type(ctx, "must be a string"))?
-        .to_string()
 }
 
 fn parse_offset_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<UtcOffset> {
     let offset = if value.is_string() {
         value.get::<String>()?
     } else if value.is_object() {
-        to_option_string(ctx, value)?
+        Coerced::<String>::from_js(ctx, value.clone())?.0
     } else {
         return Err(Exception::throw_type(ctx, "offset must be a string"));
     };
@@ -467,13 +430,7 @@ fn zoned_fields_from_object<'js>(
             .calendar_fields
             .with_month(truncated_u8(ctx, &value)?);
     }
-    let month_code = if let Some(value) = get_defined(object, "monthCode")? {
-        let code = require_string_field(ctx, &value)?;
-        reject_illformed_month_code(ctx, &code)?;
-        Some(code)
-    } else {
-        None
-    };
+    let month_code = optional_month_code(ctx, object)?;
     if let Some(value) = get_defined(object, "nanosecond")? {
         fields.time.nanosecond = Some(truncated_u16(ctx, &value)?);
     }
@@ -518,7 +475,7 @@ fn zoned_options<'js>(
     let disambiguation = match get_defined(&object, "disambiguation")? {
         None => None,
         Some(value) => {
-            let name = to_option_string(ctx, &value)?;
+            let name = Coerced::<String>::from_js(ctx, value)?.0;
             Some(
                 Disambiguation::from_str(&name)
                     .map_err(|_error| Exception::throw_range(ctx, "invalid disambiguation"))?,
@@ -528,7 +485,7 @@ fn zoned_options<'js>(
     let offset_option = match get_defined(&object, "offset")? {
         None => Some(default_offset),
         Some(value) => {
-            let name = to_option_string(ctx, &value)?;
+            let name = Coerced::<String>::from_js(ctx, value)?.0;
             Some(
                 OffsetDisambiguation::from_str(&name)
                     .map_err(|_error| Exception::throw_range(ctx, "invalid offset option"))?,
@@ -662,7 +619,7 @@ fn datetime_rounding_options<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Resul
 
 fn direction_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TransitionDirection> {
     let direction = if value.is_string() {
-        to_option_string(ctx, value)?
+        Coerced::<String>::from_js(ctx, value.clone())?.0
     } else {
         let object = value
             .as_object()
@@ -671,7 +628,7 @@ fn direction_option<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Transitio
             None => {
                 return Err(Exception::throw_range(ctx, "direction is required"));
             }
-            Some(direction) => to_option_string(ctx, &direction)?,
+            Some(direction) => Coerced::<String>::from_js(ctx, direction)?.0,
         }
     };
     TransitionDirection::from_str(&direction)
@@ -701,18 +658,13 @@ fn to_string_options<'js>(
     let precision = match get_defined(&object, "fractionalSecondDigits")? {
         None => Precision::Auto,
         Some(value) => {
-            fractional_second_digits(
-                ctx,
-                &value,
-                "fractionalSecondDigits is not finite",
-                to_option_string,
-            )?
+            fractional_second_digits(ctx, &value, "fractionalSecondDigits is not finite")?
         }
     };
     let display_offset = match get_defined(&object, "offset")? {
         None => DisplayOffset::Auto,
         Some(value) => {
-            let name = to_option_string(ctx, &value)?;
+            let name = Coerced::<String>::from_js(ctx, value)?.0;
             DisplayOffset::from_str(&name)
                 .map_err(|_error| Exception::throw_range(ctx, "invalid offset option"))?
         }
@@ -728,7 +680,7 @@ fn to_string_options<'js>(
     let display_timezone = match get_defined(&object, "timeZoneName")? {
         None => DisplayTimeZone::Auto,
         Some(value) => {
-            let name = to_option_string(ctx, &value)?;
+            let name = Coerced::<String>::from_js(ctx, value)?.0;
             DisplayTimeZone::from_str(&name)
                 .map_err(|_error| Exception::throw_range(ctx, "invalid timeZoneName option"))?
         }

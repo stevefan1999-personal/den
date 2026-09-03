@@ -1,8 +1,8 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
-    function::This, prelude::Opt,
+    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     options::{
@@ -15,9 +15,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, fractional_second_digits, get_defined, js_to_string,
-        optional_truncated_i128, options_object, probe_class, require_object, throw_value_of,
-        to_duration, to_number, truncated_u8_or_zero, truncated_u16_or_zero, unwrap_temporal,
+        calendar_slot, fractional_second_digits, get_defined, optional_truncated_i128,
+        options_object, probe_class, require_object, throw_value_of, to_duration, to_number,
+        truncated_u8_or_zero, truncated_u16_or_zero, unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -392,12 +392,7 @@ fn string_rounding_options<'js>(
     let precision = match get_defined(object, "fractionalSecondDigits")? {
         None => Precision::Auto,
         Some(value) => {
-            fractional_second_digits(
-                ctx,
-                &value,
-                "fractionalSecondDigits must be finite",
-                to_option_string,
-            )?
+            fractional_second_digits(ctx, &value, "fractionalSecondDigits must be finite")?
         }
     };
     let rounding_mode = match get_defined(object, "roundingMode")? {
@@ -416,60 +411,18 @@ fn string_rounding_options<'js>(
 }
 
 fn option_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
-    let name = to_option_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Unit::from_str(&name).map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 fn option_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<RoundingMode> {
-    let name = to_option_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     RoundingMode::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
 }
 
 fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
-    let name = to_option_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Overflow::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
-}
-
-fn to_option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if let Some(object) = value.as_object()
-        && let Some(primitive) = ordinary_to_primitive_string(object)?
-    {
-        return primitive_to_string(ctx, &primitive);
-    }
-    js_to_string(ctx, value)
-}
-
-fn ordinary_to_primitive_string<'js>(object: &Object<'js>) -> Result<Option<Value<'js>>> {
-    for key in ["toString", "valueOf"] {
-        let method: Value = object.get(key)?;
-        let Some(func) = method.as_function() else {
-            continue;
-        };
-        let result: Value = func.call((This(object.clone()),))?;
-        if !result.is_object() {
-            return Ok(Some(result));
-        }
-    }
-    Ok(None)
-}
-
-fn primitive_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    js_to_string(ctx, value)
 }

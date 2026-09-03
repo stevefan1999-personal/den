@@ -1,10 +1,9 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Ctx, Exception, JsLifetime, Object, Result, Value,
+    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
-    function::This,
     prelude::{Opt, Rest},
 };
 use temporal_rs::{
@@ -21,10 +20,10 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, ctor_required_i32, ctor_required_u8, fractional_second_digits, get_defined,
-        js_to_string, optional_truncated_i32, optional_truncated_u8, optional_truncated_u16,
-        options_object, probe_class, reject_calendar_or_time_zone, reject_illformed_month_code,
-        require_object, throw_value_of, to_duration, to_number, to_time_zone, truncated_u8_or_zero,
-        truncated_u16_or_zero, unwrap_temporal,
+        optional_month_code, optional_truncated_i32, optional_truncated_u8, optional_truncated_u16,
+        options_object, probe_class, reject_calendar_or_time_zone, require_object, throw_value_of,
+        to_duration, to_number, to_time_zone, truncated_u8_or_zero, truncated_u16_or_zero,
+        unwrap_temporal,
     },
     duration::Duration,
     plain_date::PlainDate,
@@ -43,71 +42,6 @@ impl PlainDateTime {
     pub(crate) const fn wrap(inner: temporal_rs::PlainDateTime) -> Self { Self { inner } }
 }
 
-/// `ToPrimitive` with hint string. `String(object)` in this engine prefers
-/// `valueOf`, which breaks GetOption / `ToTemporalMonthCode` observers.
-fn to_primitive_hint_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Value<'js>> {
-    let Some(object) = value.as_object() else {
-        return Ok(value.clone());
-    };
-    let exotic: Value = object.get(PredefinedAtom::SymbolToPrimitive)?;
-    if !exotic.is_undefined() {
-        let Some(func) = exotic.as_function() else {
-            return Err(Exception::throw_type(
-                ctx,
-                "Cannot convert object to primitive value",
-            ));
-        };
-        let primitive: Value = func.call((This(object.clone()), "string"))?;
-        if primitive.is_object() {
-            return Err(Exception::throw_type(
-                ctx,
-                "Cannot convert object to primitive value",
-            ));
-        }
-        return Ok(primitive);
-    }
-    for key in ["toString", "valueOf"] {
-        let method: Value = object.get(key)?;
-        let Some(func) = method.as_function() else {
-            continue;
-        };
-        let primitive: Value = func.call((This(object.clone()),))?;
-        if !primitive.is_object() {
-            return Ok(primitive);
-        }
-    }
-    Err(Exception::throw_type(
-        ctx,
-        "Cannot convert object to primitive value",
-    ))
-}
-
-/// `ToString`, with hint string on objects (GetOption).
-fn temporal_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "Cannot convert a Symbol value to a string",
-        ));
-    }
-    if value.is_object() {
-        let primitive = to_primitive_hint_string(ctx, value)?;
-        return temporal_to_string(ctx, &primitive);
-    }
-    js_to_string(ctx, value)
-}
-
-/// `ToTemporalMonthCode`: ToPrimitive hint string, then require a String.
-fn to_month_code_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    let primitive = to_primitive_hint_string(ctx, value)?;
-    if !primitive.is_string() {
-        return Err(Exception::throw_type(ctx, "monthCode must be a string"));
-    }
-    let code = primitive.get::<String>()?;
-    reject_illformed_month_code(ctx, &code)?;
-    Ok(code)
-}
-
 fn get_overflow<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> Result<Option<Overflow>> {
     let Some(object) = options else {
         return Ok(None);
@@ -115,7 +49,7 @@ fn get_overflow<'js>(ctx: &Ctx<'js>, options: Option<&Object<'js>>) -> Result<Op
     let Some(value) = get_defined(object, "overflow")? else {
         return Ok(None);
     };
-    let name = temporal_to_string(ctx, &value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Overflow::from_str(&name)
         .map(Some)
         .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
@@ -125,7 +59,7 @@ fn get_unit_option<'js>(ctx: &Ctx<'js>, object: &Object<'js>, key: &str) -> Resu
     let Some(value) = get_defined(object, key)? else {
         return Ok(None);
     };
-    let name = temporal_to_string(ctx, &value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Unit::from_str(&name)
         .map(Some)
         .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
@@ -137,7 +71,7 @@ fn get_rounding_mode_option<'js>(
     let Some(value) = get_defined(object, "roundingMode")? else {
         return Ok(None);
     };
-    let name = temporal_to_string(ctx, &value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     RoundingMode::from_str(&name)
         .map(Some)
         .map_err(|_error| Exception::throw_range(ctx, "invalid roundingMode"))
@@ -157,12 +91,7 @@ fn get_fractional_second_digits<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Re
     let Some(value) = get_defined(object, "fractionalSecondDigits")? else {
         return Ok(Precision::Auto);
     };
-    fractional_second_digits(
-        ctx,
-        &value,
-        "fractionalSecondDigits must be finite",
-        temporal_to_string,
-    )
+    fractional_second_digits(ctx, &value, "fractionalSecondDigits must be finite")
 }
 
 fn difference_settings<'js>(
@@ -234,10 +163,7 @@ fn datetime_fields_from_object<'js>(
     let millisecond = optional_truncated_u16(ctx, object, "millisecond")?;
     let minute = optional_truncated_u8(ctx, object, "minute")?;
     let month = optional_truncated_u8(ctx, object, "month")?;
-    let month_code_text = match get_defined(object, "monthCode")? {
-        None => None,
-        Some(value) => Some(to_month_code_string(ctx, &value)?),
-    };
+    let month_code_text = optional_month_code(ctx, object)?;
     let nanosecond = optional_truncated_u16(ctx, object, "nanosecond")?;
     let second = optional_truncated_u8(ctx, object, "second")?;
     let year = optional_truncated_i32(ctx, object, "year")?;
@@ -322,7 +248,7 @@ fn rounding_from_value<'js>(ctx: &Ctx<'js>, options: Value<'js>) -> Result<Round
         let mut rounding = RoundingOptions::default();
         rounding.largest_unit = Some(Unit::Auto);
         rounding.smallest_unit = Some({
-            let name = temporal_to_string(ctx, &options)?;
+            let name = Coerced::<String>::from_js(ctx, options.clone())?.0;
             Unit::from_str(&name)
                 .map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))?
         });
@@ -349,7 +275,7 @@ fn get_disambiguation<'js>(
     let Some(value) = get_defined(object, "disambiguation")? else {
         return Ok(Disambiguation::Compatible);
     };
-    let name = temporal_to_string(ctx, &value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Disambiguation::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid disambiguation"))
 }
@@ -572,7 +498,7 @@ impl PlainDateTime {
                 let display = match get_defined(&object, "calendarName")? {
                     None => DisplayCalendar::Auto,
                     Some(value) => {
-                        let name = temporal_to_string(&ctx, &value)?;
+                        let name = Coerced::<String>::from_js(&ctx, value.clone())?.0;
                         DisplayCalendar::from_str(&name).map_err(|_error| {
                             Exception::throw_range(&ctx, "invalid calendarName option")
                         })?

@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs as _, Function, JsLifetime, Object, Result, Value,
-    atom::PredefinedAtom,
-    class::Trace,
-    prelude::{Opt, This},
+    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
@@ -17,8 +15,8 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_truncated_i32,
-        optional_truncated_i128, options_object, probe_class, reject_illformed_month_code,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_month_code,
+        optional_truncated_i32, optional_truncated_i128, options_object, probe_class,
         throw_value_of, to_duration, to_number, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
@@ -40,46 +38,8 @@ impl PlainDate {
     pub(crate) const fn wrap(inner: temporal_rs::PlainDate) -> Self { Self { inner } }
 }
 
-fn option_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to string",
-        ));
-    }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if value.is_null() {
-        return Ok("null".to_string());
-    }
-    if value.is_undefined() {
-        return Ok("undefined".to_string());
-    }
-    if let Some(boolean) = value.as_bool() {
-        return Ok(if boolean { "true" } else { "false" }.to_string());
-    }
-    if let Some(number) = value.as_number() {
-        return Ok(number.to_string());
-    }
-    if value.is_big_int() {
-        return Ok(Coerced::<String>::from_js(ctx, value.clone())?.0);
-    }
-    if value.is_object() {
-        let primitive = to_primitive_prefer_string(ctx, value)?;
-        if primitive.is_object() {
-            return Err(Exception::throw_type(
-                ctx,
-                "cannot convert object to primitive",
-            ));
-        }
-        return option_to_string(ctx, &primitive);
-    }
-    Err(Exception::throw_type(ctx, "cannot convert value to string"))
-}
-
 fn option_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, what: &str) -> Result<T> {
-    let name = option_to_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     T::from_str(&name).map_err(|_error| Exception::throw_range(ctx, &format!("invalid {what}")))
 }
 
@@ -152,52 +112,6 @@ fn optional_positive_date_unit<'js>(
         }
         Some(value) => Ok(Some(value)),
     }
-}
-
-fn to_primitive_prefer_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Value<'js>> {
-    if !value.is_object() {
-        return Ok(value.clone());
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| Exception::throw_type(ctx, "cannot convert object to primitive"))?;
-    if let Ok(func) = object.get::<_, Function>("toString") {
-        let result: Value = func.call((This(value.clone()),))?;
-        if !result.is_object() {
-            return Ok(result);
-        }
-    }
-    if let Ok(func) = object.get::<_, Function>("valueOf") {
-        let result: Value = func.call((This(value.clone()),))?;
-        if !result.is_object() {
-            return Ok(result);
-        }
-    }
-    Err(Exception::throw_type(
-        ctx,
-        "cannot convert object to primitive",
-    ))
-}
-
-fn month_code_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to string",
-        ));
-    }
-    let primitive = to_primitive_prefer_string(ctx, value)?;
-    let code = primitive
-        .as_string()
-        .ok_or_else(|| Exception::throw_type(ctx, "monthCode must be a string"))?
-        .to_string()?;
-    reject_illformed_month_code(ctx, &code)?;
-    Ok(code)
-}
-
-fn optional_month_code<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<String>> {
-    get_defined(object, "monthCode")?
-        .map_or(Ok(None), |value| month_code_string(ctx, &value).map(Some))
 }
 
 fn u8_date_unit(ctx: &Ctx<'_>, value: i128, overflow: Overflow) -> Result<u8> {

@@ -47,3 +47,8 @@ async fn duration_like_arguments_share_one_conversion() -> eyre::Result<()> {
 async fn time_property_bags_require_a_unit_and_constrain() -> eyre::Result<()> {
     run("time_bag.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn option_and_month_code_coercion_follow_the_spec() -> eyre::Result<()> {
+    run("options_coercion.js").await
+}

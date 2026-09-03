@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use rquickjs::{
-    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
-    prelude::Opt,
+    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
@@ -15,9 +15,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_truncated_i32,
-        optional_truncated_i128, options_object, probe_class, reject_calendar_or_time_zone,
-        reject_illformed_month_code, throw_value_of, to_duration, to_integer_with_truncation,
+        calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_month_code,
+        optional_truncated_i32, optional_truncated_i128, options_object, probe_class,
+        reject_calendar_or_time_zone, throw_value_of, to_duration, to_integer_with_truncation,
         to_number, truncated_u8, unwrap_temporal,
     },
     duration::Duration,
@@ -319,7 +319,7 @@ fn year_month_fields<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RawYea
     if matches!(month, Some(value) if value < 1) {
         return Err(Exception::throw_range(ctx, "integer is out of range"));
     }
-    let month_code = optional_month_code(ctx, &object.get("monthCode")?)?;
+    let month_code = optional_month_code(ctx, object)?;
     let year = optional_truncated_i32(ctx, object, "year")?;
     Ok(RawYearMonthFields {
         month,
@@ -382,54 +382,9 @@ fn optional_rounding_mode<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Opt
 }
 
 fn parse_enum<'js, T: FromStr>(ctx: &Ctx<'js>, value: &Value<'js>, message: &str) -> Result<T> {
-    let name = option_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     name.parse()
         .map_err(|_error| Exception::throw_range(ctx, message))
-}
-
-fn option_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if let Some(object) = value.as_object() {
-        let to_string = object.get::<_, Value>("toString")?;
-        if let Some(function) = to_string.as_function() {
-            let primitive: Value = function.call((rquickjs::function::This(value.clone()),))?;
-            if let Some(string) = primitive.as_string() {
-                return string.to_string();
-            }
-            if primitive.is_symbol() {
-                return Err(Exception::throw_type(
-                    ctx,
-                    "cannot convert Symbol to a string",
-                ));
-            }
-            return option_string(ctx, &primitive);
-        }
-    }
-    if value.is_null() {
-        return Ok("null".to_string());
-    }
-    if value.is_bool() {
-        return Ok(if value.as_bool() == Some(true) {
-            "true".to_string()
-        } else {
-            "false".to_string()
-        });
-    }
-    if value.is_number() {
-        return Ok(to_number(ctx, value)?.to_string());
-    }
-    if value.is_big_int() {
-        return crate::convert::js_to_string(ctx, value);
-    }
-    crate::convert::js_to_string(ctx, value)
 }
 
 fn optional_rounding_increment<'js>(
@@ -441,31 +396,6 @@ fn optional_rounding_increment<'js>(
         let number = to_number(ctx, value)?;
         unwrap_temporal(ctx, RoundingIncrement::try_from(number)).map(Some)
     }
-}
-
-fn optional_month_code<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Option<String>> {
-    if value.is_undefined() {
-        return Ok(None);
-    }
-    let code = require_string(ctx, value)?;
-    reject_illformed_month_code(ctx, &code)?;
-    Ok(Some(code))
-}
-
-fn require_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if let Some(object) = value.as_object() {
-        let to_string = object.get::<_, Value>("toString")?;
-        if let Some(function) = to_string.as_function() {
-            let primitive: Value = function.call((rquickjs::function::This(value.clone()),))?;
-            if let Some(string) = primitive.as_string() {
-                return string.to_string();
-            }
-        }
-    }
-    Err(Exception::throw_type(ctx, "monthCode must be a string"))
 }
 
 fn month_u8(ctx: &Ctx<'_>, month: Option<i128>, overflow: Overflow) -> Result<Option<u8>> {

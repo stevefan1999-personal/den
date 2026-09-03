@@ -111,42 +111,59 @@ pub fn reject_illformed_month_code(ctx: &Ctx<'_>, code: &str) -> Result<()> {
     }
 }
 
-pub fn js_to_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert a Symbol to a String",
-        ));
+/// `ToPrimitive` with hint string. `String(object)` in this engine prefers
+/// `valueOf`, which breaks GetOption / `ToTemporalMonthCode` observers.
+fn to_primitive_hint_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Value<'js>> {
+    let Some(object) = value.as_object() else {
+        return Ok(value.clone());
+    };
+    let exotic: Value = object.get(PredefinedAtom::SymbolToPrimitive)?;
+    if !exotic.is_undefined() {
+        let Some(func) = exotic.as_function() else {
+            return Err(Exception::throw_type(
+                ctx,
+                "Cannot convert object to primitive value",
+            ));
+        };
+        let primitive: Value = func.call((This(object.clone()), "string"))?;
+        if primitive.is_object() {
+            return Err(Exception::throw_type(
+                ctx,
+                "Cannot convert object to primitive value",
+            ));
+        }
+        return Ok(primitive);
     }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
+    for key in ["toString", "valueOf"] {
+        let method: Value = object.get(key)?;
+        let Some(func) = method.as_function() else {
+            continue;
+        };
+        let primitive: Value = func.call((This(object.clone()),))?;
+        if !primitive.is_object() {
+            return Ok(primitive);
+        }
     }
-    let string: Function = ctx.globals().get(PredefinedAtom::String)?;
-    string.call((value.clone(),))
+    Err(Exception::throw_type(
+        ctx,
+        "Cannot convert object to primitive value",
+    ))
 }
 
-/// GetOption string path: prefer `toString` so observers do not see `valueOf`
-/// first. A non-string primitive result still goes through `ToString`.
-pub fn to_js_string<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<String> {
-    if value.is_symbol() {
-        return Err(Exception::throw_type(
-            ctx,
-            "cannot convert Symbol to a string",
-        ));
-    }
-    if let Some(string) = value.as_string() {
-        return string.to_string();
-    }
-    if let Some(object) = value.as_object()
-        && let Ok(func) = object.get::<_, Function>("toString")
-    {
-        let result: Value = func.call((This(object.clone()),))?;
-        if let Some(string) = result.as_string() {
-            return string.to_string();
-        }
-        return js_to_string(ctx, &result);
-    }
-    js_to_string(ctx, value)
+/// `ToTemporalMonthCode`: `ToPrimitive` with hint string, then the primitive
+/// has to be a String — a number never stringifies into a month code.
+pub fn optional_month_code<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<String>> {
+    get_defined(object, "monthCode")?
+        .map(|value| {
+            let primitive = to_primitive_hint_string(ctx, &value)?;
+            let code = primitive
+                .as_string()
+                .ok_or_else(|| Exception::throw_type(ctx, "monthCode must be a string"))?
+                .to_string()?;
+            reject_illformed_month_code(ctx, &code)?;
+            Ok(code)
+        })
+        .transpose()
 }
 
 pub fn to_number<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<f64> {
@@ -321,20 +338,16 @@ pub fn i128_to_bigint(ctx: Ctx<'_>, value: i128) -> Result<BigInt<'_>> {
 }
 
 pub fn to_unit<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Unit> {
-    let name = js_to_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Unit::from_str(&name).map_err(|_error| Exception::throw_range(ctx, "invalid Temporal unit"))
 }
 
 /// `GetStringOrNumberOption` for `fractionalSecondDigits`: a Number is
-/// floored, everything else goes through the caller's options-bag string
-/// coercion (`"auto"` or RangeError). Interfaces disagree on the not-finite
-/// message, so the caller supplies it.
-pub fn fractional_second_digits<'js, ToString>(
-    ctx: &Ctx<'js>, value: &Value<'js>, not_finite_message: &str, to_string: ToString,
-) -> Result<Precision>
-where
-    ToString: FnOnce(&Ctx<'js>, &Value<'js>) -> Result<String>,
-{
+/// floored, everything else is `ToString`-ed (`"auto"` or RangeError).
+/// Interfaces disagree on the not-finite message, so the caller supplies it.
+pub fn fractional_second_digits<'js>(
+    ctx: &Ctx<'js>, value: &Value<'js>, not_finite_message: &str,
+) -> Result<Precision> {
     if value.is_number() {
         let number = to_number(ctx, value)?;
         if !number.is_finite() {
@@ -349,7 +362,7 @@ where
         }
         return Ok(Precision::Digit(digits as u8));
     }
-    let name = to_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     if name == "auto" {
         return Ok(Precision::Auto);
     }
@@ -445,7 +458,7 @@ pub fn to_instant<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs
         return unwrap_temporal(ctx, temporal_rs::Instant::from_utf8(string.as_bytes()));
     }
     if value.is_object() {
-        let string = js_to_string(ctx, value)?;
+        let string = Coerced::<String>::from_js(ctx, value.clone())?.0;
         return unwrap_temporal(ctx, temporal_rs::Instant::from_utf8(string.as_bytes()));
     }
     Err(Exception::throw_type(

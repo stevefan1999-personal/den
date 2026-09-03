@@ -1,8 +1,8 @@
 use std::str::FromStr as _;
 
 use rquickjs::{
-    Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom, class::Trace,
-    prelude::Opt,
+    Coerced, Ctx, Exception, FromJs as _, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
+    class::Trace, prelude::Opt,
 };
 use temporal_rs::{
     Calendar, MonthCode,
@@ -13,10 +13,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        calendar_slot, ctor_required_u8, get_defined, options_object, probe_class,
-        reject_illformed_month_code, require_object, throw_temporal, throw_value_of,
-        to_integer_with_truncation, to_js_string, to_plain_month_day, truncated_i32,
-        unwrap_temporal,
+        calendar_slot, ctor_required_u8, get_defined, optional_month_code, options_object,
+        probe_class, require_object, throw_temporal, throw_value_of, to_integer_with_truncation,
+        to_plain_month_day, truncated_i32, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_time::PlainTime,
@@ -218,14 +217,7 @@ fn month_day_bag<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<MonthDayBa
         None => None,
         Some(value) => Some(field_to_u8(ctx, &value)?),
     };
-    let month_code = match get_defined(object, "monthCode")? {
-        None => None,
-        Some(value) => {
-            let code = to_js_string(ctx, &value)?;
-            reject_illformed_month_code(ctx, &code)?;
-            Some(code)
-        }
-    };
+    let month_code = optional_month_code(ctx, object)?;
     let year = match get_defined(object, "year")? {
         None => None,
         Some(value) => Some(truncated_i32(ctx, &value)?),
@@ -297,13 +289,13 @@ fn overflow_option<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Opti
 }
 
 fn option_overflow<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Overflow> {
-    let name = to_js_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     Overflow::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid overflow option"))
 }
 
 fn option_display_calendar<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<DisplayCalendar> {
-    let name = to_js_string(ctx, value)?;
+    let name = Coerced::<String>::from_js(ctx, value.clone())?.0;
     DisplayCalendar::from_str(&name)
         .map_err(|_error| Exception::throw_range(ctx, "invalid calendarName option"))
 }
