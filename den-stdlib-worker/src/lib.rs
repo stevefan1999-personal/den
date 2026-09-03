@@ -102,7 +102,6 @@ pub mod worker_module {
     pub fn evaluate<'js>(ctx: &Ctx<'js>, exports: &Exports<'js>) -> Result<()> {
         let natives = Object::new(ctx.clone())?;
         crate::events::install(ctx, &natives)?;
-        crate::worker::install(ctx, &natives)?;
 
         let namespace = exports.module().namespace()?;
         crate::events::finish(ctx, &namespace)?;

@@ -35,6 +35,12 @@ pub fn set_exception_sink<'js>(ctx: &Ctx<'js>, sink: &Object<'js>) -> rquickjs::
         .map_err(|_error| rquickjs::Error::UserData(rquickjs::runtime::UserDataError(())))
 }
 
+/// This realm's sink object itself, for a caller that has to *write* hooks
+/// onto it (a worker scope replacing its reporter); readers use [`sink_hook`].
+pub fn exception_sink<'js>(ctx: &Ctx<'js>) -> Option<Object<'js>> {
+    ctx.userdata::<ExceptionSink>()?.0.clone().restore(ctx).ok()
+}
+
 /// Report `value` — a caught exception, or anything else that was thrown —
 /// through this realm's sink, falling back to [`print_exception`].
 ///
@@ -96,11 +102,5 @@ pub fn print_exception<'js>(ctx: &Ctx<'js>, value: &Value<'js>) {
 /// separates an event the runtime fired from one a script dispatched, above
 /// all.
 pub fn sink_hook<'js>(ctx: &Ctx<'js>, name: &str) -> Option<Function<'js>> {
-    let sink = ctx
-        .userdata::<ExceptionSink>()?
-        .0
-        .clone()
-        .restore(ctx)
-        .ok()?;
-    sink.get::<_, Function<'js>>(name).ok()
+    exception_sink(ctx)?.get::<_, Function<'js>>(name).ok()
 }

@@ -28,7 +28,7 @@ use den_util::{coerce_string, inherit};
 use oxc_sourcemap::OwnedSourceMap;
 use rquickjs::{
     AsyncContext, Class, Ctx, Error, Exception, FromJs, Function, IntoJs, JsLifetime, Module,
-    Object, Persistent, Result, Value,
+    Object, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     context::EvalOptions,
@@ -47,7 +47,7 @@ use crate::{
     host::{BaseUrl, HostHandle, WorkerEngine, WorkerHost},
     message::clone::split_transfer,
     port::{NativePort, pair, track_message_listeners},
-    report::{report_uncaught, sink_hook},
+    report::{exception_sink, report_uncaught, sink_hook},
     transport::PortHandle,
 };
 
@@ -270,24 +270,6 @@ impl ScriptError {
             || message.starts_with("Error loading module")
             || message.starts_with("could not load module")
     }
-}
-
-/// The natives bag `events::install` parks as the exception sink. Worker
-/// scope installation replaces `reportException` and `escalate` on it.
-struct NativesBag(Persistent<Object<'static>>);
-
-// SAFETY: `Persistent` owns its value and is tied to the runtime, not a scope.
-unsafe impl JsLifetime<'_> for NativesBag {
-    type Changed<'to> = NativesBag;
-}
-
-fn natives<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
-    ctx.userdata::<NativesBag>()
-        .ok_or_else(|| Exception::throw_internal(ctx, "den:worker is not installed"))?
-        .0
-        .clone()
-        .restore(ctx)
-        .map_err(|_restore_error| Exception::throw_internal(ctx, "den:worker natives vanished"))
 }
 
 fn transfer_list(options: Option<Value<'_>>) -> Option<Value<'_>> {
@@ -1115,7 +1097,8 @@ fn install_worker_scope<'js>(
         Opt(None),
     )?;
 
-    let natives = natives(ctx)?;
+    let natives = exception_sink(ctx)
+        .ok_or_else(|| Exception::throw_internal(ctx, "den:worker is not installed"))?;
     let escalate_fn = Function::new(
         ctx.clone(),
         |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, fault: WorkerFault| -> Result<()> {
@@ -1189,27 +1172,6 @@ fn install_worker_scope<'js>(
 }
 
 /// Park the natives bag and the default (print) escalate hook.
-pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
-    ctx.store_userdata(NativesBag(Persistent::save(ctx, natives.clone())))
-        .map_err(|_store_error| {
-            Exception::throw_internal(ctx, "den:worker is already installed")
-        })?;
-    natives.set(
-        "escalate",
-        Function::new(ctx.clone(), |ctx: Ctx<'js>, fault: WorkerFault| {
-            let text = if fault.stack.is_empty() {
-                format!("{}: {}", fault.name, fault.message)
-            } else {
-                fault.stack
-            };
-            if let Ok(value) = text.into_js(&ctx) {
-                print_exception(&ctx, &value);
-            }
-        })?,
-    )?;
-    Ok(())
-}
-
 /// Prototype chain, `onX` slots, constructor `length`.
 pub fn finish(ctx: &Ctx<'_>) -> Result<()> {
     let hidden = Object::new(ctx.clone())?;
