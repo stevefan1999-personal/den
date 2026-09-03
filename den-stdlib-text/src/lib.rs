@@ -1,5 +1,5 @@
 use den_util::BufferSource;
-use encoding_rs::{DecoderResult, Encoding};
+use encoding_rs::Encoding;
 use rquickjs::{Ctx, Exception, JsLifetime, Object, Result, TypedArray, class::Trace, prelude::*};
 
 pub use crate::js_text_module as js_text;
@@ -46,33 +46,28 @@ impl TextDecoder {
         let Some(buffer) = buffer else {
             return Ok(String::new());
         };
-        let mut decoder = if self.ignore_bom {
-            self.encoding.new_decoder_without_bom_handling()
-        } else {
-            self.encoding.new_decoder()
-        };
-        let buffer = buffer.bytes();
-        let len = if self.fatal {
-            decoder.max_utf8_buffer_length_without_replacement(buffer.len())
-        } else {
-            decoder.max_utf8_buffer_length(buffer.len())
-        };
-
-        let mut output = len.map_or_else(String::new, String::with_capacity);
-        if self.fatal {
-            let (res, _) = decoder.decode_to_string_without_replacement(buffer, &mut output, true);
-            if let DecoderResult::Malformed(_, _) = res {
-                Err(Exception::throw_type(
-                    &ctx,
-                    "invalid decoding encountered and no replacements allowed",
-                ))
-            } else {
-                Ok(output)
+        let bytes = buffer.bytes();
+        // WHATWG "decode": a BOM overrides the label, unless ignoreBOM keeps
+        // it as data.
+        let (encoding, bytes) = match Encoding::for_bom(bytes) {
+            Some((sniffed, bom)) if !self.ignore_bom => {
+                (sniffed, bytes.get(bom..).unwrap_or_default())
             }
+            _ => (self.encoding, bytes),
+        };
+        let text = if self.fatal {
+            encoding
+                .decode_without_bom_handling_and_without_replacement(bytes)
+                .ok_or_else(|| {
+                    Exception::throw_type(
+                        &ctx,
+                        "invalid decoding encountered and no replacements allowed",
+                    )
+                })?
         } else {
-            let _ = decoder.decode_to_string(buffer, &mut output, true);
-            Ok(output)
-        }
+            encoding.decode_without_bom_handling(bytes).0
+        };
+        Ok(text.into_owned())
     }
 }
 
@@ -99,17 +94,19 @@ impl TextEncoder {
     pub fn encode_into<'js>(
         &self, src: String, dest: TypedArray<'js, u8>, ctx: Ctx<'js>,
     ) -> Result<Object<'js>> {
-        // `as_raw` is the only mutable view rquickjs 0.12 offers — `as_bytes` hands
-        // back a shared `&[u8]` — and it reports a detached buffer as `None`.
+        // `as_raw` is the only mutable view rquickjs 0.12 offers — `as_bytes`
+        // hands back a shared `&[u8]` — and it reports a detached
+        // buffer as `None`.
         let raw = dest
             .as_raw()
             .ok_or_else(|| Exception::throw_type(&ctx, "destination is detached"))?;
 
         let written = src.floor_char_boundary(raw.len);
 
-        // SAFETY: `raw` is QuickJS's own live allocation for this view. Nothing else
-        // aliases it here — no JS runs between `as_raw` and the end of the
-        // copy, so the buffer cannot be detached or resized underneath us.
+        // SAFETY: `raw` is QuickJS's own live allocation for this view. Nothing
+        // else aliases it here — no JS runs between `as_raw` and the
+        // end of the copy, so the buffer cannot be detached or resized
+        // underneath us.
         let dest = unsafe { core::slice::from_raw_parts_mut(raw.ptr.as_ptr(), raw.len) };
         let encoded = src
             .get(..written)
