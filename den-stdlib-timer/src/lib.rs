@@ -7,19 +7,10 @@ use rquickjs::{Ctx, JsLifetime};
 use tokio_util::sync::CancellationToken;
 
 /// Per-realm timer handles. Scripts see a numeric id, never this map.
-#[derive(JsLifetime)]
+#[derive(JsLifetime, Default)]
 struct Timers {
     next:    Cell<u32>,
     handles: RefCell<HashMap<u32, CancellationToken>>,
-}
-
-impl Default for Timers {
-    fn default() -> Self {
-        Self {
-            next:    Cell::new(1),
-            handles: RefCell::default(),
-        }
-    }
 }
 
 impl Timers {
