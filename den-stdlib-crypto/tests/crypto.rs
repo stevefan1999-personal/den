@@ -51,3 +51,8 @@ async fn get_random_values_accepts_wider_typed_arrays() -> eyre::Result<()> {
 async fn get_random_values_fills_only_the_typed_array_view() -> eyre::Result<()> {
     run("random_values_offset.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn digest_normalizes_algorithm_names_and_reports_the_unrecognized_one() -> eyre::Result<()> {
+    run("digest_names.js").await
+}

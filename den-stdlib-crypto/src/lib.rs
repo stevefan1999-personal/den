@@ -8,9 +8,9 @@ use uuid::Uuid;
 
 pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
     {
-        // The view, not the backing buffer: `new Uint8Array(memory.buffer, ptr, len)`
-        // is how JS WASI implements `random_get`, and filling the whole
-        // `ArrayBuffer` would overwrite the wasm heap.
+        // The view, not the backing buffer: `new Uint8Array(memory.buffer, ptr,
+        // len)` is how JS WASI implements `random_get`, and filling the
+        // whole `ArrayBuffer` would overwrite the wasm heap.
         let Some((ptr, len)) = integer_typed_view(&array) else {
             return Err(Exception::throw_type(&ctx, "not a typed array"));
         };
@@ -66,17 +66,13 @@ enum DigestAlgorithm {
 }
 
 impl DigestAlgorithm {
-    const fn parse(name: &str) -> Option<Self> {
-        if name.eq_ignore_ascii_case("SHA-1") {
-            Some(Self::Sha1)
-        } else if name.eq_ignore_ascii_case("SHA-256") {
-            Some(Self::Sha256)
-        } else if name.eq_ignore_ascii_case("SHA-384") {
-            Some(Self::Sha384)
-        } else if name.eq_ignore_ascii_case("SHA-512") {
-            Some(Self::Sha512)
-        } else {
-            None
+    fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_uppercase().as_str() {
+            "SHA-1" => Some(Self::Sha1),
+            "SHA-256" => Some(Self::Sha256),
+            "SHA-384" => Some(Self::Sha384),
+            "SHA-512" => Some(Self::Sha512),
+            _ => None,
         }
     }
 
@@ -88,33 +84,23 @@ impl DigestAlgorithm {
     fn from_algorithm(ctx: &Ctx<'_>, algorithm: Value<'_>) -> Result<Self> {
         let raw_name = Self::raw_name(algorithm)?;
         let name = raw_name.as_deref().unwrap_or("undefined");
-        raw_name.as_deref().and_then(Self::parse).map_or_else(
-            || {
-                Err(den_util::throw_dom_exception(
-                    ctx,
-                    "NotSupportedError",
-                    &format!("Unrecognized algorithm name: {name}"),
-                ))
-            },
-            Ok,
-        )
+        raw_name.as_deref().and_then(Self::parse).ok_or_else(|| {
+            den_util::throw_dom_exception(
+                ctx,
+                "NotSupportedError",
+                &format!("Unrecognized algorithm name: {name}"),
+            )
+        })
     }
 
     fn raw_name(algorithm: Value<'_>) -> Result<Option<String>> {
-        if let Some(name) = algorithm.as_string() {
-            return Ok(Some(name.to_string()?));
-        }
-        let Some(object) = algorithm.as_object() else {
-            return Ok(None);
+        let name = match algorithm.as_object() {
+            Some(object) => object.get::<_, Value>("name")?,
+            None => algorithm,
         };
-        let name: Value<'_> = object.get("name")?;
-        if name.is_undefined() || name.is_null() {
-            return Ok(None);
-        }
-        match name.as_string() {
-            Some(name) => Ok(Some(name.to_string()?)),
-            None => Ok(None),
-        }
+        name.as_string()
+            .map(rquickjs::String::to_string)
+            .transpose()
     }
 
     fn hash(self, data: &[u8]) -> Vec<u8> {
