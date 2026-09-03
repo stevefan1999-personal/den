@@ -22,9 +22,9 @@ use crate::{
     convert::{
         calendar_slot, ctor_required_i32, ctor_required_u8, fractional_second_digits, get_defined,
         js_to_string, optional_truncated_i32, optional_truncated_u8, optional_truncated_u16,
-        options_object, ordering_i32, probe_class, reject_calendar_or_time_zone,
-        reject_illformed_month_code, require_object, throw_value_of, to_duration, to_number,
-        to_time_zone, truncated_u8_or_zero, truncated_u16_or_zero, unwrap_temporal,
+        options_object, probe_class, reject_calendar_or_time_zone, reject_illformed_month_code,
+        require_object, throw_value_of, to_duration, to_number, to_time_zone, truncated_u8_or_zero,
+        truncated_u16_or_zero, unwrap_temporal,
     },
     duration::Duration,
     plain_date::PlainDate,
@@ -402,7 +402,7 @@ impl PlainDateTime {
     pub fn compare<'js>(one: Value<'js>, two: Value<'js>, ctx: Ctx<'js>) -> Result<i32> {
         let left = to_pdt(&ctx, &one, Opt(None))?;
         let right = to_pdt(&ctx, &two, Opt(None))?;
-        Ok(ordering_i32(left.compare_iso(&right)))
+        Ok(left.compare_iso(&right) as i32)
     }
 
     #[qjs(get, configurable)]

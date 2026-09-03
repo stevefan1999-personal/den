@@ -15,9 +15,9 @@ use temporal_rs::{
 
 use crate::{
     convert::{
-        fractional_second_digits, get_defined, i128_to_bigint, ordering_i32, require_object,
-        throw_value_of, to_big_int_i128, to_duration, to_instant, to_integer_if_integral,
-        to_js_string, to_number, to_time_zone, unwrap_temporal,
+        fractional_second_digits, get_defined, i128_to_bigint, require_object, throw_value_of,
+        to_big_int_i128, to_duration, to_instant, to_integer_if_integral, to_js_string, to_number,
+        to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     zoned_date_time::ZonedDateTime,
@@ -191,7 +191,7 @@ impl Instant {
     pub fn compare<'js>(one: Value<'js>, two: Value<'js>, ctx: Ctx<'js>) -> Result<i32> {
         let left = to_instant(&ctx, &one)?;
         let right = to_instant(&ctx, &two)?;
-        Ok(ordering_i32(left.cmp(&right)))
+        Ok(left.cmp(&right) as i32)
     }
 
     #[qjs(get)]

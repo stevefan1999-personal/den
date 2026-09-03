@@ -3,7 +3,7 @@
 //! Slot-bearing Temporal objects are probed without leaving a `TypeError`
 //! pending when the value is simply the wrong class.
 
-use std::{cmp::Ordering, str::FromStr as _};
+use std::str::FromStr as _;
 
 use den_util::Probe as _;
 use rquickjs::{
@@ -36,14 +36,6 @@ pub fn unwrap_temporal<T>(ctx: &Ctx<'_>, result: temporal_rs::TemporalResult<T>)
 
 pub fn throw_value_of(ctx: &Ctx<'_>, name: &str) -> rquickjs::Error {
     Exception::throw_type(ctx, &format!("cannot convert {name} to a primitive value"))
-}
-
-pub const fn ordering_i32(ordering: Ordering) -> i32 {
-    match ordering {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
 }
 
 /// `Class::from_object` is `JS_GetOpaque2`, which throws when the object is a

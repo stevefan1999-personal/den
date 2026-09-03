@@ -18,9 +18,8 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, ctor_required_i32, ctor_required_u8, get_defined, optional_truncated_i32,
-        optional_truncated_i128, options_object, ordering_i32, probe_class,
-        reject_illformed_month_code, throw_value_of, to_duration, to_number, to_time_zone,
-        unwrap_temporal,
+        optional_truncated_i128, options_object, probe_class, reject_illformed_month_code,
+        throw_value_of, to_duration, to_number, to_time_zone, unwrap_temporal,
     },
     duration::Duration,
     plain_date_time::PlainDateTime,
@@ -388,7 +387,7 @@ impl PlainDate {
     pub fn compare<'js>(one: Value<'js>, two: Value<'js>, ctx: Ctx<'js>) -> Result<i32> {
         let left = to_temporal_date(&ctx, &one)?;
         let right = to_temporal_date(&ctx, &two)?;
-        Ok(ordering_i32(left.compare_iso(&right)))
+        Ok(left.compare_iso(&right) as i32)
     }
 
     #[qjs(get, configurable)]

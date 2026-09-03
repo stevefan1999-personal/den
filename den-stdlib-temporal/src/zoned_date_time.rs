@@ -21,9 +21,9 @@ use temporal_rs::{
 use crate::{
     convert::{
         calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
-        optional_truncated_i32, options_object, ordering_i32, probe_class,
-        reject_illformed_month_code, throw_value_of, to_big_int_i128, to_calendar, to_duration,
-        to_number, to_time_zone, truncated_u8, truncated_u16, unwrap_temporal,
+        optional_truncated_i32, options_object, probe_class, reject_illformed_month_code,
+        throw_value_of, to_big_int_i128, to_calendar, to_duration, to_number, to_time_zone,
+        truncated_u8, truncated_u16, unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -73,7 +73,7 @@ impl ZonedDateTime {
     pub fn compare<'js>(one: Value<'js>, two: Value<'js>, ctx: Ctx<'js>) -> Result<i32> {
         let left = to_zoned(&ctx, &one, Opt(None))?;
         let right = to_zoned(&ctx, &two, Opt(None))?;
-        Ok(ordering_i32(left.compare_instant(&right)))
+        Ok(left.compare_instant(&right) as i32)
     }
 
     #[qjs(get)]

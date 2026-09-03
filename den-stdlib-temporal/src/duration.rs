@@ -20,8 +20,8 @@ use crate::{
         calendar_slot, ctor_integer_if_integral, ctor_integer_if_integral_i128,
         fractional_second_digits, get_defined, js_to_string, optional_integral_i64,
         optional_integral_i128, optional_truncated_i32, optional_truncated_u8,
-        optional_truncated_u16, ordering_i32, probe_class, throw_value_of, to_calendar,
-        to_duration, to_number, to_time_zone, to_unit, unwrap_temporal,
+        optional_truncated_u16, probe_class, throw_value_of, to_calendar, to_duration, to_number,
+        to_time_zone, to_unit, unwrap_temporal,
     },
     plain_date::PlainDate,
     plain_date_time::PlainDateTime,
@@ -309,7 +309,7 @@ impl Duration {
         let left = to_duration(&ctx, &one)?;
         let right = to_duration(&ctx, &two)?;
         let relative_to = relative_to_option(&ctx, &options_object(&ctx, options)?)?;
-        unwrap_temporal(&ctx, left.compare(&right, relative_to)).map(ordering_i32)
+        unwrap_temporal(&ctx, left.compare(&right, relative_to)).map(|ordering| ordering as i32)
     }
 
     #[qjs(get)]
