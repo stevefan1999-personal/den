@@ -103,7 +103,6 @@ pub mod worker_module {
         let natives = Object::new(ctx.clone())?;
         crate::events::install(ctx, &natives)?;
         crate::worker::install(ctx, &natives)?;
-        crate::broadcast::install(ctx, &natives)?;
 
         let namespace = exports.module().namespace()?;
         crate::events::finish(ctx, &namespace)?;

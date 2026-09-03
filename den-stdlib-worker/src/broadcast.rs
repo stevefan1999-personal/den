@@ -9,7 +9,7 @@
 //! no runtime — crosses; the receiving realm rebuilds the value itself.
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     sync::{
         LazyLock,
         atomic::{AtomicUsize, Ordering},
@@ -53,19 +53,13 @@ static SUBSCRIBERS: LazyLock<DashMap<String, Vec<Subscriber>>> = LazyLock::new(D
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// The transport end of one `BroadcastChannel`.
-#[derive(Trace, JsLifetime)]
-#[rquickjs::class(rename = "NativeBroadcast")]
-pub struct NativeBroadcast {
-    #[qjs(skip_trace)]
+struct NativeBroadcast {
     name:  String,
-    #[qjs(skip_trace)]
     id:    usize,
     /// This channel's own inbox, until the pump takes it.
-    #[qjs(skip_trace)]
     inbox: RefCell<Option<UnboundedReceiver<Message>>>,
     /// Ends the pump, and doubles as the closed flag: nothing else can tell a
     /// quiet channel from a closed one.
-    #[qjs(skip_trace)]
     stop:  CancellationToken,
 }
 
@@ -121,16 +115,11 @@ impl NativeBroadcast {
             NativePort::dispatch(&ctx, message, &on_message, &on_message_error);
         }
     }
-}
 
-#[rquickjs::methods]
-impl NativeBroadcast {
-    /// `new NativeBroadcast(name)` — "create a new BroadcastChannel object"
-    /// (HTML §9.5): the channel joins its name's subscriber list at once, so
-    /// that a message posted before anything is listening is still queued for
-    /// it.
-    #[qjs(constructor)]
-    pub fn new(name: String) -> Self {
+    /// "Create a new BroadcastChannel object" (HTML §9.5): the channel joins
+    /// its name's subscriber list at once, so that a message posted before
+    /// anything is listening is still queued for it.
+    fn new(name: String) -> Self {
         let (inbox, outbox) = mpsc::unbounded_channel();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         SUBSCRIBERS
@@ -145,25 +134,21 @@ impl NativeBroadcast {
         }
     }
 
-    /// `nativeBroadcast.post(value)` — the "BroadcastChannel postMessage"
-    /// steps. Serialisation happens once, before the fan-out, so a
+    /// The "BroadcastChannel postMessage" steps.
+    /// Serialisation happens once, before the fan-out, so a
     /// `DataCloneError` is synchronous and nobody receives a half-formed
     /// message; each subscriber then gets its own copy of the bytes and
     /// deserialises in its own realm.
     ///
     /// There is no transfer list: `BroadcastChannel` takes none, which also
     /// means the clone pre-pass refuses any `MessagePort` in the graph.
-    pub fn post<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
-        if self.stop.is_cancelled() {
-            return Ok(());
-        }
+    fn post<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> Result<()> {
         self.fan_out(&Message::serialize(&ctx, value, Vec::new(), Vec::new())?);
         Ok(())
     }
 
-    /// `nativeBroadcast.subscribe(onMessage, onMessageError)` — start
-    /// delivering. Idempotent, and a no-op once closed.
-    pub fn subscribe<'js>(
+    /// Start delivering. Idempotent, and a no-op once closed.
+    fn subscribe<'js>(
         &self, ctx: Ctx<'js>, on_message: Function<'js>, on_message_error: Function<'js>,
     ) {
         let inbox = self
@@ -183,9 +168,9 @@ impl NativeBroadcast {
         ));
     }
 
-    /// `nativeBroadcast.close()` — leave the registry and end the pump, which
-    /// is what lets the runtime go idle. Idempotent.
-    pub fn close(&self) {
+    /// Leave the registry and end the pump, which is what lets the runtime go
+    /// idle. Idempotent.
+    fn close(&self) {
         self.stop.cancel();
         self.unregister();
         if let Ok(mut inbox) = self.inbox.try_borrow_mut() {
@@ -204,27 +189,24 @@ impl Drop for NativeBroadcast {
 /// HTML §9.5 `BroadcastChannel`.
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
-pub struct BroadcastChannel<'js> {
+pub struct BroadcastChannel {
     #[qjs(get, skip_trace)]
     name:   String,
-    native: Class<'js, NativeBroadcast>,
     #[qjs(skip_trace)]
-    closed: Cell<bool>,
+    native: NativeBroadcast,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
-impl<'js> BroadcastChannel<'js> {
+impl BroadcastChannel {
     #[qjs(constructor)]
-    pub fn new(ctx: Ctx<'js>, name: Opt<Value<'js>>) -> Result<Class<'js, Self>> {
+    pub fn new<'js>(ctx: Ctx<'js>, name: Opt<Value<'js>>) -> Result<Class<'js, Self>> {
         let name = match name.0 {
             Some(value) => coerce_string(&ctx, value)?,
             None => "undefined".to_owned(),
         };
-        let native = Class::instance(ctx.clone(), NativeBroadcast::new(name.clone()))?;
         let channel = Class::instance(ctx.clone(), Self {
-            name,
-            native: native.clone(),
-            closed: Cell::new(false),
+            name:   name.clone(),
+            native: NativeBroadcast::new(name),
         })?;
         let on_message = Function::new(
             ctx.clone(),
@@ -262,33 +244,28 @@ impl<'js> BroadcastChannel<'js> {
             },
         )?;
         on_error.set("_target", channel.clone())?;
-        native.borrow().subscribe(ctx.clone(), on_message, on_error);
+        channel
+            .borrow()
+            .native
+            .subscribe(ctx.clone(), on_message, on_error);
         Ok(channel)
     }
 
-    pub fn post_message(&self, ctx: Ctx<'js>, message: Value<'js>) -> Result<()> {
-        if self.closed.get() {
+    pub fn post_message<'js>(&self, ctx: Ctx<'js>, message: Value<'js>) -> Result<()> {
+        if self.native.stop.is_cancelled() {
             return Err(throw_dom_exception(
                 &ctx,
                 "InvalidStateError",
                 "the BroadcastChannel is closed",
             ));
         }
-        self.native.borrow().post(ctx, message)
+        self.native.post(ctx, message)
     }
 
-    pub fn close(&self) {
-        self.closed.set(true);
-        self.native.borrow().close();
-    }
+    pub fn close(&self) { self.native.close(); }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
     pub const fn to_string_tag() -> &'static str { "BroadcastChannel" }
-}
-
-/// NativeBroadcast stays off the public surface; the wrapper is the export.
-pub fn install<'js>(_ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
-    Class::<NativeBroadcast>::define(natives)
 }
 
 /// Prototype chain and `onmessage` / `onmessageerror`.
