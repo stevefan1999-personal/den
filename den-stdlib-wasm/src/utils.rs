@@ -10,8 +10,8 @@
 use std::cell::RefCell;
 
 use rquickjs::{
-    Array, BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs as _, JsLifetime, Result,
-    Symbol, Value, function::Rest,
+    BigInt, Coerced, Ctx, Exception, FromJs, Function, IntoJs as _, JsLifetime, Result, Symbol,
+    Value, function::Rest,
 };
 use wasmtime::{Func, RefType, Val, ValType};
 
@@ -624,13 +624,7 @@ impl<'js> ExportedFunction<'js> {
         match results.as_slice() {
             [] => Ok(Value::new_undefined(ctx.clone())),
             [single] => Ok(single.clone()),
-            _ => {
-                let array = Array::new(ctx.clone())?;
-                for (position, value) in results.into_iter().enumerate() {
-                    array.set(position, value)?;
-                }
-                Ok(array.into_value())
-            }
+            _ => results.into_js(ctx),
         }
     }
 
