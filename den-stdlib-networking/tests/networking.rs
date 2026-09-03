@@ -19,3 +19,6 @@ async fn networking_module_exports_socket_classes() -> eyre::Result<()> { run("e
 
 #[tokio::test(flavor = "multi_thread")]
 async fn udp_send_to_echoes_on_loopback() -> eyre::Result<()> { run("udp_echo.js").await }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn socket_addr_accessors_are_read_only() -> eyre::Result<()> { run("socket_addr.js").await }

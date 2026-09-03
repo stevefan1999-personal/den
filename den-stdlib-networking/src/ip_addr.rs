@@ -1,9 +1,9 @@
 use std::net::IpAddr;
 
-use derive_more::{Deref, DerefMut, From, Into};
+use derive_more::{Deref, DerefMut, From};
 use rquickjs::{JsLifetime, class::Trace};
 
-#[derive(Trace, JsLifetime, Clone, Debug, From, Into, Deref, DerefMut)]
+#[derive(Trace, JsLifetime, Clone, Debug, From, Deref, DerefMut)]
 #[rquickjs::class(rename = "IpAddr")]
 pub struct IpAddrWrapper {
     #[qjs(skip_trace)]
