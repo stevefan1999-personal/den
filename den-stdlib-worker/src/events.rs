@@ -732,7 +732,7 @@ impl<'js> EventTarget<'js> {
         Ok((capture, once, signal))
     }
 
-    fn is_aborted(signal: &Value<'js>) -> Result<bool> {
+    pub(crate) fn is_aborted(signal: &Value<'js>) -> Result<bool> {
         let Some(object) = signal.as_object() else {
             return Ok(false);
         };

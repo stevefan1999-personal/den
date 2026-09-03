@@ -6,7 +6,7 @@
 
 use den_util::{inherit, new_dom_exception};
 use rquickjs::{
-    Class, Ctx, Exception, Function, IntoJs as _, JsLifetime, Result, Value,
+    Class, Ctx, Function, IntoJs as _, JsLifetime, Result, Value,
     atom::PredefinedAtom,
     class::Trace,
     function::{FuncArg, Opt, This},
@@ -25,32 +25,11 @@ fn timeout_reason<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {
     new_dom_exception(ctx, TIMEOUT_MESSAGE, "TimeoutError")
 }
 
-fn is_aborted(source: &Value<'_>) -> bool {
-    let Some(object) = source.as_object() else {
-        return false;
-    };
-    object.get::<_, bool>("aborted").unwrap_or(false)
-}
-
 fn source_reason<'js>(ctx: &Ctx<'js>, source: &Value<'js>) -> Result<Value<'js>> {
     let Some(object) = source.as_object() else {
         return Ok(Value::new_undefined(ctx.clone()));
     };
     object.get("reason")
-}
-
-fn collect_sources<'js>(ctx: &Ctx<'js>, signals: Value<'js>) -> Result<Vec<Value<'js>>> {
-    let Some(array) = signals.as_array() else {
-        return Err(Exception::throw_type(
-            ctx,
-            "AbortSignal.any: signals is not iterable",
-        ));
-    };
-    let mut sources = Vec::with_capacity(array.len());
-    for index in 0..array.len() {
-        sources.push(array.get(index)?);
-    }
-    Ok(sources)
 }
 
 fn add_listener<'js>(source: &Value<'js>, listener: &Function<'js>) -> Result<()> {
@@ -154,11 +133,10 @@ impl<'js> AbortSignal<'js> {
     }
 
     #[qjs(static)]
-    pub fn any(ctx: Ctx<'js>, signals: Value<'js>) -> Result<Class<'js, Self>> {
+    pub fn any(ctx: Ctx<'js>, sources: Vec<Value<'js>>) -> Result<Class<'js, Self>> {
         let combined = Class::instance(ctx.clone(), Self::fresh(&ctx))?;
-        let sources = collect_sources(&ctx, signals)?;
         for source in &sources {
-            if is_aborted(source) {
+            if EventTarget::is_aborted(source)? {
                 Self::abort_inner(&ctx, &combined, Some(source_reason(&ctx, source)?), false)?;
                 return Ok(combined);
             }
@@ -169,7 +147,7 @@ impl<'js> AbortSignal<'js> {
                 let combined: Class<'js, Self> = function.0.get("_combined")?;
                 let sources: Vec<Value<'js>> = function.0.get("_sources")?;
                 for source in &sources {
-                    if !is_aborted(source) {
+                    if !EventTarget::is_aborted(source)? {
                         continue;
                     }
                     if Self::abort_inner(&ctx, &combined, Some(source_reason(&ctx, source)?), true)?

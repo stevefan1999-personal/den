@@ -98,6 +98,10 @@ const fromAborted = AbortSignal.any([already.signal]);
 assertEquals(fromAborted.aborted, true);
 assertEquals(fromAborted.reason.message, "already");
 
+let anyRefusal = "no throw";
+try { AbortSignal.any(42); } catch (error) { anyRefusal = error.constructor.name; }
+assertEquals(anyRefusal, "TypeError");
+
 const timed = AbortSignal.timeout(50);
 assertEquals(timed.aborted, false);
 await new Promise((resolve) => setTimeout(resolve, 80));
