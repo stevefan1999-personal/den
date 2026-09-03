@@ -1,6 +1,6 @@
 use den_transpiler_oxc::{
     EasyOxcTranspilerError, SourceType, get_best_transpiling, infer_transpile_syntax_by_extension,
-    transpile, transpile_with_source_map,
+    transpile_with_source_map,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -11,7 +11,7 @@ fn source_type(extension: &str) -> Result<SourceType, Box<dyn std::error::Error>
 }
 
 fn transpiled(source: &str, source_type: SourceType) -> Result<String, EasyOxcTranspilerError> {
-    transpile(source, source_type)
+    Ok(transpile_with_source_map(source, source_type, "<anonymous>")?.code)
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn tsx_becomes_create_element_calls() -> TestResult {
 
 #[test]
 fn syntax_error_diagnostic() -> TestResult {
-    let result = transpile(
+    let result = transpiled(
         include_str!("fixtures/syntax_error.js"),
         source_type("js")?.with_unambiguous(true),
     );

@@ -8,14 +8,6 @@ use oxc_parser::{Parser, ParserReturn};
 pub use oxc_sourcemap::OwnedSourceMap;
 pub use oxc_span::SourceType;
 
-/// Virtual file name used for diagnostics and the transformer's `source_path`.
-/// den transpiles in-memory buffers whose real path is not known at this layer.
-const ANONYMOUS_SOURCE: &str = "<anonymous>";
-
-pub fn transpile(source: &str, source_type: SourceType) -> Result<String, EasyOxcTranspilerError> {
-    Ok(transpile_with_source_map(source, source_type, ANONYMOUS_SOURCE)?.code)
-}
-
 /// Generated JavaScript and the map from it back to the authored source.
 pub struct TranspiledSource {
     pub code:       String,
@@ -27,7 +19,8 @@ pub struct TranspiledSource {
 pub fn transpile_with_source_map(
     source: &str, source_type: SourceType, source_name: &str,
 ) -> Result<TranspiledSource, EasyOxcTranspilerError> {
-    // ponytail: fresh arena per call; use AllocatorPool if profiling justifies it.
+    // ponytail: fresh arena per call; use AllocatorPool if profiling justifies
+    // it.
     let allocator = Allocator::new();
 
     #[cfg_attr(
