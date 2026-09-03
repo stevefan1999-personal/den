@@ -48,11 +48,9 @@ declare module "den:process" {
 declare module "den:sqlite" {
   export class Connection {
     static open(path: string): Connection;
-    static openInMemory?: () => Connection;
-    static open_in_memory?: () => Connection;
+    static open_in_memory(): Connection;
     execute(sql: string, params?: unknown[]): number;
-    queryRows?(sql: string, params?: unknown[]): unknown[][] | null;
-    query_rows?(sql: string, params?: unknown[]): unknown[][] | null;
+    query_rows(sql: string, params?: unknown[]): unknown[][] | null;
     close(): void;
   }
 }
@@ -68,30 +66,26 @@ declare module "den:networking" {
   export class TcpStream {
     static connect(addr: string): Promise<TcpStream>;
     read(bytes: number): Promise<Uint8Array>;
-    writeAll?(data: string | Uint8Array): Promise<void>;
-    write_all?(data: string | Uint8Array): Promise<void>;
+    write_all(data: string | Uint8Array): Promise<void>;
     shutdown(): Promise<void>;
   }
 
   export class TcpListener {
     static listen(addr: string): Promise<TcpListener>;
-    readonly localAddr?: SocketAddr;
-    readonly local_addr?: SocketAddr;
+    readonly local_addr: SocketAddr;
     accept(): Promise<[TcpStream, SocketAddr]>;
   }
 
   export class TlsStream {
     static connect(addr: string, domain: string, caPem?: string): Promise<TlsStream>;
     read(bytes: number): Promise<Uint8Array>;
-    writeAll?(data: string | Uint8Array): Promise<void>;
-    write_all?(data: string | Uint8Array): Promise<void>;
+    write_all(data: string | Uint8Array): Promise<void>;
     shutdown(): Promise<void>;
   }
 
   export class TlsListener {
     static listen(addr: string, certPem: string, keyPem: string): Promise<TlsListener>;
-    readonly localAddr?: SocketAddr;
-    readonly local_addr?: SocketAddr;
+    readonly local_addr: SocketAddr;
     accept(): Promise<[TlsStream, SocketAddr]>;
   }
 }
