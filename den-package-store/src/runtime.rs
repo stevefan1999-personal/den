@@ -11,34 +11,27 @@ use crate::{
 pub type HydrationResult<T> = std::result::Result<T, PackageHydrationError>;
 pub type ResolutionResult<T> = std::result::Result<T, PackageResolutionError>;
 
-/// Resource limits applied while copying a solved package graph out of SQLite.
-/// `max_bytes` includes module bodies and manifests verified during hydration.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HydrationLimits {
-    pub max_packages:         u64,
-    pub max_root_edges:       u64,
-    pub max_dependency_edges: u64,
-    pub max_exports:          u64,
-    pub max_files:            u64,
-    pub max_bytes:            u64,
-}
+// The two ceilings that hydration can actually blow through, both of them
+// bounded by what SQLite reports before a single row is materialized.
+const MAX_HYDRATED_FILES: u64 = 100_000;
+const MAX_HYDRATED_BYTES: u64 = 512 * 1024 * 1024;
 
-impl HydrationLimits {
-    #[must_use]
-    pub const fn new(max_files: u64, max_bytes: u64) -> Self {
-        Self {
-            max_packages: 10_000,
-            max_root_edges: 10_000,
-            max_dependency_edges: 100_000,
-            max_exports: 100_000,
-            max_files,
-            max_bytes,
-        }
+/// Charge a blob against the byte ceiling from its SQL `length()`, i.e. before
+/// its bytes are ever materialized in memory.
+fn charge_blob_bytes(total: u64, byte_count: i64, digest: BlobDigest) -> HydrationResult<u64> {
+    let charged = u64::try_from(byte_count).map_err(|_error| {
+        PackageStoreError::InvalidSnapshot(format!(
+            "blob {digest} has an invalid SQLite byte length {byte_count}"
+        ))
+    })?;
+    let total = total.saturating_add(charged);
+    if total > MAX_HYDRATED_BYTES {
+        return Err(PackageHydrationError::ByteLimitExceeded {
+            limit:     MAX_HYDRATED_BYTES,
+            attempted: total,
+        });
     }
-}
-
-impl Default for HydrationLimits {
-    fn default() -> Self { Self::new(100_000, 512 * 1024 * 1024) }
+    Ok(total)
 }
 
 /// Failures while turning a solver result into one immutable runtime view.
@@ -72,30 +65,10 @@ pub enum PackageHydrationError {
     DuplicateModuleUrl(String),
     #[error("invalid solved package edge: {0}")]
     InvalidSolutionEdge(String),
-    #[error("hydrating {attempted} packages exceeds the configured limit of {limit}")]
-    PackageLimitExceeded { limit: u64, attempted: u64 },
-    #[error("hydrated package count overflowed")]
-    PackageCountOverflow,
-    #[error("hydrating {attempted} root edges exceeds the configured limit of {limit}")]
-    RootEdgeLimitExceeded { limit: u64, attempted: u64 },
-    #[error("hydrated root-edge count overflowed")]
-    RootEdgeCountOverflow,
-    #[error("hydrating {attempted} dependency edges exceeds the configured limit of {limit}")]
-    DependencyLimitExceeded { limit: u64, attempted: u64 },
-    #[error("hydrated dependency-edge count overflowed")]
-    DependencyCountOverflow,
-    #[error("hydrating {attempted} exports exceeds the configured limit of {limit}")]
-    ExportLimitExceeded { limit: u64, attempted: u64 },
-    #[error("hydrated export count overflowed")]
-    ExportCountOverflow,
-    #[error("hydrating {attempted} files exceeds the configured limit of {limit}")]
+    #[error("hydrating {attempted} files exceeds the limit of {limit}")]
     FileLimitExceeded { limit: u64, attempted: u64 },
-    #[error("hydrated file count overflowed")]
-    FileCountOverflow,
-    #[error("hydrating {attempted} bytes exceeds the configured limit of {limit}")]
+    #[error("hydrating {attempted} bytes exceeds the limit of {limit}")]
     ByteLimitExceeded { limit: u64, attempted: u64 },
-    #[error("hydrated byte count overflowed")]
-    ByteCountOverflow,
     #[error(transparent)]
     InvalidStore(#[from] PackageStoreError),
     #[error(transparent)]
@@ -142,123 +115,6 @@ struct SnapshotPackage {
     exports:      BTreeMap<String, String>,
     files:        BTreeMap<String, String>,
     dependencies: BTreeMap<String, Vec<PackageKey>>,
-}
-
-#[derive(Debug)]
-struct HydrationBudget {
-    limits:       HydrationLimits,
-    dependencies: u64,
-    exports:      u64,
-    files:        u64,
-    bytes:        u64,
-}
-
-impl HydrationBudget {
-    const fn new(limits: HydrationLimits) -> Self {
-        Self {
-            limits,
-            dependencies: 0,
-            exports: 0,
-            files: 0,
-            bytes: 0,
-        }
-    }
-
-    fn check_packages(&self, count: usize) -> HydrationResult<()> {
-        let attempted =
-            u64::try_from(count).map_err(|_error| PackageHydrationError::PackageCountOverflow)?;
-        if attempted > self.limits.max_packages {
-            return Err(PackageHydrationError::PackageLimitExceeded {
-                limit: self.limits.max_packages,
-                attempted,
-            });
-        }
-        Ok(())
-    }
-
-    fn check_root_edges(&self, count: usize) -> HydrationResult<()> {
-        let attempted =
-            u64::try_from(count).map_err(|_error| PackageHydrationError::RootEdgeCountOverflow)?;
-        if attempted > self.limits.max_root_edges {
-            return Err(PackageHydrationError::RootEdgeLimitExceeded {
-                limit: self.limits.max_root_edges,
-                attempted,
-            });
-        }
-        Ok(())
-    }
-
-    fn check_solved_dependencies(&self, count: usize) -> HydrationResult<()> {
-        let attempted = u64::try_from(count)
-            .map_err(|_error| PackageHydrationError::DependencyCountOverflow)?;
-        if attempted > self.limits.max_dependency_edges {
-            return Err(PackageHydrationError::DependencyLimitExceeded {
-                limit: self.limits.max_dependency_edges,
-                attempted,
-            });
-        }
-        Ok(())
-    }
-
-    fn add_dependencies(&mut self, count: u64) -> HydrationResult<()> {
-        let attempted = self
-            .dependencies
-            .checked_add(count)
-            .ok_or(PackageHydrationError::DependencyCountOverflow)?;
-        if attempted > self.limits.max_dependency_edges {
-            return Err(PackageHydrationError::DependencyLimitExceeded {
-                limit: self.limits.max_dependency_edges,
-                attempted,
-            });
-        }
-        self.dependencies = attempted;
-        Ok(())
-    }
-
-    fn add_exports(&mut self, count: u64) -> HydrationResult<()> {
-        let attempted = self
-            .exports
-            .checked_add(count)
-            .ok_or(PackageHydrationError::ExportCountOverflow)?;
-        if attempted > self.limits.max_exports {
-            return Err(PackageHydrationError::ExportLimitExceeded {
-                limit: self.limits.max_exports,
-                attempted,
-            });
-        }
-        self.exports = attempted;
-        Ok(())
-    }
-
-    fn add_files(&mut self, count: u64) -> HydrationResult<()> {
-        let attempted = self
-            .files
-            .checked_add(count)
-            .ok_or(PackageHydrationError::FileCountOverflow)?;
-        if attempted > self.limits.max_files {
-            return Err(PackageHydrationError::FileLimitExceeded {
-                limit: self.limits.max_files,
-                attempted,
-            });
-        }
-        self.files = attempted;
-        Ok(())
-    }
-
-    fn add_bytes(&mut self, count: u64) -> HydrationResult<()> {
-        let attempted = self
-            .bytes
-            .checked_add(count)
-            .ok_or(PackageHydrationError::ByteCountOverflow)?;
-        if attempted > self.limits.max_bytes {
-            return Err(PackageHydrationError::ByteLimitExceeded {
-                limit: self.limits.max_bytes,
-                attempted,
-            });
-        }
-        self.bytes = attempted;
-        Ok(())
-    }
 }
 
 /// One verified module body loaded from the SQLite CAS.
@@ -469,28 +325,19 @@ impl PackageStore {
     /// Materialize all selected modules and verify their CAS content under one
     /// read transaction. The returned snapshot performs no I/O.
     pub fn hydrate_modules(&self, solved: &SolveResult) -> HydrationResult<PackageModuleSnapshot> {
-        self.hydrate_modules_with_limits(solved, HydrationLimits::default())
-    }
-
-    /// Materialize modules with explicit finite file and verified-byte limits.
-    pub fn hydrate_modules_with_limits(
-        &self, solved: &SolveResult, limits: HydrationLimits,
-    ) -> HydrationResult<PackageModuleSnapshot> {
-        let mut budget = HydrationBudget::new(limits);
-        budget.check_packages(solved.packages.len())?;
-        budget.check_root_edges(solved.roots.len())?;
-        budget.check_solved_dependencies(solved.dependencies.len())?;
         let selected = selected_packages(solved)?;
-        hydrate_on(&mut self.lock(), &selected, solved, &mut budget)
+        hydrate_on(&mut self.lock(), &selected, solved)
     }
 }
 
 fn hydrate_on(
     connection: &mut Connection, selected: &BTreeMap<PackageKey, ResolvedPackage>,
-    solved: &SolveResult, budget: &mut HydrationBudget,
+    solved: &SolveResult,
 ) -> HydrationResult<PackageModuleSnapshot> {
     let transaction = connection.transaction()?;
     let mut snapshot = PackageModuleSnapshot::default();
+    let mut files_read = 0_u64;
+    let mut bytes_read = 0_u64;
 
     let mut expected_dependency_edges = Vec::new();
     for (key, selected_package) in selected {
@@ -555,7 +402,6 @@ fn hydrate_on(
                 selected_package.registry_id,
             ))?;
 
-        budget.add_dependencies(count_rows(&transaction, "dependency", version_id)?)?;
         let dependency_rows = transaction
             .prepare_cached(
                 "SELECT kind, target_registry_id, package_name, requirement, alias FROM \
@@ -602,9 +448,16 @@ fn hydrate_on(
 
         // Manifests are CAS content too even though the runtime loader does
         // not otherwise retain them.
-        read_verified_blob(&transaction, &manifest_digest, budget)?;
+        read_verified_blob(&transaction, &manifest_digest, &mut bytes_read)?;
 
-        budget.add_files(count_rows(&transaction, "package_file", version_id)?)?;
+        files_read =
+            files_read.saturating_add(count_rows(&transaction, "package_file", version_id)?);
+        if files_read > MAX_HYDRATED_FILES {
+            return Err(PackageHydrationError::FileLimitExceeded {
+                limit:     MAX_HYDRATED_FILES,
+                attempted: files_read,
+            });
+        }
         let file_rows = transaction
             .prepare_cached(
                 "SELECT path, blob_digest, media_type FROM package_file WHERE version_id = ?1 \
@@ -621,7 +474,7 @@ fn hydrate_on(
         let mut files = BTreeMap::new();
         for (path, blob_digest, media_type) in file_rows {
             validation::module_path(&path)?;
-            let bytes = read_verified_blob(&transaction, &blob_digest, budget)?;
+            let bytes = read_verified_blob(&transaction, &blob_digest, &mut bytes_read)?;
             let url = module_url(
                 &registry_kind,
                 &registry_url,
@@ -642,7 +495,6 @@ fn hydrate_on(
             files.insert(path, url);
         }
 
-        budget.add_exports(count_rows(&transaction, "export", version_id)?)?;
         let export_rows = transaction
             .prepare_cached(
                 "SELECT name, target_path FROM export WHERE version_id = ?1 ORDER BY name",
@@ -687,7 +539,7 @@ fn hydrate_on(
     Ok(snapshot)
 }
 
-/// Row counts are checked against the budget before any row is loaded.
+/// The row count is charged against the file ceiling before any row is loaded.
 fn count_rows(connection: &Connection, table: &str, version_id: VersionId) -> HydrationResult<u64> {
     let count: i64 = connection.query_row(
         &format!("SELECT COUNT(*) FROM {table} WHERE version_id = ?1"),
@@ -837,7 +689,7 @@ fn validate_requirement(
 }
 
 fn read_verified_blob(
-    connection: &Connection, raw_digest: &[u8], budget: &mut HydrationBudget,
+    connection: &Connection, raw_digest: &[u8], bytes_read: &mut u64,
 ) -> HydrationResult<Vec<u8>> {
     let digest = BlobDigest::from_database(raw_digest.to_vec())?;
     let byte_count: i64 = connection
@@ -848,11 +700,7 @@ fn read_verified_blob(
         )
         .optional()?
         .ok_or(PackageStoreError::BlobNotFound(digest))?;
-    budget.add_bytes(u64::try_from(byte_count).map_err(|_error| {
-        PackageStoreError::InvalidSnapshot(format!(
-            "blob {digest} has an invalid SQLite byte length {byte_count}"
-        ))
-    })?)?;
+    *bytes_read = charge_blob_bytes(*bytes_read, byte_count, digest)?;
     let bytes: Vec<u8> = connection
         .query_row(
             "SELECT bytes FROM blob WHERE digest = ?1",
@@ -936,11 +784,11 @@ fn split_bare_specifier(specifier: &str) -> ResolutionResult<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{HydrationBudget, HydrationLimits, PackageHydrationError, PackageResolutionError};
+    use super::{PackageHydrationError, PackageResolutionError};
     use crate::{
-        DependencyKind, NewDependency, NewExport, NewPackageFile, NewRelease, PackageKey,
-        PackageModuleSnapshot, PackageStore, PackageStoreError, RegistryId, ResolvedPackage,
-        ResolvedRootEdge, RootRequirement, SolveResult, VersionId,
+        BlobDigest, DependencyKind, NewDependency, NewExport, NewPackageFile, NewRelease,
+        PackageKey, PackageModuleSnapshot, PackageStore, PackageStoreError, RegistryId,
+        ResolvedPackage, ResolvedRootEdge, RootRequirement, SolveResult, VersionId,
     };
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -972,142 +820,22 @@ mod tests {
     }
 
     #[test]
-    fn hydration_limits_accept_boundaries_and_reject_the_next_unit() -> TestResult {
-        let (store, selected) = fixture()?;
-        let total_bytes = u64::try_from(MAIN_SOURCE.len())?
-            .checked_add(u64::try_from(CHILD_SOURCE.len())?)
-            .ok_or("fixture byte count overflowed")?;
-
-        let mut exact = HydrationLimits::new(2, total_bytes);
-        exact.max_packages = 1;
-        exact.max_root_edges = 1;
-        exact.max_dependency_edges = 0;
-        exact.max_exports = 1;
+    fn hydration_charges_the_byte_ceiling_from_the_stored_blob_length() {
+        let digest = BlobDigest::for_bytes(b"probe");
         assert_eq!(
-            store
-                .hydrate_modules_with_limits(&selected, exact)?
-                .module_count(),
-            2
+            super::charge_blob_bytes(1, 2, digest).expect("under the ceiling"),
+            3
         );
         assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, HydrationLimits::new(1, total_bytes)),
-            Err(PackageHydrationError::FileLimitExceeded {
-                limit:     1,
-                attempted: 2,
-            })
-        ));
-        assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, HydrationLimits::new(2, total_bytes - 1)),
+            super::charge_blob_bytes(0, i64::MAX, digest),
             Err(PackageHydrationError::ByteLimitExceeded { limit, attempted })
-                if limit == total_bytes - 1 && attempted == total_bytes
+                if limit == super::MAX_HYDRATED_BYTES && attempted == i64::MAX.unsigned_abs()
         ));
-
-        let mut package_limited = exact;
-        package_limited.max_packages = 0;
         assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, package_limited),
-            Err(PackageHydrationError::PackageLimitExceeded {
-                limit:     0,
-                attempted: 1,
-            })
+            super::charge_blob_bytes(0, -1, digest),
+            Err(PackageHydrationError::InvalidStore(PackageStoreError::InvalidSnapshot(message)))
+                if message.contains("-1")
         ));
-        let mut root_limited = exact;
-        root_limited.max_root_edges = 0;
-        assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, root_limited),
-            Err(PackageHydrationError::RootEdgeLimitExceeded {
-                limit:     0,
-                attempted: 1,
-            })
-        ));
-        let mut export_limited = exact;
-        export_limited.max_exports = 0;
-        assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, export_limited),
-            Err(PackageHydrationError::ExportLimitExceeded {
-                limit:     0,
-                attempted: 1,
-            })
-        ));
-
-        let defaults = HydrationLimits::default();
-        assert!(defaults.max_packages > 0 && defaults.max_packages < u64::MAX);
-        assert!(defaults.max_root_edges > 0 && defaults.max_root_edges < u64::MAX);
-        assert!(defaults.max_dependency_edges > 0 && defaults.max_dependency_edges < u64::MAX);
-        assert!(defaults.max_exports > 0 && defaults.max_exports < u64::MAX);
-        assert!(defaults.max_files > 0 && defaults.max_files < u64::MAX);
-        assert!(defaults.max_bytes > 0 && defaults.max_bytes < u64::MAX);
-        Ok(())
-    }
-
-    #[test]
-    fn hydration_budget_reports_counter_overflow() {
-        let mut files = HydrationBudget::new(HydrationLimits::new(u64::MAX, u64::MAX));
-        files.files = u64::MAX;
-        assert!(matches!(
-            files.add_files(1),
-            Err(PackageHydrationError::FileCountOverflow)
-        ));
-
-        let mut bytes = HydrationBudget::new(HydrationLimits::new(u64::MAX, u64::MAX));
-        bytes.bytes = u64::MAX;
-        assert!(matches!(
-            bytes.add_bytes(1),
-            Err(PackageHydrationError::ByteCountOverflow)
-        ));
-
-        let mut dependencies = HydrationBudget::new(HydrationLimits::default());
-        dependencies.dependencies = u64::MAX;
-        assert!(matches!(
-            dependencies.add_dependencies(1),
-            Err(PackageHydrationError::DependencyCountOverflow)
-        ));
-
-        let mut exports = HydrationBudget::new(HydrationLimits::default());
-        exports.exports = u64::MAX;
-        assert!(matches!(
-            exports.add_exports(1),
-            Err(PackageHydrationError::ExportCountOverflow)
-        ));
-    }
-
-    #[test]
-    fn hydration_counts_dependency_rows_before_loading_them() -> TestResult {
-        let (store, selected) = fixture()?;
-        let package = selected
-            .packages
-            .first()
-            .ok_or("fixture has no selected package")?;
-        store.lock().execute(
-            "INSERT INTO dependency(version_id, ordinal, kind, target_registry_id, package_name, \
-             requirement, alias) VALUES (?1, 0, 'normal', ?2, '@scope/app', '*', NULL)",
-            [package.version_id.0, package.registry_id.0],
-        )?;
-        let limits = HydrationLimits {
-            max_dependency_edges: 0,
-            ..HydrationLimits::default()
-        };
-        assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, limits),
-            Err(PackageHydrationError::DependencyLimitExceeded {
-                limit:     0,
-                attempted: 1,
-            })
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn hydration_checks_blob_length_before_loading_corrupt_content() -> TestResult {
-        let (store, selected) = fixture()?;
-        store.lock().execute_batch(
-            "UPDATE blob SET bytes = X'00' WHERE digest IN (SELECT blob_digest FROM package_file)",
-        )?;
-        assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, HydrationLimits::new(2, 0)),
-            Err(PackageHydrationError::ByteLimitExceeded { limit: 0, .. })
-        ));
-        Ok(())
     }
 
     #[test]

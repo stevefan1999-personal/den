@@ -13,7 +13,7 @@ pub use model::{
 };
 pub(crate) use model::{SnapshotDependency, SnapshotVersion};
 pub use runtime::{
-    HydrationLimits, HydrationResult, PackageHydrationError, PackageModule, PackageModuleSnapshot,
+    HydrationResult, PackageHydrationError, PackageModule, PackageModuleSnapshot,
     PackageResolutionError, ResolutionResult,
 };
 pub use solve::RootRequirement;
