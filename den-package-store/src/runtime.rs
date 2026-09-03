@@ -279,9 +279,6 @@ pub struct PackageModule {
 
 impl PackageModule {
     #[must_use]
-    pub fn url(&self) -> &str { &self.url }
-
-    #[must_use]
     pub fn path(&self) -> &str { &self.path }
 
     #[must_use]
@@ -1207,7 +1204,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_exposes_only_roots_self_and_exact_dependencies() -> TestResult {
-        let (store, app_registry, dependency_registry) = edge_fixture().await?;
+        let (store, app_registry, dependency_registry, _) = edge_fixture().await?;
         let solved = store.repository_snapshot().await?.solve(&[
             RootRequirement::new(app_registry, "app", "*"),
             RootRequirement::new(app_registry, "shared", "*"),
@@ -1264,7 +1261,8 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_rejects_dependency_edges_that_disagree_with_metadata() -> TestResult {
-        let (store, app_registry, dependency_registry) = edge_fixture().await?;
+        let (store, app_registry, dependency_registry, incompatible_version_id) =
+            edge_fixture().await?;
         let solved = store
             .repository_snapshot()
             .await?
@@ -1276,14 +1274,6 @@ mod tests {
             Err(PackageHydrationError::InvalidSolutionEdge(_))
         ));
 
-        let incompatible = store
-            .package(dependency_registry, "shared")
-            .await?
-            .ok_or("missing dependency package")?
-            .versions
-            .into_iter()
-            .find(|version| version.version == "2.0.0")
-            .ok_or("missing incompatible dependency version")?;
         let mut incompatible_selection = solved;
         let selected = incompatible_selection
             .packages
@@ -1292,8 +1282,8 @@ mod tests {
                 package.registry_id == dependency_registry && package.package == "shared"
             })
             .ok_or("missing selected dependency package")?;
-        selected.version_id = incompatible.id;
-        selected.version = incompatible.version;
+        selected.version_id = incompatible_version_id;
+        selected.version = "2.0.0".to_owned();
         let edge = incompatible_selection
             .dependencies
             .iter_mut()
@@ -1301,7 +1291,7 @@ mod tests {
                 edge.target.registry_id == dependency_registry && edge.target.name == "shared"
             })
             .ok_or("missing dependency edge")?;
-        edge.target_version_id = incompatible.id;
+        edge.target_version_id = incompatible_version_id;
         assert!(matches!(
             store.hydrate_modules(&incompatible_selection).await,
             Err(PackageHydrationError::InvalidSolutionEdge(_))
@@ -1313,7 +1303,7 @@ mod tests {
         snapshot.module(url).map(super::PackageModule::bytes)
     }
 
-    async fn edge_fixture() -> TestResult<(PackageStore, RegistryId, RegistryId)> {
+    async fn edge_fixture() -> TestResult<(PackageStore, RegistryId, RegistryId, VersionId)> {
         let store = PackageStore::open_in_memory().await?;
         let app_registry = store.add_registry("npm", "https://app.example/").await?;
         let dependency_registry = store
@@ -1338,7 +1328,7 @@ mod tests {
             &[(dependency_registry, "secret", "^1")],
         )
         .await?;
-        insert_module_release(
+        let incompatible_version_id = insert_module_release(
             &store,
             dependency_registry,
             "shared",
@@ -1353,7 +1343,12 @@ mod tests {
             "^1",
         )])
         .await?;
-        Ok((store, app_registry, dependency_registry))
+        Ok((
+            store,
+            app_registry,
+            dependency_registry,
+            incompatible_version_id,
+        ))
     }
 
     async fn insert_module_release(

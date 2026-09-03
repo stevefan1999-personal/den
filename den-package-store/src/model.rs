@@ -51,13 +51,6 @@ impl fmt::Display for BlobDigest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Registry {
-    pub id:       RegistryId,
-    pub kind:     String,
-    pub base_url: String,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DependencyKind {
     Normal,
@@ -146,32 +139,6 @@ impl NewRelease {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PackageVersion {
-    pub id:            VersionId,
-    pub version:       String,
-    pub published_at:  Option<i64>,
-    pub yanked_reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Package {
-    pub registry_id: RegistryId,
-    pub name:        String,
-    pub versions:    Vec<PackageVersion>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Module {
-    pub registry_id: RegistryId,
-    pub package:     String,
-    pub version:     String,
-    pub path:        String,
-    pub digest:      BlobDigest,
-    pub media_type:  Option<String>,
-    pub bytes:       Vec<u8>,
-}
-
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PackageKey {
     pub registry_id: RegistryId,
@@ -205,14 +172,6 @@ pub struct SnapshotVersion {
 #[derive(Clone, Debug, Default)]
 pub struct RepositorySnapshot {
     pub(crate) packages: BTreeMap<PackageKey, Vec<SnapshotVersion>>,
-}
-
-impl RepositorySnapshot {
-    #[must_use]
-    pub fn package_count(&self) -> usize { self.packages.len() }
-
-    #[must_use]
-    pub fn version_count(&self) -> usize { self.packages.values().map(Vec::len).sum() }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

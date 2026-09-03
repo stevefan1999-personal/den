@@ -19,10 +19,9 @@ async fn creates_migrates_and_reopens_store() -> TestResult {
     let reopened = PackageStore::open(&path).await?;
     assert_eq!(
         reopened
-            .registry(registry_id)
-            .await?
-            .map(|registry| registry.kind),
-        Some("npm".to_owned())
+            .registry_id("npm", "https://registry.example/")
+            .await?,
+        Some(registry_id)
     );
     drop(reopened);
 
@@ -58,12 +57,12 @@ async fn relative_store_paths_create_and_reopen() -> TestResult {
     let store = PackageStore::create(&path).await?;
     let registry = store.add_registry("jsr", "https://jsr.example/").await?;
     drop(store);
-    assert!(
+    assert_eq!(
         PackageStore::open(&path)
             .await?
-            .registry(registry)
-            .await?
-            .is_some()
+            .registry_id("jsr", "https://jsr.example/")
+            .await?,
+        Some(registry)
     );
     Ok(())
 }
@@ -236,7 +235,6 @@ async fn blobs_deduplicate() -> TestResult {
     let store = PackageStore::open_in_memory().await?;
     let digest = store.insert_blob(b"original").await?;
     assert_eq!(store.insert_blob(b"original").await?, digest);
-    assert_eq!(store.read_blob(digest).await?, b"original");
     Ok(())
 }
 
@@ -293,15 +291,11 @@ async fn concurrent_stores_insert_distinct_versions_of_one_new_package() -> Test
     let (one, two) = tokio::join!(first.insert_release(&one), second.insert_release(&two));
     one?;
     two?;
-    assert_eq!(
-        first
-            .package(registry, "shared")
-            .await?
-            .ok_or("package missing")?
-            .versions
-            .len(),
-        2
-    );
+    let snapshot = first.repository_snapshot().await?;
+    for version in ["1.0.0", "2.0.0"] {
+        let solved = snapshot.solve(&[RootRequirement::new(registry, "shared", version)])?;
+        assert_eq!(versions(&solved.packages), vec![("shared", version)]);
+    }
     Ok(())
 }
 
@@ -322,7 +316,13 @@ async fn invalid_release_leaves_no_partial_package() -> TestResult {
         store.insert_release(&release).await,
         Err(PackageStoreError::InvalidModulePath { .. })
     ));
-    assert!(store.package(registry_id, "@scope/pkg").await?.is_none());
+    assert!(
+        store
+            .repository_snapshot()
+            .await?
+            .solve(&[RootRequirement::new(registry_id, "@scope/pkg", "*")])
+            .is_err()
+    );
     Ok(())
 }
 
@@ -340,60 +340,13 @@ async fn dangling_export_is_rejected_before_commit() -> TestResult {
         store.insert_release(&release).await,
         Err(PackageStoreError::MissingExportTarget { .. })
     ));
-    assert!(store.package(registry_id, "@scope/pkg").await?.is_none());
-    Ok(())
-}
-
-#[tokio::test]
-async fn module_round_trips_from_sqlite_cas() -> TestResult {
-    let store = PackageStore::open_in_memory().await?;
-    let registry_id = store.add_registry("jsr", "https://jsr.example/").await?;
-    let source = b"export const answer: number = 42;";
-    let digest = store.insert_blob(source).await?;
-    let mut release = NewRelease::new(registry_id, "@scope/pkg", "1.0.0");
-    release.exports.push(NewExport {
-        name:   ".".to_owned(),
-        target: "src/mod.ts".to_owned(),
-    });
-    release.files.push(NewPackageFile {
-        path:       "src/mod.ts".to_owned(),
-        blob:       digest,
-        media_type: Some("text/typescript".to_owned()),
-        mode:       0o644,
-    });
-    store.insert_release(&release).await?;
-
-    let module = store
-        .module(registry_id, "@scope/pkg", "1.0.0", "src/mod.ts")
-        .await?
-        .ok_or("module was not returned")?;
-    assert_eq!(module.digest, digest);
-    assert_eq!(module.bytes, source);
-    assert_eq!(module.media_type.as_deref(), Some("text/typescript"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn prune_removes_only_unreferenced_blobs() -> TestResult {
-    let store = PackageStore::open_in_memory().await?;
-    let registry_id = store.add_registry("jsr", "https://jsr.example/").await?;
-    let orphan = store.insert_blob(b"orphan").await?;
-    let live = store.insert_blob(b"live").await?;
-    let mut release = NewRelease::new(registry_id, "live-package", "1.0.0");
-    release.files.push(NewPackageFile {
-        path:       "mod.js".to_owned(),
-        blob:       live,
-        media_type: Some("text/javascript".to_owned()),
-        mode:       0o644,
-    });
-    store.insert_release(&release).await?;
-
-    assert!(store.prune_unreferenced_blobs().await? >= 1);
-    assert!(matches!(
-        store.read_blob(orphan).await,
-        Err(PackageStoreError::BlobNotFound(digest)) if digest == orphan
-    ));
-    assert_eq!(store.read_blob(live).await?, b"live");
+    assert!(
+        store
+            .repository_snapshot()
+            .await?
+            .solve(&[RootRequirement::new(registry_id, "@scope/pkg", "*")])
+            .is_err()
+    );
     Ok(())
 }
 

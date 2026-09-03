@@ -9,9 +9,9 @@ mod validation;
 
 pub use error::{PackageStoreError, Result};
 pub use model::{
-    BlobDigest, DependencyKind, Module, NewDependency, NewExport, NewPackageFile, NewRelease,
-    Package, PackageKey, PackageVersion, Registry, RegistryId, RepositorySnapshot,
-    ResolvedDependencyEdge, ResolvedPackage, ResolvedRootEdge, SolveResult, VersionId,
+    BlobDigest, DependencyKind, NewDependency, NewExport, NewPackageFile, NewRelease, PackageKey,
+    RegistryId, RepositorySnapshot, ResolvedDependencyEdge, ResolvedPackage, ResolvedRootEdge,
+    SolveResult, VersionId,
 };
 pub(crate) use model::{SnapshotDependency, SnapshotVersion};
 pub use runtime::{

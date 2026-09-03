@@ -1,4 +1,4 @@
-use super::{BlobDigest, DependencyKind, PackageKey, RegistryId, RepositorySnapshot, VersionId};
+use super::{BlobDigest, DependencyKind, PackageKey, RegistryId, VersionId};
 use crate::PackageStoreError;
 
 #[test]
@@ -44,7 +44,4 @@ fn identifiers_and_empty_snapshots_display_their_keys() {
         name:        "pkg".into(),
     };
     assert_eq!(format!("{key}"), "2:pkg");
-    let snapshot = RepositorySnapshot::default();
-    assert_eq!(snapshot.package_count(), 0);
-    assert_eq!(snapshot.version_count(), 0);
 }

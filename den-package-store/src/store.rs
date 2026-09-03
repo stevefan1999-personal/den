@@ -10,15 +10,14 @@ use sea_orm::{
     ActiveValue::Set,
     ColumnTrait as _, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
     EntityTrait as _, QueryFilter as _, QueryOrder as _, Statement, TransactionTrait as _,
-    sea_query::{ColumnType, OnConflict, Query, TableCreateStatement},
+    sea_query::{ColumnType, OnConflict, TableCreateStatement},
     sqlx::sqlite::SqliteSynchronous,
 };
 use sea_orm_migration::{MigratorTrait as _, SchemaManager};
 
 use crate::{
-    BlobDigest, Module, NewRelease, Package, PackageKey, PackageStoreError, PackageVersion,
-    Registry, RegistryId, RepositorySnapshot, Result, SnapshotDependency, SnapshotVersion,
-    VersionId,
+    BlobDigest, NewRelease, PackageKey, PackageStoreError, RegistryId, RepositorySnapshot, Result,
+    SnapshotDependency, SnapshotVersion, VersionId,
     entity::{blob, dependency, package, package_export, package_file, package_version, registry},
     migration::{Migrator, expected_tables, install_tracking_table},
     validation,
@@ -65,8 +64,9 @@ impl PackageStore {
         database_url: String, in_memory: bool, file: Option<(std::path::PathBuf, bool)>,
     ) -> Result<Self> {
         let mut options = ConnectOptions::new(database_url);
-        // ponytail: one pooled connection serializes store work; raise this when
-        // concurrent package hydration proves it needs more read throughput.
+        // ponytail: one pooled connection serializes store work; raise this
+        // when concurrent package hydration proves it needs more read
+        // throughput.
         options
             .max_connections(1)
             .min_connections(1)
@@ -135,44 +135,8 @@ impl PackageStore {
             .transpose()
     }
 
-    pub async fn registry(&self, id: RegistryId) -> Result<Option<Registry>> {
-        Ok(registry::Entity::find_by_id(id.0)
-            .one(&self.database)
-            .await?
-            .map(|model| {
-                Registry {
-                    id,
-                    kind: model.kind,
-                    base_url: model.base_url,
-                }
-            }))
-    }
-
     pub async fn insert_blob(&self, bytes: &[u8]) -> Result<BlobDigest> {
         insert_blob_on(&self.database, bytes).await
-    }
-
-    pub async fn read_blob(&self, digest: BlobDigest) -> Result<Vec<u8>> {
-        read_blob_on(&self.database, digest).await
-    }
-
-    /// Delete content that is not referenced by a package file or manifest.
-    /// Collection is explicit so readers never lose live content mid-run.
-    pub async fn prune_unreferenced_blobs(&self) -> Result<u64> {
-        let file_blobs = Query::select()
-            .column(package_file::Column::BlobDigest)
-            .from(package_file::Entity)
-            .to_owned();
-        let manifests = Query::select()
-            .column(package_version::Column::ManifestDigest)
-            .from(package_version::Entity)
-            .to_owned();
-        let deleted = blob::Entity::delete_many()
-            .filter(blob::Column::Digest.not_in_subquery(file_blobs))
-            .filter(blob::Column::Digest.not_in_subquery(manifests))
-            .exec(&self.database)
-            .await?;
-        Ok(deleted.rows_affected)
     }
 
     pub async fn insert_release(&self, release: &NewRelease) -> Result<VersionId> {
@@ -281,99 +245,6 @@ impl PackageStore {
         }
         transaction.commit().await?;
         Ok(version_id)
-    }
-
-    pub async fn package(&self, registry_id: RegistryId, name: &str) -> Result<Option<Package>> {
-        validation::package_name(name)?;
-        let Some(package_model) = package::Entity::find()
-            .filter(package::Column::RegistryId.eq(registry_id.0))
-            .filter(package::Column::Name.eq(name))
-            .one(&self.database)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let models = package_version::Entity::find()
-            .filter(package_version::Column::PackageId.eq(package_model.id))
-            .all(&self.database)
-            .await?;
-        let mut parsed_versions = Vec::with_capacity(models.len());
-        for model in models {
-            let parsed = SemverVersion::parse(&model.version).map_err(|error| {
-                PackageStoreError::InvalidSnapshot(format!(
-                    "version `{}` cannot be parsed: {error}",
-                    model.version
-                ))
-            })?;
-            parsed_versions.push((parsed, PackageVersion {
-                id:            VersionId(model.id),
-                version:       model.version,
-                published_at:  model.published_at,
-                yanked_reason: model.yanked_reason,
-            }));
-        }
-        parsed_versions.sort_by(|(left_parsed, left), (right_parsed, right)| {
-            right_parsed
-                .cmp(left_parsed)
-                .then_with(|| left.version.cmp(&right.version))
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        Ok(Some(Package {
-            registry_id,
-            name: name.to_owned(),
-            versions: parsed_versions
-                .into_iter()
-                .map(|(_, version)| version)
-                .collect(),
-        }))
-    }
-
-    pub async fn module(
-        &self, registry_id: RegistryId, package_name: &str, version: &str, path: &str,
-    ) -> Result<Option<Module>> {
-        validation::package_name(package_name)?;
-        validation::module_path(path)?;
-        SemverVersion::parse(version).map_err(|error| {
-            PackageStoreError::InvalidVersion {
-                version: version.to_owned(),
-                reason:  error.to_string(),
-            }
-        })?;
-
-        let Some(package_model) = package::Entity::find()
-            .filter(package::Column::RegistryId.eq(registry_id.0))
-            .filter(package::Column::Name.eq(package_name))
-            .one(&self.database)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(version_model) = package_version::Entity::find()
-            .filter(package_version::Column::PackageId.eq(package_model.id))
-            .filter(package_version::Column::Version.eq(version))
-            .one(&self.database)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(file_model) =
-            package_file::Entity::find_by_id((version_model.id, path.to_owned()))
-                .one(&self.database)
-                .await?
-        else {
-            return Ok(None);
-        };
-        let digest = BlobDigest::from_database(file_model.blob_digest)?;
-        let bytes = read_blob_on(&self.database, digest).await?;
-        Ok(Some(Module {
-            registry_id,
-            package: package_name.to_owned(),
-            version: version.to_owned(),
-            path: path.to_owned(),
-            digest,
-            media_type: file_model.media_type,
-            bytes,
-        }))
     }
 
     pub async fn repository_snapshot(&self) -> Result<RepositorySnapshot> {
@@ -900,8 +771,11 @@ mod tests {
                 ],
             ))
             .await?;
+        // `insert_blob_on` re-reads and hash-verifies what is already stored,
+        // so the tampered row is caught on the way in just as it was on
+        // the way out.
         assert!(matches!(
-            store.read_blob(digest).await,
+            store.insert_blob(b"original").await,
             Err(PackageStoreError::BlobCorrupt { expected, .. }) if expected == digest
         ));
         assert!(
@@ -932,7 +806,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(store.package(registry, "rollback").await?.is_none());
+        let packages = store
+            .database
+            .query_one_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT COUNT(*) AS count FROM package".to_owned(),
+            ))
+            .await?
+            .ok_or("count returned no row")?
+            .try_get::<i64>("", "count")?;
+        assert_eq!(packages, 0);
         Ok(())
     }
 }
