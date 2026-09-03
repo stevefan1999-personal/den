@@ -11,11 +11,10 @@ license.workspace = true
 keywords.workspace = true
 
 [dependencies]
-ipnet = { workspace = true, features = ["serde"] }
+ipnet.workspace = true
 rquickjs = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
-url = { workspace = true, features = ["serde"] }
+url.workspace = true
 
 [features]
 rquickjs = ["dep:rquickjs"]

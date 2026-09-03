@@ -29,13 +29,11 @@ use std::{
 };
 
 use ipnet::IpNet;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use thiserror::Error;
 use url::{Host, Origin, Url};
 
 /// A capability controlled by a policy.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Capability {
     Read,
     Write,
@@ -67,16 +65,14 @@ impl fmt::Display for Capability {
 }
 
 /// Whether a matching rule grants or rejects access.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Effect {
     Allow,
     Deny,
 }
 
 /// The result of a policy query.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Decision {
     Allowed,
     Denied,
@@ -111,8 +107,7 @@ pub enum ScopeError {
 
 /// A normalized absolute path. Scope matching uses component boundaries, so
 /// `/srv/app` does not match `/srv/application`.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct NormalizedPath(PathBuf);
 
 impl NormalizedPath {
@@ -160,19 +155,12 @@ impl NormalizedPath {
     pub fn contains(&self, requested: &Self) -> bool { requested.0.starts_with(&self.0) }
 }
 
-impl<'de> Deserialize<'de> for NormalizedPath {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(PathBuf::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
-
 impl fmt::Display for NormalizedPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.display().fmt(f) }
 }
 
 /// A non-empty environment, system-information, or secret name.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ResourceName(String);
 
 impl ResourceName {
@@ -191,19 +179,12 @@ impl ResourceName {
     pub fn as_str(&self) -> &str { &self.0 }
 }
 
-impl<'de> Deserialize<'de> for ResourceName {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
-
 impl fmt::Display for ResourceName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
 }
 
 /// Exact or prefix matching for named resources.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "match", content = "value", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum NameScope {
     Exact(ResourceName),
     Prefix(ResourceName),
@@ -245,8 +226,7 @@ impl NameScope {
 }
 
 /// A normalized DNS name or IP address.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct NormalizedHost(String);
 
 impl NormalizedHost {
@@ -283,12 +263,6 @@ impl NormalizedHost {
 
     #[must_use]
     pub fn as_str(&self) -> &str { &self.0 }
-}
-
-impl<'de> Deserialize<'de> for NormalizedHost {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
 }
 
 impl fmt::Display for NormalizedHost {
@@ -329,32 +303,13 @@ impl Cidr {
     }
 }
 
-impl Serialize for Cidr {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Cidr {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::parse(&String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
-
 impl fmt::Display for Cidr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
 }
 
 /// An inclusive network port range.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "PortRangeWire")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct PortRange {
-    start: u16,
-    end:   u16,
-}
-
-#[derive(Deserialize)]
-struct PortRangeWire {
     start: u16,
     end:   u16,
 }
@@ -386,16 +341,8 @@ impl PortRange {
     pub fn contains(self, port: u16) -> bool { (self.start..=self.end).contains(&port) }
 }
 
-impl TryFrom<PortRangeWire> for PortRange {
-    type Error = ScopeError;
-
-    fn try_from(value: PortRangeWire) -> Result<Self, Self::Error> {
-        Self::new(value.start, value.end)
-    }
-}
-
 /// A host or network combined with an inclusive port range.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct NetworkScope {
     host:  HostScope,
     ports: PortRange,
@@ -430,8 +377,7 @@ impl NetworkScope {
 
 /// Host matching for a network rule. CIDR rules match concrete IP targets;
 /// an enforcer resolving DNS must check every resolved address before use.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "match", content = "value", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum HostScope {
     Exact(NormalizedHost),
     Cidr(Cidr),
@@ -455,11 +401,10 @@ impl HostScope {
 }
 
 /// A concrete host and port requested by a network operation.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct NetworkTarget {
     host:     NormalizedHost,
     port:     u16,
-    #[serde(default)]
     resolved: Vec<IpAddr>,
 }
 
@@ -543,8 +488,7 @@ impl fmt::Display for NetworkTarget {
 }
 
 /// A canonical, non-opaque URL origin.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct UrlOrigin(String);
 
 impl UrlOrigin {
@@ -572,19 +516,12 @@ impl UrlOrigin {
     }
 }
 
-impl<'de> Deserialize<'de> for UrlOrigin {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
-
 impl fmt::Display for UrlOrigin {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
 }
 
 /// A canonical hierarchical URL prefix with path-component matching.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct UrlPrefix(Url);
 
 impl UrlPrefix {
@@ -617,19 +554,12 @@ impl UrlPrefix {
     }
 }
 
-impl<'de> Deserialize<'de> for UrlPrefix {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
-
 impl fmt::Display for UrlPrefix {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.0.as_str()) }
 }
 
 /// Origin-wide or hierarchical-prefix matching for module imports.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "match", content = "value", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum ImportScope {
     Exact(ImportTarget),
     Origin(UrlOrigin),
@@ -660,8 +590,7 @@ impl ImportScope {
 }
 
 /// A canonical URL requested by module loading.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ImportTarget(Url);
 
 impl ImportTarget {
@@ -694,12 +623,6 @@ impl ImportTarget {
     pub const fn as_url(&self) -> &Url { &self.0 }
 }
 
-impl<'de> Deserialize<'de> for ImportTarget {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(deserializer)?).map_err(D::Error::custom)
-    }
-}
-
 impl fmt::Display for ImportTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.0.as_str()) }
 }
@@ -711,8 +634,7 @@ fn same_url_authority(left: &Url, right: &Url) -> bool {
 }
 
 /// The normalized resource scope of one rule.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "capability", content = "scope", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Scope {
     All(Capability),
     Read(NormalizedPath),
@@ -770,8 +692,7 @@ impl Scope {
 }
 
 /// A concrete capability request.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
-#[serde(tag = "capability", content = "resource", rename_all = "kebab-case")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Request {
     Read(NormalizedPath),
     Write(NormalizedPath),
@@ -874,7 +795,7 @@ impl fmt::Display for Request {
 }
 
 /// A stable, typed denial returned by [`Policy::check`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PermissionDenied {
     pub capability: Capability,
     pub requested:  Request,
@@ -898,7 +819,7 @@ impl fmt::Display for PermissionDenied {
 impl std::error::Error for PermissionDenied {}
 
 /// One explicit allow or deny rule.
-#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Rule {
     effect: Effect,
     scope:  Scope,
@@ -930,13 +851,13 @@ impl Rule {
     fn matches(&self, requested: &Request) -> bool { self.scope.matches(self.effect, requested) }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Layer {
     rules: Vec<Rule>,
 }
 
-/// A serializable policy. Empty policies deny every request.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+/// A policy. Empty policies deny every request.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Policy {
     layers: Vec<Layer>,
 }
