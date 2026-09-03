@@ -1,8 +1,6 @@
 //! Shared Fetch body extract / consume. Stream errors stay JS exceptions.
 
-use std::{cell::RefCell, rc::Rc};
-
-use den_util::{BufferSource, Probe as _, instance_of_global};
+use den_util::{BufferSource, instance_of_global};
 use rquickjs::{
     Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs as _, Object, Result,
     TypedArray, Value,
@@ -266,41 +264,6 @@ pub fn tee_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<(Value<'js>
     ))
 }
 
-pub fn text_stream_from_byte_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Value<'js>> {
-    let source = Object::new(ctx.clone())?;
-    source.set("_stream", stream)?;
-    source.set("_read", false)?;
-    source.set(
-        "pull",
-        Function::new(
-            ctx.clone(),
-            Async(
-                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
-                    let source = this.0;
-                    async move {
-                        let started: bool = source.get("_read")?;
-                        if started {
-                            return Ok(());
-                        }
-                        source.set("_read", true)?;
-                        let stream: Value = source.get("_stream")?;
-                        let bytes = read_stream(&ctx, stream).await?;
-                        if !bytes.is_empty() {
-                            controller_call(
-                                &controller,
-                                "enqueue",
-                                Some(utf8_text(&bytes).into_js(&ctx)?),
-                            )?;
-                        }
-                        controller_call(&controller, "close", None)
-                    }
-                },
-            ),
-        )?,
-    )?;
-    readable_from_source(ctx, source)
-}
-
 pub fn blob_from_bytes<'js>(ctx: &Ctx<'js>, bytes: Vec<u8>, mime: &str) -> Result<Value<'js>> {
     let ctor: Constructor = ctx
         .globals()
@@ -390,15 +353,6 @@ pub fn parse_json_js<'js>(ctx: &Ctx<'js>, bytes: &[u8]) -> Result<Value<'js>> {
     ctx.json_parse(utf8_text(bytes))
 }
 
-pub fn text_to_stream<'js>(ctx: &Ctx<'js>, text: &str) -> Result<Value<'js>> {
-    let queue = if text.is_empty() {
-        Vec::new()
-    } else {
-        vec![text.into_js(ctx)?]
-    };
-    ReadableStream::from_queue(ctx, queue).map(rquickjs::Class::into_value)
-}
-
 pub fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
     if is_readable_stream(ctx, &value) {
         return Ok(value);
@@ -425,46 +379,6 @@ pub fn value_as_body_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Va
         }
     }
     ReadableStream::from_queue(ctx, Vec::new()).map(rquickjs::Class::into_value)
-}
-
-pub fn text_chunks_to_stream<'js>(ctx: &Ctx<'js>, host: Value<'js>) -> Result<Value<'js>> {
-    let decoder = ctx.probe(|| den_util::construct::<_, Object>(ctx, "TextDecoder", ()).ok());
-    let remainder = Rc::new(RefCell::new(Vec::new()));
-    let source = Object::new(ctx.clone())?;
-    source.set("_host", host)?;
-    if let Some(decoder) = decoder {
-        source.set("_decoder", decoder)?;
-    }
-    source.set(
-        "pull",
-        Function::new(
-            ctx.clone(),
-            Async({
-                let remainder = Rc::clone(&remainder);
-                move |this: This<Object<'js>>, ctx: Ctx<'js>, controller: Object<'js>| {
-                    let host: Result<Value<'js>> = this.0.get("_host");
-                    let decoder: Option<Object<'js>> = this.0.get("_decoder").ok();
-                    let remainder = Rc::clone(&remainder);
-                    async move {
-                        let host = host?;
-                        pull_text_chunk(&ctx, &host, &controller, decoder.as_ref(), &remainder)
-                            .await
-                    }
-                }
-            }),
-        )?,
-    )?;
-    source.set(
-        "cancel",
-        Function::new(ctx.clone(), {
-            move |this: This<Object<'js>>| {
-                let host: Value = this.0.get("_host")?;
-                host_cancel_body(&host);
-                Ok::<(), rquickjs::Error>(())
-            }
-        })?,
-    )?;
-    readable_from_source(ctx, source)
 }
 
 pub fn promise_resolve<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {
@@ -599,44 +513,6 @@ async fn pull_http_chunk<'js>(
     }
     let next = host_read_chunk(ctx, host).await?;
     apply_http_chunk(ctx, controller, next, false).map(|_| ())
-}
-
-fn decode_utf8_chunk(remainder: &mut Vec<u8>, incoming: &[u8]) -> String {
-    remainder.extend_from_slice(incoming);
-    let take = match std::str::from_utf8(remainder) {
-        Err(error) if error.error_len().is_none() => error.valid_up_to(),
-        Ok(_) | Err(_) => remainder.len(),
-    };
-    let text = String::from_utf8_lossy(remainder.get(..take).unwrap_or_default()).into_owned();
-    remainder.drain(..take);
-    text
-}
-
-async fn pull_text_chunk<'js>(
-    ctx: &Ctx<'js>, host: &Value<'js>, controller: &Object<'js>, decoder: Option<&Object<'js>>,
-    remainder: &Rc<RefCell<Vec<u8>>>,
-) -> Result<()> {
-    let chunk = host_read_chunk(ctx, host).await?;
-    if chunk.is_null() || chunk.is_undefined() {
-        controller_call(controller, "close", None)?;
-        return Ok(());
-    }
-    let text = if let Some(decoder) = decoder {
-        let decode: Function = decoder.get("decode")?;
-        let opts = Object::new(ctx.clone())?;
-        opts.set("stream", true)?;
-        decode.call::<_, String>((This(decoder.clone()), chunk, opts))?
-    } else {
-        let bytes = if let Ok(buffer) = ArrayBuffer::from_js(ctx, chunk.clone()) {
-            copy_buffer(ctx, buffer.as_bytes())?
-        } else if BufferSource::is_array_buffer_view(ctx, &chunk)? {
-            BufferSource::view_bytes(ctx, &chunk)?
-        } else {
-            Vec::new()
-        };
-        decode_utf8_chunk(&mut remainder.borrow_mut(), &bytes)
-    };
-    controller_call(controller, "enqueue", Some(text.into_js(ctx)?))
 }
 
 fn array_buffer_method_stream<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'js>> {

@@ -600,40 +600,6 @@ impl<'js> Request<'js> {
         })
     }
 
-    pub fn text_stream(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Value<'js>> {
-        let mut request = this.0.borrow_mut();
-        if request.body.is_none() && request.body_stream.is_none() {
-            return super::body::text_to_stream(&ctx, "");
-        }
-        if request.is_body_used() || request.body_stream.as_ref().is_some_and(stream_is_locked) {
-            return Err(Exception::throw_type(&ctx, "Already read"));
-        }
-        let stream = match request.body_stream.clone() {
-            Some(stream) => stream,
-            None => {
-                value_as_body_stream(
-                    &ctx,
-                    request
-                        .body
-                        .clone()
-                        .ok_or_else(|| Exception::throw_type(&ctx, "Body is unavailable"))?,
-                )?
-            }
-        };
-        if stream_is_locked(&stream) || stream_is_disturbed(&stream) {
-            return Err(Exception::throw_type(&ctx, "Already read"));
-        }
-        if let Some(object) = stream.as_object()
-            && let Some(readable) = Class::<crate::streams::ReadableStream>::from_object(object)
-        {
-            crate::streams::ReadableStream::lock_for_consume(&readable, &ctx)?;
-        }
-        request.body_used = true;
-        request.body_stream = Some(stream.clone());
-        drop(request);
-        super::body::text_stream_from_byte_stream(&ctx, stream)
-    }
-
     pub fn blob(this: This<Class<'js, Request<'js>>>, ctx: Ctx<'js>) -> Result<Promise<'js>> {
         let mime = this
             .0

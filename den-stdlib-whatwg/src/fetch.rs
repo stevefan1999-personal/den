@@ -723,46 +723,6 @@ impl<'js> Response<'js> {
         Self::consume_promise(this.0, ctx, |bytes, _ctx| Ok(body::utf8_text(&bytes)))
     }
 
-    pub fn text_stream(&mut self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
-        if self.body_used()
-            || self
-                .body_stream
-                .as_ref()
-                .is_some_and(body::stream_is_locked)
-        {
-            return Err(Exception::throw_type(&ctx, "Already read"));
-        }
-        if !self.has_body() {
-            return body::text_to_stream(&ctx, "");
-        }
-        if let Some(stream) = self.body_stream.clone() {
-            if body::stream_is_locked(&stream) || body::stream_is_disturbed(&stream) {
-                return Err(Exception::throw_type(&ctx, "Already read"));
-            }
-            if let Some(object) = stream.as_object()
-                && let Some(readable) = Class::<ReadableStream>::from_object(object)
-            {
-                ReadableStream::lock_for_consume(&readable, &ctx)?;
-            }
-            self.consume_started.set(true);
-            return body::text_stream_from_byte_stream(&ctx, stream);
-        }
-        // Decode before marking used: `mark_used` borrows `inner` mutably, so
-        // holding the read borrow across it aborts the process.
-        let buffered = match &*self.inner.borrow() {
-            ResponseBody::Bytes(bytes) => Some(body::utf8_text(bytes)),
-            _ => None,
-        };
-        if let Some(text) = buffered {
-            self.mark_used();
-            self.body_stream = None;
-            return body::text_to_stream(&ctx, &text);
-        }
-        let host = Class::instance(ctx.clone(), self.clone())?.into_value();
-        self.consume_started.set(true);
-        body::text_chunks_to_stream(&ctx, host)
-    }
-
     #[qjs(rename = "_readChunk")]
     pub async fn read_chunk(&self, ctx: Ctx<'js>) -> Result<JsValue<'js>> {
         if let Some(reason) = Self::aborted_reason(&self.abort_signal, &ctx) {

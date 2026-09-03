@@ -105,11 +105,6 @@ async fn a_stream_request_body_is_uploaded_without_buffering() -> eyre::Result<(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn text_stream_decodes_a_buffered_body_without_aborting() -> eyre::Result<()> {
-    run("response_text_stream.js").await
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn xhr_get_and_post_against_den_http() -> eyre::Result<()> { run("xhr.js").await }
 
 #[tokio::test(flavor = "multi_thread")]
