@@ -24,30 +24,10 @@ pub struct Headers {
     #[qjs(skip_trace)]
     pub(crate) cookies: Vec<String>,
     #[qjs(skip_trace)]
-    pub(crate) guard:   u8,
+    pub(crate) guard:   Guard,
 }
 
 impl Headers {
-    pub(crate) const fn guard(&self) -> Guard {
-        match self.guard {
-            1 => Guard::Immutable,
-            2 => Guard::Request,
-            3 => Guard::RequestNoCors,
-            4 => Guard::Response,
-            _ => Guard::None,
-        }
-    }
-
-    pub(crate) const fn set_guard(&mut self, guard: Guard) {
-        self.guard = match guard {
-            Guard::None => 0,
-            Guard::Immutable => 1,
-            Guard::Request => 2,
-            Guard::RequestNoCors => 3,
-            Guard::Response => 4,
-        };
-    }
-
     pub(crate) fn pairs(&self) -> Vec<(String, String)> {
         self.map
             .iter()
@@ -61,7 +41,7 @@ impl Headers {
         let mut headers = Self {
             map:     IndexMap::new(),
             cookies: Vec::new(),
-            guard:   0,
+            guard:   Guard::None,
         };
         for (name, value) in pairs {
             headers.append_combined(
@@ -73,13 +53,11 @@ impl Headers {
     }
 
     pub(crate) fn empty_with(guard: Guard) -> Self {
-        let mut headers = Self {
-            map:     IndexMap::new(),
+        Self {
+            map: IndexMap::new(),
             cookies: Vec::new(),
-            guard:   0,
-        };
-        headers.set_guard(guard);
-        headers
+            guard,
+        }
     }
 
     pub(crate) fn from_init<'js>(
@@ -263,7 +241,7 @@ impl Headers {
     }
 
     fn check_guard(&self, ctx: &Ctx<'_>, name: &str, value: &str, combine: bool) -> Result<bool> {
-        match self.guard() {
+        match self.guard {
             Guard::None => Ok(true),
             Guard::Immutable => Err(Exception::throw_type(ctx, "Headers are immutable")),
             Guard::Request => Ok(!is_forbidden_request_header(name, value)),
@@ -286,15 +264,7 @@ impl Headers {
 impl Headers {
     #[qjs(constructor)]
     pub fn new<'js>(ctx: Ctx<'js>, init: Opt<Value<'js>>) -> Result<Self> {
-        let mut headers = Self {
-            map:     IndexMap::new(),
-            cookies: Vec::new(),
-            guard:   0,
-        };
-        if let Some(init) = init.0.filter(|value| !value.is_undefined()) {
-            headers.fill(&ctx, init)?;
-        }
-        Ok(headers)
+        Self::from_init(ctx, init.0, Guard::None)
     }
 
     pub fn append(

@@ -66,7 +66,7 @@ pub struct Request<'js> {
 impl<'js> Request<'js> {
     pub fn from_server(ctx: &Ctx<'js>, request: ServerRequest<'js>) -> Result<Self> {
         let mut headers = Headers::from_pairs(request.headers);
-        headers.set_guard(Guard::Request);
+        headers.guard = Guard::Request;
         let body = if request.body.is_empty() {
             None
         } else {
@@ -667,7 +667,7 @@ impl<'js> Request<'js> {
                 request.follow_source.clone()
             };
         let signal = Self::following_signal(&ctx, follow_source.clone())?;
-        let guard = request.headers.borrow().guard();
+        let guard = request.headers.borrow().guard;
         Ok(Self {
             url: request.url.clone(),
             method: request.method.clone(),

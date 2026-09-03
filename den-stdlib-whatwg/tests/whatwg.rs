@@ -141,3 +141,8 @@ async fn body_consumers_reject_with_the_spec_type_error() -> eyre::Result<()> {
 async fn clone_copies_every_response_field() -> eyre::Result<()> {
     run("response_clone_fields.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn headers_guards_survive_request_response_and_copy() -> eyre::Result<()> {
+    run("headers_guard.js").await
+}

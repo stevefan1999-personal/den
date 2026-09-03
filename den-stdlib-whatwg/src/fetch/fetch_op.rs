@@ -1780,7 +1780,7 @@ impl<'js> HttpFetch<'_, 'js> {
             "basic"
         };
         let mut header_obj = Headers::from_pairs(pairs.clone());
-        header_obj.set_guard(headers::Guard::Immutable);
+        header_obj.guard = headers::Guard::Immutable;
         let headers = Class::instance(ctx.clone(), header_obj)?;
         let status_text = response
             .status()
@@ -1986,7 +1986,7 @@ fn cached_response<'js>(
         pairs = filter_cors_headers(pairs, expose.as_deref(), include);
     }
     let mut header_obj = Headers::from_pairs(pairs);
-    header_obj.set_guard(headers::Guard::Immutable);
+    header_obj.guard = headers::Guard::Immutable;
     let mut response = Response::from_bytes(
         ctx,
         entry.status,

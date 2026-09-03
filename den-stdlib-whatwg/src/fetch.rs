@@ -186,7 +186,7 @@ impl<'js> Response<'js> {
             })
             .collect::<Vec<_>>();
         let mut header_obj = Headers::from_pairs(headers);
-        header_obj.set_guard(headers::Guard::Immutable);
+        header_obj.guard = headers::Guard::Immutable;
         let status_text = status.canonical_reason().unwrap_or("").to_owned();
         let url = response.url().to_string();
         let headers = Class::instance(ctx.clone(), header_obj)?;
