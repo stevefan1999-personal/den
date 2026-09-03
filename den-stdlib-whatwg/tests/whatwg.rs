@@ -157,3 +157,8 @@ async fn charset_parameters_are_read_bare_or_quoted() -> eyre::Result<()> {
     run("file_reader_charset.js").await?;
     run("xhr_charset.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn form_data_wraps_blobs_and_keeps_files() -> eyre::Result<()> {
+    run("form_data_files.js").await
+}

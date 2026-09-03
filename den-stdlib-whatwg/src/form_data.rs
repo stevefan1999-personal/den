@@ -30,34 +30,35 @@ impl FormData {
     fn normalize<'js>(
         ctx: &Ctx<'js>, name: String, value: Value<'js>, filename: Option<String>,
     ) -> Result<(String, FormValue)> {
-        if Host::is_blob_like(&value) {
-            let filename = filename
-                .or_else(|| Host::file_name(&value))
-                .unwrap_or_else(|| "blob".to_string());
-            let same_file = Host::is_file_like(&value)
-                && Host::file_name(&value).as_deref() == Some(filename.as_str());
-            if same_file {
-                let file = Class::<File>::from_value(&value)?;
-                return Ok((name, FormValue::File(file.borrow().clone())));
+        // A `File` keeps its identity unless a different filename is given; a
+        // bare `Blob` is always wrapped, defaulting to the name "blob".
+        let normalized = match (
+            Class::<File>::from_value(&value),
+            Class::<Blob>::from_value(&value),
+        ) {
+            (Ok(file), _) => {
+                let file = file.borrow();
+                FormValue::File(
+                    filename
+                        .filter(|given| given != file.file_name())
+                        .map_or_else(
+                            || file.clone(),
+                            |given| {
+                                File::from_parts(file.inner().clone(), given, File::now_millis())
+                            },
+                        ),
+                )
             }
-            let inner = Class::<File>::from_value(&value).map_or_else(
-                |_error| {
-                    Class::<Blob>::from_value(&value).map_or_else(
-                        |_error| Inner::from_bytes(Vec::new(), String::new()),
-                        |blob| blob.borrow().inner().clone(),
-                    )
-                },
-                |file| file.borrow().inner().clone(),
-            );
-            let mime = inner.mime_type().to_string();
-            let file = File::from_parts(
-                Inner::from_bytes(inner.bytes().to_vec(), mime),
-                filename,
-                File::now_millis(),
-            );
-            return Ok((name, FormValue::File(file)));
-        }
-        Ok((name, FormValue::Text(coerce_string(ctx, value)?)))
+            (_, Ok(blob)) => {
+                FormValue::File(File::from_parts(
+                    blob.borrow().inner().clone(),
+                    filename.unwrap_or_else(|| "blob".to_string()),
+                    File::now_millis(),
+                ))
+            }
+            _ => FormValue::Text(coerce_string(ctx, value)?),
+        };
+        Ok((name, normalized))
     }
 
     fn value_js<'js>(ctx: &Ctx<'js>, value: &FormValue) -> Result<Value<'js>> {

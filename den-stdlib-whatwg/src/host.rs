@@ -125,18 +125,6 @@ impl Host {
         String::new()
     }
 
-    pub fn is_blob_like(value: &Value<'_>) -> bool {
-        Class::<Blob>::from_value(value).is_ok() || Class::<File>::from_value(value).is_ok()
-    }
-
-    pub fn is_file_like(value: &Value<'_>) -> bool { Class::<File>::from_value(value).is_ok() }
-
-    pub fn file_name(value: &Value<'_>) -> Option<String> {
-        Class::<File>::from_value(value)
-            .ok()
-            .map(|file| file.borrow().file_name().to_string())
-    }
-
     /// The `charset` parameter of a MIME type, bare or quoted with either kind
     /// of quote. Lowercased, which costs nothing: both consumers hand the label
     /// to `TextDecoder`/`Encoding::for_label`, and those are case-insensitive.
