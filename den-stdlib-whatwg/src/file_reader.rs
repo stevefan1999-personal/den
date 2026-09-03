@@ -383,25 +383,9 @@ impl<'js> FileReader<'js> {
         if let Some(name) = encoding_name.filter(|name| !name.is_empty()) {
             return name.to_string();
         }
-        if let Some(charset) = charset_from_type(mime) {
+        if let Some(charset) = Host::charset_of(mime) {
             return charset;
         }
         "utf-8".to_string()
-    }
-}
-
-fn charset_from_type(mime: &str) -> Option<String> {
-    let lower = mime.to_ascii_lowercase();
-    let rest = lower.split("charset=").nth(1)?;
-    let token = rest
-        .split(';')
-        .next()
-        .unwrap_or(rest)
-        .trim()
-        .trim_matches(|ch| ch == '"' || ch == '\'');
-    if token.is_empty() {
-        None
-    } else {
-        Some(token.to_string())
     }
 }

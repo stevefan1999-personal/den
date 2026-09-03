@@ -137,6 +137,26 @@ impl Host {
             .map(|file| file.borrow().file_name().to_string())
     }
 
+    /// The `charset` parameter of a MIME type, bare or quoted with either kind
+    /// of quote. Lowercased, which costs nothing: both consumers hand the label
+    /// to `TextDecoder`/`Encoding::for_label`, and those are case-insensitive.
+    pub(crate) fn charset_of(mime: &str) -> Option<String> {
+        let lower = mime.to_ascii_lowercase();
+        let rest = lower
+            .get(lower.find("charset=")? + "charset=".len()..)?
+            .trim();
+        let rest = rest
+            .strip_prefix('"')
+            .map_or(rest, |value| value.split('"').next().unwrap_or(value));
+        let value = rest
+            .split(';')
+            .next()
+            .unwrap_or(rest)
+            .trim()
+            .trim_matches('\'');
+        (!value.is_empty()).then(|| value.to_string())
+    }
+
     pub fn ascii_type(value: &str) -> String {
         if value.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
             value.to_ascii_lowercase()

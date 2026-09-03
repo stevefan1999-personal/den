@@ -151,3 +151,9 @@ async fn headers_guards_survive_request_response_and_copy() -> eyre::Result<()> 
 async fn progress_and_close_events_are_real_events() -> eyre::Result<()> {
     run("events_construct.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn charset_parameters_are_read_bare_or_quoted() -> eyre::Result<()> {
+    run("file_reader_charset.js").await?;
+    run("xhr_charset.js").await
+}

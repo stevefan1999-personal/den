@@ -66,22 +66,6 @@ impl XMLHttpRequest {
         Ok(())
     }
 
-    fn charset(mime: &str) -> Option<String> {
-        let lower = mime.to_ascii_lowercase();
-        let marker = "charset=";
-        let pos = lower.find(marker)?;
-        let rest = mime.get(pos + marker.len()..)?.trim();
-        let rest = rest
-            .strip_prefix('"')
-            .map_or(rest, |value| value.split('"').next().unwrap_or(value));
-        let value = rest.split(';').next().unwrap_or(rest).trim();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        }
-    }
-
     fn decode<'js>(this: &Class<'js, Self>, ctx: &Ctx<'js>) -> String {
         let (override_charset, body, header_charset) = {
             let xhr = this.borrow();
@@ -89,7 +73,7 @@ impl XMLHttpRequest {
                 xhr.override_charset.clone(),
                 xhr.response_body.clone(),
                 xhr.response_header("content-type")
-                    .and_then(|mime| Self::charset(&mime)),
+                    .and_then(|mime| Host::charset_of(&mime)),
             )
         };
         if let Some(text) = override_charset
@@ -284,7 +268,7 @@ impl XMLHttpRequest {
                 "InvalidStateError",
             ));
         }
-        this.0.borrow_mut().override_charset = Self::charset(&mime);
+        this.0.borrow_mut().override_charset = Host::charset_of(&mime);
         Ok(())
     }
 
