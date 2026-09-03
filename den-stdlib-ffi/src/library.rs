@@ -18,7 +18,7 @@ use crate::{
     callback::InsideCall,
     error::ErrorKind,
     grant::FfiGrant,
-    marshal::{self, ArgumentCell, Borrowed, Bytes, CallSite},
+    marshal::{self, ArgumentCell, Borrowed, Bytes},
     schema::{CallMode, FnSig, ParamType, SymbolKind, SymbolSpec},
 };
 
@@ -148,14 +148,16 @@ impl BoundFn {
                 ),
             ));
         }
-        let site = CallSite {
-            mode:   self.mode,
-            origin: &self.origin,
-        };
         let mut prepared = Prepared::default();
         for (position, (declared, value)) in self.params.iter().zip(arguments).enumerate() {
-            let (cell, borrowed) =
-                ArgumentCell::marshal(ctx, declared, value, site, &mut prepared.mapped)?;
+            let (cell, borrowed) = ArgumentCell::marshal(
+                ctx,
+                declared,
+                value,
+                self.mode,
+                &self.origin,
+                &mut prepared.mapped,
+            )?;
             prepared.cells.push(cell);
             if let Some(borrowed) = borrowed {
                 prepared.borrowed.push((position, borrowed));

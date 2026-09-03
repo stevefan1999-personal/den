@@ -102,16 +102,6 @@ impl Cell {
     pub const fn as_ptr(&self) -> *const u8 { self.0.as_ptr() }
 }
 
-/// Where an argument is going: what makes a `Callback` legal, and what a
-/// foreign-thread callback names when it gives up waiting for the realm.
-#[derive(Clone, Copy)]
-pub struct CallSite<'a> {
-    pub mode:   CallMode,
-    /// `/path/to/lib.so::symbol`, recorded on a callback as the last place C
-    /// was handed its address.
-    pub origin: &'a Arc<str>,
-}
-
 /// One argument, owned for exactly the duration of one call: `Arg::new` takes
 /// the cell's address, and libffi may rewrite the argument array in place, so
 /// cells are built fresh per call and never cached (§4.3).
@@ -192,9 +182,13 @@ impl<'js> Borrowed<'js> {
 impl ArgumentCell {
     /// One argument's cell, plus the JS handle behind it when that cell is an
     /// address [`Borrowed::settle`] must take again.
+    ///
+    /// `mode` is what makes a `Callback` legal; `origin` is
+    /// `/path/to/lib.so::symbol`, recorded on a callback as the last place C
+    /// was handed its address.
     pub fn marshal<'js>(
-        ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>, site: CallSite<'_>,
-        mapped: &mut Vec<Mapped>,
+        ctx: &Ctx<'js>, declared: &ParamType, value: &Value<'js>, mode: CallMode,
+        origin: &Arc<str>, mapped: &mut Vec<Mapped>,
     ) -> Result<(Self, Option<Borrowed<'js>>)> {
         match declared {
             ParamType::Value(NativeType::Pointer) => {
@@ -212,20 +206,19 @@ impl ArgumentCell {
             // can never service the callback — so a `Callback` may only be
             // handed to a symbol that runs off the realm thread. Deterministic,
             // checked here, and satisfied by one word in the schema.
-            ParamType::Callback(_) if site.mode == CallMode::Blocking => {
+            ParamType::Callback(_) if mode == CallMode::Blocking => {
                 Err(ErrorKind::BadArgument.throw(
                     ctx,
                     format_args!(
-                        "`{}` must be declared `nonblocking: true` to take a callback — C may \
-                         call it from a thread of its own, and this thread is the only one that \
-                         may run JS",
-                        site.origin
+                        "`{origin}` must be declared `nonblocking: true` to take a callback — C \
+                         may call it from a thread of its own, and this thread is the only one \
+                         that may run JS"
                     ),
                 ))
             }
             ParamType::Callback(signature) => {
                 Ok((
-                    Self::Pointer(Callback::code_pointer(ctx, signature, value, site.origin)?),
+                    Self::Pointer(Callback::code_pointer(ctx, signature, value, origin)?),
                     None,
                 ))
             }
