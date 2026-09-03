@@ -4,24 +4,20 @@
 //! the send/receive loop live here. WHATWG `WebSocket` wraps
 //! [`NativeWebSocket`] and must not reimplement the I/O task.
 
-use std::{
-    pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    task::{Context, Poll},
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use derive_more::{Display, Error};
 use futures::{SinkExt as _, StreamExt as _};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     runtime::Handle,
     sync::mpsc,
 };
-use tokio_rustls::{TlsConnector, client::TlsStream, rustls::pki_types::ServerName};
+use tokio_rustls::{TlsConnector, rustls::pki_types::ServerName};
 use tokio_tungstenite::{
     WebSocketStream, client_async,
     tungstenite::{
@@ -101,46 +97,11 @@ enum Command {
     Close { code: Option<u16>, reason: String },
 }
 
-enum Transport {
-    Tcp(TcpStream),
-    Tls(Box<TlsStream<TcpStream>>),
-}
-
-impl AsyncRead for Transport {
-    fn poll_read(
-        self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Self::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
-            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
-        }
-    }
-}
-
-impl AsyncWrite for Transport {
-    fn poll_write(
-        self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        match self.get_mut() {
-            Self::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
-            Self::Tls(stream) => Pin::new(stream).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Self::Tcp(stream) => Pin::new(stream).poll_flush(cx),
-            Self::Tls(stream) => Pin::new(stream).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match self.get_mut() {
-            Self::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
-            Self::Tls(stream) => Pin::new(stream).poll_shutdown(cx),
-        }
-    }
-}
+/// Both `client_async` and the read/write loop only ever want the four I/O
+/// bounds; which of TCP or TLS is underneath stops mattering after connect.
+trait AsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncStream for T {}
+type Transport = Box<dyn AsyncStream>;
 
 /// Background client with command/event channels.
 pub struct NativeWebSocket {
@@ -243,9 +204,9 @@ impl NativeWebSocket {
                             .connect(server_name, tcp)
                             .await
                             .map_err(|error| NativeWsError::Tls(error.to_string()))?;
-                        Transport::Tls(Box::new(tls))
+                        Box::new(tls) as Transport
                     } else {
-                        Transport::Tcp(tcp)
+                        Box::new(tcp) as Transport
                     };
                     let mut request = parsed
                         .as_str()
