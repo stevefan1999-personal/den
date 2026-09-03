@@ -184,7 +184,7 @@ async fn rejects_altered_required_column() -> TestResult {
 }
 
 #[tokio::test]
-async fn rejects_altered_check_unique_and_foreign_key_constraints() -> TestResult {
+async fn rejects_altered_constraints_and_strictness() -> TestResult {
     assert_schema_rewrite_rejected(
         "blob",
         "CHECK (length(\"digest\") = 32)",
@@ -202,7 +202,8 @@ async fn rejects_altered_check_unique_and_foreign_key_constraints() -> TestResul
         "ON DELETE CASCADE",
         "ON DELETE NO ACTION",
     )
-    .await
+    .await?;
+    assert_schema_rewrite_rejected("export", ") STRICT", ")").await
 }
 
 #[tokio::test]

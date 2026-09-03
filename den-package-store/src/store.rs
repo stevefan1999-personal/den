@@ -10,7 +10,7 @@ use sea_orm::{
     ActiveValue::Set,
     ColumnTrait as _, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
     EntityTrait as _, QueryFilter as _, QueryOrder as _, Statement, TransactionTrait as _,
-    sea_query::{ColumnType, OnConflict, TableCreateStatement},
+    sea_query::{OnConflict, TableCreateStatement},
     sqlx::sqlite::SqliteSynchronous,
 };
 use sea_orm_migration::{MigratorTrait as _, SchemaManager};
@@ -404,74 +404,12 @@ async fn initialize(database: &DatabaseConnection, in_memory: bool) -> Result<()
     Ok(())
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct SchemaColumn {
-    name:          String,
-    declared_type: String,
-    not_null:      bool,
-    primary_key:   i64,
-    default_value: Option<String>,
-    hidden:        i64,
-}
-
+/// Refuse a store whose tables were rewritten under us. SQLite keeps the
+/// `CREATE TABLE` text verbatim, so comparing it against the definition this
+/// build ships covers columns, types, constraints and STRICT at once.
 async fn validate_schema(database: &DatabaseConnection) -> Result<()> {
-    let manager = SchemaManager::new(database);
     for (table_name, table) in expected_tables() {
-        if !manager.has_table(table_name).await? {
-            return Err(schema_mismatch(
-                table_name,
-                "required STRICT table",
-                "missing",
-            ));
-        }
-        let strict = database
-            .query_one_raw(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT strict FROM pragma_table_list WHERE schema = 'main' AND name = ?",
-                [table_name.to_owned().into()],
-            ))
-            .await?
-            .ok_or_else(|| schema_mismatch(table_name, "required STRICT table", "missing"))?
-            .try_get_by_index::<i64>(0)?;
-        if strict != 1 {
-            return Err(schema_mismatch(
-                table_name,
-                "STRICT table",
-                "non-STRICT table",
-            ));
-        }
         validate_table_definition(database, table_name, &table).await?;
-
-        let expected = expected_columns(&table)?;
-        let actual = database
-            .query_all_raw(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT name, type AS declared_type, \"notnull\" AS not_null, pk, dflt_value, \
-                 hidden FROM pragma_table_xinfo(?) ORDER BY cid",
-                [table_name.to_owned().into()],
-            ))
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok(SchemaColumn {
-                    name:          row.try_get("", "name")?,
-                    declared_type: row
-                        .try_get::<String>("", "declared_type")?
-                        .to_ascii_uppercase(),
-                    not_null:      row.try_get::<i64>("", "not_null")? != 0,
-                    primary_key:   row.try_get("", "pk")?,
-                    default_value: row.try_get("", "dflt_value")?,
-                    hidden:        row.try_get("", "hidden")?,
-                })
-            })
-            .collect::<std::result::Result<Vec<_>, sea_orm::DbErr>>()?;
-        if actual != expected {
-            return Err(schema_mismatch(
-                table_name,
-                format!("{expected:?}"),
-                format!("{actual:?}"),
-            ));
-        }
     }
     Ok(())
 }
@@ -506,66 +444,6 @@ fn normalized_table_sql(sql: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .replace("IF NOT EXISTS ", "")
-}
-
-fn expected_columns(table: &TableCreateStatement) -> Result<Vec<SchemaColumn>> {
-    let mut primary_keys = BTreeMap::new();
-    for index in table
-        .get_indexes()
-        .iter()
-        .filter(|index| index.is_primary_key())
-    {
-        for (position, column) in index
-            .get_index_spec()
-            .get_column_names()
-            .into_iter()
-            .enumerate()
-        {
-            primary_keys.insert(
-                column,
-                i64::try_from(position + 1).map_err(|_error| {
-                    PackageStoreError::InvalidSnapshot(
-                        "schema primary key has too many columns".to_owned(),
-                    )
-                })?,
-            );
-        }
-    }
-    table
-        .get_columns()
-        .iter()
-        .map(|column| {
-            let name = column.get_column_name();
-            let declared_type =
-                sqlite_declared_type(column.get_column_type()).ok_or_else(|| {
-                    PackageStoreError::InvalidSnapshot(format!(
-                        "schema column `{name}` has an unsupported SQLite type"
-                    ))
-                })?;
-            let spec = column.get_column_spec();
-            Ok(SchemaColumn {
-                primary_key: if spec.primary_key {
-                    1
-                } else {
-                    primary_keys.get(&name).copied().unwrap_or_default()
-                },
-                name,
-                declared_type: declared_type.to_owned(),
-                not_null: spec.nullable == Some(false),
-                default_value: None,
-                hidden: 0,
-            })
-        })
-        .collect()
-}
-
-fn sqlite_declared_type(column_type: Option<&ColumnType>) -> Option<&'static str> {
-    match column_type? {
-        ColumnType::Integer | ColumnType::BigInteger => Some("INTEGER"),
-        ColumnType::Text => Some("TEXT"),
-        ColumnType::Blob => Some("BLOB"),
-        _ => None,
-    }
 }
 
 fn schema_mismatch(
