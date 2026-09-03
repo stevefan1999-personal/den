@@ -27,3 +27,8 @@ async fn temporal_now_fields_and_zoned_date_time() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn temporal_plain_date_add_and_subtract_days() -> eyre::Result<()> { run("add.js").await }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn statics_now_and_plain_month_day_keep_their_shape() -> eyre::Result<()> {
+    run("shape.js").await
+}

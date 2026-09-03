@@ -528,7 +528,7 @@ fn interned_symbol<'js>(ctx: &Ctx<'js>, key: &str) -> Result<Symbol<'js>> {
     for_fn.call((key,))
 }
 
-pub fn original_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Constructor<'js>> {
+fn original_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Constructor<'js>> {
     let temporal: Object = ctx.globals().get("Temporal")?;
     let bag: Object = temporal.get(interned_symbol(ctx, ORIGINALS_KEY)?)?;
     bag.get(name)
@@ -623,14 +623,14 @@ fn object_ctor<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
 }
 
 /// `Object.getOwnPropertyDescriptor` — rquickjs has no descriptor getter.
-pub fn get_own_descriptor<'js>(object: &Object<'js>, key: &str) -> Result<Option<Object<'js>>> {
+fn get_own_descriptor<'js>(object: &Object<'js>, key: &str) -> Result<Option<Object<'js>>> {
     let get: Function = object_ctor(object.ctx())?.get("getOwnPropertyDescriptor")?;
     let desc: Value = get.call((object.clone(), key))?;
     Ok(desc.into_object())
 }
 
 /// `Object.defineProperty` for copying a full descriptor.
-pub fn define_property<'js>(object: &Object<'js>, key: &str, desc: Object<'js>) -> Result<()> {
+fn define_property<'js>(object: &Object<'js>, key: &str, desc: Object<'js>) -> Result<()> {
     let define: Function = object_ctor(object.ctx())?.get("defineProperty")?;
     define.call((object.clone(), key, desc))
 }
