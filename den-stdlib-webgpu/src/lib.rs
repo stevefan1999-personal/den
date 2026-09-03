@@ -72,16 +72,8 @@ impl<'js> FromJs<'js> for JsU32 {
     }
 }
 
-#[derive(Clone, Copy)]
-#[doc(hidden)]
-pub struct JsU64(pub(crate) u64);
-
-impl<'js> FromJs<'js> for JsU64 {
-    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        let Coerced(value) = Coerced::<u64>::from_js(ctx, value)?;
-        Ok(Self(value))
-    }
-}
+/// WebIDL `GPUSize64`: rquickjs's own `JS_ToIndex` coercion, nothing added.
+pub(crate) type JsU64 = Coerced<u64>;
 
 pub(crate) fn label(object: &Object<'_>) -> Result<String> {
     Ok(object
