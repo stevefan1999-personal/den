@@ -23,8 +23,8 @@ use crate::{
         calendar_slot, fractional_second_digits, get_defined, i128_to_bigint, js_to_string,
         optional_truncated_i32, optional_truncated_u8, optional_truncated_u16, options_object,
         ordering_i32, probe_class, reject_illformed_month_code, throw_value_of, to_big_int_i128,
-        to_calendar, to_duration, to_number, to_time_zone, to_zoned_date_time, truncated_u8,
-        truncated_u16, unwrap_temporal,
+        to_calendar, to_duration, to_number, to_time_zone, truncated_u8, truncated_u16,
+        unwrap_temporal,
     },
     duration::Duration,
     instant::Instant,
@@ -549,7 +549,7 @@ fn to_zoned<'js>(
 ) -> Result<temporal_rs::ZonedDateTime> {
     if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
         if options.0.is_none() {
-            return to_zoned_date_time(ctx, value);
+            return Ok(zoned.inner);
         }
         let _ = zoned_options(ctx, options, OffsetDisambiguation::Reject)?;
         return Ok(zoned.inner);

@@ -11,11 +11,7 @@ use rquickjs::{
     atom::PredefinedAtom, class::JsClass, function::This, prelude::Opt,
 };
 use temporal_rs::{
-    Calendar, TimeZone, UtcOffset,
-    fields::{CalendarFields, ZonedDateTimeFields},
-    options::{Overflow, Unit},
-    parsers::Precision,
-    partial::{PartialDate, PartialDuration, PartialTime, PartialZonedDateTime},
+    Calendar, TimeZone, options::Unit, parsers::Precision, partial::PartialDuration,
 };
 
 use crate::{
@@ -499,104 +495,11 @@ pub fn to_duration<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_r
     ))
 }
 
-fn calendar_fields_from_object<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>,
-) -> Result<CalendarFields> {
-    let mut fields = CalendarFields::new();
-    if let Some(year) = optional_truncated_i32(ctx, object, "year")? {
-        fields = fields.with_year(year);
-    }
-    if let Some(month) = optional_truncated_u8(ctx, object, "month")? {
-        fields = fields.with_month(month);
-    }
-    if let Some(day) = optional_truncated_u8(ctx, object, "day")? {
-        fields = fields.with_day(day);
-    }
-    if let Some(value) = get_defined(object, "monthCode")? {
-        let code = js_to_string(ctx, &value)?;
-        let month_code = temporal_rs::MonthCode::try_from_utf8(code.as_bytes())
-            .map_err(|error| throw_temporal(ctx, error))?;
-        fields = fields.with_month_code(month_code);
-    }
-    Ok(fields)
-}
-
-fn partial_time_from_object<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<PartialTime> {
-    Ok(PartialTime {
-        hour:        optional_truncated_u8(ctx, object, "hour")?,
-        minute:      optional_truncated_u8(ctx, object, "minute")?,
-        second:      optional_truncated_u8(ctx, object, "second")?,
-        millisecond: optional_truncated_u16(ctx, object, "millisecond")?,
-        microsecond: optional_truncated_u16(ctx, object, "microsecond")?,
-        nanosecond:  optional_truncated_u16(ctx, object, "nanosecond")?,
-    })
-}
-
-fn object_calendar<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Calendar> {
-    get_defined(object, "calendar")?.map_or(Ok(Calendar::ISO), |value| to_calendar(ctx, &value))
-}
-
-fn object_utc_offset<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Option<UtcOffset>> {
-    match get_defined(object, "offset")? {
-        None => Ok(None),
-        Some(value) => {
-            let identifier = js_to_string(ctx, &value)?;
-            UtcOffset::from_str(&identifier)
-                .map(Some)
-                .map_err(|error| throw_temporal(ctx, error))
-        }
-    }
-}
-
-fn month_day_from_object<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, overflow: Option<Overflow>,
-) -> Result<temporal_rs::PlainMonthDay> {
-    let partial = PartialDate {
-        calendar_fields: calendar_fields_from_object(ctx, object)?,
-        calendar:        object_calendar(ctx, object)?,
-    };
-    unwrap_temporal(
-        ctx,
-        temporal_rs::PlainMonthDay::from_partial(partial, overflow),
-    )
-}
-
-fn zoned_from_object<'js>(
-    ctx: &Ctx<'js>, object: &Object<'js>, overflow: Option<Overflow>,
-) -> Result<temporal_rs::ZonedDateTime> {
-    let timezone = match get_defined(object, "timeZone")? {
-        None => None,
-        Some(value) => Some(to_time_zone(ctx, &value)?),
-    };
-    let partial = PartialZonedDateTime {
-        fields: ZonedDateTimeFields {
-            calendar_fields: calendar_fields_from_object(ctx, object)?,
-            time:            partial_time_from_object(ctx, object)?,
-            offset:          object_utc_offset(ctx, object)?,
-        },
-        timezone,
-        calendar: object_calendar(ctx, object)?,
-    };
-    unwrap_temporal(
-        ctx,
-        temporal_rs::ZonedDateTime::from_partial(partial, overflow, None, None),
-    )
-}
-
 pub fn to_plain_month_day<'js>(
     ctx: &Ctx<'js>, value: &Value<'js>,
 ) -> Result<temporal_rs::PlainMonthDay> {
     if let Some(month_day) = probe_class::<PlainMonthDay>(ctx, value) {
         return Ok(month_day.inner);
-    }
-    if let Some(date) = probe_class::<PlainDate>(ctx, value) {
-        return unwrap_temporal(ctx, date.inner.to_plain_month_day());
-    }
-    if let Some(date_time) = probe_class::<PlainDateTime>(ctx, value) {
-        return unwrap_temporal(ctx, date_time.inner.to_plain_date().to_plain_month_day());
-    }
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return unwrap_temporal(ctx, zoned.inner.to_plain_date().to_plain_month_day());
     }
     if value.is_string() {
         let string = value.get::<String>()?;
@@ -605,37 +508,8 @@ pub fn to_plain_month_day<'js>(
             temporal_rs::PlainMonthDay::from_utf8(string.as_bytes()),
         );
     }
-    if let Some(object) = value.as_object() {
-        return month_day_from_object(ctx, object, None);
-    }
     Err(Exception::throw_type(
         ctx,
         "cannot convert value to Temporal.PlainMonthDay",
-    ))
-}
-
-pub fn to_zoned_date_time<'js>(
-    ctx: &Ctx<'js>, value: &Value<'js>,
-) -> Result<temporal_rs::ZonedDateTime> {
-    if let Some(zoned) = probe_class::<ZonedDateTime>(ctx, value) {
-        return Ok(zoned.inner);
-    }
-    if value.is_string() {
-        let string = value.get::<String>()?;
-        return unwrap_temporal(
-            ctx,
-            temporal_rs::ZonedDateTime::from_utf8(
-                string.as_bytes(),
-                temporal_rs::options::Disambiguation::Compatible,
-                temporal_rs::options::OffsetDisambiguation::Reject,
-            ),
-        );
-    }
-    if let Some(object) = value.as_object() {
-        return zoned_from_object(ctx, object, None);
-    }
-    Err(Exception::throw_type(
-        ctx,
-        "cannot convert value to Temporal.ZonedDateTime",
     ))
 }
