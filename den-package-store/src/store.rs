@@ -1,367 +1,146 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::Path,
+    sync::{Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
 use node_semver::Version as SemverVersion;
-use sea_orm::{
-    ActiveModelTrait as _,
-    ActiveValue::Set,
-    ColumnTrait as _, ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbBackend,
-    EntityTrait as _, QueryFilter as _, QueryOrder as _, Statement, TransactionTrait as _,
-    sea_query::{OnConflict, TableCreateStatement},
-    sqlx::sqlite::SqliteSynchronous,
-};
-use sea_orm_migration::{MigratorTrait as _, SchemaManager};
+use rusqlite::{Connection, OpenFlags, OptionalExtension as _, TransactionBehavior};
 
 use crate::{
-    BlobDigest, NewRelease, PackageKey, PackageStoreError, RegistryId, RepositorySnapshot, Result,
-    SnapshotDependency, SnapshotVersion, VersionId,
-    entity::{blob, dependency, package, package_export, package_file, package_version, registry},
-    migration::{Migrator, expected_tables, install_tracking_table},
-    validation,
+    BlobDigest, DependencyKind, NewRelease, PackageKey, PackageStoreError, RegistryId,
+    RepositorySnapshot, Result, SnapshotDependency, SnapshotVersion, VersionId, validation,
 };
 
 const APPLICATION_ID: i64 = 0x4445_4e50;
 const SCHEMA_VERSION: i64 = 1;
+/// Name the original SeaORM migrator logged for schema 1; stores created by it
+/// must keep opening, so the log table and this row are preserved verbatim.
+const MIGRATION_NAME: &str = "migration";
+const MIGRATION_LOG: &str = "CREATE TABLE IF NOT EXISTS \"den_package_store_migrations\" ( \
+                             \"version\" text NOT NULL PRIMARY KEY, \"applied_at\" integer NOT \
+                             NULL ) STRICT";
+/// Every table exactly as SQLite stores its `CREATE TABLE` text, so one
+/// normalized compare in `validate_schema` covers columns, types,
+/// constraints and STRICT for the whole schema.
+const TABLES: [(&str, &str); 8] = [
+    ("den_package_store_migrations", MIGRATION_LOG),
+    (
+        "blob",
+        "CREATE TABLE \"blob\" ( \"digest\" blob NOT NULL PRIMARY KEY, \"bytes\" blob NOT NULL, \
+         CHECK (length(\"digest\") = 32) ) STRICT",
+    ),
+    (
+        "registry",
+        "CREATE TABLE \"registry\" ( \"id\" integer NOT NULL PRIMARY KEY AUTOINCREMENT, \"kind\" \
+         text NOT NULL, \"base_url\" text NOT NULL UNIQUE ) STRICT",
+    ),
+    (
+        "package",
+        "CREATE TABLE \"package\" ( \"id\" integer NOT NULL PRIMARY KEY AUTOINCREMENT, \
+         \"registry_id\" integer NOT NULL, \"name\" text NOT NULL, CONSTRAINT \
+         \"uq-package-registry-name\" UNIQUE (\"registry_id\", \"name\"), FOREIGN KEY \
+         (\"registry_id\") REFERENCES \"registry\" (\"id\") ) STRICT",
+    ),
+    (
+        "package_version",
+        "CREATE TABLE \"package_version\" ( \"id\" integer NOT NULL PRIMARY KEY AUTOINCREMENT, \
+         \"package_id\" integer NOT NULL, \"version\" text NOT NULL, \"published_at\" integer \
+         NULL, \"yanked_reason\" text NULL, \"manifest_digest\" blob NOT NULL, CONSTRAINT \
+         \"uq-package-version\" UNIQUE (\"package_id\", \"version\"), FOREIGN KEY \
+         (\"package_id\") REFERENCES \"package\" (\"id\") ON DELETE CASCADE, FOREIGN KEY \
+         (\"manifest_digest\") REFERENCES \"blob\" (\"digest\") ) STRICT",
+    ),
+    (
+        "dependency",
+        "CREATE TABLE \"dependency\" ( \"version_id\" integer NOT NULL, \"ordinal\" integer NOT \
+         NULL, \"kind\" text NOT NULL, \"target_registry_id\" integer NULL, \"package_name\" text \
+         NOT NULL, \"requirement\" text NOT NULL, \"alias\" text NULL, PRIMARY KEY \
+         (\"version_id\", \"ordinal\"), FOREIGN KEY (\"version_id\") REFERENCES \
+         \"package_version\" (\"id\") ON DELETE CASCADE, FOREIGN KEY (\"target_registry_id\") \
+         REFERENCES \"registry\" (\"id\") ) STRICT",
+    ),
+    (
+        "export",
+        "CREATE TABLE \"export\" ( \"version_id\" integer NOT NULL, \"name\" text NOT NULL, \
+         \"target_path\" text NOT NULL, PRIMARY KEY (\"version_id\", \"name\"), FOREIGN KEY \
+         (\"version_id\") REFERENCES \"package_version\" (\"id\") ON DELETE CASCADE ) STRICT",
+    ),
+    (
+        "package_file",
+        "CREATE TABLE \"package_file\" ( \"version_id\" integer NOT NULL, \"path\" text NOT NULL, \
+         \"blob_digest\" blob NOT NULL, \"media_type\" text NULL, \"mode\" integer NOT NULL, \
+         PRIMARY KEY (\"version_id\", \"path\"), FOREIGN KEY (\"version_id\") REFERENCES \
+         \"package_version\" (\"id\") ON DELETE CASCADE, FOREIGN KEY (\"blob_digest\") REFERENCES \
+         \"blob\" (\"digest\") ) STRICT",
+    ),
+];
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PackageStore {
-    database: DatabaseConnection,
+    connection: Mutex<Connection>,
 }
 
 impl PackageStore {
-    pub(crate) const fn database(&self) -> &DatabaseConnection { &self.database }
-
-    pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::connect_path(path.as_ref(), false).await
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let flags = OpenFlags::default().difference(OpenFlags::SQLITE_OPEN_CREATE);
+        Self::connect(Connection::open_with_flags(path, flags)?, false)
     }
 
-    pub async fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::connect_path(path.as_ref(), true).await
+    pub fn create<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::connect(Connection::open(path)?, false)
     }
 
-    async fn connect_path(path: &Path, create: bool) -> Result<Self> {
-        if path.to_str().is_none() {
-            return Err(PackageStoreError::InvalidDatabasePath(
-                "SeaORM's SQLite driver requires a UTF-8 path".to_owned(),
-            ));
-        }
-        Self::connect_url(
-            "sqlite://den-package-store-placeholder".to_owned(),
-            false,
-            Some((path.to_path_buf(), create)),
-        )
-        .await
+    pub fn open_in_memory() -> Result<Self> { Self::connect(Connection::open_in_memory()?, true) }
+
+    fn connect(connection: Connection, in_memory: bool) -> Result<Self> {
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "trusted_schema", "OFF")?;
+        initialize(&connection, in_memory)?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
     }
 
-    pub async fn open_in_memory() -> Result<Self> {
-        Self::connect_url("sqlite::memory:".to_owned(), true, None).await
+    /// One connection behind one lock serializes all store work. A poisoned
+    /// lock only means another thread panicked mid-call; SQLite rolled its
+    /// transaction back, so the connection is still consistent.
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Connection> {
+        self.connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn connect_url(
-        database_url: String, in_memory: bool, file: Option<(std::path::PathBuf, bool)>,
-    ) -> Result<Self> {
-        let mut options = ConnectOptions::new(database_url);
-        // ponytail: one pooled connection serializes store work; raise this
-        // when concurrent package hydration proves it needs more read
-        // throughput.
-        options
-            .max_connections(1)
-            .min_connections(1)
-            .sqlx_logging(false);
-        options.map_sqlx_sqlite_opts(move |options| {
-            let options = match &file {
-                Some((path, create)) => {
-                    options
-                        .filename(path)
-                        .in_memory(false)
-                        .create_if_missing(*create)
-                }
-                None => options,
-            };
-            options
-                .foreign_keys(true)
-                .busy_timeout(Duration::from_secs(5))
-                .synchronous(SqliteSynchronous::Full)
-                .pragma("trusted_schema", "OFF")
-        });
-        let database = Database::connect(options).await?;
-        initialize(&database, in_memory).await?;
-        Ok(Self { database })
-    }
-
-    pub async fn add_registry(&self, kind: &str, base_url: &str) -> Result<RegistryId> {
+    pub fn add_registry(&self, kind: &str, base_url: &str) -> Result<RegistryId> {
         let base_url = validate_registry(kind, base_url)?;
-        if let Some(existing) = registry::Entity::find()
-            .filter(registry::Column::BaseUrl.eq(&base_url))
-            .one(&self.database)
-            .await?
-        {
-            return registry_identity(existing, kind);
-        }
-
-        let inserted = registry::ActiveModel {
-            id:       sea_orm::ActiveValue::NotSet,
-            kind:     Set(kind.to_owned()),
-            base_url: Set(base_url.clone()),
-        }
-        .insert(&self.database)
-        .await;
-        match inserted {
-            Ok(model) => Ok(RegistryId(model.id)),
-            Err(insert_error) => {
-                let existing = registry::Entity::find()
-                    .filter(registry::Column::BaseUrl.eq(&base_url))
-                    .one(&self.database)
-                    .await?;
-                existing.map_or_else(
-                    || Err(insert_error.into()),
-                    |existing| registry_identity(existing, kind),
-                )
-            }
-        }
+        add_registry_on(&self.lock(), kind, &base_url)
     }
 
     /// Look up a configured registry without mutating the store.
-    pub async fn registry_id(&self, kind: &str, base_url: &str) -> Result<Option<RegistryId>> {
+    pub fn registry_id(&self, kind: &str, base_url: &str) -> Result<Option<RegistryId>> {
         let base_url = validate_registry(kind, base_url)?;
-        registry::Entity::find()
-            .filter(registry::Column::BaseUrl.eq(base_url))
-            .one(&self.database)
-            .await?
-            .map(|model| registry_identity(model, kind))
-            .transpose()
+        find_registry(&self.lock(), kind, &base_url)
     }
 
-    pub async fn insert_blob(&self, bytes: &[u8]) -> Result<BlobDigest> {
-        insert_blob_on(&self.database, bytes).await
+    pub fn insert_blob(&self, bytes: &[u8]) -> Result<BlobDigest> {
+        insert_blob_on(&self.lock(), bytes)
     }
 
-    pub async fn insert_release(&self, release: &NewRelease) -> Result<VersionId> {
+    pub fn insert_release(&self, release: &NewRelease) -> Result<VersionId> {
         validation::release(release)?;
-        ensure_registry(&self.database, release.registry_id).await?;
-        for item in &release.dependencies {
-            if let Some(registry_id) = item.target_registry_id {
-                ensure_registry(&self.database, registry_id).await?;
-            }
-        }
-        for file in &release.files {
-            if blob::Entity::find_by_id(file.blob.as_bytes().to_vec())
-                .one(&self.database)
-                .await?
-                .is_none()
-            {
-                return Err(PackageStoreError::BlobNotFound(file.blob));
-            }
-        }
-
-        let transaction = self.database.begin().await?;
-        package::Entity::insert(package::ActiveModel {
-            id:          sea_orm::ActiveValue::NotSet,
-            registry_id: Set(release.registry_id.0),
-            name:        Set(release.package.clone()),
-        })
-        .on_conflict(
-            OnConflict::columns([package::Column::RegistryId, package::Column::Name])
-                .do_nothing()
-                .to_owned(),
-        )
-        .exec_without_returning(&transaction)
-        .await?;
-        let package_model = package::Entity::find()
-            .filter(package::Column::RegistryId.eq(release.registry_id.0))
-            .filter(package::Column::Name.eq(&release.package))
-            .one(&transaction)
-            .await?
-            .ok_or_else(|| {
-                PackageStoreError::InvalidSnapshot(
-                    "package upsert did not produce a readable row".to_owned(),
-                )
-            })?;
-        if package_version::Entity::find()
-            .filter(package_version::Column::PackageId.eq(package_model.id))
-            .filter(package_version::Column::Version.eq(&release.version))
-            .one(&transaction)
-            .await?
-            .is_some()
-        {
-            return Err(PackageStoreError::ReleaseExists {
-                package: release.package.clone(),
-                version: release.version.clone(),
-            });
-        }
-
-        let manifest_digest = insert_blob_on(&transaction, &release.manifest).await?;
-        let version_model = package_version::ActiveModel {
-            id:              sea_orm::ActiveValue::NotSet,
-            package_id:      Set(package_model.id),
-            version:         Set(release.version.clone()),
-            published_at:    Set(release.published_at),
-            yanked_reason:   Set(release.yanked_reason.clone()),
-            manifest_digest: Set(manifest_digest.as_bytes().to_vec()),
-        }
-        .insert(&transaction)
-        .await?;
-        let version_id = VersionId(version_model.id);
-
-        for (ordinal, item) in release.dependencies.iter().enumerate() {
-            dependency::ActiveModel {
-                version_id:         Set(version_id.0),
-                ordinal:            Set(i64::try_from(ordinal).map_err(|_conversion_error| {
-                    PackageStoreError::InvalidSnapshot(
-                        "too many dependencies in release".to_owned(),
-                    )
-                })?),
-                kind:               Set(item.kind.as_str().to_owned()),
-                target_registry_id: Set(item.target_registry_id.map(|id| id.0)),
-                package_name:       Set(item.package.clone()),
-                requirement:        Set(item.requirement.clone()),
-                alias:              Set(item.alias.clone()),
-            }
-            .insert(&transaction)
-            .await?;
-        }
-        for item in &release.exports {
-            package_export::ActiveModel {
-                version_id:  Set(version_id.0),
-                name:        Set(item.name.clone()),
-                target_path: Set(item.target.clone()),
-            }
-            .insert(&transaction)
-            .await?;
-        }
-        for item in &release.files {
-            package_file::ActiveModel {
-                version_id:  Set(version_id.0),
-                path:        Set(item.path.clone()),
-                blob_digest: Set(item.blob.as_bytes().to_vec()),
-                media_type:  Set(item.media_type.clone()),
-                mode:        Set(i64::from(item.mode)),
-            }
-            .insert(&transaction)
-            .await?;
-        }
-        transaction.commit().await?;
-        Ok(version_id)
+        insert_release_on(&mut self.lock(), release)
     }
 
-    pub async fn repository_snapshot(&self) -> Result<RepositorySnapshot> {
-        let transaction = self.database.begin().await?;
-        let package_models = package::Entity::find()
-            .order_by_asc(package::Column::Id)
-            .all(&transaction)
-            .await?;
-        let mut packages_by_id = BTreeMap::new();
-        for model in package_models {
-            validation::package_name(&model.name).map_err(|error| {
-                PackageStoreError::InvalidSnapshot(format!(
-                    "stored package name failed validation: {error}"
-                ))
-            })?;
-            packages_by_id.insert(model.id, PackageKey {
-                registry_id: RegistryId(model.registry_id),
-                name:        model.name,
-            });
-        }
-
-        let version_models = package_version::Entity::find()
-            .order_by_asc(package_version::Column::Id)
-            .all(&transaction)
-            .await?;
-        let mut package_by_version = BTreeMap::new();
-        for model in &version_models {
-            package_by_version.insert(model.id, model.package_id);
-        }
-
-        let dependency_models = dependency::Entity::find()
-            .order_by_asc(dependency::Column::VersionId)
-            .order_by_asc(dependency::Column::Ordinal)
-            .all(&transaction)
-            .await?;
-        let mut dependencies = BTreeMap::<VersionId, Vec<SnapshotDependency>>::new();
-        for model in dependency_models {
-            let source_package_id = package_by_version.get(&model.version_id).ok_or_else(|| {
-                PackageStoreError::InvalidSnapshot(
-                    "dependency refers to a missing version".to_owned(),
-                )
-            })?;
-            let source_package = packages_by_id.get(source_package_id).ok_or_else(|| {
-                PackageStoreError::InvalidSnapshot("version refers to a missing package".to_owned())
-            })?;
-            validation::package_name(&model.package_name).map_err(|error| {
-                PackageStoreError::InvalidSnapshot(format!(
-                    "stored dependency name failed validation: {error}"
-                ))
-            })?;
-            let parsed_requirement =
-                node_semver::Range::parse(&model.requirement).map_err(|error| {
-                    PackageStoreError::InvalidSnapshot(format!(
-                        "stored dependency range `{}` failed validation: {error}",
-                        model.requirement
-                    ))
-                })?;
-            dependencies
-                .entry(VersionId(model.version_id))
-                .or_default()
-                .push(SnapshotDependency {
-                    kind: crate::DependencyKind::from_database(&model.kind)?,
-                    alias: model.alias,
-                    package_key: PackageKey {
-                        registry_id: model
-                            .target_registry_id
-                            .map_or(source_package.registry_id, RegistryId),
-                        name:        model.package_name,
-                    },
-                    requirement: model.requirement,
-                    parsed_requirement,
-                });
-        }
-
-        let mut snapshot = RepositorySnapshot::default();
-        for model in version_models {
-            let package_key = packages_by_id.get(&model.package_id).ok_or_else(|| {
-                PackageStoreError::InvalidSnapshot("version refers to a missing package".to_owned())
-            })?;
-            let parsed_version = SemverVersion::parse(&model.version).map_err(|error| {
-                PackageStoreError::InvalidSnapshot(format!(
-                    "stored version `{}` failed validation: {error}",
-                    model.version
-                ))
-            })?;
-            snapshot
-                .packages
-                .entry(package_key.clone())
-                .or_default()
-                .push(SnapshotVersion {
-                    id: VersionId(model.id),
-                    raw_version: model.version,
-                    parsed_version,
-                    yanked_reason: model.yanked_reason,
-                    dependencies: dependencies
-                        .remove(&VersionId(model.id))
-                        .unwrap_or_default(),
-                });
-        }
-        if !dependencies.is_empty() {
-            return Err(PackageStoreError::InvalidSnapshot(
-                "dependencies refer to missing package versions".to_owned(),
-            ));
-        }
-        transaction.commit().await?;
-        Ok(snapshot)
+    pub fn repository_snapshot(&self) -> Result<RepositorySnapshot> {
+        repository_snapshot_on(&mut self.lock())
     }
 }
 
-async fn initialize(database: &DatabaseConnection, in_memory: bool) -> Result<()> {
-    if database.get_database_backend() != DbBackend::Sqlite {
-        return Err(PackageStoreError::InvalidDatabasePath(
-            "package stores require SQLite".to_owned(),
-        ));
-    }
-    let application_id = pragma_i64(database, "application_id").await?;
-    let user_version = pragma_i64(database, "user_version").await?;
+fn initialize(connection: &Connection, in_memory: bool) -> Result<()> {
+    let application_id = pragma_i64(connection, "application_id")?;
+    let user_version = pragma_i64(connection, "user_version")?;
     if user_version > SCHEMA_VERSION {
         return Err(PackageStoreError::SchemaTooNew {
             actual:    user_version,
@@ -373,68 +152,69 @@ async fn initialize(database: &DatabaseConnection, in_memory: bool) -> Result<()
             actual: application_id,
         });
     }
-    if application_id == 0 && !database_is_empty(database).await? {
+    if application_id == 0 && !database_is_empty(connection)? {
         return Err(PackageStoreError::UnrecognizedDatabase);
     }
 
-    install_tracking_table(&SchemaManager::new(database)).await?;
-    let known_migrations = Migrator::migrations()
-        .into_iter()
-        .map(|migration| migration.name().to_owned())
-        .collect::<BTreeSet<_>>();
-    if let Some(unknown) = Migrator::get_migration_models(database)
-        .await?
-        .into_iter()
-        .find(|migration| !known_migrations.contains(&migration.version))
+    connection.execute_batch(MIGRATION_LOG)?;
+    if let Some(unknown) = connection
+        .query_row(
+            "SELECT version FROM den_package_store_migrations WHERE version <> ?1 LIMIT 1",
+            [MIGRATION_NAME],
+            |row| row.get(0),
+        )
+        .optional()?
     {
-        return Err(PackageStoreError::UnknownMigration(unknown.version));
+        return Err(PackageStoreError::UnknownMigration(unknown));
     }
-    Migrator::up(database, None).await?;
-    validate_schema(database).await?;
-    execute_pragma(
-        database,
-        &format!("PRAGMA application_id = {APPLICATION_ID}"),
-    )
-    .await?;
-    execute_pragma(database, &format!("PRAGMA user_version = {SCHEMA_VERSION}")).await?;
+    if !connection
+        .prepare("SELECT 1 FROM den_package_store_migrations WHERE version = ?1")?
+        .exists([MIGRATION_NAME])?
+    {
+        create_schema(connection)?;
+    }
+    validate_schema(connection)?;
+    connection.pragma_update(None, "application_id", APPLICATION_ID)?;
+    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     if !in_memory {
-        execute_pragma(database, "PRAGMA journal_mode = WAL").await?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
     }
-    execute_pragma(database, "PRAGMA synchronous = FULL").await?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
     Ok(())
+}
+
+fn create_schema(connection: &Connection) -> Result<()> {
+    let mut batch = String::from("BEGIN;");
+    for (_name, definition) in TABLES {
+        batch.push_str(definition);
+        batch.push(';');
+    }
+    batch.push_str("INSERT INTO den_package_store_migrations(version, applied_at) VALUES ('");
+    batch.push_str(MIGRATION_NAME);
+    batch.push_str("', unixepoch()); COMMIT;");
+    Ok(connection.execute_batch(&batch)?)
 }
 
 /// Refuse a store whose tables were rewritten under us. SQLite keeps the
 /// `CREATE TABLE` text verbatim, so comparing it against the definition this
-/// build ships covers columns, types, constraints and STRICT at once.
-async fn validate_schema(database: &DatabaseConnection) -> Result<()> {
-    for (table_name, table) in expected_tables() {
-        validate_table_definition(database, table_name, &table).await?;
-    }
-    Ok(())
-}
-
-async fn validate_table_definition(
-    database: &DatabaseConnection, table_name: &str, table: &TableCreateStatement,
-) -> Result<()> {
-    let actual = database
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
-            [table_name.to_owned().into()],
-        ))
-        .await?
-        .ok_or_else(|| schema_mismatch(table_name, "SeaQuery table definition", "missing"))?
-        .try_get::<String>("", "sql")?;
-    let expected = DbBackend::Sqlite.build(table).sql;
-    let expected = normalized_table_sql(&expected);
-    let actual = normalized_table_sql(&actual);
-    if actual != expected {
-        return Err(schema_mismatch(
-            format!("{table_name} table definition"),
-            expected,
-            actual,
-        ));
+/// build ships covers columns, types, defaults, constraints and STRICT at once.
+fn validate_schema(connection: &Connection) -> Result<()> {
+    for (name, expected) in TABLES {
+        let actual: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| schema_mismatch(name, "table definition", "missing"))?;
+        if normalized_table_sql(&actual) != normalized_table_sql(expected) {
+            return Err(schema_mismatch(
+                format!("{name} table definition"),
+                normalized_table_sql(expected),
+                normalized_table_sql(&actual),
+            ));
+        }
     }
     Ok(())
 }
@@ -456,49 +236,57 @@ fn schema_mismatch(
     }
 }
 
-async fn execute_pragma(database: &DatabaseConnection, pragma: &str) -> Result<()> {
-    database
-        .execute_raw(Statement::from_string(DbBackend::Sqlite, pragma.to_owned()))
-        .await?;
-    Ok(())
+fn pragma_i64(connection: &Connection, name: &str) -> Result<i64> {
+    Ok(connection.pragma_query_value(None, name, |row| row.get(0))?)
 }
 
-async fn pragma_i64(database: &DatabaseConnection, name: &str) -> Result<i64> {
-    let row = database
-        .query_one_raw(Statement::from_string(
-            DbBackend::Sqlite,
-            format!("PRAGMA {name}"),
-        ))
-        .await?
-        .ok_or_else(|| {
-            PackageStoreError::InvalidSnapshot(format!("PRAGMA {name} returned no row"))
-        })?;
-    Ok(row.try_get_by_index(0)?)
+fn database_is_empty(connection: &Connection) -> Result<bool> {
+    let tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(tables == 0)
 }
 
-async fn database_is_empty(database: &DatabaseConnection) -> Result<bool> {
-    let row = database
-        .query_one_raw(Statement::from_string(
-            DbBackend::Sqlite,
-            "SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE \
-             'sqlite_%'"
-                .to_owned(),
-        ))
-        .await?
-        .ok_or_else(|| {
-            PackageStoreError::InvalidSnapshot("schema count returned no row".to_owned())
-        })?;
-    Ok(row.try_get::<i64>("", "count")? == 0)
+fn add_registry_on(connection: &Connection, kind: &str, base_url: &str) -> Result<RegistryId> {
+    connection.execute(
+        "INSERT OR IGNORE INTO registry(kind, base_url) VALUES (?1, ?2)",
+        (kind, base_url),
+    )?;
+    find_registry(connection, kind, base_url)?.ok_or_else(|| {
+        PackageStoreError::InvalidSnapshot(
+            "registry upsert did not produce a readable row".to_owned(),
+        )
+    })
 }
 
-async fn ensure_registry<C>(database: &C, id: RegistryId) -> Result<()>
-where
-    C: ConnectionTrait,
-{
-    if registry::Entity::find_by_id(id.0)
-        .one(database)
-        .await?
-        .is_some()
+fn find_registry(
+    connection: &Connection, kind: &str, base_url: &str,
+) -> Result<Option<RegistryId>> {
+    connection
+        .query_row(
+            "SELECT id, kind FROM registry WHERE base_url = ?1",
+            [base_url],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+        .map(|(id, stored_kind)| {
+            if stored_kind == kind {
+                Ok(RegistryId(id))
+            } else {
+                Err(PackageStoreError::InvalidRegistry(format!(
+                    "{base_url} is already registered as `{stored_kind}`, not `{kind}`"
+                )))
+            }
+        })
+        .transpose()
+}
+
+fn ensure_registry(connection: &Connection, id: RegistryId) -> Result<()> {
+    if connection
+        .prepare_cached("SELECT 1 FROM registry WHERE id = ?1")?
+        .exists([id.0])?
     {
         Ok(())
     } else {
@@ -506,82 +294,244 @@ where
     }
 }
 
-async fn insert_blob_on<C>(database: &C, bytes: &[u8]) -> Result<BlobDigest>
-where
-    C: ConnectionTrait,
-{
+fn insert_blob_on(connection: &Connection, bytes: &[u8]) -> Result<BlobDigest> {
     let digest = BlobDigest::for_bytes(bytes);
-    if let Some(existing) = blob::Entity::find_by_id(digest.as_bytes().to_vec())
-        .one(database)
-        .await?
-    {
-        verify_blob(digest, &existing.bytes)?;
-        if existing.bytes.as_slice() != bytes {
-            return Err(PackageStoreError::BlobCorrupt {
-                expected: digest,
-                actual:   BlobDigest::for_bytes(&existing.bytes),
-            });
-        }
-        return Ok(digest);
-    }
-    let insertion = blob::ActiveModel {
-        digest: Set(digest.as_bytes().to_vec()),
-        bytes:  Set(bytes.to_vec()),
-    }
-    .insert(database)
-    .await;
-    match insertion {
-        Ok(_) => {}
-        Err(insert_error) => {
-            if blob::Entity::find_by_id(digest.as_bytes().to_vec())
-                .one(database)
-                .await?
-                .is_none()
-            {
-                return Err(insert_error.into());
-            }
-        }
-    }
-    let stored = read_blob_on(database, digest).await?;
-    if stored.as_slice() != bytes {
-        return Err(PackageStoreError::BlobCorrupt {
+    connection.execute(
+        "INSERT OR IGNORE INTO blob(digest, bytes) VALUES (?1, ?2)",
+        (digest.as_bytes(), bytes),
+    )?;
+    // Re-read so a pre-existing row with tampered content is caught by its
+    // hash.
+    let stored: Vec<u8> = connection.query_row(
+        "SELECT bytes FROM blob WHERE digest = ?1",
+        [digest.as_bytes()],
+        |row| row.get(0),
+    )?;
+    let actual = BlobDigest::for_bytes(&stored);
+    if actual == digest {
+        Ok(digest)
+    } else {
+        Err(PackageStoreError::BlobCorrupt {
             expected: digest,
-            actual:   BlobDigest::for_bytes(&stored),
+            actual,
+        })
+    }
+}
+
+fn insert_release_on(connection: &mut Connection, release: &NewRelease) -> Result<VersionId> {
+    // IMMEDIATE takes the write lock up front so a concurrent writer waits on
+    // busy_timeout instead of failing the later read-to-write upgrade.
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    ensure_registry(&transaction, release.registry_id)?;
+    for item in &release.dependencies {
+        if let Some(registry_id) = item.target_registry_id {
+            ensure_registry(&transaction, registry_id)?;
+        }
+    }
+    for file in &release.files {
+        if !transaction
+            .prepare_cached("SELECT 1 FROM blob WHERE digest = ?1")?
+            .exists([file.blob.as_bytes()])?
+        {
+            return Err(PackageStoreError::BlobNotFound(file.blob));
+        }
+    }
+
+    transaction.execute(
+        "INSERT OR IGNORE INTO package(registry_id, name) VALUES (?1, ?2)",
+        (release.registry_id.0, &release.package),
+    )?;
+    let package_id: i64 = transaction.query_row(
+        "SELECT id FROM package WHERE registry_id = ?1 AND name = ?2",
+        (release.registry_id.0, &release.package),
+        |row| row.get(0),
+    )?;
+    if transaction
+        .prepare_cached("SELECT 1 FROM package_version WHERE package_id = ?1 AND version = ?2")?
+        .exists((package_id, &release.version))?
+    {
+        return Err(PackageStoreError::ReleaseExists {
+            package: release.package.clone(),
+            version: release.version.clone(),
         });
     }
-    Ok(digest)
-}
 
-async fn read_blob_on<C>(database: &C, digest: BlobDigest) -> Result<Vec<u8>>
-where
-    C: ConnectionTrait,
-{
-    let model = blob::Entity::find_by_id(digest.as_bytes().to_vec())
-        .one(database)
-        .await?
-        .ok_or(PackageStoreError::BlobNotFound(digest))?;
-    verify_blob(digest, &model.bytes)?;
-    Ok(model.bytes)
-}
+    let manifest_digest = insert_blob_on(&transaction, &release.manifest)?;
+    transaction.execute(
+        "INSERT INTO package_version(package_id, version, published_at, yanked_reason, \
+         manifest_digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+        (
+            package_id,
+            &release.version,
+            release.published_at,
+            &release.yanked_reason,
+            manifest_digest.as_bytes(),
+        ),
+    )?;
+    let version_id = VersionId(transaction.last_insert_rowid());
 
-fn verify_blob(expected: BlobDigest, bytes: &[u8]) -> Result<()> {
-    let actual = BlobDigest::for_bytes(bytes);
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(PackageStoreError::BlobCorrupt { expected, actual })
+    for (ordinal, item) in release.dependencies.iter().enumerate() {
+        let ordinal = i64::try_from(ordinal).map_err(|_conversion_error| {
+            PackageStoreError::InvalidSnapshot("too many dependencies in release".to_owned())
+        })?;
+        transaction.execute(
+            "INSERT INTO dependency(version_id, ordinal, kind, target_registry_id, package_name, \
+             requirement, alias) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                version_id.0,
+                ordinal,
+                item.kind.as_str(),
+                item.target_registry_id.map(|id| id.0),
+                &item.package,
+                &item.requirement,
+                &item.alias,
+            ),
+        )?;
     }
+    for item in &release.exports {
+        transaction.execute(
+            "INSERT INTO export(version_id, name, target_path) VALUES (?1, ?2, ?3)",
+            (version_id.0, &item.name, &item.target),
+        )?;
+    }
+    for item in &release.files {
+        transaction.execute(
+            "INSERT INTO package_file(version_id, path, blob_digest, media_type, mode) VALUES \
+             (?1, ?2, ?3, ?4, ?5)",
+            (
+                version_id.0,
+                &item.path,
+                item.blob.as_bytes(),
+                &item.media_type,
+                i64::from(item.mode),
+            ),
+        )?;
+    }
+    transaction.commit()?;
+    Ok(version_id)
 }
 
-fn registry_identity(model: registry::Model, kind: &str) -> Result<RegistryId> {
-    if model.kind == kind {
-        Ok(RegistryId(model.id))
-    } else {
-        Err(PackageStoreError::InvalidRegistry(format!(
-            "{} is already registered as `{}`, not `{kind}`",
-            model.base_url, model.kind
-        )))
+fn repository_snapshot_on(connection: &mut Connection) -> Result<RepositorySnapshot> {
+    // One read transaction keeps the three scans on a single consistent
+    // snapshot.
+    let transaction = connection.transaction()?;
+    let packages_by_id = transaction
+        .prepare("SELECT id, registry_id, name FROM package ORDER BY id")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .map(|row| {
+            let (id, registry_id, name) = row?;
+            validation::package_name(&name).map_err(|error| {
+                PackageStoreError::InvalidSnapshot(format!(
+                    "stored package name failed validation: {error}"
+                ))
+            })?;
+            Ok((id, PackageKey {
+                registry_id: RegistryId(registry_id),
+                name,
+            }))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let version_rows = transaction
+        .prepare("SELECT id, package_id, version, yanked_reason FROM package_version ORDER BY id")?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let dependency_rows = transaction
+        .prepare(
+            "SELECT version_id, kind, target_registry_id, package_name, requirement, alias FROM \
+             dependency ORDER BY version_id, ordinal",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(transaction);
+
+    let package_by_version = version_rows
+        .iter()
+        .map(|(id, package_id, ..)| (*id, *package_id))
+        .collect::<BTreeMap<_, _>>();
+    let mut dependencies = BTreeMap::<VersionId, Vec<SnapshotDependency>>::new();
+    for (version_id, kind, target_registry_id, package_name, requirement, alias) in dependency_rows
+    {
+        let source_package_id = package_by_version.get(&version_id).ok_or_else(|| {
+            PackageStoreError::InvalidSnapshot("dependency refers to a missing version".to_owned())
+        })?;
+        let source_package = packages_by_id.get(source_package_id).ok_or_else(|| {
+            PackageStoreError::InvalidSnapshot("version refers to a missing package".to_owned())
+        })?;
+        validation::package_name(&package_name).map_err(|error| {
+            PackageStoreError::InvalidSnapshot(format!(
+                "stored dependency name failed validation: {error}"
+            ))
+        })?;
+        let parsed_requirement = node_semver::Range::parse(&requirement).map_err(|error| {
+            PackageStoreError::InvalidSnapshot(format!(
+                "stored dependency range `{requirement}` failed validation: {error}"
+            ))
+        })?;
+        dependencies
+            .entry(VersionId(version_id))
+            .or_default()
+            .push(SnapshotDependency {
+                kind: DependencyKind::from_database(&kind)?,
+                alias,
+                package_key: PackageKey {
+                    registry_id: target_registry_id.map_or(source_package.registry_id, RegistryId),
+                    name:        package_name,
+                },
+                requirement,
+                parsed_requirement,
+            });
     }
+
+    let mut snapshot = RepositorySnapshot::default();
+    for (id, package_id, version, yanked_reason) in version_rows {
+        let package_key = packages_by_id.get(&package_id).ok_or_else(|| {
+            PackageStoreError::InvalidSnapshot("version refers to a missing package".to_owned())
+        })?;
+        let parsed_version = SemverVersion::parse(&version).map_err(|error| {
+            PackageStoreError::InvalidSnapshot(format!(
+                "stored version `{version}` failed validation: {error}"
+            ))
+        })?;
+        snapshot
+            .packages
+            .entry(package_key.clone())
+            .or_default()
+            .push(SnapshotVersion {
+                id: VersionId(id),
+                raw_version: version,
+                parsed_version,
+                yanked_reason,
+                dependencies: dependencies.remove(&VersionId(id)).unwrap_or_default(),
+            });
+    }
+    if !dependencies.is_empty() {
+        return Err(PackageStoreError::InvalidSnapshot(
+            "dependencies refer to missing package versions".to_owned(),
+        ));
+    }
+    Ok(snapshot)
 }
 
 fn validate_registry(kind: &str, base_url: &str) -> Result<String> {
@@ -613,86 +563,60 @@ fn validate_registry(kind: &str, base_url: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use sea_orm::{ConnectionTrait as _, DbBackend, EntityTrait as _, Statement};
-
-    use super::{PackageStore, blob};
+    use super::PackageStore;
     use crate::{NewRelease, PackageStoreError};
 
-    #[tokio::test]
-    async fn configures_connection_pragmas() -> Result<(), Box<dyn std::error::Error>> {
-        let store = PackageStore::open_in_memory().await?;
-        assert_eq!(super::pragma_i64(&store.database, "foreign_keys").await?, 1);
-        assert_eq!(
-            super::pragma_i64(&store.database, "trusted_schema").await?,
-            0
-        );
-        assert_eq!(super::pragma_i64(&store.database, "synchronous").await?, 2);
-        assert_eq!(
-            super::pragma_i64(&store.database, "busy_timeout").await?,
-            5_000
-        );
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn configures_connection_pragmas() -> TestResult {
+        let store = PackageStore::open_in_memory()?;
+        let connection = store.lock();
+        assert_eq!(super::pragma_i64(&connection, "foreign_keys")?, 1);
+        assert_eq!(super::pragma_i64(&connection, "trusted_schema")?, 0);
+        assert_eq!(super::pragma_i64(&connection, "synchronous")?, 2);
+        assert_eq!(super::pragma_i64(&connection, "busy_timeout")?, 5_000);
         Ok(())
     }
 
-    #[tokio::test]
-    async fn detects_corrupt_blob_content() -> Result<(), Box<dyn std::error::Error>> {
-        let store = PackageStore::open_in_memory().await?;
-        let digest = store.insert_blob(b"original").await?;
-        store
-            .database
-            .execute_raw(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "UPDATE blob SET bytes = ? WHERE digest = ?",
-                [
-                    b"tampered".as_slice().into(),
-                    digest.as_bytes().as_slice().into(),
-                ],
-            ))
-            .await?;
-        // `insert_blob_on` re-reads and hash-verifies what is already stored,
-        // so the tampered row is caught on the way in just as it was on
-        // the way out.
+    #[test]
+    fn detects_corrupt_blob_content() -> TestResult {
+        let store = PackageStore::open_in_memory()?;
+        let digest = store.insert_blob(b"original")?;
+        store.lock().execute(
+            "UPDATE blob SET bytes = ?1 WHERE digest = ?2",
+            (b"tampered".as_slice(), digest.as_bytes()),
+        )?;
         assert!(matches!(
-            store.insert_blob(b"original").await,
+            store.insert_blob(b"original"),
             Err(PackageStoreError::BlobCorrupt { expected, .. }) if expected == digest
         ));
-        assert!(
-            blob::Entity::find_by_id(digest.as_bytes().to_vec())
-                .one(&store.database)
-                .await?
-                .is_some()
-        );
+        let kept: i64 = store.lock().query_row(
+            "SELECT COUNT(*) FROM blob WHERE digest = ?1",
+            [digest.as_bytes()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(kept, 1);
         Ok(())
     }
 
-    #[tokio::test]
-    async fn release_transaction_rolls_back_package_on_mid_commit_failure()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let store = PackageStore::open_in_memory().await?;
-        let registry = store.add_registry("jsr", "https://jsr.example/").await?;
-        store
-            .database
-            .execute_unprepared(
-                "CREATE TRIGGER fail_package_version BEFORE INSERT ON package_version BEGIN \
-                 SELECT RAISE(ABORT, 'forced test failure'); END",
-            )
-            .await?;
+    #[test]
+    fn release_transaction_rolls_back_package_on_mid_commit_failure() -> TestResult {
+        let store = PackageStore::open_in_memory()?;
+        let registry = store.add_registry("jsr", "https://jsr.example/")?;
+        store.lock().execute_batch(
+            "CREATE TRIGGER fail_package_version BEFORE INSERT ON package_version BEGIN SELECT \
+             RAISE(ABORT, 'forced test failure'); END",
+        )?;
 
         assert!(
             store
                 .insert_release(&NewRelease::new(registry, "rollback", "1.0.0"))
-                .await
                 .is_err()
         );
-        let packages = store
-            .database
-            .query_one_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "SELECT COUNT(*) AS count FROM package".to_owned(),
-            ))
-            .await?
-            .ok_or("count returned no row")?
-            .try_get::<i64>("", "count")?;
+        let packages: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM package", [], |row| row.get(0))?;
         assert_eq!(packages, 0);
         Ok(())
     }

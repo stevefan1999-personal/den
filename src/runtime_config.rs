@@ -40,7 +40,7 @@ pub async fn build_engine(config: Option<&Config>, argv: Vec<String>) -> Result<
 
     #[cfg(feature = "package-store")]
     if !packages.is_empty() {
-        builder = builder.package_modules(package_snapshot(config, &packages).await?);
+        builder = builder.package_modules(package_snapshot(config, &packages)?);
     }
     #[cfg(not(feature = "package-store"))]
     if !packages.is_empty() {
@@ -174,7 +174,7 @@ fn import_map(
 }
 
 #[cfg(feature = "package-store")]
-async fn package_snapshot(
+fn package_snapshot(
     config: &Config, packages: &[PackageRequirement],
 ) -> Result<std::sync::Arc<den_package_store::PackageModuleSnapshot>> {
     use den_package_store::{PackageStore, RootRequirement};
@@ -184,7 +184,6 @@ async fn package_snapshot(
         .as_deref()
         .ok_or_else(|| eyre!("package dependencies require `packageStore` in den.json"))?;
     let store = PackageStore::open(path)
-        .await
         .wrap_err_with(|| format!("failed to open package store `{}`", path.display()))?;
     let registries = config
         .registries
@@ -199,15 +198,12 @@ async fn package_snapshot(
             RegistryConfig::Url(url) => url,
             RegistryConfig::Detailed(options) => &options.url,
         };
-        let id = store
-            .registry_id(&package.registry, url)
-            .await?
-            .ok_or_else(|| {
-                eyre!(
-                    "registry `{}` ({url}) is not present in the package store",
-                    package.registry
-                )
-            })?;
+        let id = store.registry_id(&package.registry, url)?.ok_or_else(|| {
+            eyre!(
+                "registry `{}` ({url}) is not present in the package store",
+                package.registry
+            )
+        })?;
         roots.push(RootRequirement::aliased(
             &package.specifier,
             id,
@@ -215,8 +211,8 @@ async fn package_snapshot(
             &package.requirement,
         ));
     }
-    let solved = store.repository_snapshot().await?.solve(&roots)?;
-    Ok(std::sync::Arc::new(store.hydrate_modules(&solved).await?))
+    let solved = store.repository_snapshot()?.solve(&roots)?;
+    Ok(std::sync::Arc::new(store.hydrate_modules(&solved)?))
 }
 
 #[cfg(test)]
@@ -292,10 +288,10 @@ mod tests {
 
         let temp = tempdir()?;
         let store_path = temp.path().join("packages.db");
-        let store = PackageStore::create(&store_path).await?;
-        let registry = store.add_registry("jsr", "https://jsr.example/").await?;
+        let store = PackageStore::create(&store_path)?;
+        let registry = store.add_registry("jsr", "https://jsr.example/")?;
         let source = b"export default 42";
-        let digest = store.insert_blob(source).await?;
+        let digest = store.insert_blob(source)?;
         let mut release = NewRelease::new(registry, "real-package", "1.0.0");
         release.exports.push(NewExport {
             name:   ".".to_owned(),
@@ -307,7 +303,7 @@ mod tests {
             media_type: Some("text/javascript".to_owned()),
             mode:       0o644,
         });
-        store.insert_release(&release).await?;
+        store.insert_release(&release)?;
         drop(store);
 
         let config_path = temp.path().join("den.json");

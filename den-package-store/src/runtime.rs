@@ -1,17 +1,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use sea_orm::{
-    ColumnTrait as _, EntityTrait as _, PaginatorTrait as _, QueryFilter as _, QueryOrder as _,
-    QuerySelect as _, TransactionTrait as _,
-    sea_query::{Alias, Expr, Func},
-};
+use rusqlite::{Connection, OptionalExtension as _};
 use url::Url;
 
 use crate::{
     BlobDigest, DependencyKind, PackageKey, PackageStore, PackageStoreError, RegistryId,
-    ResolvedDependencyEdge, ResolvedPackage, ResolvedRootEdge, SolveResult, VersionId,
-    entity::{blob, dependency, package, package_export, package_file, package_version, registry},
-    validation,
+    ResolvedDependencyEdge, ResolvedPackage, ResolvedRootEdge, SolveResult, VersionId, validation,
 };
 
 pub type HydrationResult<T> = std::result::Result<T, PackageHydrationError>;
@@ -105,7 +99,7 @@ pub enum PackageHydrationError {
     #[error(transparent)]
     InvalidStore(#[from] PackageStoreError),
     #[error(transparent)]
-    Database(#[from] sea_orm::DbErr),
+    Database(#[from] rusqlite::Error),
 }
 
 /// Deterministic resolution failures for the deliberately flat package graph.
@@ -473,16 +467,13 @@ impl PackageModuleSnapshot {
 
 impl PackageStore {
     /// Materialize all selected modules and verify their CAS content under one
-    /// SeaORM read transaction. The returned snapshot performs no I/O.
-    pub async fn hydrate_modules(
-        &self, solved: &SolveResult,
-    ) -> HydrationResult<PackageModuleSnapshot> {
+    /// read transaction. The returned snapshot performs no I/O.
+    pub fn hydrate_modules(&self, solved: &SolveResult) -> HydrationResult<PackageModuleSnapshot> {
         self.hydrate_modules_with_limits(solved, HydrationLimits::default())
-            .await
     }
 
     /// Materialize modules with explicit finite file and verified-byte limits.
-    pub async fn hydrate_modules_with_limits(
+    pub fn hydrate_modules_with_limits(
         &self, solved: &SolveResult, limits: HydrationLimits,
     ) -> HydrationResult<PackageModuleSnapshot> {
         let mut budget = HydrationBudget::new(limits);
@@ -490,189 +481,222 @@ impl PackageStore {
         budget.check_root_edges(solved.roots.len())?;
         budget.check_solved_dependencies(solved.dependencies.len())?;
         let selected = selected_packages(solved)?;
-        let transaction = self.database().begin().await?;
-        let mut snapshot = PackageModuleSnapshot::default();
+        hydrate_on(&mut self.lock(), &selected, solved, &mut budget)
+    }
+}
 
-        let mut expected_dependency_edges = Vec::new();
-        for (key, selected_package) in &selected {
-            let version_model = package_version::Entity::find_by_id(selected_package.version_id.0)
-                .one(&transaction)
-                .await?
-                .ok_or(PackageHydrationError::SelectedVersionNotFound(
-                    selected_package.version_id,
-                ))?;
-            let package_model = package::Entity::find_by_id(version_model.package_id)
-                .one(&transaction)
-                .await?
-                .ok_or(PackageHydrationError::SelectedPackageNotFound {
-                    version_id: selected_package.version_id,
-                })?;
-            let actual = format!(
-                "{}:{}@{}",
-                package_model.registry_id, package_model.name, version_model.version
-            );
-            let expected = format!(
-                "{}:{}@{}",
-                selected_package.registry_id, selected_package.package, selected_package.version
-            );
-            if package_model.registry_id != selected_package.registry_id.0
-                || package_model.name != selected_package.package
-                || version_model.version != selected_package.version
-            {
-                return Err(PackageHydrationError::SelectedVersionMismatch {
-                    version_id: selected_package.version_id,
-                    expected,
-                    actual,
-                });
-            }
-            validation::package_name(&package_model.name)?;
-            let parsed_version =
-                node_semver::Version::parse(&version_model.version).map_err(|error| {
-                    PackageStoreError::InvalidSnapshot(format!(
-                        "stored version `{}` failed validation: {error}",
-                        version_model.version
+fn hydrate_on(
+    connection: &mut Connection, selected: &BTreeMap<PackageKey, ResolvedPackage>,
+    solved: &SolveResult, budget: &mut HydrationBudget,
+) -> HydrationResult<PackageModuleSnapshot> {
+    let transaction = connection.transaction()?;
+    let mut snapshot = PackageModuleSnapshot::default();
+
+    let mut expected_dependency_edges = Vec::new();
+    for (key, selected_package) in selected {
+        let version_id = selected_package.version_id;
+        let (package_id, version, manifest_digest) = transaction
+            .query_row(
+                "SELECT package_id, version, manifest_digest FROM package_version WHERE id = ?1",
+                [version_id.0],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
                     ))
-                })?;
-            if parsed_version.to_string() != version_model.version {
-                return Err(PackageStoreError::InvalidSnapshot(format!(
-                    "stored version `{}` is not canonical (`{parsed_version}`)",
-                    version_model.version
-                ))
-                .into());
-            }
-            let registry_model = registry::Entity::find_by_id(package_model.registry_id)
-                .one(&transaction)
-                .await?
-                .ok_or(PackageHydrationError::SelectedRegistryNotFound(
+                },
+            )
+            .optional()?
+            .ok_or(PackageHydrationError::SelectedVersionNotFound(version_id))?;
+        let (registry_id, package_name) = transaction
+            .query_row(
+                "SELECT registry_id, name FROM package WHERE id = ?1",
+                [package_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or(PackageHydrationError::SelectedPackageNotFound { version_id })?;
+        if registry_id != selected_package.registry_id.0
+            || package_name != selected_package.package
+            || version != selected_package.version
+        {
+            return Err(PackageHydrationError::SelectedVersionMismatch {
+                version_id,
+                expected: format!(
+                    "{}:{}@{}",
                     selected_package.registry_id,
-                ))?;
-
-            let dependency_count = dependency::Entity::find()
-                .filter(dependency::Column::VersionId.eq(version_model.id))
-                .count(&transaction)
-                .await?;
-            budget.add_dependencies(dependency_count)?;
-            let dependency_models = dependency::Entity::find()
-                .filter(dependency::Column::VersionId.eq(version_model.id))
-                .order_by_asc(dependency::Column::Ordinal)
-                .all(&transaction)
-                .await?;
-            for dependency in dependency_models {
-                let kind = DependencyKind::from_database(&dependency.kind)?;
-                if kind != DependencyKind::Normal || dependency.alias.is_some() {
-                    return Err(PackageHydrationError::InvalidSolutionEdge(format!(
-                        "selected package `{key}` contains unsupported {} dependency `{}`",
-                        kind.as_str(),
-                        dependency.package_name
-                    )));
-                }
-                validation::package_name(&dependency.package_name)?;
-                let target = PackageKey {
-                    registry_id: dependency
-                        .target_registry_id
-                        .map_or(key.registry_id, RegistryId),
-                    name:        dependency.package_name,
-                };
-                let selected_target = selected.get(&target).ok_or_else(|| {
-                    PackageHydrationError::InvalidSolutionEdge(format!(
-                        "dependency `{target}` required by `{key}` is not selected"
-                    ))
-                })?;
-                expected_dependency_edges.push(ResolvedDependencyEdge {
-                    importer: key.clone(),
-                    importer_version_id: selected_package.version_id,
-                    specifier: target.name.clone(),
-                    requirement: dependency.requirement,
-                    target,
-                    target_version_id: selected_target.version_id,
-                });
-            }
-
-            // Manifests are CAS content too even though the runtime loader does
-            // not otherwise retain them.
-            read_verified_blob(&transaction, &version_model.manifest_digest, &mut budget).await?;
-
-            let file_count = package_file::Entity::find()
-                .filter(package_file::Column::VersionId.eq(version_model.id))
-                .count(&transaction)
-                .await?;
-            budget.add_files(file_count)?;
-            let file_models = package_file::Entity::find()
-                .filter(package_file::Column::VersionId.eq(version_model.id))
-                .order_by_asc(package_file::Column::Path)
-                .all(&transaction)
-                .await?;
-            let mut files = BTreeMap::new();
-            for file in file_models {
-                validation::module_path(&file.path)?;
-                let bytes =
-                    read_verified_blob(&transaction, &file.blob_digest, &mut budget).await?;
-                let url = module_url(
-                    &registry_model,
-                    &package_model.name,
-                    &version_model.version,
-                    &file.path,
-                )?;
-                let module = PackageModule {
-                    package_key: key.clone(),
-                    path:        file.path.clone(),
-                    url:         url.clone(),
-                    media_type:  file.media_type,
-                    bytes:       bytes.into(),
-                };
-                if snapshot.modules.insert(url.clone(), module).is_some() {
-                    return Err(PackageHydrationError::DuplicateModuleUrl(url));
-                }
-                files.insert(file.path, url);
-            }
-
-            let export_count = package_export::Entity::find()
-                .filter(package_export::Column::VersionId.eq(version_model.id))
-                .count(&transaction)
-                .await?;
-            budget.add_exports(export_count)?;
-            let export_models = package_export::Entity::find()
-                .filter(package_export::Column::VersionId.eq(version_model.id))
-                .order_by_asc(package_export::Column::Name)
-                .all(&transaction)
-                .await?;
-            let mut exports = BTreeMap::new();
-            for export in export_models {
-                validation::export_name(&export.name)?;
-                validation::module_path(&export.target_path)?;
-                let target = files.get(&export.target_path).cloned().ok_or_else(|| {
-                    PackageHydrationError::DanglingExport {
-                        package: package_model.name.clone(),
-                        version: version_model.version.clone(),
-                        name:    export.name.clone(),
-                        target:  export.target_path.clone(),
-                    }
-                })?;
-                exports.insert(export.name, target);
-            }
-
-            let registry_name = format!("{}:{}", registry_model.kind, registry_model.base_url);
-            snapshot.packages.insert(key.clone(), SnapshotPackage {
-                registry: registry_name,
-                exports,
-                files,
-                dependencies: BTreeMap::new(),
+                    selected_package.package,
+                    selected_package.version
+                ),
+                actual: format!("{registry_id}:{package_name}@{version}"),
             });
         }
-        expected_dependency_edges.sort();
-        expected_dependency_edges.dedup();
-        let mut solved_dependency_edges = solved.dependencies.clone();
-        solved_dependency_edges.sort();
-        solved_dependency_edges.dedup();
-        if solved_dependency_edges != expected_dependency_edges {
-            return Err(PackageHydrationError::InvalidSolutionEdge(
-                "dependency edges do not match selected release metadata".to_owned(),
-            ));
+        validation::package_name(&package_name)?;
+        let parsed_version = node_semver::Version::parse(&version).map_err(|error| {
+            PackageStoreError::InvalidSnapshot(format!(
+                "stored version `{version}` failed validation: {error}"
+            ))
+        })?;
+        if parsed_version.to_string() != version {
+            return Err(PackageStoreError::InvalidSnapshot(format!(
+                "stored version `{version}` is not canonical (`{parsed_version}`)"
+            ))
+            .into());
         }
-        hydrate_solution_edges(&selected, solved, &mut snapshot)?;
-        transaction.commit().await?;
-        Ok(snapshot)
+        let (registry_kind, registry_url) = transaction
+            .query_row(
+                "SELECT kind, base_url FROM registry WHERE id = ?1",
+                [registry_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .ok_or(PackageHydrationError::SelectedRegistryNotFound(
+                selected_package.registry_id,
+            ))?;
+
+        budget.add_dependencies(count_rows(&transaction, "dependency", version_id)?)?;
+        let dependency_rows = transaction
+            .prepare_cached(
+                "SELECT kind, target_registry_id, package_name, requirement, alias FROM \
+                 dependency WHERE version_id = ?1 ORDER BY ordinal",
+            )?
+            .query_map([version_id.0], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (kind, target_registry_id, dependency_name, requirement, alias) in dependency_rows {
+            let kind = DependencyKind::from_database(&kind)?;
+            if kind != DependencyKind::Normal || alias.is_some() {
+                return Err(PackageHydrationError::InvalidSolutionEdge(format!(
+                    "selected package `{key}` contains unsupported {} dependency \
+                     `{dependency_name}`",
+                    kind.as_str(),
+                )));
+            }
+            validation::package_name(&dependency_name)?;
+            let target = PackageKey {
+                registry_id: target_registry_id.map_or(key.registry_id, RegistryId),
+                name:        dependency_name,
+            };
+            let selected_target = selected.get(&target).ok_or_else(|| {
+                PackageHydrationError::InvalidSolutionEdge(format!(
+                    "dependency `{target}` required by `{key}` is not selected"
+                ))
+            })?;
+            expected_dependency_edges.push(ResolvedDependencyEdge {
+                importer: key.clone(),
+                importer_version_id: version_id,
+                specifier: target.name.clone(),
+                requirement,
+                target,
+                target_version_id: selected_target.version_id,
+            });
+        }
+
+        // Manifests are CAS content too even though the runtime loader does
+        // not otherwise retain them.
+        read_verified_blob(&transaction, &manifest_digest, budget)?;
+
+        budget.add_files(count_rows(&transaction, "package_file", version_id)?)?;
+        let file_rows = transaction
+            .prepare_cached(
+                "SELECT path, blob_digest, media_type FROM package_file WHERE version_id = ?1 \
+                 ORDER BY path",
+            )?
+            .query_map([version_id.0], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut files = BTreeMap::new();
+        for (path, blob_digest, media_type) in file_rows {
+            validation::module_path(&path)?;
+            let bytes = read_verified_blob(&transaction, &blob_digest, budget)?;
+            let url = module_url(
+                &registry_kind,
+                &registry_url,
+                &package_name,
+                &version,
+                &path,
+            )?;
+            let module = PackageModule {
+                package_key: key.clone(),
+                path: path.clone(),
+                url: url.clone(),
+                media_type,
+                bytes: bytes.into(),
+            };
+            if snapshot.modules.insert(url.clone(), module).is_some() {
+                return Err(PackageHydrationError::DuplicateModuleUrl(url));
+            }
+            files.insert(path, url);
+        }
+
+        budget.add_exports(count_rows(&transaction, "export", version_id)?)?;
+        let export_rows = transaction
+            .prepare_cached(
+                "SELECT name, target_path FROM export WHERE version_id = ?1 ORDER BY name",
+            )?
+            .query_map([version_id.0], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut exports = BTreeMap::new();
+        for (name, target_path) in export_rows {
+            validation::export_name(&name)?;
+            validation::module_path(&target_path)?;
+            let target = files.get(&target_path).cloned().ok_or_else(|| {
+                PackageHydrationError::DanglingExport {
+                    package: package_name.clone(),
+                    version: version.clone(),
+                    name:    name.clone(),
+                    target:  target_path.clone(),
+                }
+            })?;
+            exports.insert(name, target);
+        }
+
+        snapshot.packages.insert(key.clone(), SnapshotPackage {
+            registry: format!("{registry_kind}:{registry_url}"),
+            exports,
+            files,
+            dependencies: BTreeMap::new(),
+        });
     }
+    expected_dependency_edges.sort();
+    expected_dependency_edges.dedup();
+    let mut solved_dependency_edges = solved.dependencies.clone();
+    solved_dependency_edges.sort();
+    solved_dependency_edges.dedup();
+    if solved_dependency_edges != expected_dependency_edges {
+        return Err(PackageHydrationError::InvalidSolutionEdge(
+            "dependency edges do not match selected release metadata".to_owned(),
+        ));
+    }
+    hydrate_solution_edges(selected, solved, &mut snapshot)?;
+    Ok(snapshot)
+}
+
+/// Row counts are checked against the budget before any row is loaded.
+fn count_rows(connection: &Connection, table: &str, version_id: VersionId) -> HydrationResult<u64> {
+    let count: i64 = connection.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE version_id = ?1"),
+        [version_id.0],
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(count).map_err(|_error| {
+        PackageStoreError::InvalidSnapshot(format!("{table} has an invalid row count {count}"))
+    })?)
 }
 
 fn selected_packages(
@@ -812,33 +836,32 @@ fn validate_requirement(
     Ok(())
 }
 
-async fn read_verified_blob<C>(
-    database: &C, raw_digest: &[u8], budget: &mut HydrationBudget,
-) -> HydrationResult<Vec<u8>>
-where
-    C: sea_orm::ConnectionTrait,
-{
+fn read_verified_blob(
+    connection: &Connection, raw_digest: &[u8], budget: &mut HydrationBudget,
+) -> HydrationResult<Vec<u8>> {
     let digest = BlobDigest::from_database(raw_digest.to_vec())?;
-    let byte_count = blob::Entity::find_by_id(raw_digest.to_vec())
-        .select_only()
-        .expr_as(
-            Func::cust(Alias::new("length")).arg(Expr::col(blob::Column::Bytes)),
-            "byte_count",
+    let byte_count: i64 = connection
+        .query_row(
+            "SELECT length(bytes) FROM blob WHERE digest = ?1",
+            [raw_digest],
+            |row| row.get(0),
         )
-        .into_tuple::<i64>()
-        .one(database)
-        .await?
+        .optional()?
         .ok_or(PackageStoreError::BlobNotFound(digest))?;
     budget.add_bytes(u64::try_from(byte_count).map_err(|_error| {
         PackageStoreError::InvalidSnapshot(format!(
             "blob {digest} has an invalid SQLite byte length {byte_count}"
         ))
     })?)?;
-    let model = blob::Entity::find_by_id(raw_digest.to_vec())
-        .one(database)
-        .await?
+    let bytes: Vec<u8> = connection
+        .query_row(
+            "SELECT bytes FROM blob WHERE digest = ?1",
+            [raw_digest],
+            |row| row.get(0),
+        )
+        .optional()?
         .ok_or(PackageStoreError::BlobNotFound(digest))?;
-    let actual = BlobDigest::for_bytes(&model.bytes);
+    let actual = BlobDigest::for_bytes(&bytes);
     if actual != digest {
         return Err(PackageStoreError::BlobCorrupt {
             expected: digest,
@@ -846,11 +869,11 @@ where
         }
         .into());
     }
-    Ok(model.bytes)
+    Ok(bytes)
 }
 
 fn module_url(
-    registry: &registry::Model, package: &str, version: &str, path: &str,
+    registry_kind: &str, registry_url: &str, package: &str, version: &str, path: &str,
 ) -> HydrationResult<String> {
     let mut url = Url::parse("den-pkg://module/").map_err(|error| {
         PackageStoreError::InvalidSnapshot(format!("cannot construct package URL: {error}"))
@@ -862,8 +885,8 @@ fn module_url(
             )
         })?;
         segments
-            .push(&registry.kind)
-            .push(&registry.base_url)
+            .push(registry_kind)
+            .push(registry_url)
             .push(package)
             .push(version)
             .extend(path.split('/'));
@@ -913,8 +936,6 @@ fn split_bare_specifier(specifier: &str) -> ResolutionResult<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use sea_orm::{ConnectionTrait as _, DbBackend, Statement};
-
     use super::{HydrationBudget, HydrationLimits, PackageHydrationError, PackageResolutionError};
     use crate::{
         DependencyKind, NewDependency, NewExport, NewPackageFile, NewRelease, PackageKey,
@@ -927,10 +948,10 @@ mod tests {
     const MAIN_SOURCE: &[u8] = b"export { default } from './child.js'";
     const CHILD_SOURCE: &[u8] = b"export default 42";
 
-    #[tokio::test]
-    async fn snapshot_resolves_exact_exports_and_contained_relative_files() -> TestResult {
-        let (store, selected) = fixture().await?;
-        let snapshot = store.hydrate_modules(&selected).await?;
+    #[test]
+    fn snapshot_resolves_exact_exports_and_contained_relative_files() -> TestResult {
+        let (store, selected) = fixture()?;
+        let snapshot = store.hydrate_modules(&selected)?;
         let root = snapshot.resolve("entry", "@scope/app")?;
         let child = snapshot.resolve(&root, "./child.js")?;
 
@@ -950,9 +971,9 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn hydration_limits_accept_boundaries_and_reject_the_next_unit() -> TestResult {
-        let (store, selected) = fixture().await?;
+    #[test]
+    fn hydration_limits_accept_boundaries_and_reject_the_next_unit() -> TestResult {
+        let (store, selected) = fixture()?;
         let total_bytes = u64::try_from(MAIN_SOURCE.len())?
             .checked_add(u64::try_from(CHILD_SOURCE.len())?)
             .ok_or("fixture byte count overflowed")?;
@@ -964,27 +985,19 @@ mod tests {
         exact.max_exports = 1;
         assert_eq!(
             store
-                .hydrate_modules_with_limits(&selected, exact)
-                .await?
+                .hydrate_modules_with_limits(&selected, exact)?
                 .module_count(),
             2
         );
         assert!(matches!(
-            store
-                .hydrate_modules_with_limits(&selected, HydrationLimits::new(1, total_bytes))
-                .await,
+            store.hydrate_modules_with_limits(&selected, HydrationLimits::new(1, total_bytes)),
             Err(PackageHydrationError::FileLimitExceeded {
                 limit:     1,
                 attempted: 2,
             })
         ));
         assert!(matches!(
-            store
-                .hydrate_modules_with_limits(
-                    &selected,
-                    HydrationLimits::new(2, total_bytes - 1),
-                )
-                .await,
+            store.hydrate_modules_with_limits(&selected, HydrationLimits::new(2, total_bytes - 1)),
             Err(PackageHydrationError::ByteLimitExceeded { limit, attempted })
                 if limit == total_bytes - 1 && attempted == total_bytes
         ));
@@ -992,9 +1005,7 @@ mod tests {
         let mut package_limited = exact;
         package_limited.max_packages = 0;
         assert!(matches!(
-            store
-                .hydrate_modules_with_limits(&selected, package_limited)
-                .await,
+            store.hydrate_modules_with_limits(&selected, package_limited),
             Err(PackageHydrationError::PackageLimitExceeded {
                 limit:     0,
                 attempted: 1,
@@ -1003,9 +1014,7 @@ mod tests {
         let mut root_limited = exact;
         root_limited.max_root_edges = 0;
         assert!(matches!(
-            store
-                .hydrate_modules_with_limits(&selected, root_limited)
-                .await,
+            store.hydrate_modules_with_limits(&selected, root_limited),
             Err(PackageHydrationError::RootEdgeLimitExceeded {
                 limit:     0,
                 attempted: 1,
@@ -1014,9 +1023,7 @@ mod tests {
         let mut export_limited = exact;
         export_limited.max_exports = 0;
         assert!(matches!(
-            store
-                .hydrate_modules_with_limits(&selected, export_limited)
-                .await,
+            store.hydrate_modules_with_limits(&selected, export_limited),
             Err(PackageHydrationError::ExportLimitExceeded {
                 limit:     0,
                 attempted: 1,
@@ -1064,29 +1071,24 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn hydration_counts_dependency_rows_before_loading_them() -> TestResult {
-        let (store, selected) = fixture().await?;
+    #[test]
+    fn hydration_counts_dependency_rows_before_loading_them() -> TestResult {
+        let (store, selected) = fixture()?;
         let package = selected
             .packages
             .first()
             .ok_or("fixture has no selected package")?;
-        store
-            .database()
-            .execute_raw(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "INSERT INTO dependency(version_id, ordinal, kind, target_registry_id, \
-                 package_name, requirement, alias) VALUES (?, 0, 'normal', ?, '@scope/app', '*', \
-                 NULL)",
-                [package.version_id.0.into(), package.registry_id.0.into()],
-            ))
-            .await?;
+        store.lock().execute(
+            "INSERT INTO dependency(version_id, ordinal, kind, target_registry_id, package_name, \
+             requirement, alias) VALUES (?1, 0, 'normal', ?2, '@scope/app', '*', NULL)",
+            [package.version_id.0, package.registry_id.0],
+        )?;
         let limits = HydrationLimits {
             max_dependency_edges: 0,
             ..HydrationLimits::default()
         };
         assert!(matches!(
-            store.hydrate_modules_with_limits(&selected, limits).await,
+            store.hydrate_modules_with_limits(&selected, limits),
             Err(PackageHydrationError::DependencyLimitExceeded {
                 limit:     0,
                 attempted: 1,
@@ -1095,30 +1097,22 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn hydration_checks_blob_length_before_loading_corrupt_content() -> TestResult {
-        let (store, selected) = fixture().await?;
-        store
-            .database()
-            .execute_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "UPDATE blob SET bytes = X'00' WHERE digest IN (SELECT blob_digest FROM \
-                 package_file)"
-                    .to_owned(),
-            ))
-            .await?;
+    #[test]
+    fn hydration_checks_blob_length_before_loading_corrupt_content() -> TestResult {
+        let (store, selected) = fixture()?;
+        store.lock().execute_batch(
+            "UPDATE blob SET bytes = X'00' WHERE digest IN (SELECT blob_digest FROM package_file)",
+        )?;
         assert!(matches!(
-            store
-                .hydrate_modules_with_limits(&selected, HydrationLimits::new(2, 0))
-                .await,
+            store.hydrate_modules_with_limits(&selected, HydrationLimits::new(2, 0)),
             Err(PackageHydrationError::ByteLimitExceeded { limit: 0, .. })
         ));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn hydration_rejects_invalid_selection_and_store_content() -> TestResult {
-        let (store, selected) = fixture().await?;
+    #[test]
+    fn hydration_rejects_invalid_selection_and_store_content() -> TestResult {
+        let (store, selected) = fixture()?;
         let mut mismatched = selected.clone();
         mismatched
             .packages
@@ -1126,7 +1120,7 @@ mod tests {
             .ok_or("fixture has no selected package")?
             .version = "9.9.9".to_owned();
         assert!(matches!(
-            store.hydrate_modules(&mismatched).await,
+            store.hydrate_modules(&mismatched),
             Err(PackageHydrationError::SelectedVersionMismatch { .. })
         ));
 
@@ -1139,7 +1133,7 @@ mod tests {
                 .clone(),
         );
         assert!(matches!(
-            store.hydrate_modules(&duplicate).await,
+            store.hydrate_modules(&duplicate),
             Err(PackageHydrationError::DuplicateSelectedPackage { .. })
         ));
 
@@ -1150,7 +1144,7 @@ mod tests {
             .ok_or("fixture has no selected package")?
             .version_id = VersionId(i64::MAX);
         assert!(matches!(
-            store.hydrate_modules(&missing).await,
+            store.hydrate_modules(&missing),
             Err(PackageHydrationError::SelectedVersionNotFound(_))
         ));
 
@@ -1161,40 +1155,24 @@ mod tests {
             .ok_or("fixture has no root edge")?
             .requirement = "^2".to_owned();
         assert!(matches!(
-            store.hydrate_modules(&incompatible_root).await,
+            store.hydrate_modules(&incompatible_root),
             Err(PackageHydrationError::InvalidSolutionEdge(_))
         ));
 
         store
-            .database()
-            .execute_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "UPDATE export SET target_path = 'missing.js'".to_owned(),
-            ))
-            .await?;
+            .lock()
+            .execute_batch("UPDATE export SET target_path = 'missing.js'")?;
         assert!(matches!(
-            store.hydrate_modules(&selected).await,
+            store.hydrate_modules(&selected),
             Err(PackageHydrationError::DanglingExport { .. })
         ));
 
-        store
-            .database()
-            .execute_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "UPDATE export SET target_path = 'src/main.js'".to_owned(),
-            ))
-            .await?;
-        store
-            .database()
-            .execute_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "UPDATE blob SET bytes = X'00' WHERE digest = (SELECT blob_digest FROM \
-                 package_file LIMIT 1)"
-                    .to_owned(),
-            ))
-            .await?;
+        store.lock().execute_batch(
+            "UPDATE export SET target_path = 'src/main.js'; UPDATE blob SET bytes = X'00' WHERE \
+             digest = (SELECT blob_digest FROM package_file LIMIT 1)",
+        )?;
         assert!(matches!(
-            store.hydrate_modules(&selected).await,
+            store.hydrate_modules(&selected),
             Err(PackageHydrationError::InvalidStore(
                 PackageStoreError::BlobCorrupt { .. }
             ))
@@ -1202,14 +1180,14 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn snapshot_exposes_only_roots_self_and_exact_dependencies() -> TestResult {
-        let (store, app_registry, dependency_registry, _) = edge_fixture().await?;
-        let solved = store.repository_snapshot().await?.solve(&[
+    #[test]
+    fn snapshot_exposes_only_roots_self_and_exact_dependencies() -> TestResult {
+        let (store, app_registry, dependency_registry) = edge_fixture()?;
+        let solved = store.repository_snapshot()?.solve(&[
             RootRequirement::new(app_registry, "app", "*"),
             RootRequirement::new(app_registry, "shared", "*"),
         ])?;
-        let snapshot = store.hydrate_modules(&solved).await?;
+        let snapshot = store.hydrate_modules(&solved)?;
 
         let app = snapshot.resolve("entry", "app")?;
         let root_shared = snapshot.resolve("entry", "shared")?;
@@ -1259,21 +1237,29 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn hydration_rejects_dependency_edges_that_disagree_with_metadata() -> TestResult {
-        let (store, app_registry, dependency_registry, incompatible_version_id) =
-            edge_fixture().await?;
-        let solved = store
-            .repository_snapshot()
-            .await?
-            .solve(&[RootRequirement::new(app_registry, "app", "*")])?;
+    #[test]
+    fn hydration_rejects_dependency_edges_that_disagree_with_metadata() -> TestResult {
+        let (store, app_registry, dependency_registry) = edge_fixture()?;
+        let snapshot = store.repository_snapshot()?;
+        let solved = snapshot.solve(&[RootRequirement::new(app_registry, "app", "*")])?;
         let mut missing_edge = solved.clone();
         missing_edge.dependencies.clear();
         assert!(matches!(
-            store.hydrate_modules(&missing_edge).await,
+            store.hydrate_modules(&missing_edge),
             Err(PackageHydrationError::InvalidSolutionEdge(_))
         ));
 
+        let incompatible_id = snapshot
+            .packages
+            .get(&PackageKey {
+                registry_id: dependency_registry,
+                name:        "shared".to_owned(),
+            })
+            .into_iter()
+            .flatten()
+            .find(|version| version.raw_version == "2.0.0")
+            .map(|version| version.id)
+            .ok_or("missing incompatible dependency version")?;
         let mut incompatible_selection = solved;
         let selected = incompatible_selection
             .packages
@@ -1282,7 +1268,7 @@ mod tests {
                 package.registry_id == dependency_registry && package.package == "shared"
             })
             .ok_or("missing selected dependency package")?;
-        selected.version_id = incompatible_version_id;
+        selected.version_id = incompatible_id;
         selected.version = "2.0.0".to_owned();
         let edge = incompatible_selection
             .dependencies
@@ -1291,9 +1277,9 @@ mod tests {
                 edge.target.registry_id == dependency_registry && edge.target.name == "shared"
             })
             .ok_or("missing dependency edge")?;
-        edge.target_version_id = incompatible_version_id;
+        edge.target_version_id = incompatible_id;
         assert!(matches!(
-            store.hydrate_modules(&incompatible_selection).await,
+            store.hydrate_modules(&incompatible_selection),
             Err(PackageHydrationError::InvalidSolutionEdge(_))
         ));
         Ok(())
@@ -1303,13 +1289,11 @@ mod tests {
         snapshot.module(url).map(super::PackageModule::bytes)
     }
 
-    async fn edge_fixture() -> TestResult<(PackageStore, RegistryId, RegistryId, VersionId)> {
-        let store = PackageStore::open_in_memory().await?;
-        let app_registry = store.add_registry("npm", "https://app.example/").await?;
-        let dependency_registry = store
-            .add_registry("npm", "https://dependencies.example/")
-            .await?;
-        insert_module_release(&store, app_registry, "shared", "1.0.0", b"root-shared", &[]).await?;
+    fn edge_fixture() -> TestResult<(PackageStore, RegistryId, RegistryId)> {
+        let store = PackageStore::open_in_memory()?;
+        let app_registry = store.add_registry("npm", "https://app.example/")?;
+        let dependency_registry = store.add_registry("npm", "https://dependencies.example/")?;
+        insert_module_release(&store, app_registry, "shared", "1.0.0", b"root-shared", &[])?;
         insert_module_release(
             &store,
             dependency_registry,
@@ -1317,8 +1301,7 @@ mod tests {
             "1.0.0",
             b"secret",
             &[],
-        )
-        .await?;
+        )?;
         insert_module_release(
             &store,
             dependency_registry,
@@ -1326,36 +1309,28 @@ mod tests {
             "1.0.0",
             b"dependency-shared",
             &[(dependency_registry, "secret", "^1")],
-        )
-        .await?;
-        let incompatible_version_id = insert_module_release(
+        )?;
+        insert_module_release(
             &store,
             dependency_registry,
             "shared",
             "2.0.0",
             b"incompatible-shared",
             &[],
-        )
-        .await?;
+        )?;
         insert_module_release(&store, app_registry, "app", "1.0.0", b"app", &[(
             dependency_registry,
             "shared",
             "^1",
-        )])
-        .await?;
-        Ok((
-            store,
-            app_registry,
-            dependency_registry,
-            incompatible_version_id,
-        ))
+        )])?;
+        Ok((store, app_registry, dependency_registry))
     }
 
-    async fn insert_module_release(
+    fn insert_module_release(
         store: &PackageStore, registry: RegistryId, package: &str, version: &str, source: &[u8],
         dependencies: &[(RegistryId, &str, &str)],
     ) -> TestResult<VersionId> {
-        let blob = store.insert_blob(source).await?;
+        let blob = store.insert_blob(source)?;
         let mut release = NewRelease::new(registry, package, version);
         release.exports.push(NewExport {
             name:   ".".to_owned(),
@@ -1379,14 +1354,14 @@ mod tests {
                 }
             })
             .collect();
-        Ok(store.insert_release(&release).await?)
+        Ok(store.insert_release(&release)?)
     }
 
-    async fn fixture() -> TestResult<(PackageStore, SolveResult)> {
-        let store = PackageStore::open_in_memory().await?;
-        let registry = store.add_registry("jsr", "https://jsr.example/").await?;
-        let main = store.insert_blob(MAIN_SOURCE).await?;
-        let child = store.insert_blob(CHILD_SOURCE).await?;
+    fn fixture() -> TestResult<(PackageStore, SolveResult)> {
+        let store = PackageStore::open_in_memory()?;
+        let registry = store.add_registry("jsr", "https://jsr.example/")?;
+        let main = store.insert_blob(MAIN_SOURCE)?;
+        let child = store.insert_blob(CHILD_SOURCE)?;
         let mut release = NewRelease::new(registry, "@scope/app", "1.0.0");
         release.exports.push(NewExport {
             name:   ".".to_owned(),
@@ -1406,7 +1381,7 @@ mod tests {
                 mode:       0o644,
             },
         ]);
-        let version_id = store.insert_release(&release).await?;
+        let version_id = store.insert_release(&release)?;
         Ok((store, SolveResult {
             packages:     vec![ResolvedPackage {
                 registry_id: registry,

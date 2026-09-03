@@ -55,10 +55,10 @@ Made during the Easter holiday of 2023.
   maps, policy metadata, and budgets are inherited by workers. Builds with the
   `package-store` feature also inherit pre-hydrated package dependencies.
   Builtin operations do not enforce policy metadata yet. The package store is a
-  SeaORM-managed SQLite content-addressed cache using
+  rusqlite-managed SQLite content-addressed cache using
   Resolvo for deterministic flat dependency solving. Solved root/dependency
-  edges stay importer-scoped; SeaORM migrations, exact schema validation, and
-  finite hydration budgets protect the store boundary. Registry fetching,
+  edges stay importer-scoped; a stamped schema version, exact schema
+  validation, and finite hydration budgets protect the store boundary. Registry fetching,
   lockfiles, and package commands remain separate from runtime loading.
   Unsupported runtime controls are rejected rather than silently ignored.
 

@@ -18,8 +18,6 @@ pub enum PackageStoreError {
         expected: String,
         actual:   String,
     },
-    #[error("invalid package-store database path: {0}")]
-    InvalidDatabasePath(String),
     #[error("invalid registry: {0}")]
     InvalidRegistry(String),
     #[error("registry {0} does not exist")]
@@ -57,8 +55,6 @@ pub enum PackageStoreError {
     InvalidSnapshot(String),
     #[error("dependency resolution failed:\n{0}")]
     Conflict(String),
-    #[error("dependency resolution was cancelled")]
-    Cancelled,
     #[error(transparent)]
-    Database(#[from] sea_orm::DbErr),
+    Database(#[from] rusqlite::Error),
 }
