@@ -10,10 +10,8 @@ pub mod options;
 
 use den_util::ConstructorInstaller as _;
 use rquickjs::{
-    Coerced, Ctx, Exception, Filter, Function, Object, Result, Value,
-    atom::PredefinedAtom,
-    object::Property,
-    prelude::{Opt, Rest},
+    Coerced, Ctx, Exception, Filter, Function, Object, Result, Value, atom::PredefinedAtom,
+    object::Property, prelude::Opt,
 };
 
 pub use crate::{js_intl_module as js_intl, locale::Locale, options::Bcp47};
@@ -63,9 +61,7 @@ impl Intl {
     }
 
     /// `CanonicalizeLocaleList`, exposed as `Intl.getCanonicalLocales`.
-    fn get_canonical_locales<'js>(
-        ctx: Ctx<'js>, locales: Opt<Value<'js>>, _rest: Rest<Value<'js>>,
-    ) -> Result<Vec<String>> {
+    fn get_canonical_locales<'js>(ctx: Ctx<'js>, locales: Opt<Value<'js>>) -> Result<Vec<String>> {
         let Some(locales) = locales.0.filter(|locales| !locales.is_undefined()) else {
             return Ok(Vec::new());
         };

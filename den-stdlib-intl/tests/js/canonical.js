@@ -8,3 +8,6 @@ assertEquals(Intl.getCanonicalLocales(["fr", "en-US", "FR"]), ["fr", "en-US"]);
 assertEquals(Intl.getCanonicalLocales({ length: 2, 1: "es" }), ["es"]);
 assertThrows(() => Intl.getCanonicalLocales("en-"), RangeError);
 assertThrows(() => Intl.getCanonicalLocales([1]), TypeError);
+// Surplus arguments are ignored, never rejected.
+assertEquals(Intl.getCanonicalLocales("en", "surplus", 3), ["en"]);
+assertStrictEquals(Intl.getCanonicalLocales.length, 1);
