@@ -241,15 +241,10 @@ impl<'js> Response<'js> {
         F: FnOnce(Vec<u8>, Ctx<'js>) -> Result<T> + 'js,
     {
         if let Some(reason) = Self::aborted_reason(&response.borrow().abort_signal, &ctx) {
-            let (promise, _resolve, reject) = ctx.promise()?;
-            let _ = reject.call::<_, ()>((reason,));
-            return Ok(promise);
+            return body::promise_reject(&ctx, reason);
         }
         if let Err(_error) = Self::begin_consume(&response, &ctx) {
-            let thrown = ctx.catch();
-            let (promise, _resolve, reject) = ctx.promise()?;
-            let _ = reject.call::<_, ()>((thrown,));
-            return Ok(promise);
+            return body::promise_reject(&ctx, ctx.catch());
         }
         let (promise, resolve, reject) = ctx.promise()?;
         let ctx_err = ctx.clone();
@@ -1161,11 +1156,11 @@ fn wrapped_fetch<'js>(
         value
     } else {
         let thrown = ctx.catch();
-        return body::promise_reject(&ctx, thrown);
+        return Ok(body::promise_reject(&ctx, thrown)?.into_value());
     };
     if let Some(reason) = aborted_fetch_reason(&ctx, &request)? {
         cancel_request_body(&ctx, &request, reason.clone());
-        return body::promise_reject(&ctx, reason);
+        return Ok(body::promise_reject(&ctx, reason)?.into_value());
     }
     inner.call((request,))
 }

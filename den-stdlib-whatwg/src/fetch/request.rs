@@ -16,8 +16,8 @@ pub struct ServerRequest<'js> {
 
 use super::{
     body::{
-        apply_body_types, is_readable_stream, is_valid_method, stream_is_disturbed,
-        stream_is_locked, tee_stream, value_as_body_stream, value_to_bytes,
+        apply_body_types, is_readable_stream, is_valid_method, promise_reject, stream_is_disturbed,
+        stream_is_locked, tee_stream, type_error_value, value_as_body_stream, value_to_bytes,
     },
     headers::{Guard, Headers, is_forbidden_method},
 };
@@ -159,10 +159,7 @@ impl<'js> Request<'js> {
         F: FnOnce(Vec<u8>, Ctx<'js>) -> Result<T> + 'js,
     {
         let Ok(taken) = request.borrow_mut().take_body(&ctx) else {
-            let thrown = ctx.catch();
-            let (promise, _resolve, reject) = ctx.promise()?;
-            let _ = reject.call::<_, ()>((thrown,));
-            return Ok(promise);
+            return promise_reject(&ctx, ctx.catch());
         };
         let (promise, resolve, reject) = ctx.promise()?;
         let ctx_err = ctx.clone();
@@ -634,12 +631,10 @@ impl<'js> Request<'js> {
                 .get(..33)
                 .is_some_and(|head| head.eq_ignore_ascii_case("application/x-www-form-urlencoded"))
         {
-            let error = Exception::throw_type(&ctx, "Failed to parse body as FormData");
-            let _ = error;
-            let thrown = ctx.catch();
-            let (promise, _resolve, reject) = ctx.promise()?;
-            let _ = reject.call::<_, ()>((thrown,));
-            return Ok(promise);
+            return promise_reject(
+                &ctx,
+                type_error_value(&ctx, "Failed to parse body as FormData")?,
+            );
         }
         Self::consume_promise(this.0, ctx, move |bytes, ctx| {
             let ctor: rquickjs::function::Constructor = ctx

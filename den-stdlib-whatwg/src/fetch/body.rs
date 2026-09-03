@@ -2,8 +2,8 @@
 
 use den_util::{BufferSource, instance_of_global};
 use rquickjs::{
-    Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs as _, Object, Result,
-    TypedArray, Value,
+    Array, ArrayBuffer, Class, Ctx, Exception, FromJs as _, Function, IntoJs as _, Object, Promise,
+    Result, TypedArray, Value,
     function::{Async, Constructor, Opt, This},
     promise::MaybePromise,
 };
@@ -368,10 +368,10 @@ pub fn promise_resolve<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Value<'
     Ok(promise.into_value())
 }
 
-pub fn promise_reject<'js>(ctx: &Ctx<'js>, reason: Value<'js>) -> Result<Value<'js>> {
+pub fn promise_reject<'js>(ctx: &Ctx<'js>, reason: Value<'js>) -> Result<Promise<'js>> {
     let (promise, _, reject) = ctx.promise()?;
     let _ = reject.call::<_, ()>((reason,));
-    Ok(promise.into_value())
+    Ok(promise)
 }
 
 fn form_data_keys_empty<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<bool> {
@@ -418,7 +418,7 @@ fn truthy_prop(object: &Object<'_>, name: &str) -> bool {
         .is_ok_and(|value| value.as_bool() == Some(true))
 }
 
-fn type_error_value<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
+pub fn type_error_value<'js>(ctx: &Ctx<'js>, message: &str) -> Result<Value<'js>> {
     den_util::construct(ctx, "TypeError", (message,))
 }
 
