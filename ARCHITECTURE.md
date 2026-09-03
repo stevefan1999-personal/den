@@ -62,8 +62,8 @@ multi-version graphs are excluded until scoped instance identities exist.
 - [`Engine`](den-core/src/engine.rs) owns one `rquickjs::AsyncRuntime` and
   `AsyncContext`. JavaScript work runs on that context, never on an arbitrary
   Tokio worker.
-- [`EngineBuilder`](den-core/src/builder.rs) owns stack, GC and optional heap
-  limits together with the realm's capability policy and process arguments.
+- [`EngineBuilder`](den-core/src/builder.rs) owns stack and optional heap limits
+  together with the realm's capability policy and process arguments.
   Workers inherit the same settings. Builtin operations do not enforce this
   policy yet; hosts must call
   `Policy::check` at their own boundaries.

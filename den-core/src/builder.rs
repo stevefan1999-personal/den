@@ -15,14 +15,12 @@ use crate::{
 /// QuickJS' native defaults, made explicit so worker engines cannot silently
 /// reset them while cloning the rest of the host configuration.
 pub const DEFAULT_MAX_STACK_SIZE: usize = 1024 * 1024;
-pub const DEFAULT_GC_THRESHOLD: usize = 256 * 1024;
 
 const EMPTY_BUNDLE: Bundle = rquickjs::loader::bundle::Bundle(&rquickjs::phf::Map::new());
 
 #[derive(Clone, Debug)]
 pub(crate) struct EngineSettings {
     pub(crate) max_stack_size:  usize,
-    pub(crate) gc_threshold:    usize,
     pub(crate) heap_limit:      Option<usize>,
     pub(crate) policy:          Policy,
     pub(crate) argv:            Vec<String>,
@@ -35,7 +33,6 @@ impl Default for EngineSettings {
     fn default() -> Self {
         Self {
             max_stack_size:                                    DEFAULT_MAX_STACK_SIZE,
-            gc_threshold:                                      DEFAULT_GC_THRESHOLD,
             heap_limit:                                        None,
             policy:                                            Policy::default(),
             argv:                                              std::env::args_os()
@@ -71,12 +68,6 @@ impl EngineBuilder {
     #[must_use]
     pub const fn max_stack_size(mut self, bytes: usize) -> Self {
         self.settings.max_stack_size = bytes;
-        self
-    }
-
-    #[must_use]
-    pub const fn gc_threshold(mut self, bytes: usize) -> Self {
-        self.settings.gc_threshold = bytes;
         self
     }
 

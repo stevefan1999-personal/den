@@ -1,7 +1,7 @@
 use color_eyre::eyre;
 use den_capabilities::{Capability, Policy, Request, Rule, Scope};
 
-use super::{DEFAULT_GC_THRESHOLD, DEFAULT_MAX_STACK_SIZE, EngineBuilder};
+use super::{DEFAULT_MAX_STACK_SIZE, EngineBuilder};
 use crate::engine::EngineError;
 
 #[test]
@@ -14,10 +14,6 @@ fn builder_defaults_are_bounded_and_deny_by_default() {
     assert_ne!(
         builder.settings.max_stack_size, 0,
         "the default stack must not be unlimited"
-    );
-    assert_eq!(
-        builder.settings.gc_threshold, DEFAULT_GC_THRESHOLD,
-        "the QuickJS GC default must remain explicit"
     );
     assert_eq!(
         builder.settings.heap_limit, None,

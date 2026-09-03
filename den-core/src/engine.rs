@@ -275,7 +275,6 @@ impl Engine {
         let runtime = AsyncRuntime::new()
             .unwrap_or_else(|error| panic!("could not create QuickJS runtime: {error}"));
         runtime.set_max_stack_size(settings.max_stack_size).await;
-        runtime.set_gc_threshold(settings.gc_threshold).await;
         if let Some(limit) = settings.heap_limit {
             runtime.set_memory_limit(limit).await;
         }
