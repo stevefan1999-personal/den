@@ -305,41 +305,21 @@ fn install_static(brand: &Brand<'_>, spec_name: &str, original_key: &str) -> Res
     };
     let type_name = brand.name;
     let lookup_key = original_key.to_owned();
-    let fn_ = if spec_name == "from" {
-        make_from(brand.original.ctx(), type_name)?
-    } else {
-        make_fn(
-            brand.original.ctx(),
-            spec_name,
-            length,
-            move |ctx, _, args| {
-                let original = original_constructor(&ctx, type_name)?;
-                let original_fn = own_function(&original, &lookup_key)?
-                    .ok_or_else(|| Exception::throw_type(&ctx, "static method missing"))?;
-                rehome(
-                    &ctx,
-                    call_this(&original_fn, original.as_value().clone(), &args)?,
-                )
-            },
-        )?
-    };
+    let fn_ = make_fn(
+        brand.original.ctx(),
+        spec_name,
+        length,
+        move |ctx, _, args| {
+            let original = original_constructor(&ctx, type_name)?;
+            let original_fn = own_function(&original, &lookup_key)?
+                .ok_or_else(|| Exception::throw_type(&ctx, "static method missing"))?;
+            rehome(
+                &ctx,
+                call_this(&original_fn, original.as_value().clone(), &args)?,
+            )
+        },
+    )?;
     define_data(&brand.wrapped, spec_name, fn_)
-}
-
-fn make_from<'js>(ctx: &Ctx<'js>, type_name: &'static str) -> Result<Function<'js>> {
-    make_fn(ctx, "from", 1, move |ctx, _, args| {
-        let first = arg_at(&ctx, &args, 0);
-        let second = arg_at(&ctx, &args, 1);
-        let original = original_constructor(&ctx, type_name)?;
-        let original_from = own_function(&original, "from")?
-            .ok_or_else(|| Exception::throw_type(&ctx, "from is not implemented"))?;
-        rehome(
-            &ctx,
-            call_this(&original_from, original.as_value().clone(), &[
-                first, second,
-            ])?,
-        )
-    })
 }
 
 fn install_method(
@@ -563,12 +543,6 @@ fn construct_with_new_target<'js>(
         call.push_arg(arg)?;
     }
     ctor.construct_args(call)
-}
-
-fn arg_at<'js>(ctx: &Ctx<'js>, args: &[Value<'js>], index: usize) -> Value<'js> {
-    args.get(index)
-        .cloned()
-        .unwrap_or_else(|| Value::new_undefined(ctx.clone()))
 }
 
 fn require_options_bag<'js>(ctx: &Ctx<'js>, spec_name: &str, args: &[Value<'js>]) -> Result<()> {
