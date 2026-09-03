@@ -1503,13 +1503,13 @@ fn bind_group_layout_type(entry: &Object<'_>, ctx: &Ctx<'_>) -> Result<wgpu::Bin
                 texture.get::<_, Option<String>>("sampleType")?.as_deref(),
                 ctx,
             )?,
-            view_dimension: format::view_dimension_or(
+            view_dimension: format::view_dimension(
                 texture
                     .get::<_, Option<String>>("viewDimension")?
                     .as_deref(),
-                wgpu::TextureViewDimension::D2,
                 ctx,
-            )?,
+            )?
+            .unwrap_or(wgpu::TextureViewDimension::D2),
             multisampled:   texture
                 .get::<_, Option<bool>>("multisampled")?
                 .unwrap_or_default(),
@@ -1522,13 +1522,13 @@ fn bind_group_layout_type(entry: &Object<'_>, ctx: &Ctx<'_>) -> Result<wgpu::Bin
                 ctx,
             )?,
             format:         format::texture_format(&storage.get::<_, String>("format")?, ctx)?,
-            view_dimension: format::view_dimension_or(
+            view_dimension: format::view_dimension(
                 storage
                     .get::<_, Option<String>>("viewDimension")?
                     .as_deref(),
-                wgpu::TextureViewDimension::D2,
                 ctx,
-            )?,
+            )?
+            .unwrap_or(wgpu::TextureViewDimension::D2),
         });
     }
     Ok(wgpu::BindingType::ExternalTexture)

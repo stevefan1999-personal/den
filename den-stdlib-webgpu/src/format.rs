@@ -214,12 +214,6 @@ pub fn view_dimension(
     .transpose()
 }
 
-pub fn view_dimension_or(
-    value: Option<&str>, default: wgpu::TextureViewDimension, ctx: &Ctx<'_>,
-) -> Result<wgpu::TextureViewDimension> {
-    Ok(view_dimension(value, ctx)?.unwrap_or(default))
-}
-
 pub fn aspect(name: Option<&str>, ctx: &Ctx<'_>) -> Result<wgpu::TextureAspect> {
     kebab!(
         wgpu::TextureAspect,
