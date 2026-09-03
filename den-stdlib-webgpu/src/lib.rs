@@ -126,6 +126,25 @@ macro_rules! opaque_handle {
 }
 pub(crate) use opaque_handle;
 
+/// A GPUError and its subclasses: one `message` and nothing else. The Rust name
+/// is the WebGPU interface name, so rquickjs needs no rename.
+macro_rules! error_class {
+    ($($name:ident),+ $(,)?) => { $(
+        #[derive(Clone, Trace, JsLifetime)]
+        #[rquickjs::class]
+        pub struct $name {
+            #[qjs(get, enumerable, skip_trace)]
+            message: String,
+        }
+
+        #[rquickjs::methods]
+        impl $name {
+            #[qjs(constructor)]
+            pub const fn new(message: String) -> Self { Self { message } }
+        }
+    )+ };
+}
+
 opaque_handle!(
     GPUBindGroup(wgpu::BindGroup),
     GPUBindGroupLayout(wgpu::BindGroupLayout),
@@ -2547,18 +2566,12 @@ impl GPUCommandBuffer {
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 }
 
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUError")]
-pub struct GPUError {
-    #[qjs(get, enumerable, skip_trace)]
-    message: String,
-}
-
-#[rquickjs::methods]
-impl GPUError {
-    #[qjs(constructor)]
-    pub const fn new(message: String) -> Self { Self { message } }
-}
+error_class!(
+    GPUError,
+    GPUValidationError,
+    GPUOutOfMemoryError,
+    GPUInternalError,
+);
 
 #[derive(Clone, Trace, JsLifetime)]
 #[rquickjs::class(rename = "GPUDeviceLostInfo")]
@@ -2573,45 +2586,6 @@ pub struct GPUDeviceLostInfo {
 impl GPUDeviceLostInfo {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUValidationError")]
-pub struct GPUValidationError {
-    #[qjs(get, enumerable, skip_trace)]
-    message: String,
-}
-
-#[rquickjs::methods]
-impl GPUValidationError {
-    #[qjs(constructor)]
-    pub const fn new(message: String) -> Self { Self { message } }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUOutOfMemoryError")]
-pub struct GPUOutOfMemoryError {
-    #[qjs(get, enumerable, skip_trace)]
-    message: String,
-}
-
-#[rquickjs::methods]
-impl GPUOutOfMemoryError {
-    #[qjs(constructor)]
-    pub const fn new(message: String) -> Self { Self { message } }
-}
-
-#[derive(Clone, Trace, JsLifetime)]
-#[rquickjs::class(rename = "GPUInternalError")]
-pub struct GPUInternalError {
-    #[qjs(get, enumerable, skip_trace)]
-    message: String,
-}
-
-#[rquickjs::methods]
-impl GPUInternalError {
-    #[qjs(constructor)]
-    pub const fn new(message: String) -> Self { Self { message } }
 }
 
 #[derive(Clone, Trace, JsLifetime)]
