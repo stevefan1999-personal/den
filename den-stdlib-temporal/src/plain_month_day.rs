@@ -128,8 +128,6 @@ impl PlainMonthDay {
         Ok(self.inner.to_ixdtf_string(display))
     }
 
-    pub fn to_locale_string(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
-
     #[qjs(rename = "toJSON")]
     pub fn to_json(&self) -> String { self.inner.to_ixdtf_string(DisplayCalendar::Auto) }
 

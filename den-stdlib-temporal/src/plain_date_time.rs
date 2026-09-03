@@ -641,12 +641,6 @@ impl PlainDateTime {
         )
     }
 
-    pub fn to_locale_string<'js>(
-        &self, _locales: Opt<Value<'js>>, _options: Opt<Value<'js>>, ctx: Ctx<'js>,
-    ) -> Result<String> {
-        self.to_json(ctx)
-    }
-
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.PlainDateTime"))
     }

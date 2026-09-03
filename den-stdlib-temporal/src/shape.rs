@@ -47,7 +47,7 @@ pub fn define_interface_shape<'js>(
     let originals = Object::new(ctx.clone())?;
     for brand in &brands {
         originals.set(brand.name, brand.original.clone())?;
-        install_interface(ctx, brand)?;
+        install_interface(brand)?;
         tag(&brand.proto, &format!("Temporal.{}", brand.name))?;
         namespace.set(brand.name, brand.wrapped.clone())?;
     }
@@ -190,7 +190,7 @@ fn wrap_constructor<'js>(
     })
 }
 
-fn install_interface<'js>(ctx: &Ctx<'js>, brand: &Brand<'js>) -> Result<()> {
+fn install_interface(brand: &Brand<'_>) -> Result<()> {
     let original_obj: &Object = &brand.original;
     let keys: Vec<String> = original_obj
         .own_keys::<String>(Filter::new().string())
@@ -241,56 +241,7 @@ fn install_interface<'js>(ctx: &Ctx<'js>, brand: &Brand<'js>) -> Result<()> {
         }
     }
 
-    let object_proto: Object = {
-        let object: Object = ctx.globals().get(PredefinedAtom::Object)?;
-        object.get(PredefinedAtom::Prototype)?
-    };
-    let object_to_string: Function = object_proto.get("toString")?;
-    let object_value_of: Function = object_proto.get("valueOf")?;
-
-    let rust_to_string = match own_function(&brand.original_proto, "toString")? {
-        Some(func) => Some(func),
-        None => own_function(&brand.original_proto, "to_string")?,
-    };
-    let to_string_key = if own_function(&brand.original_proto, "toString")?.is_some() {
-        "toString"
-    } else {
-        "to_string"
-    };
-    if rust_to_string
-        .as_ref()
-        .is_some_and(|func| *func != object_to_string)
-    {
-        install_method(brand, "toString", to_string_key, 0)?;
-    }
-    let rust_value_of = match own_function(&brand.original_proto, "valueOf")? {
-        Some(func) => Some(func),
-        None => own_function(&brand.original_proto, "value_of")?,
-    };
-    let value_of_key = if own_function(&brand.original_proto, "valueOf")?.is_some() {
-        "valueOf"
-    } else {
-        "value_of"
-    };
-    if rust_value_of.is_some_and(|func| func != object_value_of) {
-        install_method(brand, "valueOf", value_of_key, 0)?;
-    }
-
-    let proto_to_string = own_function(&brand.proto, "toString")?;
-    let to_string_source = if proto_to_string
-        .as_ref()
-        .is_some_and(|func| *func != object_to_string)
-    {
-        match own_function(&brand.original_proto, "toString")? {
-            Some(func) => Some(func),
-            None => own_function(&brand.original_proto, "to_string")?.or(rust_to_string),
-        }
-    } else {
-        rust_to_string
-    };
-    if to_string_source.is_some_and(|func| func != object_to_string) {
-        install_method(brand, "toLocaleString", to_string_key, 0)?;
-    }
+    install_method(brand, "toLocaleString", "toString", 0)?;
 
     Ok(())
 }

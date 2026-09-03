@@ -316,8 +316,6 @@ impl ZonedDateTime {
         )
     }
 
-    pub fn to_locale_string(&self, ctx: Ctx<'_>) -> Result<String> { self.to_json(ctx) }
-
     pub fn value_of(&self, ctx: Ctx<'_>) -> Result<()> {
         Err(throw_value_of(&ctx, "Temporal.ZonedDateTime"))
     }
