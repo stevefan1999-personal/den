@@ -61,3 +61,10 @@ async fn compute_pipeline_round_trips_a_buffer_when_an_adapter_exists() -> eyre:
     let _lock = GPU_ENV.lock().await;
     run("compute.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_script_visible_surface_of_the_native_slice_is_stable() -> eyre::Result<()> {
+    let _lock = GPU_ENV.lock().await;
+    let _env = EnvGuard::set("noop");
+    run("surface.js").await
+}

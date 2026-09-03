@@ -134,7 +134,6 @@ macro_rules! limits {
   (
     u32 { $($js:literal => $method:ident => $field:ident),+ $(,)? }
     u64 { $($ujs:literal => $umethod:ident => $ufield:ident),+ $(,)? }
-    alias { $($ajs:literal => $amethod:ident => $afield:ident),+ $(,)? }
   ) => {
     #[rquickjs::methods]
     impl GPUSupportedLimits {
@@ -149,11 +148,6 @@ macro_rules! limits {
       $(
         #[qjs(get, configurable, rename = $ujs)]
         pub fn $umethod(&self) -> u64 { self.inner.$ufield.min(JS_MAX_SAFE_INTEGER) }
-      )+
-
-      $(
-        #[qjs(get, configurable, rename = $ajs)]
-        pub const fn $amethod(&self) -> u32 { self.inner.$afield }
       )+
     }
 
@@ -177,7 +171,6 @@ macro_rules! limits {
           match name.as_str() {
             $($js => limits.$field = narrow()?,)+
             $($ujs => limits.$ufield = value.min(JS_MAX_SAFE_INTEGER),)+
-            $($ajs => limits.$afield = narrow()?,)+
             _ => return Err(operation_error(ctx, format!("unknown required limit {name}"))),
           }
         }
@@ -218,17 +211,16 @@ limits! {
     "maxComputeWorkgroupSizeZ" => max_compute_workgroup_size_z => max_compute_workgroup_size_z,
     "maxComputeWorkgroupsPerDimension" => max_compute_workgroups_per_dimension => max_compute_workgroups_per_dimension,
     "maxImmediateSize" => max_immediate_size => max_immediate_size,
+    // Per-stage aliases: wgpu has one field per resource kind, not one per stage.
+    "maxStorageBuffersInVertexStage" => max_storage_buffers_in_vertex_stage => max_storage_buffers_per_shader_stage,
+    "maxStorageBuffersInFragmentStage" => max_storage_buffers_in_fragment_stage => max_storage_buffers_per_shader_stage,
+    "maxStorageTexturesInVertexStage" => max_storage_textures_in_vertex_stage => max_storage_textures_per_shader_stage,
+    "maxStorageTexturesInFragmentStage" => max_storage_textures_in_fragment_stage => max_storage_textures_per_shader_stage,
   }
   u64 {
     "maxUniformBufferBindingSize" => max_uniform_buffer_binding_size => max_uniform_buffer_binding_size,
     "maxStorageBufferBindingSize" => max_storage_buffer_binding_size => max_storage_buffer_binding_size,
     "maxBufferSize" => max_buffer_size => max_buffer_size,
-  }
-  alias {
-    "maxStorageBuffersInVertexStage" => max_storage_buffers_in_vertex_stage => max_storage_buffers_per_shader_stage,
-    "maxStorageBuffersInFragmentStage" => max_storage_buffers_in_fragment_stage => max_storage_buffers_per_shader_stage,
-    "maxStorageTexturesInVertexStage" => max_storage_textures_in_vertex_stage => max_storage_textures_per_shader_stage,
-    "maxStorageTexturesInFragmentStage" => max_storage_textures_in_fragment_stage => max_storage_textures_per_shader_stage,
   }
 }
 
