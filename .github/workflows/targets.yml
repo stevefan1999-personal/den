@@ -114,15 +114,6 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.16.0
-      - name: Fetch pinned WPT fixture
-        shell: bash
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
       - name: Install Rust target
         run: rustup toolchain install stable --profile minimal --no-self-update --target ${{ matrix.target }}
       - name: Install LLVM MinGW
@@ -266,14 +257,6 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.16.0
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
       - name: Install QEMU binfmt
         if: matrix.qemu != ''
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
@@ -348,14 +331,6 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.16.0
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --no-self-update --target "$TARGET"
       - name: Install hosted-runner dependencies
@@ -436,14 +411,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
       - name: Build pinned musl nextest image
         run: >-
           docker build --file .github/musl-nextest.Dockerfile
@@ -466,14 +433,6 @@ jobs:
       DEN_TEST_CC: cc
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch pinned WPT fixture
-        run: |
-          wpt_rev=$(git ls-tree HEAD vendor/wpt | awk '{print $3}')
-          fixture=vendor/wpt/fetch/data-urls/resources/data-urls.json
-          mkdir -p "$(dirname "$fixture")"
-          curl --proto '=https' --tlsv1.2 -fsSL \
-            "https://raw.githubusercontent.com/web-platform-tests/wpt/$wpt_rev/fetch/data-urls/resources/data-urls.json" \
-            -o "$fixture"
       - name: Build and test on FreeBSD 15.1
         uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1.5.5
         with:
