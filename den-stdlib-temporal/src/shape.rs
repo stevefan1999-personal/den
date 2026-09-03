@@ -9,7 +9,7 @@ use den_util::ObjectExt as _;
 use rquickjs::{
     Constructor, Ctx, Exception, Filter, Function, IntoJs as _, Object, Result, Symbol, Value,
     atom::PredefinedAtom,
-    function::{Args, Opt, Rest, This},
+    function::{Opt, Rest, This},
     object::{Accessor, Property},
 };
 
@@ -52,7 +52,7 @@ pub fn define_interface_shape<'js>(
         namespace.set(brand.name, brand.wrapped.clone())?;
     }
     namespace.prop(
-        interned_symbol(ctx, ORIGINALS_KEY)?,
+        Symbol::new_global(ctx.clone(), ORIGINALS_KEY)?,
         Property::from(originals),
     )?;
 
@@ -160,7 +160,7 @@ fn wrap_constructor<'js>(
             let original = original_constructor(&ctx, name)?;
             let original_proto: Object = original.get(PredefinedAtom::Prototype)?;
             let new_target = this.0;
-            let instance = construct_with_new_target(&original, &new_target, args.0)?;
+            let instance: Value = original.construct((This(new_target.clone()), Rest(args.0)))?;
             if let Some(object) = instance.as_object() {
                 let current = object.get_prototype();
                 if current.as_ref() == Some(&original_proto) && new_target != *original.as_value() {
@@ -315,7 +315,7 @@ fn install_static(brand: &Brand<'_>, spec_name: &str, original_key: &str) -> Res
                 .ok_or_else(|| Exception::throw_type(&ctx, "static method missing"))?;
             rehome(
                 &ctx,
-                call_this(&original_fn, original.as_value().clone(), &args)?,
+                original_fn.call::<_, Value>((This(original.as_value().clone()), Rest(args)))?,
             )
         },
     )?;
@@ -345,12 +345,11 @@ fn install_method(
             let original_fn = own_function(&proto, &lookup_key)?
                 .or_else(|| own_function(&proto, "to_string").ok().flatten())
                 .ok_or_else(|| Exception::throw_type(&ctx, "method missing"))?;
-            let applied = if ignore_args {
-                call_this(&original_fn, this, &[])?
-            } else {
-                call_this(&original_fn, this, &args)?
-            };
-            rehome(&ctx, applied)
+            let args = if ignore_args { Vec::new() } else { args };
+            rehome(
+                &ctx,
+                original_fn.call::<_, Value>((This(this), Rest(args)))?,
+            )
         },
     )?;
     define_data(&brand.proto, spec_name, fn_)
@@ -373,7 +372,7 @@ fn install_getter<'js>(brand: &Brand<'js>, spec_name: &str, original_key: &str) 
             let proto = original_prototype(&ctx, type_name)?;
             let original_get = own_getter(&proto, &lookup_key)?
                 .ok_or_else(|| Exception::throw_type(&ctx, "getter missing"))?;
-            rehome(&ctx, call_this(&original_get, this.0, &[])?)
+            rehome(&ctx, original_get.call::<_, Value>((This(this.0),))?)
         },
     )
 }
@@ -502,15 +501,9 @@ fn is_brand<'js>(ctx: &Ctx<'js>, value: &Value<'js>, type_name: &str) -> Result<
 
 const ORIGINALS_KEY: &str = "den.temporal.originals";
 
-fn interned_symbol<'js>(ctx: &Ctx<'js>, key: &str) -> Result<Symbol<'js>> {
-    let ctor: Function = ctx.globals().get(PredefinedAtom::Symbol)?;
-    let for_fn: Function = ctor.get("for")?;
-    for_fn.call((key,))
-}
-
 fn original_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Constructor<'js>> {
     let temporal: Object = ctx.globals().get("Temporal")?;
-    let bag: Object = temporal.get(interned_symbol(ctx, ORIGINALS_KEY)?)?;
+    let bag: Object = temporal.get(Symbol::new_global(ctx.clone(), ORIGINALS_KEY)?)?;
     bag.get(name)
 }
 
@@ -521,28 +514,6 @@ fn original_prototype<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Object<'js>> {
 fn wrapped_constructor<'js>(ctx: &Ctx<'js>, name: &str) -> Result<Constructor<'js>> {
     let temporal: Object = ctx.globals().get("Temporal")?;
     temporal.get(name)
-}
-
-fn call_this<'js>(
-    func: &Function<'js>, this: Value<'js>, args: &[Value<'js>],
-) -> Result<Value<'js>> {
-    let mut call = Args::new(func.ctx().clone(), args.len());
-    call.this(this)?;
-    for arg in args {
-        call.push_arg(arg.clone())?;
-    }
-    func.call_arg(call)
-}
-
-fn construct_with_new_target<'js>(
-    ctor: &Constructor<'js>, new_target: &Value<'js>, args: Vec<Value<'js>>,
-) -> Result<Value<'js>> {
-    let mut call = Args::new(ctor.ctx().clone(), args.len());
-    call.this(new_target.clone())?;
-    for arg in args {
-        call.push_arg(arg)?;
-    }
-    ctor.construct_args(call)
 }
 
 fn require_options_bag<'js>(ctx: &Ctx<'js>, spec_name: &str, args: &[Value<'js>]) -> Result<()> {
