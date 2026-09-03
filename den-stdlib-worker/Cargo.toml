@@ -33,13 +33,13 @@ den-core = { workspace = true, features = [
     "stdlib-timer",
     "stdlib-worker",
     "typescript",
+    "wasm",
 ] }
 insta.workspace = true
 
 [features]
 default = ["transpile"]
 transpile = ["dep:den-transpiler-oxc"]
-wasm = ["den-core/wasm"]
 
 [[test]]
 name = "integration"
