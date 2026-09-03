@@ -601,12 +601,6 @@ impl Engine {
     pub async fn eval_prepared<'js, U: FromJs<'js>>(
         ctx: Ctx<'js>, source: &PreparedSource,
     ) -> rquickjs::Result<U> {
-        den_util::stack::register_source(
-            &ctx,
-            &source.filename,
-            source.code.clone(),
-            std::iter::empty(),
-        )?;
         ctx.eval_with_options::<Promise, _>(source.code.as_str(), {
             let mut options = EvalOptions::default();
             options.global = true;
