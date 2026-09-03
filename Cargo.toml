@@ -169,7 +169,6 @@ tracing = { version = "0.1.44", features = ["release_max_level_info"] }
 tracing-subscriber = { version = "0.3.23", default-features = false }
 url = "2.5.8"
 urlpattern = "0.6"
-uuid = "1.24.1"
 wasmtime = { version = "48.0.0", default-features = false, features = [
     "cranelift",
     "gc-copying",

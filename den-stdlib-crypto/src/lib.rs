@@ -4,7 +4,6 @@ use den_util::BufferSource;
 use rquickjs::{ArrayBuffer, Ctx, Exception, Object, Result, TypedArray, Value};
 use sha1::Sha1;
 use sha2::{Digest as _, Sha256, Sha384, Sha512};
-use uuid::Uuid;
 
 pub fn get_random_values<'js>(array: Object<'js>, ctx: Ctx<'js>) -> Result<Object<'js>> {
     {
@@ -50,7 +49,19 @@ fn integer_typed_view(array: &Object<'_>) -> Option<(NonNull<u8>, usize)> {
     None
 }
 
-pub fn random_uuid() -> String { Uuid::new_v4().to_string() }
+pub fn random_uuid() -> String {
+    // RFC 9562: version nibble 4 at bits 79..76, variant 0b10 at bits 63..62.
+    let bits = (rand::random::<u128>() & !((0xf_u128 << 76) | (0x3_u128 << 62)))
+        | ((0x4_u128 << 76) | (0x2_u128 << 62));
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        bits >> 96,
+        (bits >> 80) & 0xffff,
+        (bits >> 64) & 0xffff,
+        (bits >> 48) & 0xffff,
+        bits & 0xffff_ffff_ffff
+    )
+}
 
 /// The four hash algorithms Web Crypto requires of `SubtleCrypto.digest`.
 ///
