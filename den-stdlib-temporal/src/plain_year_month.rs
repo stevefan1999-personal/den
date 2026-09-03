@@ -47,11 +47,11 @@ impl PlainYearMonth {
         let year = ctor_required_i32(&ctx, iso_year)?;
         let month = ctor_required_u8(&ctx, iso_month)?;
         let calendar = canonicalize_calendar(&ctx, calendar)?;
-        let reference_day = match reference_iso_day.0 {
-            None => None,
-            Some(value) if value.is_undefined() => None,
-            Some(value) => Some(truncated_u8(&ctx, &value)?),
-        };
+        let reference_day = reference_iso_day
+            .0
+            .filter(|value| !value.is_undefined())
+            .map(|value| truncated_u8(&ctx, &value))
+            .transpose()?;
         unwrap_temporal(
             &ctx,
             temporal_rs::PlainYearMonth::try_new(year, month, reference_day, calendar),
@@ -306,11 +306,12 @@ fn calendar_from_value<'js>(
 }
 
 fn canonicalize_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Result<Calendar> {
-    match calendar.0 {
-        None => Ok(Calendar::ISO),
-        Some(value) if value.is_undefined() => Ok(Calendar::ISO),
-        Some(value) => calendar_from_value(ctx, &value, false),
-    }
+    calendar
+        .0
+        .filter(|value| !value.is_undefined())
+        .map_or(Ok(Calendar::ISO), |value| {
+            calendar_from_value(ctx, &value, false)
+        })
 }
 
 fn year_month_fields<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<RawYearMonthFields> {

@@ -65,11 +65,11 @@ pub fn get_defined<'js>(object: &Object<'js>, key: &str) -> Result<Option<Value<
 pub fn options_object<'js>(
     ctx: &Ctx<'js>, options: Opt<Value<'js>>,
 ) -> Result<Option<Object<'js>>> {
-    match options.0 {
-        None => Ok(None),
-        Some(value) if value.is_undefined() => Ok(None),
-        Some(value) => require_object(ctx, &value, "options must be an object").map(Some),
-    }
+    options
+        .0
+        .filter(|value| !value.is_undefined())
+        .map(|value| require_object(ctx, &value, "options must be an object"))
+        .transpose()
 }
 
 pub fn require_object<'js>(
@@ -186,19 +186,17 @@ pub fn to_integer_with_truncation<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Re
 }
 
 pub fn ctor_integer_if_integral<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<i64> {
-    match value.0 {
-        None => Ok(0),
-        Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => to_integer_if_integral_i64(ctx, &value),
-    }
+    value
+        .0
+        .filter(|value| !value.is_undefined())
+        .map_or(Ok(0), |value| to_integer_if_integral_i64(ctx, &value))
 }
 
 pub fn ctor_integer_if_integral_i128<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<i128> {
-    match value.0 {
-        None => Ok(0),
-        Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => to_integer_if_integral(ctx, &value),
-    }
+    value
+        .0
+        .filter(|value| !value.is_undefined())
+        .map_or(Ok(0), |value| to_integer_if_integral(ctx, &value))
 }
 
 /// `ToIntegerWithTruncation`, then a range check reporting
@@ -232,19 +230,17 @@ pub fn ctor_required_u8<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u
 }
 
 pub fn truncated_u8_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u8> {
-    match value.0 {
-        None => Ok(0),
-        Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => truncated_u8(ctx, &value),
-    }
+    value
+        .0
+        .filter(|value| !value.is_undefined())
+        .map_or(Ok(0), |value| truncated_u8(ctx, &value))
 }
 
 pub fn truncated_u16_or_zero<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<u16> {
-    match value.0 {
-        None => Ok(0),
-        Some(value) if value.is_undefined() => Ok(0),
-        Some(value) => truncated_u16(ctx, &value),
-    }
+    value
+        .0
+        .filter(|value| !value.is_undefined())
+        .map_or(Ok(0), |value| truncated_u16(ctx, &value))
 }
 
 /// `ToIntegerIfIntegral` on a defined property; absent stays `None`.
@@ -430,11 +426,11 @@ pub fn to_time_zone<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<TimeZone>
 }
 
 pub fn optional_time_zone<'js>(ctx: &Ctx<'js>, value: Opt<Value<'js>>) -> Result<Option<TimeZone>> {
-    match value.0 {
-        None => Ok(None),
-        Some(value) if value.is_undefined() => Ok(None),
-        Some(value) => to_time_zone(ctx, &value).map(Some),
-    }
+    value
+        .0
+        .filter(|value| !value.is_undefined())
+        .map(|value| to_time_zone(ctx, &value))
+        .transpose()
 }
 
 pub fn to_instant<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<temporal_rs::Instant> {

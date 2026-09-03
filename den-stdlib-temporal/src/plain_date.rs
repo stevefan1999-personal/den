@@ -336,9 +336,8 @@ impl PlainDate {
         let year = ctor_required_i32(&ctx, iso_year)?;
         let month = ctor_required_u8(&ctx, iso_month)?;
         let day = ctor_required_u8(&ctx, iso_day)?;
-        let calendar = match calendar.0 {
+        let calendar = match calendar.0.filter(|value| !value.is_undefined()) {
             None => Calendar::ISO,
-            Some(value) if value.is_undefined() => Calendar::ISO,
             Some(value) if value.is_string() => {
                 let identifier: String = value.get()?;
                 unwrap_temporal(&ctx, Calendar::try_from_utf8(identifier.as_bytes()))?
@@ -517,11 +516,11 @@ impl PlainDate {
     pub fn to_plain_date_time<'js>(
         &self, time: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<PlainDateTime> {
-        let time = match time.0 {
-            None => None,
-            Some(value) if value.is_undefined() => None,
-            Some(value) => Some(to_temporal_time(&ctx, &value)?),
-        };
+        let time = time
+            .0
+            .filter(|value| !value.is_undefined())
+            .map(|value| to_temporal_time(&ctx, &value))
+            .transpose()?;
         unwrap_temporal(&ctx, self.inner.to_plain_date_time(time)).map(PlainDateTime::wrap)
     }
 

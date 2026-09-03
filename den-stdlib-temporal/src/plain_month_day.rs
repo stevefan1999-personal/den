@@ -261,9 +261,8 @@ fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calend
 }
 
 fn ctor_calendar<'js>(ctx: &Ctx<'js>, calendar: Opt<Value<'js>>) -> Result<Calendar> {
-    match calendar.0 {
+    match calendar.0.filter(|value| !value.is_undefined()) {
         None => Ok(Calendar::ISO),
-        Some(value) if value.is_undefined() => Ok(Calendar::ISO),
         Some(value) => {
             if !value.is_string() {
                 return Err(Exception::throw_type(

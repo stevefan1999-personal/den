@@ -52,11 +52,10 @@ impl ZonedDateTime {
     ) -> Result<Self> {
         let nanoseconds = to_big_int_i128(&ctx, &epoch_nanoseconds)?;
         let zone = time_zone_identifier(&ctx, &time_zone)?;
-        let calendar = match calendar.0 {
-            None => Calendar::ISO,
-            Some(value) if value.is_undefined() => Calendar::ISO,
-            Some(value) => calendar_identifier(&ctx, &value)?,
-        };
+        let calendar = calendar
+            .0
+            .filter(|value| !value.is_undefined())
+            .map_or(Ok(Calendar::ISO), |value| calendar_identifier(&ctx, &value))?;
         unwrap_temporal(
             &ctx,
             temporal_rs::ZonedDateTime::try_new(nanoseconds, zone, calendar),
@@ -239,11 +238,11 @@ impl ZonedDateTime {
     }
 
     pub fn with_plain_time<'js>(&self, time: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<Self> {
-        let time = match time.0 {
-            None => None,
-            Some(value) if value.is_undefined() => None,
-            Some(value) => Some(to_temporal_time(&ctx, &value)?),
-        };
+        let time = time
+            .0
+            .filter(|value| !value.is_undefined())
+            .map(|value| to_temporal_time(&ctx, &value))
+            .transpose()?;
         unwrap_temporal(&ctx, self.inner.with_plain_time(time)).map(Self::wrap)
     }
 
