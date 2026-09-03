@@ -35,7 +35,7 @@ impl Timers {
     rename_types = "camelCase"
 )]
 pub mod timer {
-    use std::time::Duration;
+    use std::{future::Future, time::Duration};
 
     use den_stdlib_core::exceptions::report_uncaught;
     use rquickjs::{Ctx, Function, Result, Value, function::Rest, module::Exports, prelude::Opt};
@@ -56,6 +56,23 @@ pub mod timer {
 
     fn invoke<'js>(ctx: &Ctx<'js>, callback: &Function<'js>, arguments: &[Value<'js>]) {
         report_uncaught(ctx, callback.call::<_, ()>((Rest(arguments.to_vec()),)));
+    }
+
+    fn fire_once<'js, F: Future<Output = ()> + 'js>(
+        ctx: Ctx<'js>, callback: Function<'js>, arguments: Vec<Value<'js>>, wait: F,
+    ) -> Result<u32> {
+        let (id, token) = arm(&ctx)?;
+        ctx.spawn({
+            let ctx = ctx.clone();
+            async move {
+                let fired = token.run_until_cancelled(wait).await.is_some();
+                Timers::forget(&ctx, id);
+                if fired {
+                    invoke(&ctx, &callback, &arguments);
+                }
+            }
+        });
+        Ok(id)
     }
 
     fn arm(ctx: &Ctx<'_>) -> Result<(u32, CancellationToken)> {
@@ -119,23 +136,7 @@ pub mod timer {
         callback: Function<'js>, delay: Option<usize>, Rest(arguments): Rest<Value<'js>>,
         ctx: Ctx<'js>,
     ) -> Result<u32> {
-        let duration = delay_of(delay);
-        let (id, token) = arm(&ctx)?;
-
-        ctx.spawn({
-            let ctx = ctx.clone();
-            async move {
-                let fired = token
-                    .run_until_cancelled(time::sleep(duration))
-                    .await
-                    .is_some();
-                Timers::forget(&ctx, id);
-                if fired {
-                    invoke(&ctx, &callback, &arguments);
-                }
-            }
-        });
-        Ok(id)
+        fire_once(ctx, callback, arguments, time::sleep(delay_of(delay)))
     }
 
     #[rquickjs::function]
@@ -151,21 +152,7 @@ pub mod timer {
     pub fn set_immediate<'js>(
         callback: Function<'js>, Rest(arguments): Rest<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<u32> {
-        let (id, token) = arm(&ctx)?;
-        ctx.spawn({
-            let ctx = ctx.clone();
-            async move {
-                let fired = token
-                    .run_until_cancelled(tokio::task::yield_now())
-                    .await
-                    .is_some();
-                Timers::forget(&ctx, id);
-                if fired {
-                    invoke(&ctx, &callback, &arguments);
-                }
-            }
-        });
-        Ok(id)
+        fire_once(ctx, callback, arguments, tokio::task::yield_now())
     }
 
     #[rquickjs::function]
