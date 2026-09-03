@@ -223,10 +223,9 @@ materially reduces linker memory and target size. CI disables incremental
 compilation, allowing a configured `sccache` runner to cache Rust dependencies;
 local incremental builds remain enabled for quick rebuilds.
 
-The REPL stores its bounded history in the `history.surrealkv` directory using
-[SurrealKV](https://github.com/surrealdb/surrealkv) with immediate commits. SurrealKV locks a store to one process; a
-second REPL in the same directory falls back to in-memory history instead of
-failing to start.
+The REPL keeps its bounded history in a `history.txt` file, appended after every
+accepted line, with concurrent sessions merged on write instead of one falling
+back to memory.
 
 ### Snapshot assertions
 

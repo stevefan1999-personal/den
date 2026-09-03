@@ -24,7 +24,7 @@ impl App {
 
         // The REPL runs on a different task and sends complete scripts to the
         // `ctx.spawn`ed pump started in `run_until_end`. Closing the REPL ends
-        // the process outright: `run_repl` has already closed the history, and
+        // the process outright: `run_repl` has already flushed the history, and
         // anything still spawned on the engine is abandoned exactly as it would
         // be on signal death.
         tokio::spawn(async move {

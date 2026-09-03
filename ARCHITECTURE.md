@@ -82,8 +82,8 @@ multi-version graphs are excluded until scoped instance identities exist.
 - Workers use one QuickJS runtime per OS thread. The
   [`WorkerHost`](den-stdlib-worker/src/host.rs) seam lets `den-core` build a
   worker engine without reversing the dependency edge.
-- The REPL keeps durable history in `history.surrealkv`. Failure to acquire the
-  store lock falls back to in-memory history rather than preventing startup.
+- The REPL keeps durable history in `history.txt` through rustyline's
+  `FileHistory`.
 
 ## Module registration
 

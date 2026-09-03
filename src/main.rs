@@ -146,7 +146,6 @@ fn fatal(error: impl std::fmt::Display) -> ! {
 
 mod app;
 mod cli;
-mod history;
 mod repl;
 mod runtime_config;
 

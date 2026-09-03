@@ -741,9 +741,8 @@ den-package-store = { workspace = true, optional = true }
 log.workspace = true
 mimalloc = { workspace = true, optional = true }
 rquickjs.workspace = true
-rustyline = { workspace = true, default-features = false, features = ["derive"] }
+rustyline = { workspace = true, default-features = false, features = ["derive", "with-file-history"] }
 serde_json.workspace = true
-surrealkv.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"] }
 url.workspace = true
@@ -761,6 +760,11 @@ required-features = ["stdlib-console", "stdlib-process", "stdlib-timer"]
 [[test]]
 name = "stack_traces"
 path = "tests/stack_traces.rs"
+required-features = ["stdlib-console", "stdlib-timer", "typescript"]
+
+[[test]]
+name = "repl_history"
+path = "tests/repl_history.rs"
 required-features = ["stdlib-console", "stdlib-timer", "typescript"]
 
 [features]

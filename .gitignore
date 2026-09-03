@@ -5,7 +5,7 @@ notes.db
 notes.db-shm
 notes.db-wal
 test.db
-/history.surrealkv/
+/history.txt
 /link_args_probe
 /.worktrees/
 .qwen/

@@ -1144,7 +1144,6 @@ dependencies = [
  "rquickjs",
  "rustyline",
  "serde_json",
- "surrealkv",
  "tempfile",
  "tokio",
  "tracing-subscriber",
