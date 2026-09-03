@@ -202,9 +202,10 @@ impl<'js> PipeRecord<'js> {
                 let state = Rc::downgrade(&state);
                 // The closure captures no JS value: a `RustFunction` traces
                 // nothing, so a captured signal would close the cycle
-                // signal -> listener -> signal over an edge the collector cannot
-                // follow, and every one of those objects is still standing when
-                // `JS_FreeRuntime` asserts the heap is empty. The signal is read
+                // signal -> listener -> signal over an edge the collector
+                // cannot follow, and every one of those objects
+                // is still standing when `JS_FreeRuntime`
+                // asserts the heap is empty. The signal is read
                 // back out of the pipe's own traced slot instead.
                 Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
                     let Some(state) = state.upgrade() else {
@@ -228,9 +229,9 @@ impl<'js> PipeRecord<'js> {
         }
 
         // Root the pipe on both ends. A running pipe must survive as long as
-        // either stream can be observed, and rooting the destination too is what
-        // keeps `pipeThrough` alive when script holds only the readable side.
-        let _ = record;
+        // either stream can be observed, and rooting the destination too is
+        // what keeps `pipeThrough` alive when script holds only the
+        // readable side.
         PipeRecord::watch_endpoints(ctx, &state);
         let source_error = ReadableStream::stored_error(&source_inner);
         let dest_error = WritableStream::stored_error_for_pipe(&dest_inner);
@@ -334,8 +335,9 @@ impl<'js> PipeRecord<'js> {
         let Some(dest_inner) = state.borrow().dest_inner() else {
             return;
         };
-        // A destination that already failed or finished ends the pipe before the
-        // next read, so a chunk is never read for a sink that cannot take it.
+        // A destination that already failed or finished ends the pipe before
+        // the next read, so a chunk is never read for a sink that
+        // cannot take it.
         if let Some(reason) = WritableStream::stored_error_for_pipe(&dest_inner) {
             PipeRecord::shutdown(ctx, state, Some(reason), Shutdown::CancelSource);
             return;
