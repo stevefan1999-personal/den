@@ -398,7 +398,6 @@ pub mod wasm {
         backend,
         engine::Engine,
         error::WebAssemblyErrors,
-        instance::ImportedFunctions,
         memory::MemoryBuffers,
         store::{ActiveHostCall, Store},
     };
@@ -556,8 +555,6 @@ pub mod wasm {
             .map_err(|_error| in_use("store"))?;
         ctx.store_userdata(ActiveHostCall::default())
             .map_err(|_error| in_use("host-call stack"))?;
-        ctx.store_userdata(ImportedFunctions::default())
-            .map_err(|_error| in_use("import registry"))?;
         ctx.store_userdata(MemoryBuffers::default())
             .map_err(|_error| in_use("memory buffer registry"))?;
 

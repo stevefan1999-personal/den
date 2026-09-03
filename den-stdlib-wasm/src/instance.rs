@@ -1,6 +1,6 @@
 //! `WebAssembly.Instance`, import resolution and the two function boundaries.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::collections::HashMap;
 
 use den_util::Probe as _;
 use rquickjs::{
@@ -25,68 +25,6 @@ use crate::{
     store::{ActiveHostCall, Store},
     utils::{HostReferences, HostWrappers, WasmValue},
 };
-
-/// The JS functions every instance of this context imported into wasm.
-///
-/// A wasm host callback must be `Send + Sync + 'static`, which no JS value is.
-/// The callback therefore captures an index into this registry and reaches the
-/// function through the `Ctx` parked in the store payload.
-///
-/// ponytail: entries are never removed, so an imported function lives as long
-/// as the context. The store already keeps every instance alive for just as
-/// long, so this adds no leak that is not already there; per-instance
-/// registries would need the instance to be reachable from the callback.
-#[derive(JsLifetime)]
-pub struct ImportedFunctions<'js> {
-    functions: RefCell<Vec<Function<'js>>>,
-}
-
-impl<'js> ImportedFunctions<'js> {
-    fn register(ctx: &Ctx<'js>, function: Function<'js>) -> Result<usize> {
-        let registry = ctx.userdata::<Self>().ok_or_else(|| Self::missing(ctx))?;
-        let mut functions = registry
-            .functions
-            .try_borrow_mut()
-            .map_err(|_error| Self::busy(ctx))?;
-        functions.push(function);
-        Ok(functions.len() - 1)
-    }
-
-    fn get(ctx: &Ctx<'js>, index: usize) -> Result<Function<'js>> {
-        let registry = ctx.userdata::<Self>().ok_or_else(|| Self::missing(ctx))?;
-        let function = registry
-            .functions
-            .try_borrow()
-            .map_err(|_error| Self::busy(ctx))?
-            .get(index)
-            .cloned();
-        function.ok_or_else(|| {
-            Exception::throw_internal(ctx, "an imported WebAssembly function went missing")
-        })
-    }
-
-    fn missing(ctx: &Ctx<'js>) -> rquickjs::Error {
-        Exception::throw_internal(
-            ctx,
-            "the WebAssembly import registry is missing from this context",
-        )
-    }
-
-    /// Nothing here runs JS while the registry is borrowed, so this is a
-    /// belt-and-braces answer rather than a reachable state — but a `RefCell`
-    /// on a JS-reachable path may not be allowed to panic.
-    fn busy(ctx: &Ctx<'js>) -> rquickjs::Error {
-        Exception::throw_internal(ctx, "the WebAssembly import registry is already in use")
-    }
-}
-
-impl Default for ImportedFunctions<'_> {
-    fn default() -> Self {
-        Self {
-            functions: RefCell::new(Vec::new()),
-        }
-    }
-}
 
 /// One JS function imported into wasm.
 ///
@@ -122,7 +60,11 @@ impl HostFunction {
     }
 
     fn call(&self, ctx: &Ctx<'_>, params: &[Val], results: &mut [Val]) -> Result<()> {
-        let function = ImportedFunctions::get(ctx, self.index)?;
+        let function = HostReferences::value(ctx, self.index)?
+            .into_function()
+            .ok_or_else(|| {
+                Exception::throw_internal(ctx, "an imported WebAssembly function went missing")
+            })?;
         let arguments = params
             .iter()
             .map(|value| WasmValue(*value).to_js(ctx))
@@ -410,14 +352,14 @@ impl<'js> Instance<'js> {
                 .map_err(|err| throw_link(ctx, err))?;
             return Ok(true);
         }
-        let function = value.as_function().cloned().ok_or_else(|| {
-            throw_link(
+        if !value.is_function() {
+            return Err(throw_link(
                 ctx,
                 format_args!("import {namespace}.{name} is not a function"),
-            )
-        })?;
+            ));
+        }
         let host = HostFunction {
-            index:     ImportedFunctions::register(ctx, function)?,
+            index:     HostReferences::register(ctx, value)?,
             signature: signature.clone(),
         };
         linker

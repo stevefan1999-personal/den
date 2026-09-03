@@ -63,9 +63,10 @@ async fn engines_that_instantiate_and_touch_memory_survive_repeated_teardown() -
     Ok(())
 }
 
-/// A JS closure imported into wasm is held by the store's import registry, and
-/// the store is held by the context that owns the closure — the second half of
-/// the same cycle. Dropping the engine has to break it from the runtime side.
+/// A JS closure imported into wasm is held by the context's reference registry,
+/// and the store is held by the context that owns the closure — the second half
+/// of the same cycle. Dropping the engine has to break it from the runtime
+/// side.
 #[tokio::test(flavor = "multi_thread")]
 async fn engines_holding_an_imported_js_closure_survive_repeated_teardown() -> eyre::Result<()> {
     for round in 0..ENGINE_CHURN {

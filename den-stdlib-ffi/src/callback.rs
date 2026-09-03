@@ -4,7 +4,7 @@
 //! whose userdata is a plain-data [`Slot`]. The JS function itself never
 //! reaches the trampoline: no JS value is `'static`, so the slot carries an
 //! index into the realm's registry, exactly as `den-stdlib-wasm` does for a
-//! wasm import (`instance.rs`, `ImportedFunctions`).
+//! wasm import (`utils.rs`, `HostReferences`).
 //!
 //! A trampoline entered from inside a synchronous call den made re-enters JS
 //! directly — that frame holds the realm's lock, which is the precondition

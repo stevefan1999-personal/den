@@ -238,10 +238,12 @@ impl Reference {
 /// Two caches, both owned by the JS context rather than by a wrapper object,
 /// because a reference outlives the `Table` or `Global` it was read from:
 ///
-/// * `values` — the JS values an `externref` stands for. wasmtime cannot hold a
-///   `Value<'js>` itself (`ExternRef::new` wants `'static + Send + Sync`), so
-///   the reference carries an index into this list while the value stays on the
-///   JS side. That is what makes `table.set(0, o); table.get(0) === o` hold.
+/// * `values` — the JS values an `externref` stands for, and the JS functions
+///   imported into wasm. wasmtime cannot hold a `Value<'js>` itself
+///   (`ExternRef::new` wants `'static + Send + Sync`), so the reference — or
+///   the host callback — carries an index into this list while the value stays
+///   on the JS side. That is what makes `table.set(0, o); table.get(0) === o`
+///   hold.
 /// * `functions` — the spec's Exported Function cache (§ "create a new Exported
 ///   Function from funcaddr"), so that reading the same `funcref` twice yields
 ///   the same JS function object, and so that a function handed *back* to wasm
@@ -270,19 +272,25 @@ impl<'js> HostReferences<'js> {
     /// `ToWebAssemblyValue(v, externref)`: every JS value is a valid
     /// `externref`, so this only has to make the value findable again.
     fn extern_ref(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Val> {
-        let index = Self::with(ctx, |registry| {
+        let index = Self::register(ctx, value)?;
+        Store::from_ctx(ctx)?.with_mut(ctx, |store| Reference::host(ctx, store, index))
+    }
+
+    /// Park `value` where a `'static` host callback can reach it again, and
+    /// hand back the index it has to carry.
+    pub(crate) fn register(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<usize> {
+        Self::with(ctx, |registry| {
             let mut values = registry
                 .values
                 .try_borrow_mut()
                 .map_err(|_error| Self::busy(ctx))?;
             values.push(value.clone());
             Ok(values.len() - 1)
-        })?;
-        Store::from_ctx(ctx)?.with_mut(ctx, |store| Reference::host(ctx, store, index))
+        })
     }
 
     /// The JS value an `externref` built by [`Self::extern_ref`] stands for.
-    fn value(ctx: &Ctx<'js>, index: usize) -> Result<Value<'js>> {
+    pub(crate) fn value(ctx: &Ctx<'js>, index: usize) -> Result<Value<'js>> {
         Self::with(ctx, |registry| {
             registry
                 .values
