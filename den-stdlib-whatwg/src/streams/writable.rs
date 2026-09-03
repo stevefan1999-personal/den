@@ -347,36 +347,13 @@ impl<'js> WritableStream<'js> {
             return None;
         }
         let reason = type_error(ctx, "the writer was released");
-        Self::ensure_ready_rejected(ctx, inner, reason.clone());
-        Self::ensure_closed_rejected(ctx, inner, reason.clone());
-        inner.borrow_mut().writer = None;
+        let mut borrow = inner.borrow_mut();
+        if let Some(slot) = borrow.writer.as_mut() {
+            slot.ready.reject_or_replace(ctx, reason.clone());
+            slot.closed.reject_or_replace(ctx, reason.clone());
+        }
+        borrow.writer = None;
         Some(reason)
-    }
-
-    fn ensure_ready_rejected(ctx: &Ctx<'js>, inner: &Inner<'js>, reason: Value<'js>) {
-        let mut borrow = inner.borrow_mut();
-        if let Some(slot) = borrow.writer.as_mut() {
-            if slot.ready.is_pending() {
-                slot.ready.reject_handled(ctx, reason);
-            } else {
-                let Ok(mut cap) = Cap::new(ctx) else { return };
-                cap.reject_handled(ctx, reason);
-                slot.ready = cap;
-            }
-        }
-    }
-
-    fn ensure_closed_rejected(ctx: &Ctx<'js>, inner: &Inner<'js>, reason: Value<'js>) {
-        let mut borrow = inner.borrow_mut();
-        if let Some(slot) = borrow.writer.as_mut() {
-            if slot.closed.is_pending() {
-                slot.closed.reject_handled(ctx, reason);
-            } else {
-                let Ok(mut cap) = Cap::new(ctx) else { return };
-                cap.reject_handled(ctx, reason);
-                slot.closed = cap;
-            }
-        }
     }
 
     fn update_backpressure(ctx: &Ctx<'js>, inner: &Inner<'js>, backpressure: bool) {
@@ -407,8 +384,13 @@ impl<'js> WritableStream<'js> {
         if !matches!(inner.borrow().state, WsState::Writable) {
             return;
         }
-        inner.borrow_mut().state = WsState::Erroring(reason.clone());
-        Self::ensure_ready_rejected(ctx, inner, reason);
+        {
+            let mut borrow = inner.borrow_mut();
+            borrow.state = WsState::Erroring(reason.clone());
+            if let Some(slot) = borrow.writer.as_mut() {
+                slot.ready.reject_or_replace(ctx, reason);
+            }
+        }
         if !Self::has_operation_in_flight(inner) && inner.borrow().started {
             Self::finish_erroring(ctx, inner);
         }

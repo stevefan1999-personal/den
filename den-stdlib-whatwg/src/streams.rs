@@ -248,6 +248,18 @@ impl<'js> Cap<'js> {
         mark_handled(ctx, &promise);
     }
 
+    /// Reject, replacing an already-settled capability with a fresh one first:
+    /// a writer's `ready`/`closed` must show the new failure even after they
+    /// fulfilled.
+    pub(crate) fn reject_or_replace(&mut self, ctx: &Ctx<'js>, reason: Value<'js>) {
+        if !self.is_pending()
+            && let Ok(fresh) = Self::new(ctx)
+        {
+            *self = fresh;
+        }
+        self.reject_handled(ctx, reason);
+    }
+
     /// Hand the capability functions to promise reactions directly, so no Rust
     /// record has to keep them alive.
     pub(crate) fn into_parts(self) -> (Option<Function<'js>>, Option<Function<'js>>) {
