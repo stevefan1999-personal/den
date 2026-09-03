@@ -177,3 +177,8 @@ async fn pathname_percent_encodes_the_path_segment_set() -> eyre::Result<()> {
 async fn native_line_endings_fold_cr_and_crlf_to_lf() -> eyre::Result<()> {
     run("blob_native_line_endings.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lock_errors_and_writer_promises_follow_the_specification() -> eyre::Result<()> {
+    run("streams_lock_and_writer_promises.js").await
+}

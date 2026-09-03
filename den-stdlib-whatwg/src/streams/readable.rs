@@ -814,9 +814,6 @@ impl<'js> ReadableStream<'js> {
 
     pub fn is_disturbed(&self) -> bool { self.inner.borrow().disturbed }
 
-    #[qjs(get, rename = "_denDisturbed")]
-    pub fn den_disturbed(&self) -> bool { self.is_disturbed() }
-
     /// den extension: error the stream from the host (a fetch abort).
     #[qjs(rename = "_denAbort")]
     pub fn den_abort(&self, ctx: Ctx<'js>, reason: Opt<Value<'js>>) {

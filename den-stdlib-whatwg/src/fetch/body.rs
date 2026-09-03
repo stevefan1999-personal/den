@@ -29,7 +29,6 @@ pub fn stream_is_disturbed(value: &Value<'_>) -> bool {
     value.as_object().is_some_and(|object| {
         Class::<ReadableStream>::from_object(object)
             .and_then(|stream| stream.try_borrow().ok().map(|stream| stream.is_disturbed()))
-            .or_else(|| object.get("_denDisturbed").ok())
             .unwrap_or(false)
     })
 }
