@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre;
-use den_core::engine::{Engine, EngineError};
+use den_core::{EngineBuilder, engine::Engine};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -14,8 +14,10 @@ fn fixture(name: &str) -> PathBuf {
 async fn run(name: &str) -> eyre::Result<Engine> {
     let directory = fixture(name);
     let map = std::fs::read_to_string(directory.join("map.json"))?;
-    let engine = Engine::new().await;
-    engine.set_import_map(&map, &directory).await?;
+    let engine = EngineBuilder::new()
+        .import_map(&map, &directory)?
+        .build()
+        .await;
     engine.run_file(directory.join("main.js")).await?;
     Ok(engine)
 }
@@ -32,8 +34,10 @@ async fn exact_import_map_match_loads_the_mapped_module() -> eyre::Result<()> {
 async fn eval_uses_the_top_level_import_map() -> eyre::Result<()> {
     let directory = fixture("exact");
     let map = std::fs::read_to_string(directory.join("map.json"))?;
-    let engine = Engine::new().await;
-    engine.set_import_map(&map, &directory).await?;
+    let engine = EngineBuilder::new()
+        .import_map(&map, &directory)?
+        .build()
+        .await;
     let got = engine.eval::<usize>(r#"(await import("lib")).x"#).await?;
     eyre::ensure!(got == 42, "expected 42, got {got}");
     Ok(())
@@ -80,11 +84,7 @@ async fn unmatched_specifiers_still_resolve_as_files() -> eyre::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn invalid_import_map_json_is_an_error() -> eyre::Result<()> {
     let map = std::fs::read_to_string(fixture("invalid.json"))?;
-    let engine = Engine::new().await;
-    let outcome = engine.set_import_map(&map, Path::new("/tmp")).await;
-    eyre::ensure!(
-        matches!(&outcome, Err(EngineError::ImportMap(_))),
-        "expected an import-map parse error, got {outcome:?}"
-    );
+    let outcome = EngineBuilder::new().import_map(&map, Path::new("/tmp"));
+    eyre::ensure!(outcome.is_err(), "expected an import-map parse error");
     Ok(())
 }

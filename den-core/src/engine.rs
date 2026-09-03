@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use den_capabilities::Policy;
@@ -34,11 +34,7 @@ use crate::package::{PackageLoader, PackageResolver};
 use crate::{
     builder::EngineBuilder,
     loader::{http::HttpLoader, mmap_script::MmapScriptLoader},
-    resolver::{
-        file::AbsolutePathResolver,
-        http::HttpResolver,
-        import_map::{ImportMap, ImportMapError, ImportMapResolver},
-    },
+    resolver::{file::AbsolutePathResolver, http::HttpResolver, import_map::ImportMapResolver},
 };
 
 /// A rejection: the promise, and the value it rejected with. Both halves are
@@ -514,7 +510,7 @@ impl Engine {
     /// worker base URL.
     pub async fn run_module(&self, specifier: &str) -> Result<(), EngineError> {
         #[cfg(feature = "stdlib-worker")]
-        if !Path::new(specifier).is_absolute()
+        if !std::path::Path::new(specifier).is_absolute()
             && let Ok(url) = Url::parse(specifier)
             && let Ok(directory) = url.join(".")
         {
@@ -700,19 +696,6 @@ impl Engine {
                     .map_or_else(Policy::default, |policy| Policy::clone(&policy))
             })
             .await
-    }
-
-    /// Install an [import map](https://wicg.github.io/import-maps/) on this
-    /// realm. Relative `./` / `../` targets join against `base_dir`. Calling
-    /// again replaces the previous map.
-    pub async fn set_import_map<P: AsRef<Path> + Send>(
-        &self, json: &str, base_dir: P,
-    ) -> Result<(), EngineError> {
-        let map = ImportMap::parse(json, base_dir.as_ref())?;
-        self.context
-            .with(move |ctx| Self::store_userdata(&ctx, map))
-            .await?;
-        Ok(())
     }
 
     /// Hand this realm the FFI capability. Without one, `den:ffi`'s `grant()`
@@ -949,8 +932,6 @@ pub enum EngineError {
     #[from]
     Rquickjs(rquickjs::Error),
     JavaScript(Box<den_util::stack::JsError>),
-    #[from]
-    ImportMap(ImportMapError),
 }
 
 #[cfg(test)]
