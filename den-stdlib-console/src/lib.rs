@@ -101,9 +101,7 @@ impl Formatter {
     }
 
     fn write_number(out: &mut String, number: f64) -> Result<()> {
-        let text = if number.is_nan() {
-            "NaN".to_owned()
-        } else if number == f64::INFINITY {
+        let text = if number == f64::INFINITY {
             "Infinity".to_owned()
         } else if number == f64::NEG_INFINITY {
             "-Infinity".to_owned()
@@ -126,34 +124,11 @@ impl Formatter {
         }
 
         match value.type_of() {
-            Type::String => {
-                out.write_str(
-                    &value
-                        .into_string()
-                        .ok_or_else(|| Error::new_from_js("value", "string"))?
-                        .to_string()?,
-                )
-                .map_err(|_error| Error::Unknown)?
-            }
-            Type::Int => {
-                write!(
-                    out,
-                    "{}",
-                    value
-                        .as_int()
-                        .ok_or_else(|| Error::new_from_js("value", "int"))?
-                )
-                .map_err(|_error| Error::Unknown)?
-            }
-            Type::Bool => {
-                write!(
-                    out,
-                    "{}",
-                    value
-                        .as_bool()
-                        .ok_or_else(|| Error::new_from_js("value", "bool"))?
-                )
-                .map_err(|_error| Error::Unknown)?
+            // `type_of` already discriminated these three; re-unwrapping each
+            // to its Rust type only to print it back is the same coercion.
+            Type::String | Type::Int | Type::Bool => {
+                let Coerced(text) = Coerced::<String>::from_js(value.ctx(), value.clone())?;
+                out.write_str(&text).map_err(|_error| Error::Unknown)?
             }
             Type::Float => {
                 write!(
