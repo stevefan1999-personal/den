@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -391,13 +391,7 @@ const fn jsonc_options() -> ParseOptions {
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        env::current_dir()
-            .map(|directory| directory.join(path))
-            .map_err(ConfigError::CurrentDirectory)
-    }
+    std::path::absolute(path).map_err(ConfigError::CurrentDirectory)
 }
 
 fn resolve_optional_path(root: &Path, path: &mut Option<PathBuf>) {
@@ -597,6 +591,20 @@ mod tests {
             .expect("load explicit configuration")
             .expect("configuration exists");
         assert_eq!(explicit.package_store, Some(nested.join("explicit.db")));
+    }
+
+    #[test]
+    fn relative_config_paths_resolve_against_the_current_directory() {
+        let relative = Path::new("definitely-missing-dir/den.json");
+        let expected = std::env::current_dir()
+            .expect("current directory")
+            .join(relative);
+
+        let error = Config::load(relative).expect_err("missing relative config must fail");
+        assert!(
+            matches!(&error, ConfigError::NotFound { path } if *path == expected),
+            "{error}"
+        );
     }
 
     #[test]
