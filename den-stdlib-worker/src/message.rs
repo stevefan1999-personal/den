@@ -11,10 +11,8 @@
 
 use std::{ptr, slice};
 
-use den_util::throw_dom_exception;
-use rquickjs::{
-    ArrayBuffer, Class, Ctx, Error, Exception, Object, Result, Value, object::Filter, qjs,
-};
+use den_util::{ObjectExt as _, throw_dom_exception};
+use rquickjs::{ArrayBuffer, Class, Ctx, Error, Exception, Object, Result, Value, qjs};
 
 use crate::{port::NativePort, transport::PortHandle};
 
@@ -190,7 +188,16 @@ impl Message {
                     "an ArrayBuffer in the transfer list is immutable",
                 ));
             }
-            if Self::has_detach_key(object)? {
+            // `[[ArrayBufferDetachKey]]`, den-flavoured:
+            // `WebAssembly.Memory#buffer` is sealed against
+            // transfer by shadowing `transfer` with a throwing
+            // **own** property (den-stdlib-wasm/src/memory.rs), and a
+            // Rust-level detach would walk straight past that seal
+            // and yank the wasm pages out from under the instance.
+            // An own `transfer` property is therefore read as "this
+            // buffer has a detach key"; a script that adds one to a plain
+            // buffer has merely opted out of transferring it.
+            if object.has_own("transfer")? {
                 return Err(throw_data_clone(
                     ctx,
                     "an ArrayBuffer in the transfer list has a detach key",
@@ -198,22 +205,6 @@ impl Message {
             }
         }
         Ok(())
-    }
-
-    /// `[[ArrayBufferDetachKey]]`, den-flavoured: `WebAssembly.Memory#buffer`
-    /// is sealed against transfer by shadowing `transfer` with a throwing
-    /// **own** property (den-stdlib-wasm/src/memory.rs), and a Rust-level
-    /// detach would walk straight past that seal and yank the wasm pages out
-    /// from under the instance. An own `transfer` property is therefore read as
-    /// "this buffer has a detach key"; a script that adds one to a plain buffer
-    /// has merely opted out of transferring it.
-    fn has_detach_key(object: &Object<'_>) -> Result<bool> {
-        for key in object.own_keys::<String>(Filter::new().string()) {
-            if key? == "transfer" {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// A port may be transferred once, and only while it is still entangled
