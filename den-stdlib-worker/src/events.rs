@@ -47,13 +47,6 @@ const PHASE_BUBBLING: u32 = 3;
 #[derive(JsLifetime)]
 struct TimeOrigin(f64);
 
-/// Construct a `DOMException` from the engine intrinsic.
-pub(crate) fn new_dom_exception<'js>(
-    ctx: &Ctx<'js>, message: &str, name: &str,
-) -> Result<Value<'js>> {
-    den_util::new_dom_exception(ctx, message, name)
-}
-
 fn unix_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

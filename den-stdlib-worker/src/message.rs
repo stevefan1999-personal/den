@@ -163,8 +163,9 @@ impl Message {
                     "the same object appears twice in the transfer list",
                 ));
             }
-            // SAFETY: `as_raw` borrows the value for the call; `JS_IsArrayBuffer`
-            // only reads the class id and never throws.
+            // SAFETY: `as_raw` borrows the value for the call;
+            // `JS_IsArrayBuffer` only reads the class id and never
+            // throws.
             if !unsafe { qjs::JS_IsArrayBuffer(entry.as_raw()) } {
                 return Err(throw_data_clone(
                     ctx,
@@ -285,7 +286,8 @@ impl Message {
         let bytes = unsafe { slice::from_raw_parts(buffer, len as usize) }.to_vec();
         // SAFETY: the buffer came from this context's allocator (with
         // `rust-alloc`, its `RustAllocator`), so it must go back through
-        // `js_free`, not Rust's `dealloc`; nothing references it after the copy.
+        // `js_free`, not Rust's `dealloc`; nothing references it after the
+        // copy.
         unsafe { qjs::js_free(ctx.as_raw().as_ptr(), buffer.cast()) };
         Ok(bytes)
     }
@@ -311,7 +313,8 @@ impl Message {
             return Err(Error::Exception);
         }
         // SAFETY: the reader hands over ownership of the value, which is what
-        // `from_raw` expects, and it belongs to `ctx`'s runtime by construction.
+        // `from_raw` expects, and it belongs to `ctx`'s runtime by
+        // construction.
         Ok(unsafe { Value::from_raw(ctx.clone(), raw) })
     }
 

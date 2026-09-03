@@ -6,15 +6,14 @@ use std::collections::HashMap;
 
 use den_util::{
     BufferSource, ClassId as _, ObjectExt as _, coerce_string, construct, instance_of_global,
+    new_dom_exception,
 };
 use rquickjs::{
     Array, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs as _, JsLifetime, Object,
     Result, Symbol, Value, object::Property, qjs,
 };
 
-use crate::{
-    events::new_dom_exception, message::throw_data_clone, port::NativePort, report::sink_hook,
-};
+use crate::{message::throw_data_clone, port::NativePort, report::sink_hook};
 
 const TAG: &str = "\0den:structured-clone";
 
