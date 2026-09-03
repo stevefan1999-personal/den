@@ -280,7 +280,6 @@ impl WebSocket {
             url,
             ready_state: CONNECTING,
         })?;
-        Self::install_idl_constants(&ctx)?;
         let start = Function::new(ctx.clone(), {
             let this = class.clone();
             move |ctx: Ctx<'js>| -> Result<()> {
