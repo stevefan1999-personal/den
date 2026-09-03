@@ -23,14 +23,11 @@ impl App {
         let (repl_tx, repl_rx) = mpsc::unbounded_channel::<String>();
 
         // The REPL runs on a different task and sends complete scripts to the
-        // `ctx.spawn`ed pump started in `run_until_end`. Closing the REPL ends
-        // the process outright: `run_repl` has already flushed the history, and
-        // anything still spawned on the engine is abandoned exactly as it would
-        // be on signal death.
-        tokio::spawn(async move {
-            repl::run_repl(repl_tx).await;
-            std::process::exit(0)
-        });
+        // `ctx.spawn`ed pump started in `run_until_end`. Closing the REPL drops
+        // the sender; the pump exits the process once it has printed the last
+        // queued line, and anything still spawned on the engine is abandoned
+        // exactly as it would be on signal death.
+        tokio::spawn(repl::run_repl(repl_tx));
 
         self.repl_rx = Some(repl_rx);
     }
@@ -74,6 +71,7 @@ impl App {
                 Err(error) => eprintln!("{error}"),
             }
         }
+        std::process::exit(0)
     }
 
     pub(crate) fn print_js_error(ctx: &rquickjs::Ctx<'_>) {
