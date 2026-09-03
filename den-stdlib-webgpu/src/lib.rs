@@ -11,10 +11,10 @@
 #![recursion_limit = "256"]
 
 mod format;
-mod query;
-mod render;
-mod supported;
-mod texture;
+pub mod query;
+pub mod render;
+pub mod supported;
+pub mod texture;
 
 use std::{
     cell::{Cell, RefCell},
@@ -2785,21 +2785,9 @@ pub mod webgpu {
         module::{Declarations, Exports},
     };
 
-    use super::{GLOBAL_CLASSES, MAP_READ, MAP_WRITE, constants, install_classes, make_instance};
-    pub use super::{
-        GPU, GPUAdapter, GPUAdapterInfo, GPUBindGroup, GPUBindGroupLayout, GPUBuffer,
-        GPUCommandBuffer, GPUCommandEncoder, GPUComputePassEncoder, GPUComputePipeline, GPUDevice,
-        GPUDeviceLostInfo, GPUError, GPUInternalError, GPUOutOfMemoryError, GPUPipelineError,
-        GPUPipelineLayout, GPUQueue, GPUShaderModule, GPUUncapturedErrorEvent, GPUValidationError,
-        query::GPUQuerySet,
-        render::{
-            GPURenderBundle, GPURenderBundleEncoder, GPURenderPassEncoder, GPURenderPipeline,
-        },
-        supported::{
-            GPUExternalTexture, GPUSupportedFeatures, GPUSupportedLimits,
-            GPUSupportedWGSLLanguageFeatures,
-        },
-        texture::{GPUSampler, GPUTexture, GPUTextureView},
+    use super::{
+        GLOBAL_CLASSES, GPU, MAP_READ, MAP_WRITE, constants, install_classes, make_instance,
+        supported::GPUSupportedWGSLLanguageFeatures,
     };
 
     #[qjs(declare)]
