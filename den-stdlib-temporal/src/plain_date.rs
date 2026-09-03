@@ -126,72 +126,13 @@ fn difference_settings<'js>(
     Ok(settings)
 }
 
-fn calendar_annotation(identifier: &str) -> Option<&str> {
-    let lower = identifier.to_ascii_lowercase();
-    let start = lower.find("[u-ca=")?;
-    let rest = identifier.get(start + 6..)?;
-    let end = rest.find(']')?;
-    rest.get(..end)
-}
-
-fn looks_like_iso_temporal(identifier: &str) -> bool {
-    let head = identifier
-        .split_once('[')
-        .map_or(identifier, |(head, _)| head);
-    if head.is_empty() || !head.bytes().any(|byte| byte.is_ascii_digit()) {
-        return false;
-    }
-    head.bytes().all(|byte| {
-        byte.is_ascii_digit()
-            || matches!(
-                byte,
-                b'T' | b't' | b'Z' | b'z' | b'+' | b'-' | b':' | b'.' | b','
-            )
-    })
-}
-
-fn parse_calendar_identifier_only(ctx: &Ctx<'_>, identifier: &str) -> Result<Calendar> {
-    if identifier.is_empty() || identifier.contains('[') || looks_like_iso_temporal(identifier) {
-        return Err(Exception::throw_range(ctx, "invalid calendar identifier"));
-    }
-    Calendar::from_str(&identifier.to_ascii_lowercase())
-        .or_else(|_| Calendar::from_str(identifier))
-        .map_err(|_error| Exception::throw_range(ctx, "invalid calendar identifier"))
-}
-
-fn parse_calendar_id(ctx: &Ctx<'_>, identifier: &str) -> Result<Calendar> {
-    if identifier.is_empty() {
-        return Err(Exception::throw_range(ctx, "invalid calendar identifier"));
-    }
-    let lower = identifier.to_ascii_lowercase();
-    if let Ok(calendar) = Calendar::from_str(&lower) {
-        return Ok(calendar);
-    }
-    if let Ok(calendar) = Calendar::from_str(identifier) {
-        return Ok(calendar);
-    }
-    if identifier.contains("-000000") {
-        return Err(Exception::throw_range(
-            ctx,
-            "year 0 must be written +000000, not -000000",
-        ));
-    }
-    if let Some(annotation) = calendar_annotation(identifier) {
-        return unwrap_temporal(ctx, Calendar::from_str(annotation));
-    }
-    if looks_like_iso_temporal(identifier) {
-        return Ok(Calendar::ISO);
-    }
-    Err(Exception::throw_range(ctx, "invalid calendar identifier"))
-}
-
 fn calendar_from_value<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<Calendar> {
     if let Some(calendar) = calendar_slot(ctx, value) {
         return Ok(calendar);
     }
     if value.is_string() {
         let identifier: String = value.get()?;
-        return parse_calendar_id(ctx, &identifier);
+        return unwrap_temporal(ctx, Calendar::from_str(&identifier));
     }
     Err(Exception::throw_type(
         ctx,
@@ -401,7 +342,7 @@ impl PlainDate {
             Some(value) if value.is_undefined() => Calendar::ISO,
             Some(value) if value.is_string() => {
                 let identifier: String = value.get()?;
-                parse_calendar_identifier_only(&ctx, &identifier)?
+                unwrap_temporal(&ctx, Calendar::try_from_utf8(identifier.as_bytes()))?
             }
             Some(value) => calendar_from_value(&ctx, &value)?,
         };
