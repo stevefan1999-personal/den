@@ -502,7 +502,7 @@ fn gpu_error_data(error: wgpu::Error) -> GPUErrorData {
 pub struct GPU<'js> {
     #[qjs(skip_trace)]
     instance:               wgpu::Instance,
-    wgsl_language_features: Class<'js, GPUSupportedWGSLLanguageFeatures>,
+    wgsl_language_features: Object<'js>,
 }
 
 #[rquickjs::methods(rename_all = "camelCase")]
@@ -580,9 +580,7 @@ impl<'js> GPU<'js> {
     }
 
     #[qjs(get, configurable)]
-    pub fn wgsl_language_features(&self) -> Class<'js, GPUSupportedWGSLLanguageFeatures> {
-        self.wgsl_language_features.clone()
-    }
+    pub fn wgsl_language_features(&self) -> Object<'js> { self.wgsl_language_features.clone() }
 }
 
 #[derive(Clone, Trace, JsLifetime)]
@@ -590,7 +588,7 @@ impl<'js> GPU<'js> {
 pub struct GPUAdapter<'js> {
     #[qjs(skip_trace)]
     inner:    wgpu::Adapter,
-    features: Class<'js, GPUSupportedFeatures>,
+    features: Object<'js>,
     limits:   Class<'js, GPUSupportedLimits>,
     info:     Class<'js, GPUAdapterInfo>,
 }
@@ -614,7 +612,7 @@ impl<'js> GPUAdapter<'js> {
     pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
 
     #[qjs(get, configurable)]
-    pub fn features(&self) -> Class<'js, GPUSupportedFeatures> { self.features.clone() }
+    pub fn features(&self) -> Object<'js> { self.features.clone() }
 
     #[qjs(get, configurable)]
     pub fn limits(&self) -> Class<'js, GPUSupportedLimits> { self.limits.clone() }
@@ -772,7 +770,7 @@ pub struct GPUDevice<'js> {
     destroyed:         Rc<Cell<bool>>,
     pub(crate) device: wgpu::Device,
     pub(crate) errors: ErrorSink,
-    features:          Class<'js, GPUSupportedFeatures>,
+    features:          Object<'js>,
     label:             Rc<RefCell<String>>,
     limits:            Class<'js, GPUSupportedLimits>,
     lost:              Promise<'js>,
@@ -1085,7 +1083,7 @@ impl<'js> GPUDevice<'js> {
     pub fn set_label(&self, value: String) { *self.label.borrow_mut() = value; }
 
     #[qjs(get, configurable)]
-    pub fn features(&self) -> Class<'js, GPUSupportedFeatures> { self.features.clone() }
+    pub fn features(&self) -> Object<'js> { self.features.clone() }
 
     #[qjs(get, configurable)]
     pub fn limits(&self) -> Class<'js, GPUSupportedLimits> { self.limits.clone() }
@@ -2674,6 +2672,8 @@ fn install_classes(globals: &Object<'_>) -> Result<()> {
     inherit_global_prototype::<GPUDevice<'_>>(globals.ctx(), "EventTarget")?;
     inherit_global_prototype::<GPUUncapturedErrorEvent>(globals.ctx(), "Event")?;
     inherit_global_prototype::<GPUPipelineError>(globals.ctx(), "DOMException")?;
+    inherit_global_prototype::<GPUSupportedFeatures>(globals.ctx(), "Set")?;
+    inherit_global_prototype::<GPUSupportedWGSLLanguageFeatures>(globals.ctx(), "Set")?;
     if let Some(proto) = Class::<GPUDevice<'_>>::prototype(globals.ctx())? {
         define_event_handler(
             globals.ctx().clone(),

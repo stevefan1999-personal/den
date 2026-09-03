@@ -1,84 +1,34 @@
 use std::{cell::RefCell, rc::Rc};
 
-use rquickjs::{
-    Array, Class, Ctx, FromJs as _, Function, IntoJs as _, JsLifetime, Object, Result, Value,
-    atom::PredefinedAtom,
-    class::Trace,
-    function::{Opt, This},
-};
+use rquickjs::{Class, Ctx, FromJs as _, JsLifetime, Object, Result, Value, class::Trace};
 
 use crate::{JS_MAX_SAFE_INTEGER, JsU64, illegal_constructor, operation_error};
 
+/// A readonly WebIDL `setlike<DOMString>`: a real JS `Set`, re-parented onto
+/// this class's prototype so `instanceof` and the interface name still hold.
+///
+/// ponytail: a native Set also answers add/delete/clear/union on what the IDL
+/// calls readonly, and reports `@@toStringTag` "Set". Nothing in vendor/cts or
+/// the local tests looks; a frozen proxy is the upgrade if one ever does.
 macro_rules! setlike {
     ($name:ident, $js:literal) => {
         #[derive(Clone, Trace, JsLifetime)]
         #[rquickjs::class(rename = $js)]
-        pub struct $name {
-            #[qjs(skip_trace)]
-            names: Vec<String>,
-        }
+        pub struct $name {}
 
-        impl $name {
-            pub fn from_names<'js>(ctx: &Ctx<'js>, names: Vec<String>) -> Result<Class<'js, Self>> {
-                Class::instance(ctx.clone(), Self { names })
-            }
-        }
-
-        #[rquickjs::methods(rename_all = "camelCase")]
+        #[rquickjs::methods]
         impl $name {
             #[qjs(constructor)]
             pub fn new(ctx: Ctx<'_>) -> Result<Self> { illegal_constructor(&ctx) }
+        }
 
-            pub fn has(&self, value: String) -> bool {
-                self.names.iter().any(|name| name == &value)
-            }
-
-            #[qjs(get)]
-            pub fn size(&self) -> usize { self.names.len() }
-
-            pub fn keys<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> { self.iterator(ctx) }
-
-            pub fn values<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> { self.iterator(ctx) }
-
-            pub fn entries<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-                let array = Array::new(ctx.clone())?;
-                for (index, name) in self.names.iter().enumerate() {
-                    let pair = Array::new(ctx.clone())?;
-                    pair.set(0, name.clone())?;
-                    pair.set(1, name.clone())?;
-                    array.set(index, pair)?;
+        impl $name {
+            pub fn from_names<'js>(ctx: &Ctx<'js>, names: Vec<String>) -> Result<Object<'js>> {
+                let set: Object<'js> = den_util::construct(ctx, "Set", (names,))?;
+                if let Some(proto) = Class::<Self>::prototype(ctx)? {
+                    set.set_prototype(Some(&proto))?;
                 }
-                let values: Function = array.as_object().get("values")?;
-                values.call((This(array),))
-            }
-
-            pub fn for_each<'js>(
-                &self, callback: Function<'js>, this_arg: Opt<Value<'js>>,
-                this: This<Class<'js, Self>>, ctx: Ctx<'js>,
-            ) -> Result<()> {
-                let this_arg = this_arg
-                    .0
-                    .unwrap_or_else(|| Value::new_undefined(ctx.clone()));
-                let set = this.0.clone().into_js(&ctx)?;
-                for name in &self.names {
-                    callback.call::<_, ()>((
-                        This(this_arg.clone()),
-                        name.clone(),
-                        name.clone(),
-                        set.clone(),
-                    ))?;
-                }
-                Ok(())
-            }
-
-            #[qjs(rename = PredefinedAtom::SymbolIterator)]
-            pub fn iterator<'js>(&self, ctx: Ctx<'js>) -> Result<Value<'js>> {
-                let array = Array::new(ctx.clone())?;
-                for (index, name) in self.names.iter().enumerate() {
-                    array.set(index, name.clone())?;
-                }
-                let values: Function = array.as_object().get("values")?;
-                values.call((This(array),))
+                Ok(set)
             }
         }
     };
@@ -93,9 +43,7 @@ setlike!(
 impl GPUSupportedFeatures {
     pub const CORE_FEATURES_AND_LIMITS: &'static str = "core-features-and-limits";
 
-    pub fn from_features<'js>(
-        ctx: &Ctx<'js>, features: wgpu::Features,
-    ) -> Result<Class<'js, Self>> {
+    pub fn from_features<'js>(ctx: &Ctx<'js>, features: wgpu::Features) -> Result<Object<'js>> {
         let mut names: Vec<String> = (features & wgpu::Features::all_webgpu_mask())
             .iter()
             .filter_map(|feature| feature.as_str().map(str::to_owned))
