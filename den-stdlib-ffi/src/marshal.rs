@@ -378,7 +378,8 @@ impl ArgumentCell {
             NativeType::U64 => Self::U64(big(ctx, name, value)?),
             NativeType::Isize => Self::Isize(big(ctx, name, value)?),
             NativeType::Usize => Self::Usize(big(ctx, name, value)?),
-            NativeType::F32 => Self::F32(narrowing(ctx, name, value)?),
+            // `f32` loses precision silently, exactly as C does at the same call.
+            NativeType::F32 => Self::F32(float(ctx, name, value)? as f32),
             NativeType::F64 => Self::F64(float(ctx, name, value)?),
             // C's `_Bool` is one byte wide, and only `true`/`false` reach it:
             // a truthy string is not a boolean.
@@ -510,11 +511,6 @@ fn float(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f64> {
     value.as_number().ok_or_else(|| {
         ErrorKind::BadArgument.throw(ctx, format_args!("expected a number for `{declared}`"))
     })
-}
-
-/// `f32` loses precision silently, exactly as C does at the same call.
-fn narrowing(ctx: &Ctx<'_>, declared: &str, value: &Value<'_>) -> Result<f32> {
-    Ok(float(ctx, declared, value)? as f32)
 }
 
 /// Call `address` and hand back the raw bytes of its result.
