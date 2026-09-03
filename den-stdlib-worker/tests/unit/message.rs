@@ -665,3 +665,17 @@ fn every_forbidden_type_names_itself_in_the_data_clone_error_message() {
         );
     }
 }
+
+/// A rebuilt `Error` keeps the message it had, gets the empty default when
+/// it had none — not `"undefined"` — and coerces a non-string one from a
+/// script-forged tag instead of turning delivery into a `TypeError`.
+#[test]
+fn a_revived_error_keeps_or_omits_its_message_and_coerces_a_forged_one() {
+    assert_eq!(
+        eval::<String>(include_str!(
+            "../fixtures/unit/message/\
+             a_revived_error_keeps_or_omits_its_message_and_coerces_a_forged_one.js"
+        )),
+        Ok("|boom|42".to_owned())
+    );
+}

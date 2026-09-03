@@ -468,9 +468,9 @@ fn revive<'js>(
             "Error" => {
                 let name: String = object.get("name").unwrap_or_else(|_| "Error".to_owned());
                 let ctor_name = error_name(&name);
-                let message: OptMessage = object.get("message").unwrap_or(OptMessage(None));
-                let revived_obj: Object<'js> = match message.0 {
-                    Some(message) => construct(ctx, ctor_name, (message,))?,
+                let message: Option<Coerced<String>> = object.get("message").unwrap_or(None);
+                let revived_obj: Object<'js> = match message {
+                    Some(Coerced(message)) => construct(ctx, ctor_name, (message,))?,
                     None => construct(ctx, ctor_name, ())?,
                 };
                 let stacked = with_stack(
@@ -537,18 +537,6 @@ fn revive<'js>(
         }
     }
     Ok(value)
-}
-
-struct OptMessage(Option<String>);
-
-impl<'js> rquickjs::FromJs<'js> for OptMessage {
-    fn from_js(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Self> {
-        if value.is_undefined() {
-            Ok(Self(None))
-        } else {
-            Ok(Self(Some(coerce_string(ctx, value)?)))
-        }
-    }
 }
 
 /// Split a transfer list into ArrayBuffers and NativePorts.
