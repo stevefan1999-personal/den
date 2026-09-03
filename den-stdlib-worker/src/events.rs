@@ -21,11 +21,11 @@ use den_stdlib_core::exceptions::{
 };
 use den_util::{coerce_string, inherit, throw_dom_exception};
 use rquickjs::{
-    Array, Class, Coerced, Ctx, Error, Exception, FromJs as _, Function, IntoJs as _, JsLifetime,
-    Object, Result, Value,
+    Array, Class, Coerced, Ctx, Error, Exception, FromJs as _, Function, JsLifetime, Object,
+    Result, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
-    function::{Args, Opt, This},
+    function::{Opt, This},
     object::{Accessor, Property},
     qjs,
 };
@@ -78,19 +78,6 @@ fn dictionary<'js>(ctx: &Ctx<'js>, options: Opt<Value<'js>>) -> Result<Object<'j
         Some(value) if value.is_undefined() || value.is_null() => Object::new(ctx.clone()),
         Some(value) => Object::from_js(ctx, value),
     }
-}
-
-fn call_with_this<'js>(
-    ctx: &Ctx<'js>, function: &Function<'js>, this: Value<'js>,
-    args: impl IntoIterator<Item = Value<'js>>,
-) -> Result<Value<'js>> {
-    let collected: Vec<Value<'js>> = args.into_iter().collect();
-    let mut call = Args::new(ctx.clone(), collected.len());
-    call.this(this)?;
-    for arg in collected {
-        call.push_arg(arg)?;
-    }
-    function.call_arg(call)
 }
 
 pub(crate) fn freeze<'js>(ctx: &Ctx<'js>, value: &Value<'js>) -> Result<()> {
@@ -757,14 +744,17 @@ impl<'js> EventTarget<'js> {
                     handle.as_function().map_or_else(
                         || Err(Exception::throw_type(ctx, "handleEvent is not a function")),
                         |function| {
-                            call_with_this(ctx, function, record.callback.clone(), [event.clone()])
+                            function
+                                .call::<_, Value>((This(record.callback.clone()), event.clone()))
                                 .map(|_| ())
                         },
                     )
                 })
             },
             |function| {
-                call_with_this(ctx, function, current_target.clone(), [event.clone()]).map(|_| ())
+                function
+                    .call::<_, Value>((This(current_target.clone()), event.clone()))
+                    .map(|_| ())
             },
         );
         report_uncaught(ctx, outcome);
@@ -1026,15 +1016,16 @@ impl<'js> EventTarget<'js> {
         let returned = if special {
             let error_event = Class::<ErrorEvent>::from_value(&event)?;
             let borrowed = error_event.try_borrow()?;
-            call_with_this(ctx, function, this.clone(), [
-                borrowed.message.clone().into_js(ctx)?,
-                borrowed.filename.clone().into_js(ctx)?,
-                Value::new_number(ctx.clone(), f64::from(borrowed.lineno)),
-                Value::new_number(ctx.clone(), f64::from(borrowed.colno)),
+            function.call::<_, Value>((
+                This(this.clone()),
+                borrowed.message.clone(),
+                borrowed.filename.clone(),
+                borrowed.lineno,
+                borrowed.colno,
                 borrowed.error.clone(),
-            ])?
+            ))?
         } else {
-            call_with_this(ctx, function, this.clone(), [event.clone()])?
+            function.call::<_, Value>((This(this.clone()), event.clone()))?
         };
         let cancel = if special {
             returned.as_bool() == Some(true)
