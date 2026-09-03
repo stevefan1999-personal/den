@@ -84,10 +84,9 @@ fn equal_objects<'js>(
         if left_array.len() != right_array.len() {
             return Ok(false);
         }
-        for index in 0..left_array.len() {
-            let left_item: Value = left_array.get(index)?;
-            let right_item: Value = right_array.get(index)?;
-            if !equal_seen(ctx, &left_item, &right_item, seen)? {
+        // The length check above already ran, so zip cannot lose an element.
+        for (left_item, right_item) in left_array.iter::<Value>().zip(right_array.iter::<Value>()) {
+            if !equal_seen(ctx, &left_item?, &right_item?, seen)? {
                 return Ok(false);
             }
         }
@@ -570,14 +569,9 @@ pub mod assert {
                 super::message_or(msg, "Expected an array-like".into()),
             );
         };
-        let needles: Vec<Value> = if let Some(array) = expected.as_array() {
-            let mut items = Vec::new();
-            for index in 0..array.len() {
-                items.push(array.get(index)?);
-            }
-            items
-        } else {
-            vec![expected]
+        let needles: Vec<Value> = match expected.as_array() {
+            Some(array) => array.iter().collect::<Result<_>>()?,
+            None => vec![expected],
         };
         for needle in needles {
             let mut found = false;

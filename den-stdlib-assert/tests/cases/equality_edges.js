@@ -28,3 +28,8 @@ assertThrows(
   AssertionError,
   "custom equality message",
 );
+
+// Array holes compare as undefined and length still decides, so walking two
+// arrays in lockstep must not shorten to the first hole.
+assertEquals([, 1], [undefined, 1]);
+assertNotEquals([, 1], [1]);
