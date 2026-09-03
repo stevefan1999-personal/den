@@ -23,7 +23,7 @@ pub async fn build_engine(config: Option<&Config>, argv: Vec<String>) -> Result<
     };
 
     builder = builder.policy(config.policy()?);
-    if let Some(budgets) = config.budgets() {
+    if let Some(budgets) = &config.budgets {
         if let Some(bytes) = budgets.stack_bytes {
             builder = builder.max_stack_size(bytes);
         }
@@ -53,7 +53,7 @@ pub async fn build_engine(config: Option<&Config>, argv: Vec<String>) -> Result<
 }
 
 pub async fn run_preloads(engine: &Engine, config: Option<&Config>) -> Result<()> {
-    if let Some(preloads) = config.and_then(Config::preloads) {
+    if let Some(preloads) = config.and_then(|config| config.preloads.as_deref()) {
         for preload in preloads {
             engine
                 .run_file(preload.clone())
@@ -66,7 +66,8 @@ pub async fn run_preloads(engine: &Engine, config: Option<&Config>) -> Result<()
 
 fn package_requirements(config: &Config) -> Result<Vec<PackageRequirement>> {
     let registries = config
-        .registries()
+        .registries
+        .as_ref()
         .map(|registries| {
             registries
                 .keys()
@@ -75,8 +76,8 @@ fn package_requirements(config: &Config) -> Result<Vec<PackageRequirement>> {
         })
         .unwrap_or_default();
     config
-        .dependencies()
-        .into_iter()
+        .dependencies
+        .iter()
         .flatten()
         .filter_map(|(specifier, target)| {
             let (registry, package) = target.split_once(':')?;
@@ -118,7 +119,7 @@ fn parse_package_requirement(
 fn import_map(
     config: &Config, packages: &[PackageRequirement],
 ) -> Result<Option<(String, PathBuf)>> {
-    let mut map = if let Some(path) = config.import_map() {
+    let mut map = if let Some(path) = config.import_map.as_deref() {
         serde_json::from_str(
             &std::fs::read_to_string(path)
                 .wrap_err_with(|| format!("failed to read import map `{}`", path.display()))?,
@@ -127,7 +128,7 @@ fn import_map(
     } else {
         serde_json::json!({})
     };
-    let base = config.import_map().map_or_else(
+    let base = config.import_map.as_deref().map_or_else(
         || {
             config
                 .root()
@@ -144,15 +145,15 @@ fn import_map(
         .iter()
         .map(|package| package.specifier.as_str())
         .collect::<BTreeSet<_>>();
-    let mut configured = config.imports().cloned().unwrap_or_default();
-    for (specifier, target) in config.dependencies().into_iter().flatten() {
+    let mut configured = config.imports.clone().unwrap_or_default();
+    for (specifier, target) in config.dependencies.iter().flatten() {
         if !package_specifiers.contains(specifier.as_str()) {
             configured
                 .entry(specifier.clone())
                 .or_insert_with(|| target.strip_prefix("link:").unwrap_or(target).to_owned());
         }
     }
-    if configured.is_empty() && config.import_map().is_none() {
+    if configured.is_empty() && config.import_map.is_none() {
         return Ok(None);
     }
 
@@ -179,13 +180,15 @@ async fn package_snapshot(
     use den_package_store::{PackageStore, RootRequirement};
 
     let path = config
-        .package_store()
+        .package_store
+        .as_deref()
         .ok_or_else(|| eyre!("package dependencies require `packageStore` in den.json"))?;
     let store = PackageStore::open(path)
         .await
         .wrap_err_with(|| format!("failed to open package store `{}`", path.display()))?;
     let registries = config
-        .registries()
+        .registries
+        .as_ref()
         .ok_or_else(|| eyre!("package dependencies require `registries` in den.json"))?;
     let mut roots = Vec::with_capacity(packages.len());
     for package in packages {

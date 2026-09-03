@@ -47,65 +47,20 @@ pub struct PolicyError {
     source:     ScopeError,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Config {
-    imports:       Option<BTreeMap<String, String>>,
-    import_map:    Option<PathBuf>,
-    package_store: Option<PathBuf>,
-    registries:    Option<BTreeMap<String, RegistryConfig>>,
-    dependencies:  Option<BTreeMap<String, String>>,
-    permissions:   Option<PermissionsConfig>,
-    budgets:       Option<BudgetsConfig>,
-    preloads:      Option<Vec<PathBuf>>,
-    source:        Option<ConfigSource>,
-}
-
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-struct RawConfig {
-    imports:       Option<BTreeMap<String, String>>,
-    import_map:    Option<PathBuf>,
-    package_store: Option<PathBuf>,
-    registries:    Option<BTreeMap<String, RegistryConfig>>,
-    dependencies:  Option<BTreeMap<String, String>>,
-    permissions:   Option<PermissionsConfig>,
-    budgets:       Option<BudgetsConfig>,
-    preloads:      Option<Vec<PathBuf>>,
-}
-
-impl Default for RawConfig {
-    fn default() -> Self { Self::from(Config::default()) }
-}
-
-impl From<Config> for RawConfig {
-    fn from(config: Config) -> Self {
-        Self {
-            imports:       config.imports,
-            import_map:    config.import_map,
-            package_store: config.package_store,
-            registries:    config.registries,
-            dependencies:  config.dependencies,
-            permissions:   config.permissions,
-            budgets:       config.budgets,
-            preloads:      config.preloads,
-        }
-    }
-}
-
-impl From<RawConfig> for Config {
-    fn from(raw: RawConfig) -> Self {
-        Self {
-            imports:       raw.imports,
-            import_map:    raw.import_map,
-            package_store: raw.package_store,
-            registries:    raw.registries,
-            dependencies:  raw.dependencies,
-            permissions:   raw.permissions,
-            budgets:       raw.budgets,
-            preloads:      raw.preloads,
-            source:        None,
-        }
-    }
+pub struct Config {
+    pub imports:       Option<BTreeMap<String, String>>,
+    pub import_map:    Option<PathBuf>,
+    pub package_store: Option<PathBuf>,
+    pub registries:    Option<BTreeMap<String, RegistryConfig>>,
+    pub dependencies:  Option<BTreeMap<String, String>>,
+    pub permissions:   Option<PermissionsConfig>,
+    pub budgets:       Option<BudgetsConfig>,
+    pub preloads:      Option<Vec<PathBuf>>,
+    // `load` is the only writer: every path above is resolved against it.
+    #[serde(skip)]
+    source:            Option<ConfigSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,20 +131,6 @@ impl Config {
 
     pub fn root(&self) -> Option<&Path> { self.source.as_ref().map(|source| source.root.as_path()) }
 
-    pub const fn imports(&self) -> Option<&BTreeMap<String, String>> { self.imports.as_ref() }
-
-    pub fn import_map(&self) -> Option<&Path> { self.import_map.as_deref() }
-
-    pub fn package_store(&self) -> Option<&Path> { self.package_store.as_deref() }
-
-    pub const fn registries(&self) -> Option<&BTreeMap<String, RegistryConfig>> {
-        self.registries.as_ref()
-    }
-
-    pub const fn dependencies(&self) -> Option<&BTreeMap<String, String>> {
-        self.dependencies.as_ref()
-    }
-
     pub const fn permissions(&self) -> Option<&PermissionsConfig> { self.permissions.as_ref() }
 
     /// Convert configured permissions to den's deny-by-default host policy.
@@ -198,10 +139,6 @@ impl Config {
             .as_ref()
             .map_or_else(|| Ok(Policy::default()), PermissionsConfig::policy)
     }
-
-    pub const fn budgets(&self) -> Option<&BudgetsConfig> { self.budgets.as_ref() }
-
-    pub fn preloads(&self) -> Option<&[PathBuf]> { self.preloads.as_deref() }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = absolute(path.as_ref())?;
@@ -222,13 +159,12 @@ impl Config {
                 source,
             }
         })?;
-        let raw: RawConfig = parse_to_serde_value(&text, &jsonc_options()).map_err(|source| {
+        let mut config: Self = parse_to_serde_value(&text, &jsonc_options()).map_err(|source| {
             ConfigError::Parse {
                 path: path.clone(),
                 source,
             }
         })?;
-        let mut config = Self::from(raw);
         let root = path
             .parent()
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
@@ -676,7 +612,7 @@ mod tests {
         assert!(message.contains("boolean"));
 
         // Keys den used to parse and then reject by hand are plain unknown
-        // fields now.
+        // fields now, and the resolved `source` cannot be set from JSON.
         for (key, body) in [
             ("offine", r#"{ "offine": true }"#),
             ("offline", r#"{ "offline": false }"#),
@@ -689,6 +625,7 @@ mod tests {
             ("tasks", r#"{ "tasks": {} }"#),
             ("workspace", r#"{ "workspace": [] }"#),
             ("prompt", r#"{ "permissions": { "prompt": true } }"#),
+            ("source", r#"{ "source": {} }"#),
         ] {
             write(&malformed, body);
             let error = Config::load(&malformed).expect_err("unknown field should fail");
