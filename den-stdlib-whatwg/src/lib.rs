@@ -44,13 +44,6 @@ pub mod whatwg {
         xhr::XMLHttpRequest,
     };
 
-    fn install<'js, C: JsClass<'js>>(ctx: &Ctx<'js>, name: &str) -> Result<()> {
-        if let Some(ctor) = Class::<C>::create_constructor(ctx)? {
-            ctx.globals().set(name, ctor)?;
-        }
-        Ok(())
-    }
-
     fn install_event_handlers<'js, C: JsClass<'js>>(ctx: &Ctx<'js>, names: &[&str]) -> Result<()> {
         let Some(proto) = Class::<C>::prototype(ctx)? else {
             return Ok(());
@@ -68,32 +61,32 @@ pub mod whatwg {
             define_on(&globals)?;
         }
         globals.install_constructor::<Blob>(0)?;
-        install::<CloseEvent>(ctx, "CloseEvent")?;
-        install::<CompressionStream>(ctx, "CompressionStream")?;
-        install::<DecompressionStream>(ctx, "DecompressionStream")?;
-        install::<EventSource>(ctx, "EventSource")?;
-        install::<File>(ctx, "File")?;
-        install::<FileReader>(ctx, "FileReader")?;
-        install::<FormData>(ctx, "FormData")?;
-        install::<ProgressEvent>(ctx, "ProgressEvent")?;
+        Class::<CloseEvent>::define(&globals)?;
+        Class::<CompressionStream>::define(&globals)?;
+        Class::<DecompressionStream>::define(&globals)?;
+        Class::<EventSource>::define(&globals)?;
+        Class::<File>::define(&globals)?;
+        Class::<FileReader>::define(&globals)?;
+        Class::<FormData>::define(&globals)?;
+        Class::<ProgressEvent>::define(&globals)?;
         crate::streams::install_intrinsics(ctx)?;
-        install::<ByteLengthQueuingStrategy>(ctx, "ByteLengthQueuingStrategy")?;
-        install::<CountQueuingStrategy>(ctx, "CountQueuingStrategy")?;
-        install::<ReadableStream>(ctx, "ReadableStream")?;
-        install::<ReadableStreamDefaultController>(ctx, "ReadableStreamDefaultController")?;
-        install::<ReadableStreamDefaultReader>(ctx, "ReadableStreamDefaultReader")?;
-        install::<TransformStream>(ctx, "TransformStream")?;
-        install::<TransformStreamDefaultController>(ctx, "TransformStreamDefaultController")?;
-        install::<WritableStreamDefaultController>(ctx, "WritableStreamDefaultController")?;
-        install::<WritableStreamDefaultWriter>(ctx, "WritableStreamDefaultWriter")?;
+        Class::<ByteLengthQueuingStrategy>::define(&globals)?;
+        Class::<CountQueuingStrategy>::define(&globals)?;
+        Class::<ReadableStream>::define(&globals)?;
+        Class::<ReadableStreamDefaultController>::define(&globals)?;
+        Class::<ReadableStreamDefaultReader>::define(&globals)?;
+        Class::<TransformStream>::define(&globals)?;
+        Class::<TransformStreamDefaultController>::define(&globals)?;
+        Class::<WritableStreamDefaultController>::define(&globals)?;
+        Class::<WritableStreamDefaultWriter>::define(&globals)?;
         let _ = Class::<crate::streams::ReadableStreamAsyncIterator>::create_constructor(ctx)?;
-        install::<crate::url::URL>(ctx, "URL")?;
-        install::<crate::url::URLSearchParams>(ctx, "URLSearchParams")?;
+        Class::<crate::url::URL>::define(&globals)?;
+        Class::<crate::url::URLSearchParams>::define(&globals)?;
         let _ = Class::<crate::url::UrlSearchIterator>::create_constructor(ctx)?;
-        install::<URLPattern>(ctx, "URLPattern")?;
-        install::<WebSocket>(ctx, "WebSocket")?;
-        install::<XMLHttpRequest>(ctx, "XMLHttpRequest")?;
-        install::<WritableStream>(ctx, "WritableStream")?;
+        Class::<URLPattern>::define(&globals)?;
+        Class::<WebSocket>::define(&globals)?;
+        Class::<XMLHttpRequest>::define(&globals)?;
+        Class::<WritableStream>::define(&globals)?;
         inherit::<File, Blob>(ctx)?;
         inherit::<ProgressEvent, Event>(ctx)?;
         inherit::<CloseEvent, Event>(ctx)?;
