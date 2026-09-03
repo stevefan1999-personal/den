@@ -18,7 +18,6 @@ pub mod texture;
 
 use std::{
     cell::{Cell, RefCell},
-    mem::MaybeUninit,
     num::NonZeroU64,
     ops::Range,
     rc::Rc,
@@ -31,8 +30,8 @@ use std::{
 use den_stdlib_worker::events::define_event_handler;
 use den_util::BufferSource;
 use rquickjs::{
-    Array, ArrayBuffer, Class, Coerced, Constructor, Ctx, Error, Exception, FromJs, Function,
-    IntoJs as _, JsLifetime, Object, Persistent, Promise, Result, Value,
+    Array, ArrayBuffer, Class, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs as _,
+    JsLifetime, Object, Persistent, Promise, Result, Value,
     atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Args, Opt, This},
@@ -335,7 +334,7 @@ impl<T> Recorder<T> {
 pub(crate) fn data_window<'js>(
     data: Value<'js>, data_offset: Opt<Option<JsU64>>, size: Opt<Option<JsU64>>, ctx: &Ctx<'js>,
 ) -> Result<Vec<u8>> {
-    let element_size = typed_array_element_size(ctx, &data)?;
+    let element_size = typed_array_element_size(&data);
     let bytes = BufferSource::from_js(ctx, data)?.into_bytes();
     let start = data_offset
         .0
@@ -2041,37 +2040,28 @@ impl<'js> GPUQueue<'js> {
     }
 }
 
-fn typed_array_element_size(ctx: &Ctx<'_>, value: &Value<'_>) -> Result<u64> {
-    if unsafe { rquickjs::qjs::JS_GetTypedArrayType(value.as_raw()) } < 0 {
-        return Ok(1);
-    }
-    let mut offset = MaybeUninit::<rquickjs::qjs::size_t>::uninit();
-    let mut length = MaybeUninit::<rquickjs::qjs::size_t>::uninit();
-    let mut element_size = MaybeUninit::<rquickjs::qjs::size_t>::uninit();
-    // SAFETY: the native typed-array brand was checked above; QuickJS
-    // initializes all three metadata outputs and returns one owned reference.
-    let raw = unsafe {
-        rquickjs::qjs::JS_GetTypedArrayBuffer(
-            ctx.as_raw().as_ptr(),
-            value.as_raw(),
-            offset.as_mut_ptr(),
-            length.as_mut_ptr(),
-            element_size.as_mut_ptr(),
-        )
+/// The stride `writeBuffer`'s `dataOffset`/`size` are counted in. A value that
+/// is not a typed array — a DataView or a bare ArrayBuffer — counts bytes.
+fn typed_array_element_size(value: &Value<'_>) -> u64 {
+    use rquickjs::qjs::{
+        JSTypedArrayEnum_JS_TYPED_ARRAY_BIG_INT64 as BIG_INT64,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_BIG_UINT64 as BIG_UINT64,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_FLOAT16 as FLOAT16,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_FLOAT32 as FLOAT32,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_FLOAT64 as FLOAT64,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_INT16 as INT16,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_INT32 as INT32,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_UINT16 as UINT16,
+        JSTypedArrayEnum_JS_TYPED_ARRAY_UINT32 as UINT32,
     };
-    if unsafe { rquickjs::qjs::JS_IsException(raw) } {
-        return Err(Error::Exception);
+    // SAFETY: reads the value's typed-array class tag only; anything else
+    // answers -1.
+    match u32::try_from(unsafe { rquickjs::qjs::JS_GetTypedArrayType(value.as_raw()) }) {
+        Ok(INT16 | UINT16 | FLOAT16) => 2,
+        Ok(INT32 | UINT32 | FLOAT32) => 4,
+        Ok(BIG_INT64 | BIG_UINT64 | FLOAT64) => 8,
+        _ => 1,
     }
-    // SAFETY: JS_GetTypedArrayBuffer transferred one owned JSValue reference.
-    drop(unsafe { Value::from_raw(ctx.clone(), raw) });
-    // `size_t` is `u64` on 64-bit and `u32` on 32-bit; the conversion is a
-    // no-op only on the hosts we currently ship.
-    #[expect(
-        clippy::useless_conversion,
-        reason = "qjs size_t width is pointer-sized"
-    )]
-    u64::try_from(unsafe { element_size.assume_init() })
-        .map_err(|_error| Exception::throw_range(ctx, "typed-array element size is too large"))
 }
 
 #[derive(Clone, Trace, JsLifetime)]
