@@ -187,3 +187,8 @@ async fn lock_errors_and_writer_promises_follow_the_specification() -> eyre::Res
 async fn a_transformer_finish_that_rejects_errors_the_other_half() -> eyre::Result<()> {
     run("streams_transform_finish.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_parked_on_transform_backpressure_waits_for_a_pull() -> eyre::Result<()> {
+    run("streams_transform_backpressure.js").await
+}

@@ -34,14 +34,13 @@ struct TransformInner<'js> {
     writable:            Weak<RefCell<crate::streams::writable::WritableInner<'js>>>,
     backpressure:        bool,
     backpressure_change: Option<Cap<'js>>,
-    /// Writes parked on `backpressure_change`. The reaction that resumes one
-    /// is a `Function::new` closure, and rquickjs gives `RustFunction` an empty
-    /// `Trace` impl — so such a closure may capture no JS value or the
+    /// The one write parked on `backpressure_change`. The reaction that resumes
+    /// it is a `Function::new` closure, and rquickjs gives `RustFunction` an
+    /// empty `Trace` impl — so such a closure may capture no JS value or the
     /// collector cannot see it and the whole graph outlives the runtime. The
     /// chunk and its capability live here, traced, and the closure carries
-    /// nothing but an id.
-    parked:              Vec<(u64, Value<'js>, Cap<'js>)>,
-    next_parked:         u64,
+    /// nothing.
+    parked:              Option<(Value<'js>, Cap<'js>)>,
     finish:              Option<(Cap<'js>, FinishAction<'js>)>,
     finish_error:        Option<Value<'js>>,
 }
@@ -76,7 +75,7 @@ impl<'js> Trace<'js> for TransformInner<'js> {
         if let Some(cap) = self.backpressure_change.as_ref() {
             cap.trace(tracer);
         }
-        for (_, chunk, cap) in &self.parked {
+        if let Some((chunk, cap)) = &self.parked {
             chunk.trace(tracer);
             cap.trace(tracer);
         }
@@ -333,19 +332,12 @@ fn unblock_write<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>) {
 
 /// Resume a write that was parked on backpressure, settling the capability the
 /// sink handed back with the transform's own outcome.
-fn resume_parked<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, id: u64) {
+fn resume_parked<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>) {
     let Some(owned) = shared.upgrade() else {
         return;
     };
-    let parked = {
-        let mut borrow = owned.borrow_mut();
-        borrow
-            .parked
-            .iter()
-            .position(|(each, ..)| *each == id)
-            .map(|at| borrow.parked.remove(at))
-    };
-    let Some((_, chunk, mut cap)) = parked else {
+    let parked = owned.borrow_mut().parked.take();
+    let Some((chunk, mut cap)) = parked else {
         return;
     };
     // Specification step 2 of the sink write algorithm: a stream that started
@@ -462,8 +454,7 @@ impl<'js> TransformStream<'js> {
             writable: Weak::new(),
             backpressure: false,
             backpressure_change: None,
-            parked: Vec::new(),
-            next_parked: 0,
+            parked: None,
             finish: None,
             finish_error: None,
         }));
@@ -523,17 +514,11 @@ impl<'js> TransformStream<'js> {
                     };
                     let cap = Cap::new(&ctx)?;
                     let promise = cap.promise();
-                    let id = {
-                        let mut borrow = owned.borrow_mut();
-                        let id = borrow.next_parked;
-                        borrow.next_parked += 1;
-                        borrow.parked.push((id, chunk, cap));
-                        id
-                    };
+                    owned.borrow_mut().parked = Some((chunk, cap));
                     let on_ok = {
                         let shared = shared.clone();
                         Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                            resume_parked(&ctx, &shared, id);
+                            resume_parked(&ctx, &shared);
                         })?
                     };
                     react(&ctx, waiting.into_value(), Some(on_ok), None)?;
