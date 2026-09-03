@@ -982,15 +982,7 @@ impl<'js> Worker<'js> {
         };
         let url = coerce_string(&ctx, script_url)?;
         let (kind, name) = worker_options(&ctx, options.0)?;
-        let ports = pair(ctx.clone())?;
-        let [outside, inside] = ports.as_slice() else {
-            return Err(Exception::throw_internal(
-                &ctx,
-                "worker port pair is incomplete",
-            ));
-        };
-        let outside = outside.clone();
-        let inside = inside.clone();
+        let (outside, inside) = pair(ctx.clone())?;
         let on_fault = Function::new(
             ctx.clone(),
             |ctx: Ctx<'js>, function: FuncArg<Function<'js>>, fault: WorkerFault| -> Result<()> {

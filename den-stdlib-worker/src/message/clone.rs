@@ -16,7 +16,6 @@ use rquickjs::{
 use crate::{
     message::throw_data_clone,
     port::{MessagePort, NativePort},
-    report::sink_hook,
 };
 
 const TAG: &str = "\0den:structured-clone";
@@ -403,13 +402,6 @@ pub fn restore<'js>(
     revive(ctx, value, ports, &mut seen)
 }
 
-fn wrap_port<'js>(ctx: &Ctx<'js>, port: Class<'js, NativePort>) -> Result<Value<'js>> {
-    if let Some(wrap) = sink_hook(ctx, "wrapPort") {
-        return wrap.call((port,));
-    }
-    Err(fail(ctx, "MessagePort"))
-}
-
 fn revive<'js>(
     ctx: &Ctx<'js>, value: Value<'js>, ports: &[Class<'js, NativePort>],
     seen: &mut HashMap<Value<'js>, Value<'js>>,
@@ -427,12 +419,10 @@ fn revive<'js>(
         match kind.as_str() {
             "Port" => {
                 let index: usize = object.get("index")?;
-                let wrapped = wrap_port(
-                    ctx,
-                    ports.get(index).cloned().ok_or_else(|| {
-                        Exception::throw_internal(ctx, "clone port index out of range")
-                    })?,
-                )?;
+                let native = ports.get(index).cloned().ok_or_else(|| {
+                    Exception::throw_internal(ctx, "clone port index out of range")
+                })?;
+                let wrapped = MessagePort::wrap(ctx, native)?.into_value();
                 seen.insert(value, wrapped.clone());
                 return Ok(wrapped);
             }

@@ -366,14 +366,13 @@ impl NativePort {
     }
 }
 
-/// `natives.pair()` — two entangled ports, the guts of `new MessageChannel()`.
-#[rquickjs::function(rename = "pair")]
-pub fn pair(ctx: Ctx<'_>) -> Result<Vec<Class<'_, NativePort>>> {
+/// Two entangled ports, the guts of `new MessageChannel()` and `new Worker()`.
+pub fn pair(ctx: Ctx<'_>) -> Result<(Class<'_, NativePort>, Class<'_, NativePort>)> {
     let (first, second) = PortHandle::pair();
-    Ok(vec![
+    Ok((
         Class::instance(ctx.clone(), NativePort::from_handle(first))?,
         Class::instance(ctx, NativePort::from_handle(second))?,
-    ])
+    ))
 }
 
 const WRAPPER_SLOT: &str = "\0den:port-wrapper";
@@ -508,13 +507,10 @@ pub struct MessageChannel<'js> {
 impl<'js> MessageChannel<'js> {
     #[qjs(constructor)]
     pub fn new(ctx: Ctx<'js>) -> Result<Self> {
-        let pair = pair(ctx.clone())?;
-        let [first, second] = pair.as_slice() else {
-            return Err(Exception::throw_internal(&ctx, "port pair is incomplete"));
-        };
+        let (first, second) = pair(ctx.clone())?;
         Ok(Self {
-            port1: MessagePort::wrap(&ctx, first.clone())?,
-            port2: MessagePort::wrap(&ctx, second.clone())?,
+            port1: MessagePort::wrap(&ctx, first)?,
+            port2: MessagePort::wrap(&ctx, second)?,
         })
     }
 
@@ -572,19 +568,6 @@ pub fn track_message_listeners<'js>(
     arm.set("_bag", bag)?;
     crate::events::EventTarget::set_change_hook(&ctx, &target, hook)?;
     Ok(arm)
-}
-
-/// Install pair + wrapPort. Public classes are module exports.
-pub fn install<'js>(ctx: &Ctx<'js>, natives: &Object<'js>) -> Result<()> {
-    natives.set("pair", js_pair)?;
-    natives.set(
-        "wrapPort",
-        Function::new(
-            ctx.clone(),
-            |ctx: Ctx<'js>, native: Class<'js, NativePort>| MessagePort::wrap(&ctx, native),
-        )?,
-    )?;
-    Ok(())
 }
 
 pub fn finish<'js>(ctx: &Ctx<'js>) -> Result<()> {
