@@ -456,16 +456,10 @@ fn flush_uncaptured<'js>(device: &Class<'js, GPUDevice<'js>>, ctx: &Ctx<'js>) ->
 fn flushed<'js, T>(
     this: &This<Class<'js, GPUDevice<'js>>>, ctx: &Ctx<'js>, result: Result<T>,
 ) -> Result<T> {
-    match result {
-        Ok(value) => {
-            flush_uncaptured(&this.0, ctx)?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = flush_uncaptured(&this.0, ctx);
-            Err(error)
-        }
-    }
+    // Flushed on both paths, but an operation's own error outranks a flush one.
+    let flush = flush_uncaptured(&this.0, ctx);
+    let value = result?;
+    flush.map(|()| value)
 }
 
 fn dispatch_uncaptured_error<'js>(
