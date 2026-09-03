@@ -131,29 +131,7 @@ impl<'js> FromJs<'js> for WriteOptions {
     rename_types = "camelCase"
 )]
 pub mod fs {
-    use rquickjs::{Result, function::Opt, module::Declarations};
-
-    #[qjs(declare)]
-    pub fn declare(declare: &Declarations) -> rquickjs::Result<()> {
-        declare.declare("hardLink")?;
-        declare.declare("canonicalize")?;
-        declare.declare("rename")?;
-        declare.declare("createDir")?;
-        declare.declare("removeDirAll")?;
-        declare.declare("symlinkMetadata")?;
-        declare.declare("metadata")?;
-        declare.declare("createDirAll")?;
-        declare.declare("setPermissions")?;
-        declare.declare("copy")?;
-        declare.declare("readDir")?;
-        declare.declare("readLink")?;
-        declare.declare("readToString")?;
-        declare.declare("removeFile")?;
-        declare.declare("read")?;
-        declare.declare("write")?;
-        declare.declare("removeDir")?;
-        Ok(())
-    }
+    use rquickjs::{Result, function::Opt};
 
     #[rquickjs::function(rename = "canonicalize")]
     pub async fn canonicalize(path: String) -> Result<Option<String>> {

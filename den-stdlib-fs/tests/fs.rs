@@ -74,3 +74,10 @@ async fn create_rename_and_remove_directories() -> eyre::Result<()> {
 async fn atomic_write_replaces_the_target_and_leaves_no_temp_file() -> eyre::Result<()> {
     run_with_tree("write_atomic.js").await
 }
+
+// No tree needed: this only reads the module's export list.
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_module_exports_exactly_the_seventeen_functions() -> eyre::Result<()> {
+    Engine::new().await.run_file(case("exports.js")).await?;
+    Ok(())
+}
