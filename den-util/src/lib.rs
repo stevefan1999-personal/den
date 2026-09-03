@@ -11,7 +11,7 @@ use rquickjs::{
     atom::PredefinedAtom,
     class::JsClass,
     function::{IntoArgs, This},
-    object::Filter,
+    object::{Filter, Property},
     proxy::ProxyHandler,
     qjs,
     runtime::UserDataError,
@@ -232,7 +232,12 @@ impl<'js> ConstructorInstaller<'js> for Object<'js> {
         if let Some(prototype) = Class::<C>::prototype(ctx)? {
             prototype.set(PredefinedAtom::Constructor, constructor.clone())?;
         }
-        self.set(C::NAME, constructor)
+        // WebIDL: an interface object on a global is
+        // { writable, enumerable: false, configurable }.
+        self.prop(
+            C::NAME,
+            Property::from(constructor).writable().configurable(),
+        )
     }
 }
 

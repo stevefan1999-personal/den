@@ -12,3 +12,12 @@ assertEquals(
   { writable: true, enumerable: false, configurable: true },
 );
 assertStrictEquals(Object.prototype.toString.call(Intl), "[object Intl]");
+
+// Clause 17: no `Intl` member is enumerable. `Intl.Locale` is installed by
+// den-util's constructor installer, so this pins that installer's attributes.
+const locale = Object.getOwnPropertyDescriptor(Intl, "Locale");
+assertEquals(
+  { writable: locale.writable, enumerable: locale.enumerable, configurable: locale.configurable },
+  { writable: true, enumerable: false, configurable: true },
+);
+assertEquals(Object.keys(Intl), []);

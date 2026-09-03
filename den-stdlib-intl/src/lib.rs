@@ -42,15 +42,6 @@ impl Intl {
         )?;
 
         intl.install_constructor::<Locale>(Self::LOCALE_ARITY)?;
-        // `install_constructor` uses a plain assignment, which leaves the
-        // property enumerable; no `Intl` member is. Redefining only sets the
-        // attributes it names, so the enumerable one has to go first.
-        let constructor = intl.get::<_, Value<'js>>("Locale")?;
-        intl.remove("Locale")?;
-        intl.prop(
-            "Locale",
-            Property::from(constructor).writable().configurable(),
-        )?;
         Self::finish_prototype(ctx)?;
 
         ctx.globals().prop(
