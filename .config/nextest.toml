@@ -1,5 +1,4 @@
 [profile.default]
-test-threads = "num-cpus"
 # Official vendor binaries need a complete pass/fail/ignore tally.
 fail-fast = false
 
@@ -11,20 +10,21 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 
 # den unit tests only — used by lint.yml so official gaps do not hide regressions.
 [profile.compat]
-test-threads = "num-cpus"
 fail-fast = true
 default-filter = 'not (binary(spec_core) | binary(wpt) | binary(test262) | binary(cts))'
 
 # Every vendored official file, raw, one nextest test each.
 [profile.official]
-test-threads = "num-cpus"
 fail-fast = false
 default-filter = 'binary(spec_core) | binary(wpt) | binary(test262) | binary(cts)'
-slow-timeout = { period = "60s", terminate-after = 3 }
 
 # Serial: each spec file owns a wgpu instance. Parallel files OOM the host.
 [profile.cts]
 test-threads = 1
 fail-fast = false
 default-filter = 'binary(cts)'
+
+# Ahead of the default profile's 60s/3 override, which otherwise wins.
+[[profile.cts.overrides]]
+filter = 'binary(cts)'
 slow-timeout = { period = "120s", terminate-after = 10 }
