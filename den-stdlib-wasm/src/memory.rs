@@ -217,8 +217,8 @@ impl<'js> MemoryBuffers<'js> {
     /// `[[BufferObject]]` of `memory`, built on first read and shared by every
     /// wrapper naming the same linear memory.
     fn buffer(ctx: &Ctx<'js>, memory: &WasmMemory) -> Result<ArrayBuffer<'js>> {
-        // Sweeping first is what makes the cache self-validating: whatever survives
-        // is known to still describe its memory.
+        // Sweeping first is what makes the cache self-validating: whatever
+        // survives is known to still describe its memory.
         Self::refresh(ctx)?;
         let (base, byte_length) = Self::extent(ctx, memory)?;
         Self::with_live(ctx, |live| {
@@ -383,11 +383,12 @@ impl<'js> MemoryBuffers<'js> {
     /// nothing here — the pages belong to the wasm store — so the correct free
     /// function is none at all.
     fn alias(ctx: &Ctx<'js>, base: usize, byte_length: usize) -> Result<ArrayBuffer<'js>> {
-        // SAFETY: `base` and `byte_length` are the base and byte length of a live
-        // wasm linear memory, read under the store borrow by the caller, and QuickJS
-        // only ever touches them under the runtime lock. Passing no free function
-        // means the buffer never claims ownership of those pages, and the registry
-        // detaches it before the pages can go away.
+        // SAFETY: `base` and `byte_length` are the base and byte length of a
+        // live wasm linear memory, read under the store borrow by the
+        // caller, and QuickJS only ever touches them under the runtime
+        // lock. Passing no free function means the buffer never claims
+        // ownership of those pages, and the registry detaches it before
+        // the pages can go away.
         let value = unsafe {
             let raw = qjs::JS_NewArrayBuffer(
                 ctx.as_raw().as_ptr(),
@@ -536,8 +537,9 @@ impl Memory {
 
     /// Grow by `delta` pages, returning the page count *before* the growth.
     pub fn grow(&self, delta: EnforceRange, ctx: Ctx<'_>) -> Result<u64> {
-        // Read before growing: once the memory has moved, its old base — the key
-        // the buffer is registered under — is no longer reachable from it.
+        // Read before growing: once the memory has moved, its old base — the
+        // key the buffer is registered under — is no longer reachable
+        // from it.
         let (base, _) = MemoryBuffers::extent(&ctx, &self.inner)?;
         let previous = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| {
             self.inner.grow(&mut *store, delta.size()).map_err(|error| {

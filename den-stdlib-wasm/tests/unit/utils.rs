@@ -104,7 +104,8 @@ fn i64_accepts_the_values_to_big_int_accepts() {
         assert!(matches!(from_js(ctx, "'42'", "i64"), Ok(Val::I64(42))));
         assert!(matches!(from_js(ctx, "true", "i64"), Ok(Val::I64(1))));
         assert!(from_js(ctx, "undefined", "i64").is_err());
-        // ToBigInt64 wraps modulo 2^64: 2^63 is i64::MIN, not a conversion failure.
+        // ToBigInt64 wraps modulo 2^64: 2^63 is i64::MIN, not a conversion
+        // failure.
         assert!(matches!(
             from_js(ctx, "2n ** 63n", "i64"),
             Ok(Val::I64(i64::MIN))
@@ -213,9 +214,9 @@ fn enforce_range_truncates_toward_zero_like_web_idl() {
 #[test]
 fn enforce_range_rejects_nan_infinity_and_everything_out_of_range() {
     with_context(|ctx| {
-        // `Coerced<u64>` reads every one of these as a number in range, which is
-        // how a `NaN` descriptor used to allocate an empty table instead of
-        // throwing.
+        // `Coerced<u64>` reads every one of these as a number in range, which
+        // is how a `NaN` descriptor used to allocate an empty table
+        // instead of throwing.
         for source in [
             "NaN",
             "undefined",

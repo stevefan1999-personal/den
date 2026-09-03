@@ -449,7 +449,8 @@ impl Slot {
             .map(|(position, declared)| {
                 // SAFETY: libffi hands one pointer per parameter the CIF
                 // declares, and the CIF was built from this same signature, so
-                // `position` is in bounds and the pointee has the declared type.
+                // `position` is in bounds and the pointee has the declared
+                // type.
                 unsafe { Cell::read_from(declared, (*arguments.add(position)).cast::<u8>()) }
             })
             .collect()

@@ -434,8 +434,8 @@ async fn run_case(
             let mut options = EvalOptions::default();
             options.global = true;
             options.promise = true;
-            // testharness.js is browser sloppy-mode; Engine::eval_prepared is always
-            // strict.
+            // testharness.js is browser sloppy-mode; Engine::eval_prepared is
+            // always strict.
             options.strict = false;
             options.filename = Some(filename);
             let run = async {

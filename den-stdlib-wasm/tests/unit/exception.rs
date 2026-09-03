@@ -68,8 +68,9 @@ fn another_tag_neither_matches_nor_can_read_the_payload() {
 fn a_tag_that_is_already_in_use_is_a_type_error_rather_than_a_panic() {
     with_wasm_context(|ctx| {
         let (tag, _) = exception(ctx, "({ parameters: [] })", "[]", None).expect("exception");
-        // Stands in for whatever else holds the class cell — a `Tag` method taking
-        // `&mut self`, say — which `Class::borrow` would answer with an abort.
+        // Stands in for whatever else holds the class cell — a `Tag` method
+        // taking `&mut self`, say — which `Class::borrow` would answer
+        // with an abort.
         let held = tag.borrow_mut();
 
         let refused = Exception::new(tag.clone(), Vec::new(), Opt(None), ctx.clone());
@@ -110,8 +111,9 @@ fn the_stack_is_only_captured_when_trace_stack_is_asked_for() {
             Some("({ traceStack: true })"),
         )
         .expect("exception");
-        // The stack is the current JS call stack, and this exception is built straight
-        // from Rust, so it can be empty — the point is that *a* string was captured.
+        // The stack is the current JS call stack, and this exception is built
+        // straight from Rust, so it can be empty — the point is that
+        // *a* string was captured.
         assert!(traced.stack().is_some());
     })
 }

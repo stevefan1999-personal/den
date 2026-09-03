@@ -163,11 +163,11 @@ pub fn compile_module(engine: &Engine, bytes: &[u8]) -> Result<Module, Error> {
 pub fn link_wasi(linker: &mut Linker) -> Result<(), Error> {
     linker.allow_shadowing(true);
     let result = wasmtime_wasi::p1::add_to_linker_sync(linker, |data: &mut StoreData| {
-        // THE sandbox decision, and the reason the context is built here rather than
-        // with the store: this inherits the host's stdio and environment, so it may
-        // only happen once a caller has asked for WASI by passing `wasiImports()` as
-        // an import namespace. A store that is never handed to a WASI module never
-        // builds one.
+        // THE sandbox decision, and the reason the context is built here rather
+        // than with the store: this inherits the host's stdio and
+        // environment, so it may only happen once a caller has asked
+        // for WASI by passing `wasiImports()` as an import namespace. A
+        // store that is never handed to a WASI module never builds one.
         data.wasi.get_or_insert_with(|| {
             wasmtime_wasi::WasiCtxBuilder::new()
                 .inherit_stdio()

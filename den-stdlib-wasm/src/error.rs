@@ -83,8 +83,9 @@ impl WebAssemblyErrorKind {
             .and_then(|constructor| constructor.construct::<_, Value>((message.as_str(),)))
             .map_or_else(
                 |_error| {
-                    // The classes are installed by `js_wasm`'s evaluate hook, so this is only
-                    // reachable if JS deleted them again; a plain `Error` beats a panic.
+                    // The classes are installed by `js_wasm`'s evaluate hook,
+                    // so this is only reachable if JS
+                    // deleted them again; a plain `Error` beats a panic.
                     den_util::stack::throw_error(ctx, &format!("{}: {message}", self.name()))
                 },
                 |error| ctx.throw(error),

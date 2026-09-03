@@ -127,8 +127,9 @@ impl Table {
             let ty = self.inner.ty(&*store);
             Ok((self.element_type(store), ty.minimum(), ty.maximum()))
         })?;
-        // The dictionary is built outside the borrow: a `set` walks the prototype
-        // chain, so a setter planted on `Object.prototype` would run JS here.
+        // The dictionary is built outside the borrow: a `set` walks the
+        // prototype chain, so a setter planted on `Object.prototype`
+        // would run JS here.
         let element = ValueTypeName::get(&element).ok_or_else(|| {
             Exception::throw_type(&ctx, "this table's element type has no JS name")
         })?;
@@ -154,11 +155,12 @@ impl Table {
         &self, index: EnforceRange, value: Opt<Value<'js>>, ctx: Ctx<'js>,
     ) -> Result<()> {
         let store = Store::from_ctx(&ctx)?;
-        // The element type is read under its own short borrow. `ToWebAssemblyValue`
-        // runs arbitrary JS and allocates externrefs in the store, neither of which
-        // may happen while the store is borrowed — and the spec coerces (step 4)
-        // *before* the write bounds-checks (step 7), so a bad value is a `TypeError`
-        // even when the index is out of range.
+        // The element type is read under its own short borrow.
+        // `ToWebAssemblyValue` runs arbitrary JS and allocates
+        // externrefs in the store, neither of which may happen while
+        // the store is borrowed — and the spec coerces (step 4)
+        // *before* the write bounds-checks (step 7), so a bad value is a
+        // `TypeError` even when the index is out of range.
         let ty = store.with_mut(&ctx, |store| Ok(self.element_type(store)))?;
         let value = match value.0 {
             Some(value) => Some(value),

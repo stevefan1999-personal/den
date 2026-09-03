@@ -69,8 +69,9 @@ impl Env {
                 Ok(true)
             })?;
 
-        // `ownKeys` / `getOwnPropertyDescriptor` are not on the builder; without
-        // them `Object.keys(process.env)` would walk an empty target.
+        // `ownKeys` / `getOwnPropertyDescriptor` are not on the builder;
+        // without them `Object.keys(process.env)` would walk an empty
+        // target.
         let handler = Object::from_value(handler.into_js(&ctx)?)?;
         handler.set(
             PredefinedAtom::OwnKeys,

@@ -25,7 +25,8 @@ fn rendered(ctx: &Ctx<'_>, global: &Global) -> String {
 #[test]
 fn the_constructor_coerces_the_initial_value_to_the_declared_type() {
     with_wasm_context(|ctx| {
-        // ToInt32("3") is 3: the target type drives the coercion, not the JS type.
+        // ToInt32("3") is 3: the target type drives the coercion, not the JS
+        // type.
         let from_string = global(ctx, "({ value: 'i32' })", Some("'3'")).expect("i32 global");
         assert_eq!(rendered(ctx, &from_string), "number:3");
         // `1` is a perfectly good f64, even though it arrives as an integer.

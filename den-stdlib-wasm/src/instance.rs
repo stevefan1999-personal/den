@@ -187,11 +187,12 @@ impl<'js> Instance<'js> {
                 .map_err(|err| Self::throw_instantiation_failure(ctx, err))?;
             Ok((instance, reused))
         });
-        // A `start` function runs arbitrary wasm, `memory.grow` included, so the
-        // same buffer refresh a returning export gets applies here — and it has
-        // to run for a failed instantiation too, which may have grown a memory
-        // before it trapped. The instantiation failure is the more useful error
-        // of the two, so it is the one reported.
+        // A `start` function runs arbitrary wasm, `memory.grow` included, so
+        // the same buffer refresh a returning export gets applies here
+        // — and it has to run for a failed instantiation too, which may
+        // have grown a memory before it trapped. The instantiation
+        // failure is the more useful error of the two, so it is the one
+        // reported.
         let refreshed = MemoryBuffers::refresh(ctx);
         let (instance, reused) = instantiated?;
         refreshed?;
@@ -253,9 +254,10 @@ impl<'js> Instance<'js> {
                     ),
                 )
             })?;
-            // Explicit, opt-in WASI: `wasiImports()` from `den:wasm` stands in for the
-            // whole preview1 namespace, because those functions are implemented by the
-            // engine against the calling instance's own memory and have no JS spelling.
+            // Explicit, opt-in WASI: `wasiImports()` from `den:wasm` stands in
+            // for the whole preview1 namespace, because those
+            // functions are implemented by the engine against the
+            // calling instance's own memory and have no JS spelling.
             #[cfg(feature = "wasi")]
             if WasiImports::is_marker(ctx, &namespace) {
                 pending.push(PendingImport::Wasi {
@@ -593,8 +595,9 @@ impl<'js> Instance<'js> {
             } else {
                 // wasmtime's `SharedMemory` is the only remaining kind, and den
                 // has no `SharedArrayBuffer`-backed `Memory` to wrap one in.
-                // Refusing out loud rather than skipping the entry keeps `instance.exports` and
-                // `Module.exports()` telling the same story: the latter lists
+                // Refusing out loud rather than skipping the entry keeps
+                // `instance.exports` and `Module.exports()`
+                // telling the same story: the latter lists
                 // every export the module declares, so an omission here would
                 // be an `undefined` property with no diagnostic. Unreachable
                 // today — the engine is built without the threads proposal, so

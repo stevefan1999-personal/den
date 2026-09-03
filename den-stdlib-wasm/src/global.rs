@@ -86,9 +86,10 @@ impl Global {
     #[qjs(set, enumerable, configurable, rename = "value")]
     pub fn set_value<'js>(&self, value: Opt<Value<'js>>, ctx: Ctx<'js>) -> Result<()> {
         let store = Store::from_ctx(&ctx)?;
-        // The type is read under its own short borrow: `ToWebAssemblyValue` below
-        // runs arbitrary JS and allocates externrefs in the store, neither of which
-        // may happen while the store is borrowed.
+        // The type is read under its own short borrow: `ToWebAssemblyValue`
+        // below runs arbitrary JS and allocates externrefs in the
+        // store, neither of which may happen while the store is
+        // borrowed.
         let ty = store.with_mut(&ctx, |store| Ok(self.inner.ty(&*store)))?;
         if !matches!(ty.mutability(), Mutability::Var) {
             return Err(Exception::throw_type(
@@ -111,8 +112,8 @@ impl Global {
     #[qjs(rename = "type")]
     pub fn global_type<'js>(&self, ctx: Ctx<'js>) -> Result<Object<'js>> {
         let declared = Store::from_ctx(&ctx)?.with_mut(&ctx, |store| Ok(self.inner.ty(&*store)))?;
-        // Built outside the borrow: a `set` walks the prototype chain, so a setter
-        // planted on `Object.prototype` would run JS here.
+        // Built outside the borrow: a `set` walks the prototype chain, so a
+        // setter planted on `Object.prototype` would run JS here.
         let value = ValueTypeName::get(declared.content()).ok_or_else(|| {
             Exception::throw_type(&ctx, "this global's value type has no JS name")
         })?;

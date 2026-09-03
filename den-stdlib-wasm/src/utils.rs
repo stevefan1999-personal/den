@@ -604,9 +604,10 @@ impl<'js> ExportedFunction<'js> {
     /// function has to reach the caller as that same object, so a still-pending
     /// exception wins over the engine's trap description.
     fn throw_call_failure(ctx: &Ctx<'js>, error: wasmtime::Error) -> rquickjs::Error {
-        // `Ctx::catch` is `JS_GetException`, which hands back `JS_UNINITIALIZED`
-        // when nothing is pending — neither `undefined` nor `null`, so the tag
-        // cannot be used to decide this.
+        // `Ctx::catch` is `JS_GetException`, which hands back
+        // `JS_UNINITIALIZED` when nothing is pending — neither
+        // `undefined` nor `null`, so the tag cannot be used to decide
+        // this.
         if ctx.has_exception() {
             rquickjs::Error::Exception
         } else {

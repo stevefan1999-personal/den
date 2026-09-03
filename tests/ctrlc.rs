@@ -110,7 +110,8 @@ impl Den {
 
 impl Drop for Den {
     fn drop(&mut self) {
-        // A failed assert must not leak a spinning den into the rest of the run.
+        // A failed assert must not leak a spinning den into the rest of the
+        // run.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

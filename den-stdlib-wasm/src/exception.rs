@@ -39,8 +39,8 @@ impl<'js> Exception<'js> {
         tag: Class<'js, Tag>, payload: Vec<Value<'js>>, options: Opt<Object<'js>>, ctx: Ctx<'js>,
     ) -> Result<Self> {
         // `borrow` would abort the process if anything else held the cell; a JS
-        // constructor argument is never allowed to reach a panic, however hard the
-        // outstanding `borrow_mut` is to arrange today.
+        // constructor argument is never allowed to reach a panic, however hard
+        // the outstanding `borrow_mut` is to arrange today.
         let parameters = tag
             .try_borrow()
             .map_err(|_error| {
@@ -64,8 +64,9 @@ impl<'js> Exception<'js> {
             .map(|(ty, value)| WasmValue::from_js(&ctx, value, ty))
             .collect::<Result<Vec<_>>>()?;
 
-        // `traceStack` asks for a stack "in an implementation-defined format"; the one
-        // JS itself would have produced is the only one worth having.
+        // `traceStack` asks for a stack "in an implementation-defined format";
+        // the one JS itself would have produced is the only one worth
+        // having.
         let trace_stack = options
             .0
             .map(|options| options.get::<_, Option<Coerced<bool>>>("traceStack"))
