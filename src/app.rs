@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use den_core::engine::Engine;
 use rquickjs::convert::Coerced;
 use tokio::sync::mpsc;
@@ -19,6 +21,11 @@ impl App {
 }
 
 impl App {
+    /// How long EOF waits for the pump to print a line that is still running.
+    /// A line that awaits a promise nothing settles never reaches the pump's
+    /// own exit, and Ctrl-D has to close the REPL regardless.
+    const EOF_GRACE: Duration = Duration::from_secs(5);
+
     pub fn start_repl_session(&mut self) {
         let (repl_tx, repl_rx) = mpsc::unbounded_channel::<String>();
 
@@ -27,7 +34,11 @@ impl App {
         // the sender; the pump exits the process once it has printed the last
         // queued line, and anything still spawned on the engine is abandoned
         // exactly as it would be on signal death.
-        tokio::spawn(repl::run_repl(repl_tx));
+        tokio::spawn(async move {
+            repl::run_repl(repl_tx).await;
+            tokio::time::sleep(Self::EOF_GRACE).await;
+            std::process::exit(0)
+        });
 
         self.repl_rx = Some(repl_rx);
     }

@@ -743,7 +743,7 @@ mimalloc = { workspace = true, optional = true }
 rquickjs.workspace = true
 rustyline = { workspace = true, default-features = false, features = ["derive", "with-file-history"] }
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"] }
 url.workspace = true
 
@@ -763,8 +763,8 @@ path = "tests/stack_traces.rs"
 required-features = ["stdlib-console", "stdlib-timer", "typescript"]
 
 [[test]]
-name = "repl_history"
-path = "tests/repl_history.rs"
+name = "repl"
+path = "tests/repl.rs"
 required-features = ["stdlib-console", "stdlib-timer", "typescript"]
 
 [features]
