@@ -162,3 +162,8 @@ async fn charset_parameters_are_read_bare_or_quoted() -> eyre::Result<()> {
 async fn form_data_wraps_blobs_and_keeps_files() -> eyre::Result<()> {
     run("form_data_files.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_replaces_the_first_match_and_drops_the_rest() -> eyre::Result<()> {
+    run("set_replaces_first_match.js").await
+}

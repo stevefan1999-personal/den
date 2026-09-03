@@ -195,22 +195,15 @@ impl FormData {
         let name = name.0;
         let filename = filename.0.and_then(|value| coerce_string(&ctx, value).ok());
         let replacement = Self::normalize(&ctx, name.clone(), value, filename)?;
-        let mut result = Vec::new();
-        let mut replace = true;
-        for entry in self.entries.drain(..) {
-            if entry.0 == name {
-                if replace {
-                    result.push(replacement.clone());
-                    replace = false;
-                }
-            } else {
-                result.push(entry);
-            }
+        let first = self
+            .entries
+            .iter()
+            .position(|(existing, _)| existing == &name);
+        self.entries.retain(|(existing, _)| existing != &name);
+        match first {
+            Some(index) => self.entries.insert(index, replacement),
+            None => self.entries.push(replacement),
         }
-        if replace {
-            result.push(replacement);
-        }
-        self.entries = result;
         Ok(())
     }
 

@@ -1078,22 +1078,12 @@ impl URLSearchParams {
         let name = name.0;
         let value = value.0;
         let mut pairs = self.query.borrow_mut();
-        let mut replaced = false;
-        let mut result = Vec::new();
-        for pair in pairs.drain(..) {
-            if pair.0 == name {
-                if !replaced {
-                    result.push((name.clone(), value.clone()));
-                    replaced = true;
-                }
-            } else {
-                result.push(pair);
-            }
+        let first = pairs.iter().position(|(existing, _)| existing == &name);
+        pairs.retain(|(existing, _)| existing != &name);
+        match first {
+            Some(index) => pairs.insert(index, (name, value)),
+            None => pairs.push((name, value)),
         }
-        if !replaced {
-            result.push((name, value));
-        }
-        *pairs = result;
         drop(pairs);
         self.sync();
     }
