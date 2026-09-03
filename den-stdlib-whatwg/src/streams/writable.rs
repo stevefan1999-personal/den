@@ -14,7 +14,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, native::NativeSink, optional_object, range_error, react,
+    Cap, Pins, method, native::ByteSink, optional_object, range_error, react,
     readable::extract_strategy, thrown, type_error,
 };
 
@@ -70,7 +70,7 @@ pub struct WritableInner<'js> {
     pub(crate) write_fn:         Option<Function<'js>>,
     pub(crate) close_fn:         Option<Function<'js>>,
     pub(crate) abort_fn:         Option<Function<'js>>,
-    pub(crate) native:           Option<Rc<RefCell<NativeSink<'js>>>>,
+    pub(crate) native:           Option<Rc<RefCell<ByteSink<'js>>>>,
     pub(crate) abort_controller: Option<Object<'js>>,
     pub(crate) started:          bool,
     pub(crate) in_flight_write:  Option<Cap<'js>>,
@@ -567,7 +567,7 @@ impl<'js> WritableStream<'js> {
             )
         };
         let outcome = if let Some(native) = native {
-            crate::streams::native::drive_write(ctx, inner, &native, chunk)
+            crate::streams::native::drive_write(ctx, &native, chunk)
         } else {
             match (write_fn, controller) {
                 (Some(write), Some(controller)) => {
@@ -652,7 +652,7 @@ impl<'js> WritableStream<'js> {
                     |close| close.call::<_, Value>((This(sink),)),
                 )
             },
-            |native| crate::streams::native::drive_close(ctx, inner, &native),
+            |native| crate::streams::native::drive_close(ctx, &native),
         );
         Self::clear_algorithms(inner);
         match outcome {

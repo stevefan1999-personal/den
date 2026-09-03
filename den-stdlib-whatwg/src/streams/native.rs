@@ -8,10 +8,7 @@ use std::{cell::RefCell, future::Future, pin::Pin, rc::Rc};
 
 use rquickjs::{Class, Ctx, Result, Value};
 
-use crate::streams::{
-    Cap, type_error,
-    writable::{Inner as WsInner, WritableStream},
-};
+use crate::streams::{Cap, WritableStream, type_error};
 
 pub type SinkFuture<'js> = Pin<Box<dyn Future<Output = std::result::Result<(), String>> + 'js>>;
 
@@ -25,8 +22,6 @@ pub struct ByteSink<'js> {
 unsafe impl<'js> rquickjs::JsLifetime<'js> for ByteSink<'js> {
     type Changed<'to> = ByteSink<'to>;
 }
-
-pub(crate) type NativeSink<'js> = ByteSink<'js>;
 
 impl<'js> ByteSink<'js> {
     pub(crate) fn abort(&mut self, reason: Value<'js>) {
@@ -61,7 +56,7 @@ impl<'js> WritableStream<'js> {
 }
 
 pub(crate) fn drive_write<'js>(
-    ctx: &Ctx<'js>, inner: &WsInner<'js>, sink: &Rc<RefCell<ByteSink<'js>>>, chunk: Value<'js>,
+    ctx: &Ctx<'js>, sink: &Rc<RefCell<ByteSink<'js>>>, chunk: Value<'js>,
 ) -> Result<Value<'js>> {
     let Some(bytes) = crate::host::Host::buffer_source_bytes(ctx, chunk)? else {
         return Err(rquickjs::Exception::throw_type(
@@ -70,31 +65,29 @@ pub(crate) fn drive_write<'js>(
         ));
     };
     let future = (sink.borrow_mut().write)(ctx.clone(), bytes);
-    settle_native(ctx, inner, future)
+    settle_native(ctx, future)
 }
 
 pub(crate) fn drive_close<'js>(
-    ctx: &Ctx<'js>, inner: &WsInner<'js>, sink: &Rc<RefCell<ByteSink<'js>>>,
+    ctx: &Ctx<'js>, sink: &Rc<RefCell<ByteSink<'js>>>,
 ) -> Result<Value<'js>> {
     let Some(close) = sink.borrow_mut().close.take() else {
         return Ok(Value::new_undefined(ctx.clone()));
     };
     let future = close(ctx.clone());
-    settle_native(ctx, inner, future)
+    settle_native(ctx, future)
 }
 
-fn settle_native<'js>(
-    ctx: &Ctx<'js>, _inner: &WsInner<'js>, future: SinkFuture<'js>,
-) -> Result<Value<'js>> {
-    let cap = Rc::new(RefCell::new(Cap::new(ctx)?));
-    let promise = cap.borrow().promise();
+fn settle_native<'js>(ctx: &Ctx<'js>, future: SinkFuture<'js>) -> Result<Value<'js>> {
+    let mut cap = Cap::new(ctx)?;
+    let promise = cap.promise();
     let spawn_ctx = ctx.clone();
     ctx.spawn(async move {
         match future.await {
-            Ok(()) => cap.borrow_mut().fulfill(&spawn_ctx),
+            Ok(()) => cap.fulfill(&spawn_ctx),
             Err(error) => {
                 let reason = type_error(&spawn_ctx, &error);
-                cap.borrow_mut().reject(reason);
+                cap.reject(reason);
             }
         }
     });
