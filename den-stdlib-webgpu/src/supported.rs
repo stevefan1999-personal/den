@@ -126,8 +126,6 @@ impl GPUSupportedLimits {
     pub fn from_limits<'js>(ctx: &Ctx<'js>, limits: wgpu::Limits) -> Result<Class<'js, Self>> {
         Class::instance(ctx.clone(), Self { inner: limits })
     }
-
-    pub const fn inner(&self) -> &wgpu::Limits { &self.inner }
 }
 
 /// One list of WebGPU limit names feeds both `GPUSupportedLimits`'s getters
