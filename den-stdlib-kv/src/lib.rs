@@ -73,9 +73,7 @@ struct TransactionState {
     staged_bytes: usize,
 }
 
-struct TransactionSlot {
-    state: Mutex<TransactionState>,
-}
+type TransactionSlot = Mutex<TransactionState>;
 
 type CloseOutcome = std::result::Result<(), Arc<KvError>>;
 
@@ -272,9 +270,7 @@ impl KvStore {
                 .map_err(|_error| KvError::Poisoned("KV"))?;
             let mut transaction = tree.as_ref().ok_or(KvError::Closed("KV"))?.begin()?;
             transaction.set_durability(Durability::Immediate);
-            let slot = Arc::new(TransactionSlot {
-                state: Mutex::new(TransactionState::new(transaction)),
-            });
+            let slot = Arc::new(Mutex::new(TransactionState::new(transaction)));
             let mut transactions = store
                 .transactions
                 .lock()
@@ -297,7 +293,6 @@ impl KvStore {
     {
         self.with_tree(move |_tree| {
             let mut state = slot
-                .state
                 .lock()
                 .map_err(|_error| KvError::Poisoned("KV transaction"))?;
             operation(&mut state)
@@ -309,7 +304,6 @@ impl KvStore {
         let runtime = Handle::current();
         self.with_tree(move |_tree| {
             let mut state = slot
-                .state
                 .lock()
                 .map_err(|_error| KvError::Poisoned("KV transaction"))?;
             if let Err(error) = TransactionState::check_size(state.staged_bytes, state.staged.len())
@@ -333,8 +327,7 @@ impl KvStore {
 
     async fn rollback_transaction(slot: Arc<TransactionSlot>) -> KvResult<()> {
         Self::run_blocking(move || {
-            slot.state
-                .lock()
+            slot.lock()
                 .map_err(|_error| KvError::Poisoned("KV transaction"))?
                 .rollback();
             Ok(())
@@ -361,7 +354,6 @@ impl KvStore {
                 .map_err(|_error| KvError::Poisoned("KV transaction registry"))?;
             for slot in transactions.drain(..).filter_map(|slot| slot.upgrade()) {
                 let mut state = slot
-                    .state
                     .lock()
                     .map_err(|_error| KvError::Poisoned("KV transaction"))?;
                 state.rollback();
