@@ -42,7 +42,7 @@ pub use crate::streams::{
 /// `Promise.prototype.then` and a no-op, captured before user code can patch
 /// them. Internal reactions go through these, so patching `Promise.prototype`
 /// neither breaks nor observes the stream machinery.
-#[derive(JsLifetime)]
+#[derive(JsLifetime, Clone)]
 pub(crate) struct Intrinsics<'js> {
     then:      Function<'js>,
     noop:      Function<'js>,
@@ -72,35 +72,16 @@ pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
     Ok(())
 }
 
-fn intrinsics<'js>(ctx: &Ctx<'js>) -> Result<(Function<'js>, Function<'js>)> {
-    let cached = cached_intrinsics(ctx)?;
-    Ok((cached.0, cached.1))
-}
-
-/// `(then, noop, countSize, byteLengthSize)`.
-fn cached_intrinsics<'js>(
-    ctx: &Ctx<'js>,
-) -> Result<(Function<'js>, Function<'js>, Function<'js>, Function<'js>)> {
+fn intrinsics<'js>(ctx: &Ctx<'js>) -> Result<Intrinsics<'js>> {
     if ctx.userdata::<Intrinsics<'js>>().is_none() {
         install_intrinsics(ctx)?;
     }
     let cached = ctx
         .userdata::<Intrinsics<'js>>()
         .ok_or_else(|| Exception::throw_type(ctx, "stream intrinsics are unavailable"))?;
-    Ok((
-        cached.then.clone(),
-        cached.noop.clone(),
-        cached.count.clone(),
-        cached.byte_size.clone(),
-    ))
-}
-
-pub(crate) fn count_size<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>> {
-    Ok(cached_intrinsics(ctx)?.2)
-}
-
-pub(crate) fn byte_length_size<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>> {
-    Ok(cached_intrinsics(ctx)?.3)
+    // Deref explicitly: the guard implements no `Clone` of its own today, and a
+    // future one must not silently start cloning the guard instead.
+    Ok((*cached).clone())
 }
 
 /// PerformPromiseThen over the pristine `then`. `value` is treated as the
@@ -109,7 +90,7 @@ pub(crate) fn byte_length_size<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>> {
 pub(crate) fn react<'js>(
     ctx: &Ctx<'js>, value: Value<'js>, on_ok: Option<Function<'js>>, on_err: Option<Function<'js>>,
 ) -> Result<()> {
-    let (then, _) = intrinsics(ctx)?;
+    let then = intrinsics(ctx)?.then;
     let promise = if value.is_promise() {
         value
     } else {
@@ -121,7 +102,7 @@ pub(crate) fn react<'js>(
 
 /// A one-turn identity chain using the pristine `Promise.prototype.then`.
 pub(crate) fn chain<'js>(ctx: &Ctx<'js>, promise: Promise<'js>) -> Result<Promise<'js>> {
-    let (then, _) = intrinsics(ctx)?;
+    let then = intrinsics(ctx)?.then;
     then.call((This(promise),))
 }
 
@@ -145,8 +126,12 @@ pub(crate) fn chain_undefined<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<
 /// `Promise.prototype.then` cannot observe or break an internal reaction —
 /// which is why this is public rather than something each caller reimplements.
 pub fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
-    if let Ok((then, noop)) = intrinsics(ctx) {
-        let _ = then.call::<_, Value>((This(promise.clone()), Option::<Function>::None, noop));
+    if let Ok(cached) = intrinsics(ctx) {
+        let _ = cached.then.call::<_, Value>((
+            This(promise.clone()),
+            Option::<Function>::None,
+            cached.noop,
+        ));
     }
 }
 

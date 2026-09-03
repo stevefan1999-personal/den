@@ -29,7 +29,7 @@ fn high_water_mark<'js>(ctx: &Ctx<'js>, init: Opt<Value<'js>>) -> Result<f64> {
 use rquickjs::FromJs as _;
 
 macro_rules! queuing_strategy {
-    ($name:ident, $tag:literal, $size:path) => {
+    ($name:ident, $tag:literal, $size:ident) => {
         #[derive(JsLifetime)]
         #[rquickjs::class]
         pub struct $name<'js> {
@@ -47,7 +47,7 @@ macro_rules! queuing_strategy {
             pub fn new(ctx: Ctx<'js>, init: Opt<Value<'js>>) -> Result<Self> {
                 Ok(Self {
                     mark: high_water_mark(&ctx, init)?,
-                    size: $size(&ctx)?,
+                    size: crate::streams::intrinsics(&ctx)?.$size,
                 })
             }
 
@@ -63,13 +63,9 @@ macro_rules! queuing_strategy {
     };
 }
 
-queuing_strategy!(
-    CountQueuingStrategy,
-    "CountQueuingStrategy",
-    crate::streams::count_size
-);
+queuing_strategy!(CountQueuingStrategy, "CountQueuingStrategy", count);
 queuing_strategy!(
     ByteLengthQueuingStrategy,
     "ByteLengthQueuingStrategy",
-    crate::streams::byte_length_size
+    byte_size
 );
