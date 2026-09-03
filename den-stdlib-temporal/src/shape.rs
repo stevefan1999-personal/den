@@ -5,7 +5,6 @@
 //! rebuilds each interface as a constructor (writable:false `prototype`) and
 //! rehomes values that the Rust class still stamps onto the original proto.
 
-use den_util::ObjectExt as _;
 use rquickjs::{
     Constructor, Ctx, Exception, Filter, Function, IntoJs as _, Object, Result, Symbol, Value,
     atom::PredefinedAtom,
@@ -112,33 +111,6 @@ fn proto_length(type_name: &str, method_name: &str) -> usize {
     }
 }
 
-fn rename(key: &str) -> &str {
-    match key {
-        "toJson" | "to_json" => "toJSON",
-        "toZonedDateTimeIso" => "toZonedDateTimeISO",
-        "to_string" => "toString",
-        "value_of" => "valueOf",
-        _ => key,
-    }
-}
-
-fn required_statics(type_name: &str) -> &'static [&'static str] {
-    match type_name {
-        "Instant" => {
-            &[
-                "from",
-                "compare",
-                "fromEpochNanoseconds",
-                "fromEpochMilliseconds",
-            ]
-        }
-        "PlainMonthDay" => &["from"],
-        "Duration" | "PlainDate" | "PlainTime" | "PlainDateTime" | "PlainYearMonth"
-        | "ZonedDateTime" => &["from", "compare"],
-        _ => &[],
-    }
-}
-
 fn wrap_constructor<'js>(
     ctx: &Ctx<'js>, name: &'static str, original: Constructor<'js>,
 ) -> Result<Brand<'js>> {
@@ -202,22 +174,7 @@ fn install_interface(brand: &Brand<'_>) -> Result<()> {
         if own_function(&brand.original, &key)?.is_none() {
             continue;
         }
-        let spec_name = rename(&key);
-        install_static(brand, spec_name, &key)?;
-    }
-    for spec_name in required_statics(brand.name) {
-        if brand.wrapped.has_own(spec_name)? {
-            continue;
-        }
-        let lowered = uncapitalize(spec_name);
-        let found_key = if own_function(&brand.original, spec_name)?.is_some() {
-            spec_name
-        } else if own_function(&brand.original, &lowered)?.is_some() {
-            lowered.as_str()
-        } else {
-            continue;
-        };
-        install_static(brand, spec_name, found_key)?;
+        install_static(brand, &key)?;
     }
 
     let proto_keys: Vec<String> = brand
@@ -228,16 +185,10 @@ fn install_interface(brand: &Brand<'_>) -> Result<()> {
         if key == "constructor" {
             continue;
         }
-        let spec_name = rename(&key).to_owned();
         if own_getter(&brand.original_proto, &key)?.is_some() {
-            install_getter(brand, &spec_name, &key)?;
+            install_getter(brand, &key)?;
         } else if own_function(&brand.original_proto, &key)?.is_some() {
-            install_method(
-                brand,
-                &spec_name,
-                &key,
-                proto_length(brand.name, &spec_name),
-            )?;
+            install_method(brand, &key, &key, proto_length(brand.name, &key))?;
         }
     }
 
@@ -246,31 +197,25 @@ fn install_interface(brand: &Brand<'_>) -> Result<()> {
     Ok(())
 }
 
-fn install_static(brand: &Brand<'_>, spec_name: &str, original_key: &str) -> Result<()> {
-    let original_fn = own_function(&brand.original, original_key)?
-        .or_else(|| own_function(&brand.original, spec_name).ok().flatten())
+fn install_static(brand: &Brand<'_>, key: &str) -> Result<()> {
+    let original_fn = own_function(&brand.original, key)?
         .ok_or_else(|| Exception::throw_internal(brand.original.ctx(), "static method missing"))?;
-    let length = match static_length(spec_name) {
+    let length = match static_length(key) {
         Some(length) => length,
         None => function_length(&original_fn)?,
     };
     let type_name = brand.name;
-    let lookup_key = original_key.to_owned();
-    let fn_ = make_fn(
-        brand.original.ctx(),
-        spec_name,
-        length,
-        move |ctx, _, args| {
-            let original = original_constructor(&ctx, type_name)?;
-            let original_fn = own_function(&original, &lookup_key)?
-                .ok_or_else(|| Exception::throw_type(&ctx, "static method missing"))?;
-            rehome(
-                &ctx,
-                original_fn.call::<_, Value>((This(original.as_value().clone()), Rest(args)))?,
-            )
-        },
-    )?;
-    define_data(&brand.wrapped, spec_name, fn_)
+    let lookup_key = key.to_owned();
+    let fn_ = make_fn(brand.original.ctx(), key, length, move |ctx, _, args| {
+        let original = original_constructor(&ctx, type_name)?;
+        let original_fn = own_function(&original, &lookup_key)?
+            .ok_or_else(|| Exception::throw_type(&ctx, "static method missing"))?;
+        rehome(
+            &ctx,
+            original_fn.call::<_, Value>((This(original.as_value().clone()), Rest(args)))?,
+        )
+    })?;
+    define_data(&brand.wrapped, key, fn_)
 }
 
 fn install_method(
@@ -294,7 +239,6 @@ fn install_method(
             require_options_bag(&ctx, &spec, &args)?;
             let proto = original_prototype(&ctx, type_name)?;
             let original_fn = own_function(&proto, &lookup_key)?
-                .or_else(|| own_function(&proto, "to_string").ok().flatten())
                 .ok_or_else(|| Exception::throw_type(&ctx, "method missing"))?;
             let args = if ignore_args { Vec::new() } else { args };
             rehome(
@@ -306,13 +250,13 @@ fn install_method(
     define_data(&brand.proto, spec_name, fn_)
 }
 
-fn install_getter<'js>(brand: &Brand<'js>, spec_name: &str, original_key: &str) -> Result<()> {
+fn install_getter<'js>(brand: &Brand<'js>, key: &str) -> Result<()> {
     let type_name = brand.name;
-    let getter_name = format!("get {spec_name}");
-    let lookup_key = original_key.to_owned();
+    let getter_name = format!("get {key}");
+    let lookup_key = key.to_owned();
     define_named_getter(
         &brand.proto,
-        spec_name,
+        key,
         move |ctx: Ctx<'js>, this: This<Value<'js>>| -> Result<Value<'js>> {
             if !is_brand(&ctx, &this.0, type_name)? {
                 return Err(Exception::throw_type(
@@ -505,13 +449,6 @@ fn own_getter<'js>(object: &Object<'js>, key: &str) -> Result<Option<Function<'j
 fn function_length(func: &Function<'_>) -> Result<usize> {
     let value: Value = func.get(PredefinedAtom::Length)?;
     Ok(value.as_number().unwrap_or(0.0) as usize)
-}
-
-fn uncapitalize(name: &str) -> String {
-    let mut chars = name.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_lowercase().collect::<String>() + chars.as_str()
-    })
 }
 
 fn object_ctor<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> {
