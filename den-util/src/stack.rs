@@ -34,7 +34,6 @@ pub struct Location {
 pub struct JsError {
     name:     Option<String>,
     message:  String,
-    stack:    Option<String>,
     rendered: String,
     location: Option<Location>,
 }
@@ -56,15 +55,11 @@ impl JsError {
             let message = optional(ctx, error.get::<_, Option<Coerced<String>>>("message"))
                 .flatten()
                 .map_or_else(String::new, |Coerced(message)| message);
-            let stack = optional(ctx, error.get::<_, Option<Coerced<String>>>("stack"))
-                .flatten()
-                .map(|Coerced(stack)| stack);
             let rendered = format_error(ctx, error);
             let location = first_location(&rendered);
             return Self {
                 name,
                 message,
-                stack,
                 rendered,
                 location,
             };
@@ -75,7 +70,6 @@ impl JsError {
             name: None,
             rendered: message.clone(),
             message,
-            stack: None,
             location: None,
         }
     }
@@ -83,8 +77,6 @@ impl JsError {
     pub fn name(&self) -> Option<&str> { self.name.as_deref() }
 
     pub fn message(&self) -> &str { &self.message }
-
-    pub fn stack(&self) -> Option<&str> { self.stack.as_deref() }
 
     pub const fn location(&self) -> Option<&Location> { self.location.as_ref() }
 }
