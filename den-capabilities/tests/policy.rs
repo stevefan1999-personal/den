@@ -98,15 +98,20 @@ fn deny_rules_win_inside_a_layer_and_across_attenuation() {
 }
 
 #[test]
-fn env_and_name_scopes_match_exact_and_prefix_forms() {
+fn env_and_name_scopes_match_exact_names_only() {
     let policy = Policy::new([
-        Rule::allow(Scope::Env(NameScope::prefix("DEN_").expect("prefix"))),
+        Rule::allow(Scope::Env(NameScope::exact("DEN_TOKEN").expect("exact"))),
         Rule::deny(Scope::Env(NameScope::exact("DEN_SECRET").expect("exact"))),
     ]);
     assert!(
         policy
             .check(&Request::env("DEN_TOKEN").expect("name"))
             .is_ok()
+    );
+    assert!(
+        policy
+            .check(&Request::env("DEN_TOKENS").expect("name"))
+            .is_err()
     );
     assert!(
         policy
@@ -152,7 +157,7 @@ fn network_scopes_match_hosts_and_reject_invalid_port_ranges() {
 }
 
 #[test]
-fn import_scopes_match_exact_origin_and_prefix() {
+fn import_scopes_match_exact_and_prefix() {
     let exact = Policy::new([Rule::allow(Scope::Import(
         ImportScope::exact("https://example.test/mod.js").expect("url"),
     ))]);
@@ -165,15 +170,6 @@ fn import_scopes_match_exact_origin_and_prefix() {
         exact
             .check(&Request::import("https://example.test/other.js").expect("url"))
             .is_err()
-    );
-
-    let origin = Policy::new([Rule::allow(Scope::Import(
-        ImportScope::origin("https://example.test").expect("origin"),
-    ))]);
-    assert!(
-        origin
-            .check(&Request::import("https://example.test/lib/a.js").expect("url"))
-            .is_ok()
     );
 
     let prefix = Policy::new([Rule::allow(Scope::Import(

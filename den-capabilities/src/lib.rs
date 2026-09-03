@@ -30,7 +30,7 @@ use std::{
 
 use ipnet::IpNet;
 use thiserror::Error;
-use url::{Host, Origin, Url};
+use url::{Host, Url};
 
 /// A capability controlled by a policy.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -183,11 +183,10 @@ impl fmt::Display for ResourceName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
 }
 
-/// Exact or prefix matching for named resources.
+/// Exact matching for named resources.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum NameScope {
     Exact(ResourceName),
-    Prefix(ResourceName),
 }
 
 impl NameScope {
@@ -195,32 +194,19 @@ impl NameScope {
         ResourceName::new(value).map(Self::Exact)
     }
 
-    pub fn prefix<S: Into<String>>(value: S) -> Result<Self, ScopeError> {
-        ResourceName::new(value).map(Self::Prefix)
-    }
-
     #[must_use]
     pub fn matches(&self, requested: &ResourceName) -> bool {
-        match self {
-            Self::Exact(value) => value == requested,
-            Self::Prefix(value) => requested.0.starts_with(&value.0),
-        }
+        let Self::Exact(value) = self;
+        value == requested
     }
 
     #[must_use]
     pub fn matches_env(&self, requested: &ResourceName) -> bool {
+        let Self::Exact(value) = self;
         if cfg!(windows) {
-            match self {
-                Self::Exact(value) => value.0.eq_ignore_ascii_case(&requested.0),
-                Self::Prefix(value) => {
-                    requested
-                        .0
-                        .get(..value.0.len())
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&value.0))
-                }
-            }
+            value.0.eq_ignore_ascii_case(&requested.0)
         } else {
-            self.matches(requested)
+            value == requested
         }
     }
 }
@@ -487,39 +473,6 @@ impl fmt::Display for NetworkTarget {
     }
 }
 
-/// A canonical, non-opaque URL origin.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct UrlOrigin(String);
-
-impl UrlOrigin {
-    pub fn new<S: AsRef<str>>(value: S) -> Result<Self, ScopeError> {
-        let target = ImportTarget::new(value)?;
-        let url = target.as_url();
-        if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
-            return Err(ScopeError::InvalidUrl);
-        }
-        match url.origin() {
-            Origin::Tuple(_, _, _) => Ok(Self(url.origin().ascii_serialization())),
-            Origin::Opaque(_) => Err(ScopeError::InvalidUrl),
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str { &self.0 }
-
-    #[must_use]
-    pub fn matches(&self, target: &ImportTarget) -> bool {
-        self.0
-            .split_once(':')
-            .is_some_and(|(scheme, _)| scheme == target.0.scheme())
-            && target.0.origin().ascii_serialization() == self.0
-    }
-}
-
-impl fmt::Display for UrlOrigin {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
-}
-
 /// A canonical hierarchical URL prefix with path-component matching.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct UrlPrefix(Url);
@@ -558,21 +511,16 @@ impl fmt::Display for UrlPrefix {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.0.as_str()) }
 }
 
-/// Origin-wide or hierarchical-prefix matching for module imports.
+/// Exact or hierarchical-prefix matching for module imports.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum ImportScope {
     Exact(ImportTarget),
-    Origin(UrlOrigin),
     Prefix(UrlPrefix),
 }
 
 impl ImportScope {
     pub fn exact<S: AsRef<str>>(value: S) -> Result<Self, ScopeError> {
         ImportTarget::new(value).map(Self::Exact)
-    }
-
-    pub fn origin<S: AsRef<str>>(value: S) -> Result<Self, ScopeError> {
-        UrlOrigin::new(value).map(Self::Origin)
     }
 
     pub fn prefix<S: AsRef<str>>(value: S) -> Result<Self, ScopeError> {
@@ -583,7 +531,6 @@ impl ImportScope {
     pub fn matches(&self, requested: &ImportTarget) -> bool {
         match self {
             Self::Exact(scope) => scope == requested,
-            Self::Origin(scope) => scope.matches(requested),
             Self::Prefix(scope) => scope.matches(requested),
         }
     }
@@ -618,9 +565,6 @@ impl ImportTarget {
         }
         Ok(Self(url))
     }
-
-    #[must_use]
-    pub const fn as_url(&self) -> &Url { &self.0 }
 }
 
 impl fmt::Display for ImportTarget {
@@ -1136,9 +1080,9 @@ mod tests {
     }
 
     #[test]
-    fn origin_does_not_match_scheme_port_or_subdomain_changes() {
+    fn root_prefix_does_not_match_scheme_port_or_subdomain_changes() {
         let policy = Policy::new([Rule::allow(Scope::Import(
-            ImportScope::origin("https://example.test").unwrap(),
+            ImportScope::prefix("https://example.test/").unwrap(),
         ))]);
 
         assert!(
@@ -1181,7 +1125,7 @@ mod tests {
         ));
         let policy = Policy::new([
             Rule::allow(Scope::Import(
-                ImportScope::origin("https://example.test").unwrap(),
+                ImportScope::prefix("https://example.test/").unwrap(),
             )),
             Rule::deny(Scope::Import(
                 ImportScope::exact("https://example.test/admin.js").unwrap(),
@@ -1278,14 +1222,14 @@ mod tests {
             NormalizedPath::new("relative/path"),
             Err(ScopeError::InvalidPath)
         );
-        assert_eq!(NameScope::prefix(""), Err(ScopeError::Empty));
+        assert_eq!(NameScope::exact(""), Err(ScopeError::Empty));
         assert_eq!(
             NetworkScope::host("", PortRange::exact(80)),
             Err(ScopeError::Empty)
         );
         assert_eq!(PortRange::new(443, 80), Err(ScopeError::InvalidPortRange));
         assert_eq!(
-            ImportScope::origin("https://example.test/path"),
+            ImportScope::prefix("https://example.test/lib?x=1"),
             Err(ScopeError::InvalidUrl)
         );
     }
