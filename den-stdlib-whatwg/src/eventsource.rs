@@ -128,7 +128,6 @@ impl EventSource {
     pub fn close(&self) {
         self.closed.set(true);
         self.aborted.set(true);
-        self.ready_state_slot_closed();
     }
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
@@ -136,8 +135,6 @@ impl EventSource {
 }
 
 impl EventSource {
-    const fn ready_state_slot_closed(&self) { let _ = self; }
-
     fn start<'js>(this: Class<'js, Self>, ctx: Ctx<'js>) {
         if this.borrow().closed.get() {
             this.borrow_mut().ready_state = CLOSED;
