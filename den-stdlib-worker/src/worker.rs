@@ -69,7 +69,7 @@ const RUNTIME_SHUTDOWN_TIMEOUT: Duration = JOIN_TIMEOUT;
 
 /// The two ways HTML knows to run a worker script (`WorkerOptions.type`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ScriptKind {
+pub enum ScriptKind {
     Classic,
     Module,
 }
@@ -324,7 +324,9 @@ fn escalate(ctx: &Ctx<'_>, fault: WorkerFault) {
     }
 }
 
-fn worker_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<(String, String)> {
+fn worker_options<'js>(
+    ctx: &Ctx<'js>, options: Option<Value<'js>>,
+) -> Result<(ScriptKind, String)> {
     let object = options.as_ref().and_then(Value::as_object);
     let kind = match object {
         Some(options) => {
@@ -337,12 +339,7 @@ fn worker_options<'js>(ctx: &Ctx<'js>, options: Option<Value<'js>>) -> Result<(S
         }
         None => "classic".to_owned(),
     };
-    if kind != "classic" && kind != "module" {
-        return Err(Exception::throw_type(
-            ctx,
-            &format!("Worker constructor: '{kind}' is not a valid worker type"),
-        ));
-    }
+    let kind = ScriptKind::parse(ctx, &kind)?;
     let name = match object {
         Some(options) => {
             let value: Value<'js> = options.get("name")?;
@@ -491,10 +488,9 @@ impl NativeWorker {
 
 /// Spawn a worker thread (HTML §10.2.6.3 step 10, "run a worker in parallel").
 pub fn spawn<'js>(
-    ctx: Ctx<'js>, url: String, kind: String, name: String, port: Class<'js, NativePort>,
+    ctx: Ctx<'js>, url: String, kind: ScriptKind, name: String, port: Class<'js, NativePort>,
     on_fault: Function<'js>,
 ) -> Result<Class<'js, NativeWorker>> {
-    let kind = ScriptKind::parse(&ctx, &kind)?;
     let script = kind.resolve(&ctx, &url)?;
     // The worker realm's own base URL is its script's directory, which is what
     // makes a nested `new Worker("./x.js")` mean what it says.
