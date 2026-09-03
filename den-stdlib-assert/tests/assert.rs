@@ -46,6 +46,3 @@ async fn javascript_values_snapshot_through_insta() { run("snapshot.js").await.e
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fail_unimplemented_unreachable_and_is_error() { run("fail.js").await.expect("fail"); }
-
-#[test]
-fn insta_is_reexported_for_rust_consumers() { drop(den_stdlib_assert::insta::Settings::new()); }

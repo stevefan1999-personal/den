@@ -8,7 +8,6 @@ use std::{
 };
 
 use den_util::instance_of_global;
-pub use insta;
 use rquickjs::{
     Class, Coerced, Ctx, Error, Filter, FromJs as _, Function, Object, Result, Value, class::Trace,
     function::Opt, prelude::This,
