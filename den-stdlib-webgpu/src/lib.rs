@@ -479,10 +479,8 @@ fn dispatch_uncaptured_error<'js>(
     let error_js = gpu_error_value(ctx, error)?;
     let init = Object::new(ctx.clone())?;
     init.set("error", error_js)?;
-    let ctor: Constructor = match ctx.globals().get("GPUUncapturedErrorEvent") {
-        Ok(ctor) => ctor,
-        Err(_error) => return Ok(()),
-    };
+    // Installed by `install_classes` before any device can exist.
+    let ctor: Constructor = ctx.globals().get("GPUUncapturedErrorEvent")?;
     let event: Value = ctor.construct(("uncapturederror", init))?;
     let Ok(dispatch) = device.as_inner().get::<_, Function>("dispatchEvent") else {
         return Ok(());
@@ -2639,14 +2637,10 @@ impl GPUPipelineError {
                 format!("invalid GPUPipelineErrorReason {reason}"),
             ));
         }
-        let exception = if let Ok(ctor) = ctx.globals().get::<_, Constructor>("DOMException") {
-            ctor.construct::<_, Object>((message.as_str(), "GPUPipelineError"))?
-        } else {
-            let object = Object::new(ctx.clone())?;
-            object.set("message", message)?;
-            object.set("name", "GPUPipelineError")?;
-            object
-        };
+        // DOMException is a QuickJS intrinsic, present in every realm den
+        // builds.
+        let exception: Object =
+            den_util::construct(&ctx, "DOMException", (message.as_str(), "GPUPipelineError"))?;
         if let Some(proto) = Class::<Self>::prototype(&ctx)? {
             exception.set_prototype(Some(&proto))?;
         }
