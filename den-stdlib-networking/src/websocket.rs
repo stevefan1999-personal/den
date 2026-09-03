@@ -206,15 +206,11 @@ impl NativeWebSocket {
                         "http"
                     };
                     let mut converted = parsed.clone();
-                    let origin = if converted.set_scheme(scheme).is_ok() {
-                        converted.origin().ascii_serialization()
-                    } else {
-                        let host = parsed.host_str().unwrap_or_default();
-                        parsed.port().map_or_else(
-                            || format!("{scheme}://{host}"),
-                            |port| format!("{scheme}://{host}:{port}"),
-                        )
-                    };
+                    // ws->http and wss->https is special-to-special on a URL
+                    // that already parsed with a host, which is the only shape
+                    // `set_scheme` refuses.
+                    let _ = converted.set_scheme(scheme);
+                    let origin = converted.origin().ascii_serialization();
                     if let Ok(value) = HeaderValue::from_str(&origin) {
                         request.headers_mut().insert("Origin", value);
                     }

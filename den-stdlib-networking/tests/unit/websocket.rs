@@ -163,6 +163,15 @@ async fn protocol_negotiation_picks_from_the_response() {
                     .and_then(|value| value.to_str().ok())
                     .unwrap_or_default();
                 assert!(offered.split(',').any(|item| item.trim() == "superchat"));
+                // `set_scheme` cannot fail on a ws/wss URL, so the Origin
+                // header always comes from the converted URL, never from a
+                // hand-built fallback.
+                let origin = request
+                    .headers()
+                    .get("Origin")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                assert_eq!(origin, format!("http://127.0.0.1:{port}"));
                 response.headers_mut().insert(
                     "Sec-WebSocket-Protocol",
                     HeaderValue::from_static("superchat"),
