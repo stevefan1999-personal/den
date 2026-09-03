@@ -392,7 +392,7 @@ impl<'js> Instance<'js> {
                     "imported global does not match the declared type or mutability",
                 ));
             }
-            HostWrappers::remember_global(ctx, inner, value.clone())?;
+            HostWrappers::remember(ctx, inner, value.clone())?;
             return Ok(inner.into());
         }
         // A mutable global import cannot be a primitive: the spec only
@@ -450,7 +450,7 @@ impl<'js> Instance<'js> {
                 throw_link(ctx, "a memory import must be a WebAssembly.Memory object")
             })?;
         let inner = Self::borrow_import(ctx, &memory, "memory")?.inner;
-        HostWrappers::remember_memory(ctx, inner, value.clone())?;
+        HostWrappers::remember(ctx, inner, value.clone())?;
         Self::check_limits(
             ctx,
             "memory",
@@ -471,7 +471,7 @@ impl<'js> Instance<'js> {
             })
             .ok_or_else(|| throw_link(ctx, "a table import must be a WebAssembly.Table object"))?;
         let inner = Self::borrow_import(ctx, &table, "table")?.inner;
-        HostWrappers::remember_table(ctx, inner, value.clone())?;
+        HostWrappers::remember(ctx, inner, value.clone())?;
         // The element type is left to the engine: a mismatch fails
         // instantiation, which is a `LinkError` all the same.
         Self::check_limits(

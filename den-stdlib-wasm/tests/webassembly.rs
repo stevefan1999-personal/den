@@ -158,3 +158,8 @@ async fn reflection_dictionaries_keep_their_spec_key_order() -> eyre::Result<()>
 async fn memory_buffer_kinds_are_cached_per_kind_and_detach_each_other() -> eyre::Result<()> {
     run("buffer_kinds.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wrapper_objects_are_one_per_handle_across_kinds() -> eyre::Result<()> {
+    run("wrapper_identity.js").await
+}

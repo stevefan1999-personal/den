@@ -455,11 +455,12 @@ impl<'js> HostReferences<'js> {
 /// exporting it again yields the *same* JS object. Wasmtime exposes no handle
 /// equality API; its derived `Debug` identity contains the store/instance and
 /// index without reading the `repr(C)` padding bytes.
+///
+/// One list for all three kinds: that same derived `Debug` prefixes the type
+/// name, so a memory's identity can never read as a table's.
 #[derive(Default)]
 pub struct HostWrappers<'js> {
-    memories: RefCell<Vec<(String, Value<'js>)>>,
-    tables:   RefCell<Vec<(String, Value<'js>)>>,
-    globals:  RefCell<Vec<(String, Value<'js>)>>,
+    entries: RefCell<Vec<(String, Value<'js>)>>,
 }
 
 // SAFETY: the only `'js` data is the cached wrappers, which change lifetime
@@ -470,68 +471,38 @@ unsafe impl<'js> JsLifetime<'js> for HostWrappers<'js> {
 
 impl<'js> HostWrappers<'js> {
     pub fn memory(ctx: &Ctx<'js>, handle: wasmtime::Memory) -> Result<Value<'js>> {
-        Self::wrap(
-            ctx,
-            handle,
-            |wrappers| &wrappers.memories,
-            |inner| crate::memory::Memory { inner }.into_js(ctx),
-        )
+        Self::wrap(ctx, handle, |inner| {
+            crate::memory::Memory { inner }.into_js(ctx)
+        })
     }
 
     pub fn table(ctx: &Ctx<'js>, handle: wasmtime::Table) -> Result<Value<'js>> {
-        Self::wrap(
-            ctx,
-            handle,
-            |wrappers| &wrappers.tables,
-            |inner| crate::table::Table { inner }.into_js(ctx),
-        )
+        Self::wrap(ctx, handle, |inner| {
+            crate::table::Table { inner }.into_js(ctx)
+        })
     }
 
     pub fn global(ctx: &Ctx<'js>, handle: wasmtime::Global) -> Result<Value<'js>> {
-        Self::wrap(
-            ctx,
-            handle,
-            |wrappers| &wrappers.globals,
-            |inner| crate::global::Global { inner }.into_js(ctx),
-        )
-    }
-
-    pub fn remember_memory(
-        ctx: &Ctx<'js>, handle: wasmtime::Memory, object: Value<'js>,
-    ) -> Result<()> {
-        Self::remember(ctx, handle, object, |wrappers| &wrappers.memories)
-    }
-
-    pub fn remember_table(
-        ctx: &Ctx<'js>, handle: wasmtime::Table, object: Value<'js>,
-    ) -> Result<()> {
-        Self::remember(ctx, handle, object, |wrappers| &wrappers.tables)
-    }
-
-    pub fn remember_global(
-        ctx: &Ctx<'js>, handle: wasmtime::Global, object: Value<'js>,
-    ) -> Result<()> {
-        Self::remember(ctx, handle, object, |wrappers| &wrappers.globals)
+        Self::wrap(ctx, handle, |inner| {
+            crate::global::Global { inner }.into_js(ctx)
+        })
     }
 
     fn wrap<H: Copy + core::fmt::Debug>(
-        ctx: &Ctx<'js>, handle: H, slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
-        create: impl FnOnce(H) -> Result<Value<'js>>,
+        ctx: &Ctx<'js>, handle: H, create: impl FnOnce(H) -> Result<Value<'js>>,
     ) -> Result<Value<'js>> {
-        let identity = format!("{handle:?}");
-        if let Some(existing) = Self::find(ctx, &identity, &slot)? {
+        if let Some(existing) = Self::find(ctx, &format!("{handle:?}"))? {
             return Ok(existing);
         }
         let object = create(handle)?;
-        Self::remember_identity(ctx, identity, object.clone(), slot)?;
+        Self::remember(ctx, handle, object.clone())?;
         Ok(object)
     }
 
-    fn find(
-        ctx: &Ctx<'js>, identity: &str, slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
-    ) -> Result<Option<Value<'js>>> {
+    fn find(ctx: &Ctx<'js>, identity: &str) -> Result<Option<Value<'js>>> {
         Self::with(ctx, |wrappers| {
-            Ok(slot(wrappers)
+            Ok(wrappers
+                .entries
                 .try_borrow()
                 .map_err(|_error| Self::busy(ctx))?
                 .iter()
@@ -540,20 +511,13 @@ impl<'js> HostWrappers<'js> {
         })
     }
 
-    fn remember<H: core::fmt::Debug>(
+    pub fn remember<H: core::fmt::Debug>(
         ctx: &Ctx<'js>, handle: H, object: Value<'js>,
-        slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
     ) -> Result<()> {
         let identity = format!("{handle:?}");
-        Self::remember_identity(ctx, identity, object, slot)
-    }
-
-    fn remember_identity(
-        ctx: &Ctx<'js>, identity: String, object: Value<'js>,
-        slot: impl Fn(&Self) -> &RefCell<Vec<(String, Value<'js>)>>,
-    ) -> Result<()> {
         Self::with(ctx, |wrappers| {
-            let mut entries = slot(wrappers)
+            let mut entries = wrappers
+                .entries
                 .try_borrow_mut()
                 .map_err(|_error| Self::busy(ctx))?;
             if !entries.iter().any(|(cached, _)| cached == &identity) {
