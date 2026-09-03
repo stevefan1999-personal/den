@@ -1033,22 +1033,7 @@ impl<'js> WritableStreamDefaultWriter<'js> {
     pub(crate) fn acquire(
         ctx: &Ctx<'js>, stream: Class<'js, WritableStream<'js>>,
     ) -> Result<Class<'js, Self>> {
-        let inner = stream.borrow().inner.clone();
-        let id = WritableStream::acquire_writer(ctx, &inner)?;
-        let (ready, closed) = {
-            let borrow = inner.borrow();
-            let slot = borrow
-                .writer
-                .as_ref()
-                .ok_or_else(|| Exception::throw_type(ctx, "WritableStream is locked"))?;
-            (slot.ready.promise(), slot.closed.promise())
-        };
-        Class::instance(ctx.clone(), Self {
-            stream,
-            id,
-            ready: RefCell::new(ready),
-            closed: RefCell::new(closed),
-        })
+        Class::instance(ctx.clone(), Self::new(ctx.clone(), stream.into_value())?)
     }
 
     fn inner(&self, ctx: &Ctx<'js>) -> Result<Inner<'js>> {
