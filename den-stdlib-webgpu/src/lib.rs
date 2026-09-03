@@ -32,7 +32,6 @@ use den_util::BufferSource;
 use rquickjs::{
     Array, ArrayBuffer, Class, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs as _,
     JsLifetime, Object, Persistent, Promise, Result, Value,
-    atom::PredefinedAtom,
     class::{Trace, Tracer},
     function::{Args, Opt, This},
 };
@@ -188,30 +187,14 @@ fn iterable_strings<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> Result<Vec<String
     if value.is_undefined() || value.is_null() {
         return Ok(Vec::new());
     }
-    if let Ok(features) = Class::<GPUSupportedFeatures>::from_js(ctx, value.clone()) {
-        return Ok(features.borrow().names().to_vec());
-    }
-    if let Ok(features) = Class::<GPUSupportedWGSLLanguageFeatures>::from_js(ctx, value.clone()) {
-        return Ok(features.borrow().names().to_vec());
-    }
-    if let Ok(array) = Array::from_js(ctx, value.clone()) {
-        return array.iter::<String>().collect();
-    }
-    let object = Object::from_js(ctx, value.clone())?;
-    let iterator_fn: Function = object
-        .get(PredefinedAtom::SymbolIterator)
-        .or_else(|_error| object.get("values"))?;
-    let iterator: Object = iterator_fn.call((This(value.clone()),))?;
-    let next: Function = iterator.get("next")?;
-    let mut names = Vec::new();
-    loop {
-        let step: Object = next.call((This(iterator.clone()),))?;
-        if step.get::<_, Coerced<bool>>("done")?.0 {
-            break;
-        }
-        names.push(step.get::<_, Coerced<String>>("value")?.0);
-    }
-    Ok(names)
+    // `Array.from` is the engine's own sequence<DOMString> conversion: a set,
+    // an array and any other iterable all answer here, and a non-iterable
+    // is an empty list whose caller validates every name anyway.
+    let from: Function = ctx.globals().get::<_, Object>("Array")?.get("from")?;
+    from.call::<_, Array>((value,))?
+        .iter::<Coerced<String>>()
+        .map(|name| Ok(name?.0))
+        .collect()
 }
 
 /// wgpu's `BufferSlice` panics on out-of-range and empty ranges, both of

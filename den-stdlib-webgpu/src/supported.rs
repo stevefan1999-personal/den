@@ -22,8 +22,6 @@ macro_rules! setlike {
             pub fn from_names<'js>(ctx: &Ctx<'js>, names: Vec<String>) -> Result<Class<'js, Self>> {
                 Class::instance(ctx.clone(), Self { names })
             }
-
-            pub fn names(&self) -> &[String] { &self.names }
         }
 
         #[rquickjs::methods(rename_all = "camelCase")]
