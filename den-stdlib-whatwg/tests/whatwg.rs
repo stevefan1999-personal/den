@@ -116,3 +116,8 @@ async fn response_static_constructors_and_body_extracts() -> eyre::Result<()> {
 async fn event_source_reads_two_events_from_den_http() -> eyre::Result<()> {
     run("event_source.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn readable_stream_cancel_is_the_native_method() -> eyre::Result<()> {
+    run("readable_cancel_untouched.js").await
+}

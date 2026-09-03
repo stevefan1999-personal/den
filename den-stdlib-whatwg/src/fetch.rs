@@ -10,7 +10,7 @@ use rquickjs::{
     Array, ArrayBuffer, Class, Coerced, Ctx, Exception, FromJs as _, Function, IntoJs, JsLifetime,
     Object, Promise, Result, TypedArray, Value as JsValue,
     class::Trace,
-    function::{Constructor, FuncArg, Opt as JsOpt, Rest, This},
+    function::{Constructor, FuncArg, Opt as JsOpt, This},
 };
 use tokio::sync::Notify;
 
@@ -1243,36 +1243,6 @@ fn cancel_request_body<'js>(ctx: &Ctx<'js>, request: &JsValue<'js>, reason: JsVa
     }
 }
 
-fn wrap_readable_stream_cancel<'js>(ctx: &Ctx<'js>) -> Result<()> {
-    let globals = ctx.globals();
-    let Ok(ctor) = globals.get::<_, Function>("ReadableStream") else {
-        return Ok(());
-    };
-    let Ok(proto) = ctor.get::<_, Object>("prototype") else {
-        return Ok(());
-    };
-    let Ok(inner_cancel) = proto.get::<_, Function>("cancel") else {
-        return Ok(());
-    };
-    let wrapped = Function::new(
-        ctx.clone(),
-        move |ctx: Ctx<'js>,
-              func: FuncArg<Function<'js>>,
-              this: This<JsValue<'js>>,
-              args: Rest<JsValue<'js>>| {
-            let inner_cancel: Function = func.0.get("_inner")?;
-            let result: JsValue = inner_cancel.call((This(this.0), Rest(args.0)))?;
-            if result.is_null() || result.is_undefined() {
-                body::promise_resolve(&ctx, JsValue::new_undefined(ctx.clone()))
-            } else {
-                body::promise_resolve(&ctx, result)
-            }
-        },
-    )?;
-    wrapped.set("_inner", inner_cancel)?;
-    proto.set("cancel", wrapped)
-}
-
 #[rquickjs::module(rename = "camelCase", rename_vars = "camelCase")]
 pub mod whatwg {
     use den_util::ConstructorInstaller as _;
@@ -1300,7 +1270,6 @@ pub mod whatwg {
         wrapped.set_name("fetch")?;
         exports.export("fetch", wrapped.clone())?;
         globals.set("fetch", wrapped)?;
-        super::wrap_readable_stream_cancel(ctx)?;
         Ok(())
     }
 }
