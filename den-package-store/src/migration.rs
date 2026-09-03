@@ -226,21 +226,4 @@ impl MigrationTrait for Migration {
         }
         Ok(())
     }
-
-    async fn down(&self, manager: &SchemaManager) -> std::result::Result<(), DbErr> {
-        for table in [
-            package_file::Entity.into_iden(),
-            package_export::Entity.into_iden(),
-            dependency::Entity.into_iden(),
-            package_version::Entity.into_iden(),
-            package::Entity.into_iden(),
-            registry::Entity.into_iden(),
-            blob::Entity.into_iden(),
-        ] {
-            manager
-                .drop_table(Table::drop().table(table).to_owned())
-                .await?;
-        }
-        Ok(())
-    }
 }
