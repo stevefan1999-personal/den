@@ -377,29 +377,7 @@ fn read_last_modified<'js>(ctx: &Ctx<'js>, object: &Object<'js>) -> Result<Optio
 }
 
 fn native_line_endings(text: &str) -> Vec<u8> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let Some(&byte) = bytes.get(index) else {
-            break;
-        };
-        match byte {
-            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
-                out.push(b'\n');
-                index += 2;
-            }
-            b'\r' | b'\n' => {
-                out.push(b'\n');
-                index += 1;
-            }
-            byte => {
-                out.push(byte);
-                index += 1;
-            }
-        }
-    }
-    out
+    text.replace("\r\n", "\n").replace('\r', "\n").into_bytes()
 }
 
 fn empty_sequence<'js>(ctx: &Ctx<'js>) -> Result<Value<'js>> {

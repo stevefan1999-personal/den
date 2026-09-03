@@ -172,3 +172,8 @@ async fn set_replaces_the_first_match_and_drops_the_rest() -> eyre::Result<()> {
 async fn pathname_percent_encodes_the_path_segment_set() -> eyre::Result<()> {
     run("url_pathname_encoding.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn native_line_endings_fold_cr_and_crlf_to_lf() -> eyre::Result<()> {
+    run("blob_native_line_endings.js").await
+}
