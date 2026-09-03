@@ -1140,21 +1140,11 @@ fn aborted_fetch_reason<'js>(
     if !reason.is_undefined() && !reason.is_null() {
         return Ok(Some(reason));
     }
-    Ok(Some(abort_error_reason(ctx)?))
-}
-
-fn abort_error_reason<'js>(ctx: &Ctx<'js>) -> Result<JsValue<'js>> {
-    if let Ok(value) = den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError")
-    {
-        Ok(value)
-    } else {
-        if ctx.has_exception() {
-            drop(ctx.catch());
-        }
-        let error: Object = den_util::construct(ctx, "Error", ("The operation was aborted.",))?;
-        error.set("name", "AbortError")?;
-        Ok(error.into_value())
-    }
+    Ok(Some(den_util::new_dom_exception(
+        ctx,
+        "The operation was aborted.",
+        "AbortError",
+    )?))
 }
 
 fn cancel_request_body<'js>(ctx: &Ctx<'js>, request: &JsValue<'js>, reason: JsValue<'js>) {

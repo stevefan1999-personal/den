@@ -41,39 +41,6 @@ impl Host {
         if let Ok(exc) = den_util::new_dom_exception(ctx, message, name) {
             return ctx.throw(exc);
         }
-        let code: i32 = match name {
-            "IndexSizeError" => 1,
-            "HierarchyRequestError" => 3,
-            "WrongDocumentError" => 4,
-            "InvalidCharacterError" => 5,
-            "NoModificationAllowedError" => 7,
-            "NotFoundError" => 8,
-            "NotSupportedError" => 9,
-            "InUseAttributeError" => 10,
-            "InvalidStateError" => 11,
-            "SyntaxError" => 12,
-            "InvalidModificationError" => 13,
-            "NamespaceError" => 14,
-            "InvalidAccessError" => 15,
-            "TypeMismatchError" => 17,
-            "SecurityError" => 18,
-            "NetworkError" => 19,
-            "AbortError" => 20,
-            "URLMismatchError" => 21,
-            "QuotaExceededError" => 22,
-            "TimeoutError" => 23,
-            "InvalidNodeTypeError" => 24,
-            "DataCloneError" => 25,
-            _ => 0,
-        };
-        if let Ok(error_ctor) = ctx.globals().get::<_, Constructor>("Error")
-            && let Ok(exc) = error_ctor.construct::<_, Object>((message,))
-        {
-            let _ = exc.set("name", name);
-            let _ = exc.set("message", message);
-            let _ = exc.set("code", code);
-            return ctx.throw(exc.into_value());
-        }
         den_util::stack::throw_error(ctx, message)
     }
 

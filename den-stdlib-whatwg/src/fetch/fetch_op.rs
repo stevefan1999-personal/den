@@ -15,9 +15,7 @@ use dashmap::DashMap;
 use futures::future::Either;
 use rquickjs::{
     ArrayBuffer, Class, Ctx, Error, Exception, Function, Object, Result, TypedArray,
-    Value as JsValue,
-    function::{Constructor, This},
-    promise::MaybePromise,
+    Value as JsValue, function::This, promise::MaybePromise,
 };
 use tokio::sync::Notify;
 
@@ -96,22 +94,7 @@ pub fn abort_error<'js>(ctx: &Ctx<'js>, signal: &JsValue<'js>) -> Error {
     if let Ok(exc) = den_util::new_dom_exception(ctx, "The operation was aborted.", "AbortError") {
         return ctx.throw(exc);
     }
-    // Without `DOMException` (realms lacking `den:worker`) keep the spec's
-    // error name on a plain `Error` instead of degrading to `TypeError`.
-    let plain = ctx
-        .globals()
-        .get::<_, Constructor>("Error")
-        .and_then(|ctor| ctor.construct::<_, JsValue>(("The operation was aborted.",)))
-        .and_then(|exc| {
-            if let Some(object) = exc.as_object() {
-                object.set("name", "AbortError")?;
-            }
-            Ok(exc)
-        });
-    plain.map_or_else(
-        |_error| Exception::throw_type(ctx, "The operation was aborted."),
-        |exc| ctx.throw(exc),
-    )
+    Exception::throw_type(ctx, "The operation was aborted.")
 }
 
 fn network_error(ctx: &Ctx<'_>, message: &str) -> Error { Exception::throw_type(ctx, message) }
