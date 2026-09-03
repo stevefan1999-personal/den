@@ -14,7 +14,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, optional_object, pipe, range_error, react, thrown, type_error,
+    Cap, bound, method, optional_object, pipe, range_error, react, thrown, type_error,
 };
 
 pub enum RsState<'js> {
@@ -436,25 +436,28 @@ impl<'js> ReadableStream<'js> {
         };
         match outcome {
             Ok(value) => {
-                // Pinning the controller is what keeps the record's JS values
-                // alive for the length of this operation: see
-                // the note on
+                // The controller rides along as a bound leading argument,
+                // which is what keeps the record's JS values alive for the
+                // length of this operation: see the note on
                 // `ReadableStreamDefaultController`.
-                let pin = Pins::hold(ctx, Self::keeper(inner));
+                let keeper = Self::keeper(inner);
                 let ok = {
                     let inner = Rc::clone(inner);
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                        Pins::release(&ctx, pin);
+                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, _keeper: Value<'js>| {
                         ReadableStream::pull_settled(&ctx, &inner);
                     })
+                    .and_then(|ok| bound(ctx, ok, keeper.clone()))
                 };
                 let err = {
                     let inner = Rc::clone(inner);
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        Pins::release(&ctx, pin);
-                        inner.borrow_mut().pulling = false;
-                        ReadableStream::error(&ctx, &inner, reason);
-                    })
+                    Function::new(
+                        ctx.clone(),
+                        move |ctx: Ctx<'js>, _keeper: Value<'js>, reason: Value<'js>| {
+                            inner.borrow_mut().pulling = false;
+                            ReadableStream::error(&ctx, &inner, reason);
+                        },
+                    )
+                    .and_then(|err| bound(ctx, err, keeper))
                 };
                 if let (Ok(ok), Ok(err)) = (ok, err) {
                     let _ = react(ctx, value, Some(ok), Some(err));
@@ -768,22 +771,24 @@ impl<'js> ReadableStream<'js> {
             Some(start) => start.call::<_, Value>((This(source_object), controller.clone()))?,
             None => Value::new_undefined(ctx.clone()),
         };
-        let pin = Pins::hold(&ctx, Some(controller.clone()));
         let ok = {
             let inner = Rc::clone(&inner);
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                Pins::release(&ctx, pin);
+            let ok = Function::new(ctx.clone(), move |ctx: Ctx<'js>, _keeper: Value<'js>| {
                 inner.borrow_mut().started = true;
                 ReadableStream::pull_settled(&ctx, &inner);
                 ReadableStream::pull_if_needed(&ctx, &inner);
-            })?
+            })?;
+            bound(&ctx, ok, controller.clone())?
         };
         let err = {
             let inner = Rc::clone(&inner);
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                Pins::release(&ctx, pin);
-                ReadableStream::error(&ctx, &inner, reason);
-            })?
+            let err = Function::new(
+                ctx.clone(),
+                move |ctx: Ctx<'js>, _keeper: Value<'js>, reason: Value<'js>| {
+                    ReadableStream::error(&ctx, &inner, reason);
+                },
+            )?;
+            bound(&ctx, err, controller.clone())?
         };
         react(&ctx, started, Some(ok), Some(err))?;
         Ok(Self { inner, controller })
@@ -925,9 +930,9 @@ impl<'js> ReadableStream<'js> {
 /// invisible to the collector. A closure that held only `Rc<ReadableInner>`
 /// therefore kept the record alive in Rust while the collector was free to
 /// reclaim the stream object that traced it, and the record's JS values became
-/// dangling. Reactions hold this object instead: a refcount the collector
-/// cannot follow is an external root, so the record and everything it traces
-/// survives exactly as long as the operation does.
+/// dangling. Reactions carry this object as a bound leading argument instead:
+/// that is an edge the collector can follow, so the record and everything it
+/// traces survives exactly as long as the operation does.
 #[rquickjs::class]
 pub struct ReadableStreamDefaultController<'js> {
     inner: Inner<'js>,

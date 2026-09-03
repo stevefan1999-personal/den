@@ -17,7 +17,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, chain, mark_handled, react,
+    Cap, bound, chain, mark_handled, react,
     readable::{Inner as RsInner, ReadOutcome, ReadRequest, ReadableStream, iter_result},
     thrown, type_error,
     writable::{Inner as WsInner, WritableStream},
@@ -192,9 +192,7 @@ impl<'js> PipeRecord<'js> {
                         }
                     },
                 )?;
-                let bind: Function = run.get("bind")?;
-                let run: Function =
-                    bind.call((This(run), Value::new_undefined(ctx.clone()), record.clone()))?;
+                let run = bound(ctx, run, record.clone())?;
                 run.defer(())?;
                 return Ok(promise);
             }
@@ -567,12 +565,7 @@ impl<'js> PipeRecord<'js> {
                                     );
                                 },
                             )?;
-                            let bind: Function = on_ok.get("bind")?;
-                            let on_ok: Function = bind.call((
-                                This(on_ok),
-                                Value::new_undefined(ctx.clone()),
-                                record.clone(),
-                            ))?;
+                            let on_ok = bound(ctx, on_ok, record.clone())?;
                             let on_err = Function::new(
                                 ctx.clone(),
                                 move |ctx: Ctx<'js>,
@@ -586,12 +579,7 @@ impl<'js> PipeRecord<'js> {
                                     );
                                 },
                             )?;
-                            let bind: Function = on_err.get("bind")?;
-                            let on_err = bind.call((
-                                This(on_err),
-                                Value::new_undefined(ctx.clone()),
-                                record,
-                            ))?;
+                            let on_err = bound(ctx, on_err, record)?;
                             Ok::<_, rquickjs::Error>((on_ok, on_err))
                         });
                         if let Some(Ok((on_ok, on_err))) = handlers {
@@ -1114,8 +1102,7 @@ fn after<'js>(ctx: &Ctx<'js>, promise: Promise<'js>, value: Value<'js>) -> Resul
     let Some(resolve) = resolve else {
         return Ok(mapped);
     };
-    let bind: Function = resolve.get("bind")?;
-    let on_ok: Function = bind.call((This(resolve), Value::new_undefined(ctx.clone()), value))?;
+    let on_ok = bound(ctx, resolve, value)?;
     react(ctx, promise.into_value(), Some(on_ok), reject)?;
     Ok(mapped)
 }

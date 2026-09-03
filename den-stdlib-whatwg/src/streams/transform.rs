@@ -16,7 +16,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, optional_object, react,
+    Cap, bound, method, optional_object, react,
     readable::{Inner as RsInner, ReadableStream, extract_strategy},
     thrown, type_error,
     writable::{Inner as WsInner, WritableStream},
@@ -591,16 +591,16 @@ impl<'js> TransformStream<'js> {
         // where the specification's start promise would: a readable strategy
         // with room pulls straight away and lifts the initial backpressure.
         let on_ok = {
+            let keeper = ReadableStream::keeper(&readable_inner);
             let readable_inner = Rc::clone(&readable_inner);
             let writable_inner = Rc::clone(&writable_inner);
-            let pin = Pins::hold(&ctx, ReadableStream::keeper(&readable_inner));
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                Pins::release(&ctx, pin);
+            let on_ok = Function::new(ctx.clone(), move |ctx: Ctx<'js>, _keeper: Value<'js>| {
                 readable_inner.borrow_mut().started = true;
                 writable_inner.borrow_mut().started = true;
                 WritableStream::advance_queue(&ctx, &writable_inner);
                 ReadableStream::pull_if_needed(&ctx, &readable_inner);
-            })?
+            })?;
+            bound(&ctx, on_ok, keeper)?
         };
         react(&ctx, started, Some(on_ok), Some(on_err))?;
 

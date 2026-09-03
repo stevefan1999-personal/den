@@ -197,3 +197,8 @@ async fn a_write_parked_on_transform_backpressure_waits_for_a_pull() -> eyre::Re
 async fn a_source_is_pulled_only_while_the_consumer_has_demand() -> eyre::Result<()> {
     run("streams_demand_pacing.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_reactions_never_touch_a_patched_bind() -> eyre::Result<()> {
+    run("streams_pristine_intrinsics.js").await
+}

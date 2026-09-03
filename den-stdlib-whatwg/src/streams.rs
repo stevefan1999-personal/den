@@ -17,11 +17,6 @@ mod strategy;
 mod transform;
 mod writable;
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashMap,
-};
-
 use rquickjs::{
     Ctx, Function, IntoJs, JsLifetime, Object, Promise, Result, Value,
     class::{Trace, Tracer},
@@ -39,12 +34,13 @@ pub use crate::streams::{
     writable::{WritableStream, WritableStreamDefaultController, WritableStreamDefaultWriter},
 };
 
-/// `Promise.prototype.then` and a no-op, captured before user code can patch
-/// them. Internal reactions go through these, so patching `Promise.prototype`
-/// neither breaks nor observes the stream machinery.
+/// `Promise.prototype.then`, `Function.prototype.bind` and a no-op, captured
+/// before user code can patch them. Internal reactions go through these, so
+/// patching a prototype neither breaks nor observes the stream machinery.
 #[derive(JsLifetime, Clone)]
 pub(crate) struct Intrinsics<'js> {
     then:      Function<'js>,
+    bind:      Function<'js>,
     noop:      Function<'js>,
     /// The queuing strategies' `size` is one function per realm, not one per
     /// instance: `queuing-strategies.any.js` compares them by identity.
@@ -56,6 +52,8 @@ pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
     let promise: Object = ctx.globals().get("Promise")?;
     let proto: Object = promise.get("prototype")?;
     let then: Function = proto.get("then")?;
+    let function: Object = ctx.globals().get("Function")?;
+    let bind: Function = function.get::<_, Object>("prototype")?.get("bind")?;
     let noop = Function::new(ctx.clone(), || {})?;
     let count = Function::new(ctx.clone(), || 1.0)?.with_name("size")?;
     // JavaScript property access performs ToObject for primitives, while
@@ -65,6 +63,7 @@ pub fn install_intrinsics(ctx: &Ctx<'_>) -> Result<()> {
         .with_name("size")?;
     let _ = ctx.store_userdata(Intrinsics {
         then,
+        bind,
         noop,
         count,
         byte_size,
@@ -135,46 +134,21 @@ pub fn mark_handled<'js>(ctx: &Ctx<'js>, promise: &Promise<'js>) {
     }
 }
 
-/// JS values Rust must keep alive for the length of an in-flight operation.
+/// Bind `keeper` onto `function` as a leading argument, through the realm's
+/// pristine `Function.prototype.bind`.
 ///
-/// A `Function::new` closure cannot hold one itself. `RustFunction` traces
-/// nothing, so a handle it captures is a refcount the collector cannot follow —
-/// an external root that is still standing when `JS_FreeRuntime` asserts every
-/// object is gone, which is how a `pipeThrough` whose readable is never drained
-/// aborts at exit. Realm userdata is released with the realm, so a pin that
-/// outlives its operation costs a leak for the run instead.
-#[derive(JsLifetime)]
-pub(crate) struct Pins<'js> {
-    live: RefCell<HashMap<u64, Value<'js>>>,
-    next: Cell<u64>,
-}
-
-impl<'js> Pins<'js> {
-    /// Keep `value` alive and hand back the ticket that releases it.
-    pub(crate) fn hold(ctx: &Ctx<'js>, value: Option<impl IntoJs<'js>>) -> u64 {
-        let Some(value) = value.and_then(|value| value.into_js(ctx).ok()) else {
-            return 0;
-        };
-        if ctx.userdata::<Pins<'js>>().is_none() {
-            let _ = ctx.store_userdata(Pins {
-                live: RefCell::new(HashMap::new()),
-                next: Cell::new(1),
-            });
-        }
-        let Some(pins) = ctx.userdata::<Pins<'js>>() else {
-            return 0;
-        };
-        let id = pins.next.get();
-        pins.next.set(id + 1);
-        pins.live.borrow_mut().insert(id, value);
-        id
-    }
-
-    pub(crate) fn release(ctx: &Ctx<'js>, id: u64) {
-        if let Some(pins) = ctx.userdata::<Pins<'js>>() {
-            pins.live.borrow_mut().remove(&id);
-        }
-    }
+/// A reaction implemented with `Function::new` cannot hold a JS value itself:
+/// `RustFunction` traces nothing, so a handle it captures is a refcount the
+/// collector cannot follow — an external root still standing when
+/// `JS_FreeRuntime` asserts every object is gone. Riding on the bound function
+/// object instead is an edge the collector can follow, and the value dies with
+/// the reaction.
+pub(crate) fn bound<'js, K: IntoJs<'js>>(
+    ctx: &Ctx<'js>, function: Function<'js>, keeper: K,
+) -> Result<Function<'js>> {
+    intrinsics(ctx)?
+        .bind
+        .call((This(function), Value::new_undefined(ctx.clone()), keeper))
 }
 
 /// A promise plus its capability functions. Settling drops both functions,

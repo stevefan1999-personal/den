@@ -14,7 +14,7 @@ use rquickjs::{
 };
 
 use crate::streams::{
-    Cap, Pins, method, native::ByteSink, optional_object, range_error, react,
+    Cap, bound, method, native::ByteSink, optional_object, range_error, react,
     readable::extract_strategy, thrown, type_error,
 };
 
@@ -439,16 +439,15 @@ impl<'js> WritableStream<'js> {
         match outcome {
             Ok(value) => {
                 let (resolve, reject) = abort.cap.into_parts();
-                // Pinning the controller is what keeps the record's JS values
-                // alive for the length of this operation: see
-                // the note on
+                // The controller rides along as a bound leading argument,
+                // which is what keeps the record's JS values alive for the
+                // length of this operation: see the note on
                 // `ReadableStreamDefaultController`.
-                let pin = Pins::hold(ctx, Self::keeper(inner));
+                let keeper = Self::keeper(inner);
                 let settle = |handler: Option<Function<'js>>, rejected: bool| {
                     let inner = Rc::clone(inner);
                     let reason = reason.clone();
-                    move |ctx: Ctx<'js>, error: Opt<Value<'js>>| {
-                        Pins::release(&ctx, pin);
+                    move |ctx: Ctx<'js>, _keeper: Value<'js>, error: Opt<Value<'js>>| {
                         if let Some(handler) = handler.as_ref() {
                             if rejected {
                                 let _ = handler.call::<_, ()>((error
@@ -461,8 +460,10 @@ impl<'js> WritableStream<'js> {
                         WritableStream::reject_close_and_closed(&ctx, &inner, reason.clone());
                     }
                 };
-                let on_ok = Function::new(ctx.clone(), settle(resolve, false));
-                let on_err = Function::new(ctx.clone(), settle(reject, true));
+                let on_ok = Function::new(ctx.clone(), settle(resolve, false))
+                    .and_then(|on_ok| bound(ctx, on_ok, keeper.clone()));
+                let on_err = Function::new(ctx.clone(), settle(reject, true))
+                    .and_then(|on_err| bound(ctx, on_err, keeper));
                 if let (Ok(on_ok), Ok(on_err)) = (on_ok, on_err) {
                     let _ = react(ctx, value, Some(on_ok), Some(on_err));
                 }
@@ -578,20 +579,23 @@ impl<'js> WritableStream<'js> {
         };
         match outcome {
             Ok(value) => {
-                let pin = Pins::hold(ctx, Self::keeper(inner));
+                let keeper = Self::keeper(inner);
                 let on_ok = {
                     let inner = Rc::clone(inner);
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                        Pins::release(&ctx, pin);
+                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, _keeper: Value<'js>| {
                         WritableStream::write_settled(&ctx, &inner);
                     })
+                    .and_then(|on_ok| bound(ctx, on_ok, keeper.clone()))
                 };
                 let on_err = {
                     let inner = Rc::clone(inner);
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        Pins::release(&ctx, pin);
-                        WritableStream::write_failed(&ctx, &inner, reason);
-                    })
+                    Function::new(
+                        ctx.clone(),
+                        move |ctx: Ctx<'js>, _keeper: Value<'js>, reason: Value<'js>| {
+                            WritableStream::write_failed(&ctx, &inner, reason);
+                        },
+                    )
+                    .and_then(|on_err| bound(ctx, on_err, keeper))
                 };
                 if let (Ok(on_ok), Ok(on_err)) = (on_ok, on_err) {
                     let _ = react(ctx, value, Some(on_ok), Some(on_err));
@@ -657,20 +661,23 @@ impl<'js> WritableStream<'js> {
         Self::clear_algorithms(inner);
         match outcome {
             Ok(value) => {
-                let pin = Pins::hold(ctx, Self::keeper(inner));
+                let keeper = Self::keeper(inner);
                 let on_ok = {
                     let inner = Rc::clone(inner);
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                        Pins::release(&ctx, pin);
+                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, _keeper: Value<'js>| {
                         WritableStream::close_settled(&ctx, &inner);
                     })
+                    .and_then(|on_ok| bound(ctx, on_ok, keeper.clone()))
                 };
                 let on_err = {
                     let inner = Rc::clone(inner);
-                    Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                        Pins::release(&ctx, pin);
-                        WritableStream::close_failed(&ctx, &inner, reason);
-                    })
+                    Function::new(
+                        ctx.clone(),
+                        move |ctx: Ctx<'js>, _keeper: Value<'js>, reason: Value<'js>| {
+                            WritableStream::close_failed(&ctx, &inner, reason);
+                        },
+                    )
+                    .and_then(|on_err| bound(ctx, on_err, keeper))
                 };
                 if let (Ok(on_ok), Ok(on_err)) = (on_ok, on_err) {
                     let _ = react(ctx, value, Some(on_ok), Some(on_err));
@@ -850,22 +857,24 @@ impl<'js> WritableStream<'js> {
             Some(start) => start.call::<_, Value>((This(sink), controller.clone()))?,
             None => Value::new_undefined(ctx.clone()),
         };
-        let pin = Pins::hold(ctx, Some(controller.clone()));
         let on_ok = {
             let inner = Rc::clone(inner);
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>| {
-                Pins::release(&ctx, pin);
+            let on_ok = Function::new(ctx.clone(), move |ctx: Ctx<'js>, _keeper: Value<'js>| {
                 inner.borrow_mut().started = true;
                 WritableStream::advance_queue(&ctx, &inner);
-            })?
+            })?;
+            bound(ctx, on_ok, controller.clone())?
         };
         let on_err = {
             let inner = Rc::clone(inner);
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, reason: Value<'js>| {
-                Pins::release(&ctx, pin);
-                inner.borrow_mut().started = true;
-                WritableStream::deal_with_rejection(&ctx, &inner, reason);
-            })?
+            let on_err = Function::new(
+                ctx.clone(),
+                move |ctx: Ctx<'js>, _keeper: Value<'js>, reason: Value<'js>| {
+                    inner.borrow_mut().started = true;
+                    WritableStream::deal_with_rejection(&ctx, &inner, reason);
+                },
+            )?;
+            bound(ctx, on_err, controller.clone())?
         };
         react(ctx, started, Some(on_ok), Some(on_err))?;
         Ok(())
