@@ -1026,14 +1026,7 @@ impl<'js> ReadableStreamDefaultReader<'js> {
     pub(crate) fn acquire(
         ctx: &Ctx<'js>, stream: Class<'js, ReadableStream<'js>>,
     ) -> Result<Class<'js, Self>> {
-        let inner = stream.borrow().inner.clone();
-        let id = ReadableStream::acquire_reader(ctx, &inner)?;
-        let closed = ReadableStream::closed_promise(ctx, &inner)?;
-        Class::instance(ctx.clone(), Self {
-            stream,
-            id,
-            closed: RefCell::new(closed),
-        })
+        Class::instance(ctx.clone(), Self::new(ctx.clone(), stream.into_value())?)
     }
 
     fn inner(&self, ctx: &Ctx<'js>) -> Result<Inner<'js>> {
