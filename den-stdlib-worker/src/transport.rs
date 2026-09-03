@@ -8,24 +8,16 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, error::SendErr
 
 use crate::message::Message;
 
-/// What travels down a port's channel.
-#[derive(Debug)]
-pub enum Envelope {
-    Message(Message),
-    /// The peer is gone — `close()`, or the context that owned it was dropped.
-    /// A pump that sees this ends; the port is entangled with nothing.
-    Close,
-}
-
 /// One end of an entangled pair.
 ///
 /// Owns the sender into the *peer's* inbox and, until a pump takes it, its own
-/// inbox. Dropping a handle announces the closure to the peer, so a pump on the
-/// other side always terminates instead of parking forever.
+/// inbox. Dropping a handle drops that sender, which is how the peer's pump
+/// learns the port is gone — its `recv()` yields `None` — instead of parking
+/// forever.
 #[derive(Debug)]
 pub struct PortHandle {
-    outbox: Option<UnboundedSender<Envelope>>,
-    inbox:  Option<UnboundedReceiver<Envelope>>,
+    outbox: UnboundedSender<Message>,
+    inbox:  Option<UnboundedReceiver<Message>>,
 }
 
 impl PortHandle {
@@ -35,46 +27,25 @@ impl PortHandle {
         let (to_second, second_inbox) = mpsc::unbounded_channel();
         (
             Self {
-                outbox: Some(to_second),
+                outbox: to_second,
                 inbox:  Some(first_inbox),
             },
             Self {
-                outbox: Some(to_first),
+                outbox: to_first,
                 inbox:  Some(second_inbox),
             },
         )
     }
 
-    /// Hand `envelope` to the peer. The envelope comes back in the `Err` when
+    /// Hand `message` to the peer. The message comes back in the `Err` when
     /// there is no peer left to take it — which is not an error in the spec:
     /// posting to a closed port is silently a no-op.
-    pub fn send(&self, envelope: Envelope) -> Result<(), SendError<Envelope>> {
-        match self.outbox.as_ref() {
-            Some(outbox) => outbox.send(envelope),
-            None => Err(SendError(envelope)),
-        }
+    pub fn send(&self, message: Message) -> Result<(), SendError<Message>> {
+        self.outbox.send(message)
     }
 
     /// Take this end's inbox, once, for a pump to await. `None` afterwards.
-    pub const fn take_receiver(&mut self) -> Option<UnboundedReceiver<Envelope>> {
+    pub const fn take_receiver(&mut self) -> Option<UnboundedReceiver<Message>> {
         self.inbox.take()
     }
-
-    /// Whether this end can still deliver to its peer.
-    pub const fn is_open(&self) -> bool { self.outbox.is_some() }
-
-    /// Detach the port: tell the peer, and stop being able to send or receive.
-    /// Idempotent.
-    pub fn close(&mut self) {
-        if let Some(outbox) = self.outbox.take() {
-            // The peer may already be gone; that is exactly the case this
-            // notification exists to handle, so its failure is not one.
-            let _ = outbox.send(Envelope::Close);
-        }
-        self.inbox = None;
-    }
-}
-
-impl Drop for PortHandle {
-    fn drop(&mut self) { self.close(); }
 }

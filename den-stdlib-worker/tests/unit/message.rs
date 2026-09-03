@@ -4,10 +4,7 @@ use rquickjs::{
 };
 
 use super::Message;
-use crate::{
-    port::NativePort,
-    transport::{Envelope, PortHandle},
-};
+use crate::{port::NativePort, transport::PortHandle};
 
 /// A fresh runtime with `den:worker` installed. One per test: the module
 /// keeps its clone hooks in the context userdata, so contexts are not
@@ -421,20 +418,27 @@ fn a_transferred_port_moves_its_channel_and_detaches_the_source() {
         assert_eq!(ports.len(), 1, "exactly one port arrived");
         let port = ports.first().expect("exactly one port arrived");
         assert!(port.borrow().is_open());
+        // The channel end travelled with the message: a post from the
+        // receiving realm reaches the peer that stayed behind.
+        let ping = Message::serialize(&ctx, Value::new_null(ctx.clone()), vec![], vec![])
+            .catch(&ctx)
+            .map_err(|err| err.to_string())
+            .expect("a null message serialises");
         port.borrow()
             .take_handle()
             .expect("the port still holds its channel")
-            .send(Envelope::Close)
+            .send(ping)
             .expect("the peer is still listening");
     });
 
     let mut peer = peer;
-    assert!(matches!(
+    assert!(
         peer.take_receiver()
             .expect("the peer keeps its inbox")
-            .try_recv(),
-        Ok(Envelope::Close)
-    ));
+            .try_recv()
+            .is_ok(),
+        "the message posted through the transferred end reaches the peer"
+    );
 }
 
 #[test]

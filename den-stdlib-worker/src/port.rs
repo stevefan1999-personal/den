@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     message::{Message, throw_data_clone},
     report::report_uncaught,
-    transport::{Envelope, PortHandle},
+    transport::PortHandle,
 };
 
 /// Everything a port shares with its pump.
@@ -45,7 +45,7 @@ struct PortState {
     /// can leave it behind: unreffing a port disables *delivery*, not receipt,
     /// and every envelope the peer already sent has to still be there when the
     /// next pump picks the queue up (HTML §9.4.4).
-    inbox:  RefCell<Option<UnboundedReceiver<Envelope>>>,
+    inbox:  RefCell<Option<UnboundedReceiver<Message>>>,
     /// The token of the pump run that is currently delivering, if any. `Some`
     /// is exactly "a pump future is live and this port is keeping the event
     /// loop awake".
@@ -117,7 +117,7 @@ impl NativePort {
         self.state
             .handle
             .try_borrow()
-            .is_ok_and(|handle| handle.as_ref().is_some_and(PortHandle::is_open))
+            .is_ok_and(|handle| handle.is_some())
     }
 
     /// Identity, by the one thing two `Class` handles to the same instance
@@ -132,9 +132,8 @@ impl NativePort {
     }
 
     /// Detach this end: stop the pump, drop whatever the peer sent and nobody
-    /// dispatched (HTML §10.2.4 step 4), hand the peer its `Close` (through
-    /// `PortHandle`'s `Drop`), and make every later operation a no-op.
-    /// Idempotent.
+    /// dispatched (HTML §10.2.4 step 4), drop the handle — which is what tells
+    /// the peer — and make every later operation a no-op. Idempotent.
     fn detach(&self) {
         self.stop.cancel();
         if let Ok(mut inbox) = self.state.inbox.try_borrow_mut() {
@@ -177,14 +176,14 @@ impl NativePort {
         }
     }
 
-    /// Await the next envelope without moving the inbox out of the port, so
+    /// Await the next message without moving the inbox out of the port, so
     /// that a run which ends leaves the queue behind for the next one.
     ///
     /// The inbox is borrowed for the length of a single poll and nothing else
     /// borrows it across an await, so the borrow cannot actually fail; waking
     /// and retrying is still the only answer to one that could not lose a
     /// queue.
-    fn recv(state: &PortState) -> impl Future<Output = Option<Envelope>> + '_ {
+    fn recv(state: &PortState) -> impl Future<Output = Option<Message>> + '_ {
         poll_fn(|cx| {
             if let Ok(mut inbox) = state.inbox.try_borrow_mut() {
                 inbox
@@ -197,7 +196,7 @@ impl NativePort {
         })
     }
 
-    /// One pump run: deliver every envelope until the peer goes away, until
+    /// One pump run: deliver every message until the peer goes away, until
     /// `close()` cancels the port, or until [`NativePort::pause`] ends this run
     /// alone.
     ///
@@ -213,23 +212,19 @@ impl NativePort {
         on_message_error: Function<'js>, on_close: Function<'js>,
     ) {
         loop {
-            let envelope = tokio::select! {
-                // Biased, and cancellation first: a paused run must not take an
-                // envelope on its way out, because the listener it would have
+            let message = tokio::select! {
+                // Biased, and cancellation first: a paused run must not take a
+                // message on its way out, because the listener it would have
                 // been dispatched to is the one that just went away.
                 biased;
                 () = run.cancelled() => return,
-                envelope = Self::recv(&state) => envelope,
+                message = Self::recv(&state) => message,
             };
-            match envelope {
-                Some(Envelope::Message(message)) => {
-                    Self::dispatch(&ctx, message, &on_message, &on_message_error)
-                }
-                // The peer is gone. Only a live run reaches this — a cancelled
-                // one returns above — so clearing `run` cannot clear a newer
-                // run's token.
-                Some(Envelope::Close) | None => break,
-            }
+            // `None` is the peer gone. Only a live run reaches this — a
+            // cancelled one returns above — so clearing `run` cannot clear a
+            // newer run's token.
+            let Some(message) = message else { break };
+            Self::dispatch(&ctx, message, &on_message, &on_message_error);
         }
         // Nothing will ever arrive again. Dropping our end announces the
         // closure to the peer in turn, and makes a later `post` the silent
@@ -295,7 +290,7 @@ impl NativePort {
         if let Ok(handle) = self.state.handle.try_borrow()
             && let Some(handle) = handle.as_ref()
         {
-            let _ = handle.send(Envelope::Message(message));
+            let _ = handle.send(message);
         }
         Ok(())
     }
