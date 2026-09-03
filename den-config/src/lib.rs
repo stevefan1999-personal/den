@@ -49,34 +49,28 @@ pub struct PolicyError {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Config {
-    imports:          Option<BTreeMap<String, String>>,
-    import_map:       Option<PathBuf>,
-    package_store:    Option<PathBuf>,
-    registries:       Option<BTreeMap<String, RegistryConfig>>,
-    dependencies:     Option<BTreeMap<String, String>>,
-    dev_dependencies: Option<BTreeMap<String, String>>,
-    permissions:      Option<PermissionsConfig>,
-    budgets:          Option<BudgetsConfig>,
-    tasks:            Option<BTreeMap<String, TaskConfig>>,
-    workspace:        Option<WorkspaceConfig>,
-    preloads:         Option<Vec<PathBuf>>,
-    source:           Option<ConfigSource>,
+    imports:       Option<BTreeMap<String, String>>,
+    import_map:    Option<PathBuf>,
+    package_store: Option<PathBuf>,
+    registries:    Option<BTreeMap<String, RegistryConfig>>,
+    dependencies:  Option<BTreeMap<String, String>>,
+    permissions:   Option<PermissionsConfig>,
+    budgets:       Option<BudgetsConfig>,
+    preloads:      Option<Vec<PathBuf>>,
+    source:        Option<ConfigSource>,
 }
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct RawConfig {
-    imports:          Option<BTreeMap<String, String>>,
-    import_map:       Option<PathBuf>,
-    package_store:    Option<PathBuf>,
-    registries:       Option<BTreeMap<String, RegistryConfig>>,
-    dependencies:     Option<BTreeMap<String, String>>,
-    dev_dependencies: Option<BTreeMap<String, String>>,
-    permissions:      Option<PermissionsConfig>,
-    budgets:          Option<BudgetsConfig>,
-    tasks:            Option<BTreeMap<String, TaskConfig>>,
-    workspace:        Option<WorkspaceConfig>,
-    preloads:         Option<Vec<PathBuf>>,
+    imports:       Option<BTreeMap<String, String>>,
+    import_map:    Option<PathBuf>,
+    package_store: Option<PathBuf>,
+    registries:    Option<BTreeMap<String, RegistryConfig>>,
+    dependencies:  Option<BTreeMap<String, String>>,
+    permissions:   Option<PermissionsConfig>,
+    budgets:       Option<BudgetsConfig>,
+    preloads:      Option<Vec<PathBuf>>,
 }
 
 impl Default for RawConfig {
@@ -86,17 +80,14 @@ impl Default for RawConfig {
 impl From<Config> for RawConfig {
     fn from(config: Config) -> Self {
         Self {
-            imports:          config.imports,
-            import_map:       config.import_map,
-            package_store:    config.package_store,
-            registries:       config.registries,
-            dependencies:     config.dependencies,
-            dev_dependencies: config.dev_dependencies,
-            permissions:      config.permissions,
-            budgets:          config.budgets,
-            tasks:            config.tasks,
-            workspace:        config.workspace,
-            preloads:         config.preloads,
+            imports:       config.imports,
+            import_map:    config.import_map,
+            package_store: config.package_store,
+            registries:    config.registries,
+            dependencies:  config.dependencies,
+            permissions:   config.permissions,
+            budgets:       config.budgets,
+            preloads:      config.preloads,
         }
     }
 }
@@ -104,18 +95,15 @@ impl From<Config> for RawConfig {
 impl From<RawConfig> for Config {
     fn from(raw: RawConfig) -> Self {
         Self {
-            imports:          raw.imports,
-            import_map:       raw.import_map,
-            package_store:    raw.package_store,
-            registries:       raw.registries,
-            dependencies:     raw.dependencies,
-            dev_dependencies: raw.dev_dependencies,
-            permissions:      raw.permissions,
-            budgets:          raw.budgets,
-            tasks:            raw.tasks,
-            workspace:        raw.workspace,
-            preloads:         raw.preloads,
-            source:           None,
+            imports:       raw.imports,
+            import_map:    raw.import_map,
+            package_store: raw.package_store,
+            registries:    raw.registries,
+            dependencies:  raw.dependencies,
+            permissions:   raw.permissions,
+            budgets:       raw.budgets,
+            preloads:      raw.preloads,
+            source:        None,
         }
     }
 }
@@ -136,8 +124,7 @@ pub enum RegistryConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RegistryOptions {
-    pub url:       String,
-    pub token_env: Option<String>,
+    pub url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -175,7 +162,6 @@ pub struct PermissionsConfig {
     pub ffi:         Option<Access<PathBuf>>,
     pub imports:     Option<Access<String>>,
     pub secrets:     Option<Access<String>>,
-    pub prompt:      Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -183,40 +169,6 @@ pub struct PermissionsConfig {
 pub struct BudgetsConfig {
     pub heap_bytes:  Option<u64>,
     pub stack_bytes: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum TaskConfig {
-    Command(String),
-    Detailed(TaskOptions),
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct TaskOptions {
-    pub command:      String,
-    pub description:  Option<String>,
-    pub cwd:          Option<PathBuf>,
-    #[serde(default)]
-    pub dependencies: Vec<String>,
-    #[serde(default)]
-    pub env:          BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum WorkspaceConfig {
-    Members(Vec<PathBuf>),
-    Detailed(WorkspaceOptions),
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceOptions {
-    pub members: Vec<PathBuf>,
-    #[serde(default)]
-    pub exclude: Vec<PathBuf>,
 }
 
 impl Config {
@@ -238,10 +190,6 @@ impl Config {
         self.dependencies.as_ref()
     }
 
-    pub const fn dev_dependencies(&self) -> Option<&BTreeMap<String, String>> {
-        self.dev_dependencies.as_ref()
-    }
-
     pub const fn permissions(&self) -> Option<&PermissionsConfig> { self.permissions.as_ref() }
 
     /// Convert configured permissions to den's deny-by-default host policy.
@@ -252,10 +200,6 @@ impl Config {
     }
 
     pub const fn budgets(&self) -> Option<&BudgetsConfig> { self.budgets.as_ref() }
-
-    pub const fn tasks(&self) -> Option<&BTreeMap<String, TaskConfig>> { self.tasks.as_ref() }
-
-    pub const fn workspace(&self) -> Option<&WorkspaceConfig> { self.workspace.as_ref() }
 
     pub fn preloads(&self) -> Option<&[PathBuf]> { self.preloads.as_deref() }
 
@@ -327,21 +271,12 @@ impl Config {
     fn resolve_paths(&mut self, root: &Path, source_path: &Path) -> Result<()> {
         resolve_import_targets(root, &mut self.imports)?;
         resolve_dependency_targets(root, &mut self.dependencies)?;
-        resolve_dependency_targets(root, &mut self.dev_dependencies)?;
         resolve_optional_path(root, &mut self.import_map);
         resolve_optional_path(root, &mut self.package_store);
         resolve_paths(root, &mut self.preloads);
 
         if let Some(permissions) = &mut self.permissions {
             permissions.resolve_paths(root, source_path)?;
-        }
-        if let Some(tasks) = &mut self.tasks {
-            for task in tasks.values_mut() {
-                task.resolve_paths(root);
-            }
-        }
-        if let Some(workspace) = &mut self.workspace {
-            workspace.resolve_paths(root);
         }
         Ok(())
     }
@@ -507,41 +442,6 @@ fn network_scope(value: &str, capability: Capability) -> std::result::Result<Sco
     })
 }
 
-impl TaskConfig {
-    fn resolve_paths(&mut self, root: &Path) {
-        match self {
-            Self::Command(command) => {
-                *self = Self::Detailed(TaskOptions {
-                    command:      std::mem::take(command),
-                    description:  None,
-                    cwd:          Some(root.to_path_buf()),
-                    dependencies: Vec::new(),
-                    env:          BTreeMap::new(),
-                });
-            }
-            Self::Detailed(options) => {
-                if options.cwd.is_none() {
-                    options.cwd = Some(root.to_path_buf());
-                } else {
-                    resolve_optional_path(root, &mut options.cwd);
-                }
-            }
-        }
-    }
-}
-
-impl WorkspaceConfig {
-    fn resolve_paths(&mut self, root: &Path) {
-        match self {
-            Self::Members(members) => resolve_path_list(root, members),
-            Self::Detailed(options) => {
-                resolve_path_list(root, &mut options.members);
-                resolve_path_list(root, &mut options.exclude);
-            }
-        }
-    }
-}
-
 const fn jsonc_options() -> ParseOptions {
     ParseOptions {
         allow_comments:                    true,
@@ -687,7 +587,7 @@ mod tests {
     use den_capabilities::{Decision, Request};
     use tempfile::tempdir;
 
-    use super::{Access, Config, ConfigError, TaskConfig, WorkspaceConfig, file_url};
+    use super::{Access, Config, ConfigError, file_url};
 
     fn write(path: &Path, text: &str) { fs::write(path, text).expect("write test configuration"); }
 
@@ -706,10 +606,6 @@ mod tests {
                     "read": ["data"],
                     "ffi": ["native/plugin.so"],
                 },
-                "tasks": {
-                    "dev": { "command": "den run main.ts", "cwd": "app" },
-                },
-                "workspace": { "members": ["a"], "exclude": ["a/tmp"] },
             }"#,
         );
 
@@ -730,16 +626,13 @@ mod tests {
                 .and_then(|value| value.read.as_ref()),
             Some(&Access::List(vec![temp.path().join("data")]))
         );
-        let tasks = config.tasks.as_ref().expect("tasks configured");
-        let TaskConfig::Detailed(task) = tasks.get("dev").expect("dev task") else {
-            panic!("dev task should be detailed")
-        };
-        assert_eq!(task.cwd, Some(temp.path().join("app")));
-        let WorkspaceConfig::Detailed(workspace) = config.workspace.expect("workspace") else {
-            panic!("workspace should be detailed")
-        };
-        assert_eq!(workspace.members, vec![temp.path().join("a")]);
-        assert_eq!(workspace.exclude, vec![temp.path().join("a/tmp")]);
+        assert_eq!(
+            config
+                .permissions
+                .as_ref()
+                .and_then(|value| value.ffi.as_ref()),
+            Some(&Access::List(vec![temp.path().join("native/plugin.so")]))
+        );
     }
 
     #[test]
@@ -792,6 +685,10 @@ mod tests {
             ("envFiles", r#"{ "envFiles": [] }"#),
             ("timeoutMs", r#"{ "budgets": { "timeoutMs": 1 } }"#),
             ("maxWorkers", r#"{ "budgets": { "maxWorkers": 1 } }"#),
+            ("devDependencies", r#"{ "devDependencies": {} }"#),
+            ("tasks", r#"{ "tasks": {} }"#),
+            ("workspace", r#"{ "workspace": [] }"#),
+            ("prompt", r#"{ "permissions": { "prompt": true } }"#),
         ] {
             write(&malformed, body);
             let error = Config::load(&malformed).expect_err("unknown field should fail");
@@ -802,6 +699,17 @@ mod tests {
                 "{key}: {error}"
             );
         }
+
+        // An untagged enum reports a variant mismatch rather than the field
+        // name.
+        write(
+            &malformed,
+            r#"{ "registries": { "r": { "url": "https://r.test/", "tokenEnv": "T" } } }"#,
+        );
+        assert!(
+            matches!(Config::load(&malformed), Err(ConfigError::Parse { .. })),
+            "tokenEnv must be rejected"
+        );
     }
 
     #[test]
