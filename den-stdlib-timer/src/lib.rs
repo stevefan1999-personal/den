@@ -166,11 +166,7 @@ pub mod timer {
     #[qjs(evaluate)]
     pub fn evaluate<'js>(ctx: &Ctx<'js>, _: &Exports<'js>) -> Result<()> {
         if ctx.userdata::<Timers>().is_none() {
-            ctx.store_userdata(Timers::default())
-                .map(|_| ())
-                .map_err(|_error| {
-                    rquickjs::Exception::throw_internal(ctx, "timers are already installed")
-                })?;
+            ctx.store_userdata(Timers::default()).map(|_| ())?;
         }
         let globals = ctx.globals();
         globals.set("setTimeout", js_set_timeout)?;
