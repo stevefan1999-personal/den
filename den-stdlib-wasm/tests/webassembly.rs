@@ -148,3 +148,8 @@ async fn an_error_thrown_by_an_import_reaches_the_caller_unchanged() -> eyre::Re
 async fn a_trap_in_the_start_function_is_a_runtime_error() -> eyre::Result<()> {
     run("start_trap.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflection_dictionaries_keep_their_spec_key_order() -> eyre::Result<()> {
+    run("reflection_types.js").await
+}

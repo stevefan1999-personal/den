@@ -4,10 +4,9 @@
 
 use std::cell::RefCell;
 
-use indexmap::indexmap;
 use rquickjs::{
-    ArrayBuffer, Coerced, Constructor, Ctx, Exception, FromJs, Function, IntoJs as _, JsLifetime,
-    Object, Result, Value, class::Trace, qjs,
+    ArrayBuffer, Coerced, Constructor, Ctx, Exception, FromJs, Function, JsLifetime, Object,
+    Result, Value, class::Trace, qjs,
 };
 use wasmtime::{AsContext, Memory as WasmMemory, MemoryTypeBuilder, RefType, ValType};
 
@@ -509,16 +508,13 @@ impl Memory {
             let ty = self.inner.ty(&store);
             Ok((ty.minimum(), ty.maximum(), ty.is_shared()))
         })?;
-        let mut ty = indexmap! {
-            "minimum" => minimum.into_js(&ctx)?,
-            "shared" => shared.into_js(&ctx)?,
-        };
+        let ty = Object::new(ctx.clone())?;
+        ty.set("minimum", minimum)?;
+        ty.set("shared", shared)?;
         if let Some(maximum) = maximum {
-            ty.insert("maximum", maximum.into_js(&ctx)?);
+            ty.set("maximum", maximum)?;
         }
-        ty.into_js(&ctx)?
-            .into_object()
-            .ok_or_else(|| Exception::throw_type(&ctx, "memory type is not an object"))
+        Ok(ty)
     }
 
     #[qjs(rename = "toFixedLengthBuffer")]

@@ -1,9 +1,7 @@
 //! `WebAssembly.Global`.
 
-use indexmap::indexmap;
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs, IntoJs as _, JsLifetime, Object, Result, Value, class::Trace,
-    prelude::Opt,
+    Coerced, Ctx, Exception, FromJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
 };
 use wasmtime::{Global as WasmGlobal, GlobalType, Mutability, ValType};
 
@@ -118,13 +116,10 @@ impl Global {
         let value = ValueTypeName::get(declared.content()).ok_or_else(|| {
             Exception::throw_type(&ctx, "this global's value type has no JS name")
         })?;
-        indexmap! {
-            "mutable" => matches!(declared.mutability(), Mutability::Var).into_js(&ctx)?,
-            "value" => value.into_js(&ctx)?,
-        }
-        .into_js(&ctx)?
-        .into_object()
-        .ok_or_else(|| Exception::throw_type(&ctx, "global type is not an object"))
+        let ty = Object::new(ctx.clone())?;
+        ty.set("mutable", matches!(declared.mutability(), Mutability::Var))?;
+        ty.set("value", value)?;
+        Ok(ty)
     }
 
     #[qjs(rename = "valueOf")]

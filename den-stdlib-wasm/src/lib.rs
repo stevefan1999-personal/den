@@ -479,11 +479,13 @@ pub mod wasm {
                 Promised(async move {
                     let module = Module::compile(&instantiate_ctx, bytes)?;
                     let instance = Instance::instantiate(&instantiate_ctx, &module, imports)?;
-                    indexmap::indexmap! {
-                        "module" => Class::instance(instantiate_ctx.clone(), module)?.into_js(&instantiate_ctx)?,
-                        "instance" => Class::instance(instantiate_ctx.clone(), instance)?.into_js(&instantiate_ctx)?,
-                    }
-                    .into_js(&instantiate_ctx)
+                    let pair = Object::new(instantiate_ctx.clone())?;
+                    pair.set("module", Class::instance(instantiate_ctx.clone(), module)?)?;
+                    pair.set(
+                        "instance",
+                        Class::instance(instantiate_ctx.clone(), instance)?,
+                    )?;
+                    pair.into_js(&instantiate_ctx)
                 })
                 .into_js(&ctx)
             }

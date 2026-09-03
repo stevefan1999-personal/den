@@ -1,9 +1,7 @@
 //! `WebAssembly.Table`.
 
-use indexmap::indexmap;
 use rquickjs::{
-    Coerced, Ctx, Exception, FromJs, IntoJs as _, JsLifetime, Object, Result, Value, class::Trace,
-    prelude::Opt,
+    Coerced, Ctx, Exception, FromJs, JsLifetime, Object, Result, Value, class::Trace, prelude::Opt,
 };
 use wasmtime::{Ref, Table as WasmTable, TableType, ValType};
 
@@ -134,16 +132,13 @@ impl Table {
         let element = ValueTypeName::get(&element).ok_or_else(|| {
             Exception::throw_type(&ctx, "this table's element type has no JS name")
         })?;
-        let mut ty = indexmap! {
-            "element" => element.into_js(&ctx)?,
-            "minimum" => minimum.into_js(&ctx)?,
-        };
+        let ty = Object::new(ctx.clone())?;
+        ty.set("element", element)?;
+        ty.set("minimum", minimum)?;
         if let Some(maximum) = maximum {
-            ty.insert("maximum", maximum.into_js(&ctx)?);
+            ty.set("maximum", maximum)?;
         }
-        ty.into_js(&ctx)?
-            .into_object()
-            .ok_or_else(|| Exception::throw_type(&ctx, "table type is not an object"))
+        Ok(ty)
     }
 
     pub fn get<'js>(&self, index: EnforceRange, ctx: Ctx<'js>) -> Result<Value<'js>> {
