@@ -592,10 +592,7 @@ fn skip_preflight_header(name: &str) -> bool {
         || is_forbidden_request_header(name, "")
 }
 
-fn orb_blocks(content_type: Option<&str>, _nosniff: bool, status: u16) -> bool {
-    if status == 206 {
-        return true;
-    }
+fn orb_blocks(content_type: Option<&str>, status: u16) -> bool {
     let essence = content_type
         .unwrap_or("")
         .split(';')
@@ -603,25 +600,23 @@ fn orb_blocks(content_type: Option<&str>, _nosniff: bool, status: u16) -> bool {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    if matches!(
-        essence.as_str(),
-        "text/html"
-            | "application/json"
-            | "text/json"
-            | "text/javascript"
-            | "application/javascript"
-            | "application/x-javascript"
-            | "text/ecmascript"
-            | "application/xml"
-            | "text/xml"
-            | "font/ttf"
-            | "font/woff"
-            | "font/woff2"
-            | "application/gzip"
-    ) {
-        return true;
-    }
-    false
+    status == 206
+        || matches!(
+            essence.as_str(),
+            "text/html"
+                | "application/json"
+                | "text/json"
+                | "text/javascript"
+                | "application/javascript"
+                | "application/x-javascript"
+                | "text/ecmascript"
+                | "application/xml"
+                | "text/xml"
+                | "font/ttf"
+                | "font/woff"
+                | "font/woff2"
+                | "application/gzip"
+        )
 }
 
 fn corp_blocks(corp: Option<&str>, same_origin: bool, same_site: bool) -> bool {
@@ -1664,12 +1659,7 @@ impl<'js> HttpFetch<'_, 'js> {
             ) {
                 return Err(network_error(ctx, "CORP blocked"));
             }
-            if orb_blocks(
-                header_value(&wire_pairs, "content-type"),
-                header_value(&wire_pairs, "x-content-type-options")
-                    .is_some_and(|value| value.eq_ignore_ascii_case("nosniff")),
-                status,
-            ) {
+            if orb_blocks(header_value(&wire_pairs, "content-type"), status) {
                 return Err(network_error(ctx, "ORB blocked"));
             }
             let headers =
@@ -1924,9 +1914,18 @@ fn cached_response<'js>(
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_directive, cors_safelisted_request_header, directive_secs, parse_max_age,
+        cache_directive, cors_safelisted_request_header, directive_secs, orb_blocks, parse_max_age,
         request_max_stale,
     };
+
+    #[test]
+    fn orb_blocks_partial_content_and_the_blocked_mime_essences() {
+        assert!(orb_blocks(Some("image/png"), 206));
+        assert!(orb_blocks(Some("text/html; charset=utf-8"), 200));
+        assert!(orb_blocks(Some("APPLICATION/JSON"), 200));
+        assert!(!orb_blocks(Some("image/png"), 200));
+        assert!(!orb_blocks(None, 200));
+    }
 
     fn cache_control(value: &str) -> Vec<(String, String)> {
         vec![("cache-control".to_string(), value.to_string())]
