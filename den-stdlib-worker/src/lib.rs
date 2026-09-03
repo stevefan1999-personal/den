@@ -125,28 +125,17 @@ pub mod worker_module {
             report_error.set("prototype", Object::new(ctx.clone())?)?;
         }
 
-        let api = Object::new(ctx.clone())?;
-        for name in crate::API {
-            if name == "navigator" || name == "performance" {
-                continue;
-            }
-            api.set(name, namespace.get::<_, Value>(name)?)?;
-        }
-        api.set(
-            "performance",
-            crate::performance::Performance::instance(ctx)?,
-        )?;
-        crate::navigator::install(ctx, &api)?;
-
         let globals = ctx.globals();
         for name in crate::API {
-            let value: Value<'js> = api.get(name)?;
-            if !value.is_undefined() {
-                if name == "navigator" {
-                    globals.prop(name, Property::from(value.clone()).enumerable())?;
-                } else {
-                    globals.set(name, value.clone())?;
-                }
+            let value: Value<'js> = match name {
+                "performance" => crate::performance::Performance::instance(ctx)?.into_value(),
+                "navigator" => crate::navigator::Navigator::instance(ctx)?.into_value(),
+                _ => namespace.get(name)?,
+            };
+            if name == "navigator" {
+                globals.prop(name, Property::from(value.clone()).enumerable())?;
+            } else {
+                globals.set(name, value.clone())?;
             }
             exports.export(name, value)?;
         }

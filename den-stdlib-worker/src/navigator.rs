@@ -6,7 +6,7 @@ use std::num::NonZero;
 
 use rquickjs::{
     Array, Class, Ctx, Exception, JsLifetime, Object, Result, Value, atom::PredefinedAtom,
-    class::Trace, object::Property,
+    class::Trace,
 };
 
 use crate::events::freeze;
@@ -307,11 +307,4 @@ impl<'js> Navigator<'js> {
 
     #[qjs(prop, rename = PredefinedAtom::SymbolToStringTag, configurable)]
     pub const fn to_string_tag() -> &'static str { "Navigator" }
-}
-
-/// Install `NavigatorUAData` is the module's job; this places the `navigator`
-/// instance on `target` as a non-writable, non-configurable data property.
-pub(crate) fn install<'js>(ctx: &Ctx<'js>, target: &Object<'js>) -> Result<()> {
-    let navigator = Navigator::instance(ctx)?;
-    target.prop("navigator", Property::from(navigator).enumerable())
 }
