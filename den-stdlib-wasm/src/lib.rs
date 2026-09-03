@@ -15,7 +15,7 @@ use rquickjs::{
     Coerced, Constructor, Ctx, Exception, Filter, FromJs as _, Function, IntoAtom, IntoJs,
     JsLifetime, Object, Result, Value,
     atom::PredefinedAtom,
-    function::{Async, Opt, This},
+    function::{Args, Async, Opt, This},
     object::{Accessor, AsProperty, Property},
     promise::MaybePromise,
     qjs,
@@ -333,26 +333,27 @@ fn wasm_namespace<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>> { ctx.globals().ge
 /// `namespace.compile` / `namespace.instantiate`. Looked up on the global at
 /// call time so the closures hold no JS values the GC cannot trace.
 fn install_streaming<'js>(ctx: &Ctx<'js>, namespace: &Object<'js>) -> Result<()> {
-    let compile_streaming = Function::new(
-        ctx.clone(),
-        Async(move |ctx: Ctx<'js>, source: Opt<Value<'js>>| {
-            async move {
-                let bytes = wasm_bytes(
-                    ctx.clone(),
-                    source
-                        .0
-                        .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                )
-                .await?;
-                wasm_namespace(&ctx)?
-                    .get::<_, Function>("compile")?
-                    .call::<_, Value>((bytes,))
-            }
-        }),
-    )?
-    .with_name("compileStreaming")?
-    .with_length(1)?;
-    let instantiate_streaming = Function::new(
+    for (name, target, length) in [
+        ("compileStreaming", "compile", 1),
+        ("instantiateStreaming", "instantiate", 2),
+    ] {
+        namespace.prop(
+            name,
+            Property::from(streaming(ctx, name, target, length)?)
+                .writable()
+                .configurable(),
+        )?;
+    }
+    Ok(())
+}
+
+/// One streaming function: the public `name`, and the `target` operation on the
+/// namespace it delegates to once the Response has produced its bytes. The two
+/// differ — a single name would make each function call itself.
+fn streaming<'js>(
+    ctx: &Ctx<'js>, name: &'static str, target: &'static str, length: usize,
+) -> Result<Function<'js>> {
+    Function::new(
         ctx.clone(),
         Async(
             move |ctx: Ctx<'js>, source: Opt<Value<'js>>, import_object: Opt<Value<'js>>| {
@@ -364,31 +365,20 @@ fn install_streaming<'js>(ctx: &Ctx<'js>, namespace: &Object<'js>) -> Result<()>
                             .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
                     )
                     .await?;
+                    let mut args = Args::new(ctx.clone(), 2);
+                    args.push_arg(bytes)?;
+                    if let Some(imports) = import_object.0 {
+                        args.push_arg(imports)?;
+                    }
                     wasm_namespace(&ctx)?
-                        .get::<_, Function>("instantiate")?
-                        .call::<_, Value>((
-                            bytes,
-                            import_object
-                                .0
-                                .unwrap_or_else(|| Value::new_undefined(ctx.clone())),
-                        ))
+                        .get::<_, Function>(target)?
+                        .call_arg::<Value>(args)
                 }
             },
         ),
     )?
-    .with_name("instantiateStreaming")?
-    .with_length(2)?;
-    namespace.prop(
-        "compileStreaming",
-        Property::from(compile_streaming).writable().configurable(),
-    )?;
-    namespace.prop(
-        "instantiateStreaming",
-        Property::from(instantiate_streaming)
-            .writable()
-            .configurable(),
-    )?;
-    Ok(())
+    .with_name(name)?
+    .with_length(length)
 }
 
 #[rquickjs::module]
