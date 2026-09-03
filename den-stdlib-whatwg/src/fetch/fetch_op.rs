@@ -1189,8 +1189,9 @@ impl<'js> HttpFetch<'_, 'js> {
         if hops > 20 {
             return Err(network_error(ctx, "Too many redirects"));
         }
-        // The specification's "request's body's source is null" case: a stream body
-        // was already handed to the transport and there is nothing to replay.
+        // The specification's "request's body's source is null" case: a stream
+        // body was already handed to the transport and there is nothing
+        // to replay.
         if matches!(body, Outgoing::Spent) {
             return Err(network_error(
                 ctx,
@@ -1608,8 +1609,9 @@ impl<'js> HttpFetch<'_, 'js> {
         let mut pairs = wire_pairs.clone();
         if cors_mode && cross_origin {
             let include = credentials == "include";
-            // Validate against the origin that was actually sent: a cross-origin
-            // redirect taints it to "null", and the server opts back in with
+            // Validate against the origin that was actually sent: a
+            // cross-origin redirect taints it to "null", and the
+            // server opts back in with
             // `Access-Control-Allow-Origin: null`.
             if !check_acao(
                 single_header_value(&pairs, "access-control-allow-origin"),
@@ -1744,8 +1746,9 @@ impl<'js> HttpFetch<'_, 'js> {
             return Ok(produced);
         }
 
-        // Every cache entry this response would populate, described up front so the
-        // body can be streamed and mirrored into them instead of pre-buffered.
+        // Every cache entry this response would populate, described up front so
+        // the body can be streamed and mirrored into them instead of
+        // pre-buffered.
         let mut cache_writes = Vec::new();
         if matches!(method.as_str(), "POST" | "PATCH")
             && (200..300).contains(&status)
@@ -1783,9 +1786,10 @@ impl<'js> HttpFetch<'_, 'js> {
 
         // Stream unless the whole body is needed before any of it can be handed
         // over, which is only subresource integrity: it has to hash the body to
-        // decide whether the response exists at all. Size is not a reason — a body
-        // that fits in memory is still one the consumer wants the first chunk of
-        // now — and neither is caching, which the fill mirrors as bytes flow.
+        // decide whether the response exists at all. Size is not a reason — a
+        // body that fits in memory is still one the consumer wants the
+        // first chunk of now — and neither is caching, which the fill
+        // mirrors as bytes flow.
         let content_len = response.content_length();
         if integrity.is_empty() {
             let mut produced = Response::from_reqwest(ctx, response, kind, headers);

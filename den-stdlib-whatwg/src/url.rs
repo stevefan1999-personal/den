@@ -617,8 +617,8 @@ fn normalize_opaque_path(mut url: Url) -> Url {
         && (url.query().is_some() || url.fragment().is_some())
         && let Some(path) = url.path().strip_suffix(' ')
     {
-        // ponytail: rust-url 2.5.8 predates the current opaque-path trailing-space
-        // rule.
+        // ponytail: rust-url 2.5.8 predates the current opaque-path
+        // trailing-space rule.
         url.set_path(&format!("{path}%20"));
     }
     url
@@ -737,8 +737,8 @@ fn pairs_from_init<'js>(ctx: &Ctx<'js>, init: Option<Value<'js>>) -> Result<Vec<
         return Ok(parse_urlencoded(&Host::coerce_usv_string(ctx, value)?));
     };
     if is_dom_exception_prototype(ctx, object) {
-        // QuickJS marks DOMException's branded accessors non-enumerable; browsers do
-        // not.
+        // QuickJS marks DOMException's branded accessors non-enumerable;
+        // browsers do not.
         return Err(Host::throw_type(ctx, "Illegal invocation"));
     }
     let mut record = IndexMap::new();

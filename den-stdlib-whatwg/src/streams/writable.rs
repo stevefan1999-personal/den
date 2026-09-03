@@ -193,12 +193,8 @@ impl<'js> WritableStream<'js> {
         Class::instance(ctx.clone(), Self { inner, controller })
     }
 
-    /// The pipe needs the destination's failure state and its capacity signal
-    /// without going through a writer object.
-    pub(crate) fn stored_error_for_pipe(inner: &Inner<'js>) -> Option<Value<'js>> {
-        Self::stored_error(inner)
-    }
-
+    /// The pipe needs the destination's state without going through a writer
+    /// object.
     pub(crate) fn is_closed_for_pipe(inner: &Inner<'js>) -> bool {
         matches!(inner.borrow().state, WsState::Closed) || Self::close_queued_or_in_flight(inner)
     }
@@ -266,7 +262,7 @@ impl<'js> WritableStream<'js> {
             .is_some_and(|slot| slot.id == id)
     }
 
-    fn stored_error(inner: &Inner<'js>) -> Option<Value<'js>> {
+    pub(crate) fn stored_error(inner: &Inner<'js>) -> Option<Value<'js>> {
         match &inner.borrow().state {
             WsState::Erroring(reason) | WsState::Errored(reason) => Some(reason.clone()),
             _ => None,
@@ -461,8 +457,9 @@ impl<'js> WritableStream<'js> {
         match outcome {
             Ok(value) => {
                 let (resolve, reject) = abort.cap.into_parts();
-                // Pinning the controller is what keeps the record's JS values alive
-                // for the length of this operation: see the note on
+                // Pinning the controller is what keeps the record's JS values
+                // alive for the length of this operation: see
+                // the note on
                 // `ReadableStreamDefaultController`.
                 let pin = Pins::hold(ctx, Self::keeper(inner));
                 let settle = |handler: Option<Function<'js>>, rejected: bool| {

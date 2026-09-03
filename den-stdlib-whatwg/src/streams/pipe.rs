@@ -234,7 +234,7 @@ impl<'js> PipeRecord<'js> {
         // readable side.
         PipeRecord::watch_endpoints(ctx, &state);
         let source_error = ReadableStream::stored_error(&source_inner);
-        let dest_error = WritableStream::stored_error_for_pipe(&dest_inner);
+        let dest_error = WritableStream::stored_error(&dest_inner);
         if let Some(reason) = source_error {
             PipeRecord::shutdown(ctx, &state, Some(reason), Shutdown::AbortDest);
         } else if let Some(reason) = dest_error {
@@ -338,7 +338,7 @@ impl<'js> PipeRecord<'js> {
         // A destination that already failed or finished ends the pipe before
         // the next read, so a chunk is never read for a sink that
         // cannot take it.
-        if let Some(reason) = WritableStream::stored_error_for_pipe(&dest_inner) {
+        if let Some(reason) = WritableStream::stored_error(&dest_inner) {
             PipeRecord::shutdown(ctx, state, Some(reason), Shutdown::CancelSource);
             return;
         }
@@ -529,7 +529,7 @@ impl<'js> PipeRecord<'js> {
                     .unwrap_or_else(|| type_error(ctx, "the pipe was aborted"));
                 let mut actions = Vec::new();
                 if !prevent_abort
-                    && WritableStream::stored_error_for_pipe(&dest_inner).is_none()
+                    && WritableStream::stored_error(&dest_inner).is_none()
                     && !WritableStream::is_closed_for_pipe(&dest_inner)
                     && let Ok(promise) =
                         WritableStream::abort_stream(ctx, &dest_inner, reason.clone())

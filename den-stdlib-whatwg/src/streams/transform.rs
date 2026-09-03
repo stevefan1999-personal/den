@@ -255,7 +255,7 @@ fn cancel_finish<'js>(
     };
     let capture_error = from_source
         && writable_of(shared)
-            .and_then(|writable| WritableStream::stored_error_for_pipe(&writable))
+            .and_then(|writable| WritableStream::stored_error(&writable))
             .is_none();
     let cancelled = match cancel_fn {
         Some(cancel) => {
@@ -267,8 +267,8 @@ fn cancel_finish<'js>(
         None => Value::new_undefined(ctx.clone()),
     };
     if capture_error {
-        owned.borrow_mut().finish_error = writable_of(shared)
-            .and_then(|writable| WritableStream::stored_error_for_pipe(&writable));
+        owned.borrow_mut().finish_error =
+            writable_of(shared).and_then(|writable| WritableStream::stored_error(&writable));
     }
     clear_algorithms(shared);
     let on_ok = {
@@ -358,7 +358,7 @@ fn resume_parked<'js>(ctx: &Ctx<'js>, shared: &Shared<'js>, id: u64) {
     // erroring while this write was parked rejects with its stored error
     // rather than running the transformer.
     if let Some(reason) =
-        writable_of(shared).and_then(|writable| WritableStream::stored_error_for_pipe(&writable))
+        writable_of(shared).and_then(|writable| WritableStream::stored_error(&writable))
     {
         cap.reject(reason);
         return;
