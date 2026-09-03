@@ -733,9 +733,9 @@ mod tests {
         let allowed = Request::read(temp.path().join("data/file.txt")).expect("read request");
         let denied = Request::read(temp.path().join("data/private/key")).expect("read request");
         let outside = Request::read(temp.path().join("other.txt")).expect("read request");
-        assert_eq!(policy.query(&allowed).decision(), Decision::Allowed);
-        assert_eq!(policy.query(&denied).decision(), Decision::Denied);
-        assert_eq!(policy.query(&outside).decision(), Decision::Denied);
+        assert_eq!(policy.decision(&allowed), Decision::Allowed);
+        assert_eq!(policy.decision(&denied), Decision::Denied);
+        assert_eq!(policy.decision(&outside), Decision::Denied);
         assert!(
             policy
                 .check(&Request::env("PUBLIC_TOKEN").expect("env request"))

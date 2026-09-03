@@ -1,10 +1,7 @@
 //! Den's deny-by-default capability policy kernel.
 //!
-//! A [`Policy`] is one layer of allow and deny rules. [`Policy::attenuate`]
-//! keeps parent and child policies as conjunctive layers: every layer must
-//! allow a request, while a deny in any layer wins. Keeping the intersection
-//! logical avoids lossy scope rewriting and makes it impossible for a child
-//! to broaden its parent.
+//! A [`Policy`] is a flat list of allow and deny rules: a request is allowed
+//! when at least one rule allows it and no rule denies it.
 //!
 //! These are host-side policy values. Den's standard-library operations do not
 //! enforce them yet; embedders must call [`Policy::check`] at their boundaries.
@@ -76,11 +73,6 @@ pub enum Effect {
 pub enum Decision {
     Allowed,
     Denied,
-}
-
-impl Decision {
-    #[must_use]
-    pub const fn is_allowed(self) -> bool { matches!(self, Self::Allowed) }
 }
 
 /// Invalid policy or request input. Invalid input is never widened into an
@@ -246,9 +238,6 @@ impl NormalizedHost {
 
     #[must_use]
     pub fn as_ip_addr(&self) -> Option<IpAddr> { self.0.parse().ok() }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str { &self.0 }
 }
 
 impl fmt::Display for NormalizedHost {
@@ -260,7 +249,7 @@ impl fmt::Display for NormalizedHost {
 pub struct Cidr(IpNet);
 
 impl Cidr {
-    pub fn new(network: IpNet) -> Result<Self, ScopeError> {
+    fn new(network: IpNet) -> Result<Self, ScopeError> {
         if matches!(network, IpNet::V6(network) if network.addr().to_ipv4_mapped().is_some()) {
             return Err(ScopeError::InvalidCidr);
         }
@@ -275,9 +264,6 @@ impl Cidr {
             .map_err(|_error| ScopeError::InvalidCidr)
             .and_then(Self::new)
     }
-
-    #[must_use]
-    pub const fn network(self) -> IpNet { self.0 }
 
     #[must_use]
     pub fn contains(self, address: &IpAddr) -> bool {
@@ -318,12 +304,6 @@ impl PortRange {
     }
 
     #[must_use]
-    pub const fn start(self) -> u16 { self.start }
-
-    #[must_use]
-    pub const fn end(self) -> u16 { self.end }
-
-    #[must_use]
     pub fn contains(self, port: u16) -> bool { (self.start..=self.end).contains(&port) }
 }
 
@@ -348,12 +328,6 @@ impl NetworkScope {
             ports,
         })
     }
-
-    #[must_use]
-    pub const fn host_scope(&self) -> &HostScope { &self.host }
-
-    #[must_use]
-    pub const fn ports(&self) -> PortRange { self.ports }
 
     #[must_use]
     pub fn matches(&self, requested: &NetworkTarget, effect: Effect) -> bool {
@@ -426,15 +400,6 @@ impl NetworkTarget {
         Ok(target)
     }
 
-    #[must_use]
-    pub const fn host(&self) -> &NormalizedHost { &self.host }
-
-    #[must_use]
-    pub const fn port(&self) -> u16 { self.port }
-
-    #[must_use]
-    pub fn resolved(&self) -> &[IpAddr] { &self.resolved }
-
     fn matches_resolved(&self, effect: Effect, predicate: impl Fn(IpAddr) -> bool) -> bool {
         if let Some(address) = self.host.as_ip_addr().map(normalize_ip) {
             return predicate(address);
@@ -488,9 +453,6 @@ impl UrlPrefix {
         }
         Ok(Self(target.0))
     }
-
-    #[must_use]
-    pub const fn as_url(&self) -> &Url { &self.0 }
 
     #[must_use]
     pub fn matches(&self, target: &ImportTarget) -> bool {
@@ -595,23 +557,6 @@ pub enum Scope {
 
 impl Scope {
     #[must_use]
-    pub const fn capability(&self) -> Capability {
-        match self {
-            Self::All(capability) => *capability,
-            Self::Read(_) => Capability::Read,
-            Self::Write(_) => Capability::Write,
-            Self::NetConnect(_) => Capability::NetConnect,
-            Self::NetListen(_) => Capability::NetListen,
-            Self::Env(_) => Capability::Env,
-            Self::Run(_) => Capability::Run,
-            Self::Sys(_) => Capability::Sys,
-            Self::Ffi(_) => Capability::Ffi,
-            Self::Import(_) => Capability::Import,
-            Self::Secrets(_) => Capability::Secrets,
-        }
-    }
-
-    #[must_use]
     fn matches(&self, effect: Effect, requested: &Request) -> bool {
         match (self, requested) {
             (Self::All(scope), request) => *scope == request.capability(),
@@ -627,11 +572,6 @@ impl Scope {
             (Self::Import(scope), Request::Import(target)) => scope.matches(target),
             _ => false,
         }
-    }
-
-    #[must_use]
-    fn is_all_for(&self, capability: Capability) -> bool {
-        matches!(self, Self::All(scope) if *scope == capability)
     }
 }
 
@@ -688,24 +628,8 @@ impl Request {
         ResourceName::new(name).map(Self::Env)
     }
 
-    pub fn run_path<P: AsRef<Path>>(path: P) -> Result<Self, ScopeError> {
-        NormalizedPath::new(path).map(Self::Run)
-    }
-
-    pub fn sys<S: Into<String>>(name: S) -> Result<Self, ScopeError> {
-        ResourceName::new(name).map(Self::Sys)
-    }
-
-    pub fn ffi<P: AsRef<Path>>(path: P) -> Result<Self, ScopeError> {
-        NormalizedPath::new(path).map(Self::Ffi)
-    }
-
     pub fn import<S: AsRef<str>>(url: S) -> Result<Self, ScopeError> {
         ImportTarget::new(url).map(Self::Import)
-    }
-
-    pub fn secret<S: Into<String>>(name: S) -> Result<Self, ScopeError> {
-        ResourceName::new(name).map(Self::Secrets)
     }
 
     #[must_use]
@@ -745,11 +669,6 @@ pub struct PermissionDenied {
     pub requested:  Request,
 }
 
-impl PermissionDenied {
-    /// A machine-readable identifier that is stable across message changes.
-    pub const CODE: &'static str = "DEN_CAPABILITY_DENIED";
-}
-
 impl fmt::Display for PermissionDenied {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -786,24 +705,13 @@ impl Rule {
         }
     }
 
-    #[must_use]
-    pub const fn effect(&self) -> Effect { self.effect }
-
-    #[must_use]
-    pub const fn scope(&self) -> &Scope { &self.scope }
-
     fn matches(&self, requested: &Request) -> bool { self.scope.matches(self.effect, requested) }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Layer {
-    rules: Vec<Rule>,
-}
-
-/// A policy. Empty policies deny every request.
+/// A flat rule list. Empty policies deny every request.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Policy {
-    layers: Vec<Layer>,
+    rules: Vec<Rule>,
 }
 
 #[cfg(feature = "rquickjs")]
@@ -819,32 +727,12 @@ impl Policy {
     #[must_use]
     pub fn new<I: IntoIterator<Item = Rule>>(rules: I) -> Self {
         Self {
-            layers: vec![Layer {
-                rules: rules.into_iter().collect(),
-            }],
+            rules: rules.into_iter().collect(),
         }
     }
 
-    #[must_use]
-    pub fn allow_all<I: IntoIterator<Item = Capability>>(capabilities: I) -> Self {
-        Self::new(
-            capabilities
-                .into_iter()
-                .map(|capability| Rule::allow(Scope::All(capability))),
-        )
-    }
-
-    /// Intersect this parent with a child policy. Neither an empty policy nor
-    /// a child allow can broaden the parent.
-    #[must_use]
-    pub fn attenuate(&self, child: &Self) -> Self {
-        let mut layers = self.effective_layers();
-        layers.extend(child.effective_layers());
-        Self { layers }
-    }
-
     pub fn check(&self, requested: &Request) -> Result<(), PermissionDenied> {
-        if self.query(requested).decision().is_allowed() {
+        if self.decision(requested) == Decision::Allowed {
             Ok(())
         } else {
             Err(PermissionDenied {
@@ -854,105 +742,25 @@ impl Policy {
         }
     }
 
-    /// Query one concrete resource and retain access to all and matching
-    /// rules without allocating a diagnostic copy.
-    #[must_use]
-    pub fn query<'policy, 'request>(
-        &'policy self, requested: &'request Request,
-    ) -> QueryResult<'policy, 'request> {
-        QueryResult {
-            policy: self,
-            requested,
-            decision: self.decision(requested),
-        }
-    }
-
-    /// Whether every possible resource of `capability` is allowed. A scoped
-    /// allow cannot prove this, and any scoped or global deny makes it false.
-    #[must_use]
-    pub fn query_all(&self, capability: Capability) -> Decision {
-        if self.layers.is_empty() {
-            return Decision::Denied;
-        }
-        for layer in &self.layers {
-            let mut allowed = false;
-            for rule in &layer.rules {
-                if rule.scope.capability() != capability {
-                    continue;
-                }
-                match rule.effect {
-                    Effect::Deny => return Decision::Denied,
-                    Effect::Allow if rule.scope.is_all_for(capability) => allowed = true,
-                    Effect::Allow => {}
-                }
-            }
-            if !allowed {
-                return Decision::Denied;
-            }
-        }
-        Decision::Allowed
-    }
-
     /// Every configured rule, including rules that do not match a particular
     /// request.
-    pub fn rules(&self) -> impl Iterator<Item = &Rule> {
-        self.layers.iter().flat_map(|layer| &layer.rules)
-    }
+    pub fn rules(&self) -> impl Iterator<Item = &Rule> { self.rules.iter() }
 
-    fn decision(&self, requested: &Request) -> Decision {
-        if self.layers.is_empty() {
-            return Decision::Denied;
-        }
-        for layer in &self.layers {
-            let mut allowed = false;
-            for rule in &layer.rules {
-                if !rule.matches(requested) {
-                    continue;
-                }
-                match rule.effect {
-                    Effect::Deny => return Decision::Denied,
-                    Effect::Allow => allowed = true,
-                }
-            }
-            if !allowed {
-                return Decision::Denied;
+    /// A matching deny wins over any allow; no matching allow denies.
+    #[must_use]
+    pub fn decision(&self, requested: &Request) -> Decision {
+        let mut allowed = false;
+        for rule in self.rules.iter().filter(|rule| rule.matches(requested)) {
+            match rule.effect {
+                Effect::Deny => return Decision::Denied,
+                Effect::Allow => allowed = true,
             }
         }
-        Decision::Allowed
-    }
-
-    fn effective_layers(&self) -> Vec<Layer> {
-        if self.layers.is_empty() {
-            vec![Layer { rules: Vec::new() }]
+        if allowed {
+            Decision::Allowed
         } else {
-            self.layers.clone()
+            Decision::Denied
         }
-    }
-}
-
-/// A borrowed concrete-resource query result.
-#[derive(Debug)]
-pub struct QueryResult<'policy, 'request> {
-    policy:    &'policy Policy,
-    requested: &'request Request,
-    decision:  Decision,
-}
-
-impl QueryResult<'_, '_> {
-    #[must_use]
-    pub const fn decision(&self) -> Decision { self.decision }
-
-    #[must_use]
-    pub const fn requested(&self) -> &Request { self.requested }
-
-    /// All policy rules, useful for explaining why no rule matched.
-    pub fn all_rules(&self) -> impl Iterator<Item = &Rule> { self.policy.rules() }
-
-    /// Only rules whose capability and normalized scope match this request.
-    pub fn matching_rules(&self) -> impl Iterator<Item = &Rule> {
-        self.policy
-            .rules()
-            .filter(|rule| rule.matches(self.requested))
     }
 }
 
@@ -971,7 +779,13 @@ mod tests {
 
         assert_eq!(error.capability, Capability::Read);
         assert_eq!(error.requested, request);
-        assert_eq!(PermissionDenied::CODE, "DEN_CAPABILITY_DENIED");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "read capability denied for {}",
+                test_root("file.js").display()
+            )
+        );
     }
 
     #[test]
@@ -985,10 +799,9 @@ mod tests {
         let public_request = Request::read(root.join("public.js")).unwrap();
         let private_request = Request::read(private.join("key.js")).unwrap();
 
-        assert_eq!(policy.query(&public_request).decision(), Decision::Allowed);
-        assert_eq!(policy.query(&private_request).decision(), Decision::Denied);
-        assert_eq!(policy.query(&private_request).all_rules().count(), 2);
-        assert_eq!(policy.query(&private_request).matching_rules().count(), 2);
+        assert_eq!(policy.decision(&public_request), Decision::Allowed);
+        assert_eq!(policy.decision(&private_request), Decision::Denied);
+        assert_eq!(policy.rules().count(), 2);
     }
 
     #[test]
@@ -1166,53 +979,6 @@ mod tests {
             Cidr::parse("::ffff:10.0.0.0/104"),
             Err(ScopeError::InvalidCidr)
         );
-    }
-
-    #[test]
-    fn child_attenuation_cannot_escalate() {
-        let root = test_root("parent");
-        let child_root = root.join("child");
-        let parent = Policy::new([Rule::allow(read_scope(&root))]);
-        let child = Policy::new([
-            Rule::allow(read_scope(&child_root)),
-            Rule::allow(read_scope(&test_root("outside"))),
-        ]);
-        let effective = parent.attenuate(&child);
-
-        assert!(
-            effective
-                .check(&Request::read(child_root.join("ok.js")).unwrap())
-                .is_ok()
-        );
-        assert!(
-            effective
-                .check(&Request::read(root.join("sibling.js")).unwrap())
-                .is_err()
-        );
-        assert!(
-            effective
-                .check(&Request::read(test_root("outside/escape.js")).unwrap())
-                .is_err()
-        );
-        assert!(
-            parent
-                .attenuate(&Policy::default())
-                .check(&Request::read(child_root.join("ok.js")).unwrap())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn all_query_requires_global_allow_without_denies() {
-        let allow = Policy::allow_all([Capability::Read]);
-        assert_eq!(allow.query_all(Capability::Read), Decision::Allowed);
-
-        let root = test_root("private");
-        let with_deny = Policy::new([
-            Rule::allow(Scope::All(Capability::Read)),
-            Rule::deny(read_scope(&root)),
-        ]);
-        assert_eq!(with_deny.query_all(Capability::Read), Decision::Denied);
     }
 
     #[test]

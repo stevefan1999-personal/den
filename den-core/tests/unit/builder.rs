@@ -1,5 +1,5 @@
 use color_eyre::eyre;
-use den_capabilities::{Capability, Decision, Policy};
+use den_capabilities::{Capability, Policy, Request, Rule, Scope};
 
 use super::{DEFAULT_GC_THRESHOLD, DEFAULT_MAX_STACK_SIZE, EngineBuilder};
 use crate::engine::EngineError;
@@ -27,9 +27,12 @@ fn builder_defaults_are_bounded_and_deny_by_default() {
         builder.settings.import_map.is_none(),
         "hosts opt in to an import map"
     );
-    assert_eq!(
-        builder.settings.policy.query_all(Capability::Read),
-        Decision::Denied,
+    assert!(
+        builder
+            .settings
+            .policy
+            .check(&Request::env("PATH").expect("valid name"))
+            .is_err(),
         "default authority must deny access"
     );
 }
@@ -70,7 +73,7 @@ async fn configured_stack_limit_stops_recursion() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn builder_stores_the_policy_as_context_userdata() -> eyre::Result<()> {
-    let policy = Policy::allow_all([Capability::Read]);
+    let policy = Policy::new([Rule::allow(Scope::All(Capability::Read))]);
     let engine = EngineBuilder::new().policy(policy.clone()).build().await;
     let stored = engine
         .context

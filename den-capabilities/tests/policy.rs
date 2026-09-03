@@ -4,8 +4,8 @@ use std::{
 };
 
 use den_capabilities::{
-    Capability, Decision, Effect, ImportScope, NameScope, NetworkScope, NetworkTarget,
-    NormalizedPath, Policy, PortRange, Request, ResourceName, Rule, Scope, ScopeError,
+    Capability, ImportScope, NameScope, NetworkScope, NetworkTarget, NormalizedPath, Policy,
+    PortRange, Request, ResourceName, Rule, Scope, ScopeError,
 };
 
 fn abs(path: &str) -> PathBuf {
@@ -45,39 +45,33 @@ fn normalized_paths_are_absolute_and_do_not_cross_component_boundaries() {
 }
 
 #[test]
-fn empty_policies_deny_and_child_allows_cannot_broaden_a_parent() {
+fn empty_policies_deny_every_request() {
     let empty = Policy::default();
-    assert_eq!(empty.query_all(Capability::Read), Decision::Denied);
     assert!(
         empty
             .check(&Request::read(abs("/tmp/file")).expect("path"))
             .is_err()
     );
-
-    let parent = Policy::new([Rule::allow(Scope::Read(
-        NormalizedPath::new(abs("/srv")).expect("path"),
-    ))]);
-    let child = Policy::allow_all([Capability::Read, Capability::Write]);
-    let intersected = parent.attenuate(&child);
     assert!(
-        intersected
-            .check(&Request::read(abs("/srv/app")).expect("path"))
-            .is_ok()
+        empty
+            .check(&Request::write(abs("/tmp/file")).expect("path"))
+            .is_err()
     );
+    assert!(empty.check(&Request::env("PATH").expect("name")).is_err());
     assert!(
-        intersected
-            .check(&Request::read(abs("/etc/passwd")).expect("path"))
+        empty
+            .check(&Request::net_connect("example.test", 443).expect("target"))
             .is_err()
     );
     assert!(
-        intersected
-            .check(&Request::write(abs("/srv/app")).expect("path"))
+        empty
+            .check(&Request::import("https://example.test/a.js").expect("url"))
             .is_err()
     );
 }
 
 #[test]
-fn deny_rules_win_inside_a_layer_and_across_attenuation() {
+fn deny_rules_win_over_matching_allows() {
     let policy = Policy::new([
         Rule::allow(Scope::All(Capability::Read)),
         Rule::deny(Scope::Read(
@@ -94,7 +88,6 @@ fn deny_rules_win_inside_a_layer_and_across_attenuation() {
             .check(&Request::read(abs("/secret/key")).expect("path"))
             .is_err()
     );
-    assert_eq!(policy.query_all(Capability::Read), Decision::Denied);
 }
 
 #[test]
@@ -185,13 +178,4 @@ fn import_scopes_match_exact_and_prefix() {
             .check(&Request::import("https://example.test/app.js").expect("url"))
             .is_err()
     );
-}
-
-#[test]
-fn rule_accessors_and_decision_helpers_are_stable() {
-    let rule = Rule::deny(Scope::All(Capability::Ffi));
-    assert_eq!(rule.effect(), Effect::Deny);
-    assert_eq!(rule.scope().capability(), Capability::Ffi);
-    assert!(!Decision::Denied.is_allowed());
-    assert!(Decision::Allowed.is_allowed());
 }

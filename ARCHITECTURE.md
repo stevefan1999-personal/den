@@ -63,8 +63,8 @@ multi-version graphs are excluded until scoped instance identities exist.
   Tokio worker.
 - [`EngineBuilder`](den-core/src/builder.rs) owns stack, GC and optional heap
   limits together with the realm's capability policy and process arguments.
-  Workers inherit the same settings; a child policy may only attenuate its
-  parent. Builtin operations do not enforce this policy yet; hosts must call
+  Workers inherit the same settings. Builtin operations do not enforce this
+  policy yet; hosts must call
   `Policy::check` at their own boundaries.
 - `AsyncRuntime::idle()` is the event loop. Do not run a second driver beside
   it; two schedulers would compete for the same runtime lock.
