@@ -229,11 +229,10 @@ async fn wss_connects_with_tokio_rustls() {
         };
         echo(tls).await;
     });
-    let url = format!("wss://127.0.0.1:{port}/");
+    let url = format!("wss://localhost:{port}/");
     let socket = NativeWebSocket::connect_with(&url, NativeWsConnectOptions {
-        protocols:  Vec::new(),
-        ca_pem:     Some(cert_pem),
-        tls_domain: Some("localhost".into()),
+        protocols: Vec::new(),
+        ca_pem:    Some(cert_pem),
     })
     .expect("wss connect");
     assert!(matches!(

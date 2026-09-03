@@ -86,9 +86,8 @@ pub enum NativeWsEvent {
 /// Extra knobs for [`NativeWebSocket::connect_with`] (custom CA, SNI).
 #[derive(Debug, Clone, Default)]
 pub struct NativeWsConnectOptions {
-    pub protocols:  Vec<String>,
-    pub ca_pem:     Option<String>,
-    pub tls_domain: Option<String>,
+    pub protocols: Vec<String>,
+    pub ca_pem:    Option<String>,
 }
 
 enum Command {
@@ -155,9 +154,8 @@ impl NativeWebSocket {
 
     pub fn connect(url: &str, protocols: &[String]) -> Result<Self, NativeWsError> {
         Self::connect_with(url, NativeWsConnectOptions {
-            protocols:  protocols.to_vec(),
-            ca_pem:     None,
-            tls_domain: None,
+            protocols: protocols.to_vec(),
+            ca_pem:    None,
         })
     }
 
@@ -185,8 +183,7 @@ impl NativeWebSocket {
                     let tcp = TcpStream::connect((host.as_str(), port)).await?;
                     let transport = if parsed.scheme() == "wss" {
                         let connector = tls_connector(options.ca_pem.as_deref())?;
-                        let domain = options.tls_domain.as_deref().unwrap_or(host.as_str());
-                        let server_name = ServerName::try_from(domain.to_owned())
+                        let server_name = ServerName::try_from(host.clone())
                             .map_err(|error| NativeWsError::Tls(error.to_string()))?;
                         let tls = connector
                             .connect(server_name, tcp)
