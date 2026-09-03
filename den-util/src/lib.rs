@@ -338,8 +338,9 @@ pub struct OwnedCtx(Ctx<'static>);
 
 impl OwnedCtx {
     pub fn new(ctx: &Ctx<'_>) -> Self {
-        // SAFETY: `from_raw` takes a reference of its own via `JS_DupContext`, and the
-        // caller is inside `ctx`, so the runtime lock is held right now.
+        // SAFETY: `from_raw` takes a reference of its own via `JS_DupContext`,
+        // and the caller is inside `ctx`, so the runtime lock is held
+        // right now.
         Self(unsafe { Ctx::from_raw(ctx.as_raw()) })
     }
 
@@ -360,8 +361,9 @@ impl OwnedCtx {
     /// frame, while a libffi trampoline compares thread ids first, because C
     /// may call it from a thread of its own.
     pub fn with<R, F: FnOnce(&Ctx<'_>) -> R>(&self, f: F) -> R {
-        // SAFETY: `self.0` holds a live reference to this context, and the caller
-        // holds the runtime lock (see above). The minted `Ctx` never escapes.
+        // SAFETY: `self.0` holds a live reference to this context, and the
+        // caller holds the runtime lock (see above). The minted `Ctx`
+        // never escapes.
         let ctx = unsafe { Ctx::from_raw(self.0.as_raw()) };
         f(&ctx)
     }

@@ -165,8 +165,8 @@ where
     });
     if is_new_eval {
         registry.evals.push_back(filename.to_owned());
-        // ponytail: keep recent REPL maps bounded; switch to weak script keys if
-        // rquickjs exposes bytecode identity.
+        // ponytail: keep recent REPL maps bounded; switch to weak script keys
+        // if rquickjs exposes bytecode identity.
         while registry.evals.len() > RETAINED_EVAL_SOURCES {
             if let Some(expired) = registry.evals.pop_front() {
                 registry.scripts.remove(&expired);
