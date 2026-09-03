@@ -105,7 +105,7 @@ impl HostFunction {
     fn run(
         &self, caller: backend::Caller<'_>, params: &[Val], results: &mut [Val],
     ) -> core::result::Result<(), Error> {
-        caller.data().with_ctx(|ctx| {
+        caller.data().ctx.with(|ctx| {
             // wasm may have grown a memory before calling out, so the buffer
             // refresh has to happen on the way *in* as well as on the way out:
             // otherwise this JS frame writes through a view built before the

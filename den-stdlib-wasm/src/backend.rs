@@ -93,9 +93,9 @@ pub use den_util::OwnedCtx;
 /// host's stdio and environment, which no context may be handed until a script
 /// has asked for WASI by name.
 pub struct StoreData {
-    ctx:  OwnedCtx,
+    pub(crate) ctx: OwnedCtx,
     #[cfg(feature = "wasi")]
-    wasi: Option<WasiP1Ctx>,
+    wasi:           Option<WasiP1Ctx>,
 }
 
 impl StoreData {
@@ -105,23 +105,6 @@ impl StoreData {
             #[cfg(feature = "wasi")]
             wasi:                          None,
         }
-    }
-
-    /// The store's WASI context, built on first use by `init`.
-    #[cfg(feature = "wasi")]
-    pub fn wasi_or_init<F>(&mut self, init: F) -> &mut WasiP1Ctx
-    where
-        F: FnOnce() -> WasiP1Ctx,
-    {
-        self.wasi.get_or_insert_with(init)
-    }
-
-    /// Run `f` with the JS context that owns this store.
-    pub fn with_ctx<R, F>(&self, f: F) -> R
-    where
-        F: FnOnce(&Ctx<'_>) -> R,
-    {
-        self.ctx.with(f)
     }
 }
 
@@ -185,7 +168,7 @@ pub fn link_wasi(linker: &mut Linker) -> Result<(), Error> {
         // only happen once a caller has asked for WASI by passing `wasiImports()` as
         // an import namespace. A store that is never handed to a WASI module never
         // builds one.
-        data.wasi_or_init(|| {
+        data.wasi.get_or_insert_with(|| {
             wasmtime_wasi::WasiCtxBuilder::new()
                 .inherit_stdio()
                 .inherit_env()
