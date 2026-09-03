@@ -167,25 +167,6 @@ pub async fn read_stream<'js>(ctx: &Ctx<'js>, stream: Value<'js>) -> Result<Vec<
             break;
         }
         let value: Value = result.get("value")?;
-        if value.is_undefined() || value.is_null() {
-            return Err(Exception::throw_type(
-                ctx,
-                "ReadableStream chunk must be a Uint8Array",
-            ));
-        }
-        if let Some(string) = value.as_string() {
-            let _ = string;
-            return Err(Exception::throw_type(
-                ctx,
-                "ReadableStream chunk must be a Uint8Array",
-            ));
-        }
-        if value.as_number().is_some() || value.as_bool().is_some() {
-            return Err(Exception::throw_type(
-                ctx,
-                "ReadableStream chunk must be a Uint8Array",
-            ));
-        }
         if let Ok(buffer) = ArrayBuffer::from_js(ctx, value.clone()) {
             out.extend(copy_buffer(ctx, buffer.as_bytes())?);
             continue;

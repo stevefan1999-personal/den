@@ -126,3 +126,8 @@ async fn readable_stream_cancel_is_the_native_method() -> eyre::Result<()> {
 async fn a_url_naming_bad_chunk_still_streams_intact() -> eyre::Result<()> {
     run("fetch_bad_chunk_url.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_buffer_chunks_fail_the_body_with_one_type_error() -> eyre::Result<()> {
+    run("response_stream_chunk_type.js").await
+}
