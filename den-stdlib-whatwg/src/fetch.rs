@@ -102,6 +102,25 @@ impl<'js> Response<'js> {
         }
     }
 
+    /// Every `clone()` arm produces the same response with a different body:
+    /// a fresh copy of the headers and every meta field carried over.
+    fn with_body(
+        &self, ctx: &Ctx<'js>, inner: ResponseBody, body_stream: Option<JsValue<'js>>,
+    ) -> Result<Self> {
+        let headers = Class::instance(
+            ctx.clone(),
+            Headers::new(ctx.clone(), JsOpt(Some(self.headers.clone().into_value())))?,
+        )?;
+        let mut result = Self::from_body(self.status, headers, inner, self.abort_signal.clone());
+        result.redirected = self.redirected;
+        result.status_text = self.status_text.clone();
+        result.url = self.url.clone();
+        result.kind = self.kind.clone();
+        result.abort_notify = self.abort_notify.clone();
+        result.body_stream = body_stream;
+        Ok(result)
+    }
+
     pub async fn into_server(
         response: &Class<'js, Self>, ctx: &Ctx<'js>, max_bytes: usize,
     ) -> Result<BufferedResponse> {
@@ -837,25 +856,7 @@ impl<'js> Response<'js> {
         // `inner` first would hand back a silently empty clone.
         if response.body_stream.is_none() {
             if let ResponseBody::Bytes(bytes) = &*response.inner.borrow() {
-                let headers = Class::instance(
-                    ctx.clone(),
-                    Headers::new(
-                        ctx.clone(),
-                        rquickjs::function::Opt(Some(response.headers.clone().into_value())),
-                    )?,
-                )?;
-                let mut result = Self::from_body(
-                    response.status,
-                    headers,
-                    ResponseBody::Bytes(bytes.clone()),
-                    response.abort_signal.clone(),
-                );
-                result.redirected = response.redirected;
-                result.status_text = response.status_text.clone();
-                result.url = response.url.clone();
-                result.kind = response.kind.clone();
-                result.abort_notify = response.abort_notify.clone();
-                return Ok(result);
+                return response.with_body(&ctx, ResponseBody::Bytes(bytes.clone()), None);
             }
             if !matches!(*response.inner.borrow(), ResponseBody::None) {
                 let host = Class::instance(ctx.clone(), response.clone())?.into_value();
@@ -865,26 +866,7 @@ impl<'js> Response<'js> {
         if let Some(stream) = &response.body_stream {
             let (left, right) = body::tee_stream(&ctx, stream.clone())?;
             response.body_stream = Some(left);
-            let headers = Class::instance(
-                ctx.clone(),
-                Headers::new(
-                    ctx.clone(),
-                    rquickjs::function::Opt(Some(response.headers.clone().into_value())),
-                )?,
-            )?;
-            let mut result = Self::from_body(
-                response.status,
-                headers,
-                ResponseBody::Bytes(Vec::new()),
-                response.abort_signal.clone(),
-            );
-            result.redirected = response.redirected;
-            result.status_text = response.status_text.clone();
-            result.url = response.url.clone();
-            result.kind = response.kind.clone();
-            result.body_stream = Some(right);
-            result.abort_notify = response.abort_notify.clone();
-            return Ok(result);
+            return response.with_body(&ctx, ResponseBody::Bytes(Vec::new()), Some(right));
         }
         let cloned_inner = match &*response.inner.borrow() {
             ResponseBody::None => ResponseBody::None,
@@ -899,25 +881,7 @@ impl<'js> Response<'js> {
                 ));
             }
         };
-        let headers = Class::instance(
-            ctx.clone(),
-            Headers::new(
-                ctx.clone(),
-                rquickjs::function::Opt(Some(response.headers.clone().into_value())),
-            )?,
-        )?;
-        let mut result = Self::from_body(
-            response.status,
-            headers,
-            cloned_inner,
-            response.abort_signal.clone(),
-        );
-        result.redirected = response.redirected;
-        result.status_text = response.status_text.clone();
-        result.url = response.url.clone();
-        result.kind = response.kind.clone();
-        result.abort_notify = response.abort_notify.clone();
-        Ok(result)
+        response.with_body(&ctx, cloned_inner, None)
     }
 
     #[qjs(prop, rename = rquickjs::atom::PredefinedAtom::SymbolToStringTag, configurable)]

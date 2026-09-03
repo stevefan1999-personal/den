@@ -136,3 +136,8 @@ async fn non_buffer_chunks_fail_the_body_with_one_type_error() -> eyre::Result<(
 async fn body_consumers_reject_with_the_spec_type_error() -> eyre::Result<()> {
     run("body_consume_rejections.js").await
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn clone_copies_every_response_field() -> eyre::Result<()> {
+    run("response_clone_fields.js").await
+}
