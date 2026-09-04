@@ -68,12 +68,7 @@ impl RepositorySnapshot {
                     conflict.display_user_friendly(&solver).to_string(),
                 ));
             }
-            // Nothing installs a cancellation hook, so resolvo never reports this.
-            Err(UnsolvableOrCancelled::Cancelled(_)) => {
-                return Err(PackageStoreError::InvalidSnapshot(
-                    "solver cancelled without a cancellation hook".to_owned(),
-                ));
-            }
+            Err(UnsolvableOrCancelled::Cancelled(_)) => return Err(PackageStoreError::Cancelled),
         };
 
         let provider = solver.provider();

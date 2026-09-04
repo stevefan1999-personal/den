@@ -33,7 +33,7 @@ den                              CLI, REPL, signals and tracing
     └── den-stdlib-worker        workers, events and structured clone
 
 den-config                       JSONC discovery and capability-policy conversion
-den-package-store                rusqlite package store, solver and module snapshots
+den-package-store                SeaORM package store, solver and module snapshots
 den-e2e                          file-based cross-crate runtime tests
 ```
 
@@ -46,9 +46,8 @@ The CLI uses clap derive and advertises only implemented commands. It discovers
 Root preloads run before the entry; imports, policy metadata, stack/heap budgets
 and an optional feature-gated package snapshot are inherited by workers. Downloaded
 package bytes and metadata belong to `den-package-store`; its schema is created
-by one rusqlite schema creation stamped into `PRAGMA user_version`, validated
-against the same `CREATE TABLE` definitions when opened, and package content is
-addressed by SHA-256.
+through versioned SeaORM migrations, validated against the same SeaQuery table
+definitions when opened, and package content is addressed by SHA-256.
 Resolvo operates on a validated in-memory snapshot, never from inside QuickJS's
 synchronous loader. A host solves and hydrates a `PackageModuleSnapshot`, then
 passes it to `EngineBuilder::package_modules`; workers inherit that immutable

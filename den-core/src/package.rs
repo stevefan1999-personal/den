@@ -193,9 +193,9 @@ mod tests {
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     #[cfg(feature = "transpile")]
-    #[test]
-    fn imports_js_tsx_and_typed_data_without_io() -> TestResult {
-        let snapshot = Arc::new(fixture()?);
+    #[tokio::test]
+    async fn imports_js_tsx_and_typed_data_without_io() -> TestResult {
+        let snapshot = Arc::new(fixture().await?);
         let runtime = Runtime::new()?;
         runtime.set_loader(
             PackageResolver::optional(Some(snapshot.clone())),
@@ -220,7 +220,7 @@ mod tests {
     #[cfg(feature = "transpile")]
     #[tokio::test]
     async fn package_modules_precede_embedded_bundle_entries() -> TestResult {
-        let snapshot = Arc::new(fixture()?);
+        let snapshot = Arc::new(fixture().await?);
         assert_eq!(snapshot.resolve("entry", "@scope/app")?, PACKAGE_MAIN);
         let engine = EngineBuilder::new()
             .bundle(SHADOW_BUNDLE)
@@ -234,9 +234,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn resolver_rejects_traversal_and_missing_exports() -> TestResult {
-        let snapshot = fixture()?;
+    #[tokio::test]
+    async fn resolver_rejects_traversal_and_missing_exports() -> TestResult {
+        let snapshot = fixture().await?;
         let root = snapshot.resolve("entry", "@scope/app")?;
         assert!(matches!(
             snapshot.resolve(&root, "../../outside.js"),
@@ -262,9 +262,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn claimed_package_errors_do_not_fall_through() -> TestResult {
-        let snapshot = Arc::new(fixture()?);
+    #[tokio::test]
+    async fn claimed_package_errors_do_not_fall_through() -> TestResult {
+        let snapshot = Arc::new(fixture().await?);
         let fallback_called = Arc::new(AtomicBool::new(false));
         let mut resolver = (
             PackageResolver::optional(Some(snapshot)),
@@ -289,9 +289,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn package_imports_ignore_application_import_maps() -> TestResult {
-        let snapshot = Arc::new(fixture()?);
+    #[tokio::test]
+    async fn package_imports_ignore_application_import_maps() -> TestResult {
+        let snapshot = Arc::new(fixture().await?);
         let package_base = snapshot.resolve("entry", "@scope/app")?;
         let fallback_called = Arc::new(AtomicBool::new(false));
         let mut resolver = (
@@ -317,9 +317,9 @@ mod tests {
         Ok(())
     }
 
-    fn fixture() -> TestResult<PackageModuleSnapshot> {
-        let store = PackageStore::open_in_memory()?;
-        let registry = store.add_registry("jsr", "https://jsr.example/")?;
+    async fn fixture() -> TestResult<PackageModuleSnapshot> {
+        let store = PackageStore::open_in_memory().await?;
+        let registry = store.add_registry("jsr", "https://jsr.example/").await?;
         let files: [(&str, &[u8], &str); 7] = [
             (
                 "src/main.ts",
@@ -359,7 +359,7 @@ mod tests {
             target: "src/main.ts".to_owned(),
         });
         for (path, bytes, media_type) in files {
-            let digest = store.insert_blob(bytes)?;
+            let digest = store.insert_blob(bytes).await?;
             release.files.push(NewPackageFile {
                 path:       path.to_owned(),
                 blob:       digest,
@@ -367,12 +367,11 @@ mod tests {
                 mode:       0o644,
             });
         }
-        store.insert_release(&release)?;
-        let solved = store.repository_snapshot()?.solve(&[RootRequirement::new(
-            registry,
-            "@scope/app",
-            "1.0.0",
-        )])?;
-        Ok(store.hydrate_modules(&solved)?)
+        store.insert_release(&release).await?;
+        let solved = store
+            .repository_snapshot()
+            .await?
+            .solve(&[RootRequirement::new(registry, "@scope/app", "1.0.0")])?;
+        Ok(store.hydrate_modules(&solved).await?)
     }
 }

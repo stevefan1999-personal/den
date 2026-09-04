@@ -1,4 +1,6 @@
+mod entity;
 mod error;
+mod migration;
 mod model;
 mod runtime;
 mod solve;
