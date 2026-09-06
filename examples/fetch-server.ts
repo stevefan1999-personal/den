@@ -5,6 +5,7 @@
 // One process is both sides: den:http serve (Fetch handler) and fetch()
 // against that listener. AbortController cancels an in-flight request.
 
+import { assertEquals } from "den:assert";
 import { serve } from "den:http";
 
 let started!: () => void;
@@ -49,12 +50,14 @@ const server = serve({
 
 try {
   const json = await (await fetch(server.url)).json() as { runtime: string };
+  assertEquals(json.runtime, "den");
   console.log("get", json.runtime, "at", server.url);
 
   const echoed = await (await fetch(`${server.url}echo`, {
     method: "POST",
     body: "ping",
   })).text();
+  assertEquals(echoed, "ping");
   console.log("echo", echoed);
 
   const form = new FormData();
@@ -63,6 +66,7 @@ try {
     method: "POST",
     body: form,
   })).json() as { runtime: string };
+  assertEquals(posted.runtime, "den");
   console.log("form", posted.runtime);
 
   const controller = new AbortController();
@@ -75,6 +79,7 @@ try {
   } catch (error) {
     aborted = error instanceof Error ? error.name : String(error);
   }
+  assertEquals(aborted, "AbortError");
   console.log("abort", aborted);
 } finally {
   await server.close({ drainMs: 0 });

@@ -2,7 +2,7 @@
 //
 // WinterTC CompressionStream / DecompressionStream: gzip, deflate, deflate-raw.
 
-export {};
+import { assert, assertEquals } from "den:assert";
 
 async function collect(
   stream: CompressionStream | DecompressionStream,
@@ -33,5 +33,9 @@ const decoder = new TextDecoder();
 const input = encoder.encode("a note for den");
 const compressed = await collect(new CompressionStream("gzip"), input);
 const plain = await collect(new DecompressionStream("gzip"), compressed);
+assert(compressed.length > 0);
+assertEquals(compressed[0], 0x1f);
+assertEquals(compressed[1], 0x8b);
+assertEquals(decoder.decode(plain), "a note for den");
 console.log("gzip", compressed.length, "bytes, magic", compressed[0], compressed[1]);
 console.log("round-trip", decoder.decode(plain));

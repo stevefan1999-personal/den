@@ -4,14 +4,16 @@
 // BroadcastChannel is the same name across realms (and workers).
 // structuredClone is the structured-clone algorithm without a port.
 
-export {};
+import { assertEquals } from "den:assert";
 
 const channel = new MessageChannel();
 const direct = new Promise<unknown>((resolve) => {
   channel.port1.onmessage = ({ data }: MessageEvent) => resolve(data);
 });
 channel.port2.postMessage({ value: 42 });
-console.log("message channel", await direct);
+const delivered = await direct;
+assertEquals(delivered, { value: 42 });
+console.log("message channel", delivered);
 channel.port1.close();
 channel.port2.close();
 
@@ -21,9 +23,12 @@ const broadcast = new Promise<unknown>((resolve) => {
   receiver.onmessage = ({ data }: MessageEvent) => resolve(data);
 });
 sender.postMessage("heard");
-console.log("broadcast", await broadcast);
+const heard = await broadcast;
+assertEquals(heard, "heard");
+console.log("broadcast", heard);
 sender.close();
 receiver.close();
 
 const cloned = structuredClone({ runtime: "den", n: 1 });
+assertEquals(cloned, { runtime: "den", n: 1 });
 console.log("clone", cloned.runtime, cloned.n);

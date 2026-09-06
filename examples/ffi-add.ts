@@ -6,6 +6,7 @@
 // compiled in. --allow-ffi (optionally =PATH) mints the capability. The
 // schema is data: it types the call site and builds the libffi CIF.
 
+import { assertEquals } from "den:assert";
 import { grant, open, suffix } from "den:ffi";
 import { metadata } from "den:fs";
 import { posix } from "den:path";
@@ -36,6 +37,7 @@ if (capability === null) {
   const probe = open(library, {
     add: { params: ["i32", "i32"], result: "i32" },
   }, capability);
+  assertEquals(probe.add(40, 2), 42);
   console.log("ffi add", probe.add(40, 2));
   probe[Symbol.dispose]();
 }

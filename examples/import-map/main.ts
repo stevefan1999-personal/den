@@ -4,6 +4,8 @@
 // config file's directory. Bare specifiers that the map does not name still
 // resolve as files.
 
+import { assertEquals } from "den:assert";
 import { greet } from "greet";
 
+assertEquals(greet("den"), "hello den from an import map");
 console.log(greet("den"));

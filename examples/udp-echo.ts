@@ -2,6 +2,7 @@
 //
 // Two UdpSockets on the same event loop: bind :0, sendTo, recvFrom.
 
+import { assertEquals } from "den:assert";
 import { UdpSocket } from "den:networking";
 
 const receiver = await UdpSocket.bind("127.0.0.1:0");
@@ -11,5 +12,7 @@ const dest = `127.0.0.1:${receiver.localAddr.port}`;
 const incoming = receiver.recvFrom(64);
 const sent = await sender.sendTo(new TextEncoder().encode("ping"), dest);
 const [payload, from] = await incoming;
+assertEquals(sent, 4);
+assertEquals(new TextDecoder().decode(payload), "ping");
 console.log("sent", sent, "bytes");
 console.log("recv", JSON.stringify(new TextDecoder().decode(payload)), "from", from.toString());

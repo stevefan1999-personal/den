@@ -5,6 +5,7 @@
 // DENO_WEBGPU_BACKEND) selects wgpu backends; `noop` is hermetic and does
 // not copy, so this example skips it.
 
+import { assertEquals } from "den:assert";
 import { env } from "den:process";
 import { GPUBufferUsage, GPUMapMode, gpu } from "den:webgpu";
 
@@ -54,7 +55,9 @@ if (adapter === null) {
   device.queue.submit([encoder.finish()]);
 
   await readback.mapAsync(GPUMapMode.READ);
-  console.log("doubled", [...new Uint32Array(readback.getMappedRange())].join(","));
+  const doubled = [...new Uint32Array(readback.getMappedRange())];
+  assertEquals(doubled, [0, 2, 4, 6]);
+  console.log("doubled", doubled.join(","));
   readback.unmap();
   storage.destroy();
   readback.destroy();
