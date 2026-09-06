@@ -35,7 +35,9 @@ async fn run_example(name: &str) -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn https_esm_imports_resolve_through_fetch() -> eyre::Result<()> { run("https_esm.js").await }
+async fn https_esm_imports_resolve_through_fetch() -> eyre::Result<()> {
+    run("https_esm.js").await
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn fetch_reads_a_scripted_tcp_http_server() -> eyre::Result<()> {
@@ -84,11 +86,15 @@ async fn a_worker_timer_posts_a_temporal_instant() -> eyre::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn json_import_attributes_feed_assert() -> eyre::Result<()> { run("import_json.js").await }
+async fn json_import_attributes_feed_assert() -> eyre::Result<()> {
+    run("import_json.js").await
+}
 
 #[cfg(feature = "typescript")]
 #[tokio::test(flavor = "multi_thread")]
-async fn a_typescript_entry_file_reaches_assert() -> eyre::Result<()> { run("typed_note.ts").await }
+async fn a_typescript_entry_file_reaches_assert() -> eyre::Result<()> {
+    run("typed_note.ts").await
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn random_bytes_round_trip_through_blob_and_file_reader() -> eyre::Result<()> {
@@ -124,6 +130,96 @@ async fn tls_listen_and_connect_echo_over_an_async_iterator() -> eyre::Result<()
 #[tokio::test(flavor = "multi_thread")]
 async fn the_event_loop_drives_timers_events_and_stream_chunks() -> eyre::Result<()> {
     run_example("event-loop.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn kv_commits_and_rejects_a_stale_snapshot() -> eyre::Result<()> {
+    run_example("kv.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_and_path_write_an_atomic_note() -> eyre::Result<()> {
+    run_example("fs-path.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn web_crypto_digests_and_mints_a_uuid() -> eyre::Result<()> {
+    run_example("crypto.ts").await
+}
+
+#[cfg(all(feature = "typescript", feature = "wasm"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn wasm_instantiates_from_a_bytes_import() -> eyre::Result<()> {
+    run_example("wasm.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn import_attributes_load_json_text_and_bytes() -> eyre::Result<()> {
+    run_example("import-attrs.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn webgpu_compute_runs_when_an_adapter_exists() -> eyre::Result<()> {
+    run_example("webgpu-compute.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn canvas_image_data_becomes_a_bitmap() -> eyre::Result<()> {
+    run_example("canvas.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn intl_and_temporal_print_a_calendar_date() -> eyre::Result<()> {
+    run_example("intl-temporal.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn message_and_broadcast_channels_deliver() -> eyre::Result<()> {
+    run_example("channels.ts").await
+}
+
+#[cfg(all(feature = "typescript", feature = "wasm"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_module_worker_instantiates_wasm() -> eyre::Result<()> {
+    run_example("worker-compute.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn udp_listen_and_send_echo() -> eyre::Result<()> {
+    run_example("udp-echo.ts").await
+}
+
+#[cfg(all(feature = "typescript", unix))]
+#[tokio::test(flavor = "multi_thread")]
+async fn unix_listen_and_connect_echo() -> eyre::Result<()> {
+    run_example("unix-echo.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_echoes_and_lookup_resolves_localhost() -> eyre::Result<()> {
+    run_example("spawn.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn fetch_talks_to_a_scripted_http_server() -> eyre::Result<()> {
+    run_example("fetch-server.ts").await
+}
+
+#[cfg(feature = "typescript")]
+#[tokio::test(flavor = "multi_thread")]
+async fn gzip_round_trips_through_compression_streams() -> eyre::Result<()> {
+    run_example("compress.ts").await
 }
 
 #[cfg(all(feature = "typescript", feature = "react"))]
