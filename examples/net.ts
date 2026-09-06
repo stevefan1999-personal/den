@@ -11,10 +11,12 @@ export interface SocketAddr {
   toString(): string;
 }
 
+export type PeerAddr = SocketAddr | string;
+
 export interface Listener {
-  localAddr?: SocketAddr;
-  local_addr?: SocketAddr;
-  accept(): Promise<[ByteStream, SocketAddr]>;
+  localAddr?: PeerAddr;
+  local_addr?: PeerAddr;
+  accept(): Promise<[ByteStream, PeerAddr]>;
 }
 
 export function writeAll(stream: ByteStream, data: ByteSource): Promise<void> {
@@ -35,7 +37,7 @@ export function dest(listener: Listener): string {
 
 export async function* connections(
   listener: Listener,
-): AsyncGenerator<{ stream: ByteStream; peer: SocketAddr }> {
+): AsyncGenerator<{ stream: ByteStream; peer: PeerAddr }> {
   for (;;) {
     const [stream, peer] = await listener.accept();
     yield { stream, peer };

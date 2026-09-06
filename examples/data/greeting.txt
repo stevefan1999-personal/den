@@ -1,0 +1,1 @@
+hello from a text import attribute
