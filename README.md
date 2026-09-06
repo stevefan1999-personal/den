@@ -65,6 +65,37 @@ Made during the Easter holiday of 2023.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit together. Closed
 research remains available in Git history.
 
+## Examples
+
+Runnable TypeScript under [`examples/`](examples/). From the repo root:
+
+```bash
+$ cargo run -- examples/event-loop.ts
+```
+
+| File | What it shows |
+| --- | --- |
+| `event-loop.ts` | timers, `EventTarget`, streams, Temporal |
+| `tcp-echo.ts` / `tls-echo.ts` | `den:networking` TCP and TLS |
+| `udp-echo.ts` / `unix-echo.ts` | UDP and Unix-domain sockets |
+| `http-server.tsx` | `den:http` + SQLite + React TSX |
+| `http-server-workers.tsx` | the same notes app, SQLite in a worker pool |
+| `fetch-server.ts` | `serve` and `fetch` in one process, plus abort |
+| `kv.ts` | `den:kv` durable bytes and snapshot transactions |
+| `fs-path.ts` | `den:fs` and lexical `den:path` |
+| `crypto.ts` | `crypto.subtle.digest`, UUID, `getRandomValues` |
+| `wasm.ts` | WebAssembly from `{ type: "bytes" }` |
+| `import-attrs.ts` | `json` / `text` / `bytes` import attributes |
+| `webgpu-compute.ts` | headless WebGPU compute |
+| `canvas.ts` | `ImageData` and `createImageBitmap` |
+| `intl-temporal.ts` | `Intl.Locale` and Temporal dates |
+| `channels.ts` | `MessageChannel`, `BroadcastChannel`, `structuredClone` |
+| `worker-compute.ts` | a module worker that instantiates wasm |
+| `spawn.ts` | `process.spawn` and DNS `lookup` |
+| `compress.ts` | `CompressionStream` gzip round-trip |
+| `ffi-add.ts` | `den:ffi` (`--allow-ffi`, compiles `ffi-add.c`) |
+| `import-map/` | `den.json` import map (`--config`) |
+
 # Build instruction
 
 ## Steps
