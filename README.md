@@ -28,11 +28,14 @@ Made during the Easter holiday of 2023.
   `XMLHttpRequest`, `EventSource`, `URLPattern`, `CompressionStream`, `WebSocket`,
   `performance.now`, `navigator.userAgentData` — all native Rust classes, no JS preludes
 - Official suites, one nextest test per vendored file (sources are never rewritten):
-  test262 Temporal (`cargo nextest run -p den-stdlib-temporal --test test262`),
+  test262 (`cargo nextest run -p den-core --test test262`) — full INTERPRETING.md suite,
+  no skips,
+  test262 Temporal (`cargo nextest run -p den-stdlib-temporal --test test262`) — Temporal
+  subset,
   WebAssembly spec (`cargo nextest run -p den-stdlib-wasm --test spec_core`),
   WPT (`cargo nextest run -p den-core --test wpt --features stdlib`),
   WebGPU CTS (`cargo nextest run -p den-stdlib-webgpu --test cts`).
-  All four: `cargo nextest run --profile official --build-jobs 8`
+  All of them: `cargo nextest run --profile official --build-jobs 8`
   WPT expects the official `vendor/wpt` server on ports 8000–8002; the CI workflow contains the
   matching startup and cleanup command.
 - Import maps and import attributes (`json` / `text` / `bytes`)

@@ -148,5 +148,11 @@ path = "tests/wpt.rs"
 harness = false
 required-features = ["stdlib"]
 
+[[test]]
+name = "test262"
+path = "tests/test262.rs"
+harness = false
+required-features = ["stdlib"]
+
 [lints]
 workspace = true

@@ -148,6 +148,14 @@ host memory. Measure against
 on a real adapter; the `noop` backend performs no copies and cannot run
 indirect draws, so it is a smoke test, not conformance parity.
 
+Official Test262 files live in [`vendor/test262`](vendor/test262). The
+language-engine harness is
+[`den-core/tests/test262.rs`](den-core/tests/test262.rs): one nextest test per
+official file (two when INTERPRETING.md requires both sloppy and strict),
+sources never rewritten, none ignored. `$262.createRealm` and
+`$262.agent.start` throw rather than skip. The Temporal crate keeps a focused
+subset harness that still ignores unsupported features.
+
 The loader chain is:
 
 1. native builtins;
@@ -227,8 +235,12 @@ cargo nextest run --workspace --profile official --build-jobs 8 \
   --no-default-features --features stdlib,typescript,react,wasm,wasi,ring
 ```
 
-Focused conformance suites are Test262 Temporal, the WebAssembly spec runner,
-WPT, and WebGPU CTS (`cargo nextest run -p den-stdlib-webgpu --test cts`).
+Focused conformance suites are the full Test262 INTERPRETING.md runner
+(`cargo nextest run -p den-core --test test262`; every official file under
+`vendor/test262/test`, none ignored), the Temporal subset
+(`cargo nextest run -p den-stdlib-temporal --test test262`), the WebAssembly
+spec runner, WPT, and WebGPU CTS
+(`cargo nextest run -p den-stdlib-webgpu --test cts`).
 WPT uses the vendored sparse checkout and the official `wptserve` process on
 ports 8000–8002; [scripts/wptserve.sh](scripts/wptserve.sh) owns that server
 lifecycle.
